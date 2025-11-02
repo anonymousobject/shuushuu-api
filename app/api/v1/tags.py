@@ -1,6 +1,8 @@
 """
 Tags API endpoints
 """
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,7 +80,7 @@ async def get_images_by_tag(
     sort_by: str = Query("image_id", description="Sort field"),
     sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
     db: AsyncSession = Depends(get_db)
-):
+) -> ImageListResponse:
     """
     Get all images with a specific tag.
 
@@ -162,12 +164,12 @@ async def get_images_by_tag(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return {
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "images": images
-    }
+    return ImageListResponse(
+        total=total or 0,
+        page=page,
+        per_page=per_page,
+        images=images
+    )
 
 
 @router.get("/", response_model=TagListResponse)
@@ -177,7 +179,7 @@ async def list_tags(
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(50, ge=1, le=100, description="Items per page"),
     db: AsyncSession = Depends(get_db)
-):
+) -> TagListResponse:
     """
     List and search tags.
 
@@ -210,19 +212,19 @@ async def list_tags(
     result = await db.execute(query)
     tags = result.scalars().all()
 
-    return {
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "tags": tags
-    }
+    return TagListResponse(
+        total=total or 0,
+        page=page,
+        per_page=per_page,
+        tags=tags
+    )
 
 
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: int = Path(..., description="Tag ID"),
     db: AsyncSession = Depends(get_db)
-):
+) -> TagWithStats:
     """
     Get a single tag by ID with usage statistics.
 
@@ -261,13 +263,13 @@ async def get_tag(
     # Get parent tag in hierarchy (inheritance, not alias)
     parent_tag_id = tag.inheritedfrom_id
 
-    return {
-        "tag_id": tag.tag_id,
-        "title": tag.title,
-        "type": tag.type,
-        "image_count": image_count,
-        "is_alias": is_alias,
-        "aliased_tag_id": aliased_tag_id,
-        "parent_tag_id": parent_tag_id,
-        "child_count": child_count,
-    }
+    return TagWithStats(
+        tag_id=tag.tag_id,
+        title=tag.title,
+        type=tag.type,
+        image_count=image_count or 0,
+        is_alias=is_alias,
+        aliased_tag_id=aliased_tag_id,
+        parent_tag_id=parent_tag_id,
+        child_count=child_count or 0,
+    )

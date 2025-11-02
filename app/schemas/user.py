@@ -20,9 +20,12 @@ class UserCreate(UserBase):
     password: str
 
 
-class UserUpdate(UserBase):
-    """Schema for updating a user profile"""
-    username: str | None = None  # Make username optional for updates
+class UserUpdate(BaseModel):
+    """Schema for updating a user profile - all fields optional"""
+    username: str | None = None
+    location: str | None = None
+    website: str | None = None
+    avatar: str | None = None
     email: EmailStr | None = None
     password: str | None = None
 

@@ -1,6 +1,8 @@
 """
 Users API endpoints
 """
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +23,7 @@ async def get_user_images(
     sort_by: str = Query("image_id", description="Sort field"),
     sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
     db: AsyncSession = Depends(get_db)
-):
+) -> ImageListResponse:
     """
     Get all images uploaded by a specific user.
 
@@ -58,19 +60,19 @@ async def get_user_images(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return {
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "images": images
-    }
+    return ImageListResponse(
+        total=total or 0,
+        page=page,
+        per_page=per_page,
+        images=images
+    )
 
 
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int = Path(..., description="User ID"),
     db: AsyncSession = Depends(get_db)
-):
+) -> UserResponse:
     """
     Get user profile information.
     """
@@ -80,4 +82,4 @@ async def get_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return user
+    return UserResponse.model_validate(user)

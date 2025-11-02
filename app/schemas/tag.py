@@ -15,7 +15,7 @@ class TagCreate(TagBase):
     pass
 
 
-class TagUpdate(TagBase):
+class TagUpdate(BaseModel):
     """Schema for updating a tag - all fields optional"""
     title: str | None = None
     type: int | None = None

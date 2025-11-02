@@ -2,6 +2,7 @@
 Images API endpoints
 """
 from enum import Enum
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import asc, desc, func, select
@@ -9,8 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.tags import resolve_tag_alias
 from app.core.database import get_db
-from app.models import Images, TagLinks, Tags, Users
-from app.schemas.image import ImageListResponse, ImageResponse
+from app.models import Images, TagLinks, Tags
+from app.schemas.image import (
+    ImageHashSearchResponse,
+    ImageListResponse,
+    ImageResponse,
+    ImageStatsResponse,
+    ImageTagItem,
+    ImageTagsResponse,
+)
 
 router = APIRouter(prefix="/images", tags=["images"])
 
@@ -37,7 +45,7 @@ class SortOrder(str, Enum):
 async def get_image(
     image_id: int,
     db: AsyncSession = Depends(get_db)
-):
+) -> ImageResponse:
     """
     Get a single image by ID.
 
@@ -52,7 +60,7 @@ async def get_image(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    return image
+    return ImageResponse.model_validate(image)
 
 
 @router.get("/", response_model=ImageListResponse)
@@ -92,7 +100,7 @@ async def list_images(
     characters: str | None = Query(None, description="Filter by characters (partial match)"),
 
     db: AsyncSession = Depends(get_db)
-):
+) -> ImageListResponse:
     """
     Search and list images with comprehensive filtering.
 
@@ -127,7 +135,7 @@ async def list_images(
             if tags_mode == "all":
                 # Images must have ALL specified tags
                 for tag_id in tag_ids:
-                    tag, resolved_tag_id = await resolve_tag_alias(db, tag_id)
+                    _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
                     query = query.where(
                         Images.image_id.in_(
                             select(TagLinks.image_id).where(TagLinks.tag_id == resolved_tag_id)
@@ -224,19 +232,19 @@ async def list_images(
     result = await db.execute(final_query)
     images = result.scalars().all()
 
-    return {
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "images": images
-    }
+    return ImageListResponse(
+        total=total or 0,
+        page=page,
+        per_page=per_page,
+        images=images
+    )
 
 
-@router.get("/{image_id}/tags")
+@router.get("/{image_id}/tags", response_model=ImageTagsResponse)
 async def get_image_tags(
     image_id: int,
     db: AsyncSession = Depends(get_db)
-):
+) -> ImageTagsResponse:
     """
     Get all tags for a specific image.
     """
@@ -257,24 +265,24 @@ async def get_image_tags(
     )
     tags = result.scalars().all()
 
-    return {
-        "image_id": image_id,
-        "tags": [
-            {
-                "tag_id": tag.tag_id,
-                "tag": tag.title,
-                "type_id": tag.type
-            }
+    return ImageTagsResponse(
+        image_id=image_id,
+        tags=[
+            ImageTagItem(
+                tag_id=tag.tag_id,
+                tag=tag.title,
+                type_id=tag.type
+            )
             for tag in tags
         ]
-    }
+    )
 
 
-@router.get("/search/by-hash/{md5_hash}")
+@router.get("/search/by-hash/{md5_hash}", response_model=ImageHashSearchResponse)
 async def search_by_hash(
     md5_hash: str,
     db: AsyncSession = Depends(get_db)
-):
+) -> ImageHashSearchResponse:
     """
     Search for an image by MD5 hash.
 
@@ -285,15 +293,15 @@ async def search_by_hash(
     )
     images = result.scalars().all()
 
-    return {
-        "md5_hash": md5_hash,
-        "found": len(images),
-        "images": images
-    }
+    return ImageHashSearchResponse(
+        md5_hash=md5_hash,
+        found=len(images),
+        images=list(images)
+    )
 
 
-@router.get("/stats/summary")
-async def get_stats(db: AsyncSession = Depends(get_db)):
+@router.get("/stats/summary", response_model=ImageStatsResponse)
+async def get_stats(db: AsyncSession = Depends(get_db)) -> ImageStatsResponse:
     """
     Get overall image statistics.
     """
@@ -306,8 +314,8 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     avg_rating_result = await db.execute(select(func.avg(Images.rating)))
     avg_rating = avg_rating_result.scalar() or 0.0
 
-    return {
-        "total_images": total_images,
-        "total_favorites": total_favorites,
-        "average_rating": round(float(avg_rating), 2)
-    }
+    return ImageStatsResponse(
+        total_images=total_images or 0,
+        total_favorites=int(total_favorites),
+        average_rating=round(float(avg_rating), 2)
+    )

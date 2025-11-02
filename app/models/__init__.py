@@ -10,8 +10,8 @@ For modifications:
 3. Create an Alembic migration to track the change
 """
 
+from app.core.database import Base
 from app.models.generated import (
-    Base,
     # Main models
     Users,
     Images,

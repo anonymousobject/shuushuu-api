@@ -4,9 +4,13 @@ Pydantic schemas for API responses and requests
 from app.schemas.image import (
     ImageBase,
     ImageCreate,
+    ImageHashSearchResponse,
     ImageListResponse,
     ImageResponse,
     ImageSearchParams,
+    ImageStatsResponse,
+    ImageTagItem,
+    ImageTagsResponse,
     ImageUpdate,
 )
 from app.schemas.tag import (
@@ -33,6 +37,10 @@ __all__ = [
     "ImageResponse",
     "ImageListResponse",
     "ImageSearchParams",
+    "ImageTagItem",
+    "ImageTagsResponse",
+    "ImageHashSearchResponse",
+    "ImageStatsResponse",
     # Tag schemas
     "TagBase",
     "TagCreate",

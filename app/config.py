@@ -122,15 +122,15 @@ class Settings(BaseSettings):
     
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
-    def parse_cors_origins(cls, v):
+    def parse_cors_origins(cls, v: str | List[str]) -> List[str]:
         """Parse CORS origins from comma-separated string"""
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",")]
         return v
-    
+
     @field_validator("ALLOWED_HOSTS", mode="before")
     @classmethod
-    def parse_allowed_hosts(cls, v):
+    def parse_allowed_hosts(cls, v: str | List[str]) -> List[str]:
         """Parse allowed hosts from comma-separated string"""
         if isinstance(v, str):
             return [host.strip() for host in v.split(",")]

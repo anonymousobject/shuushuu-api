@@ -27,14 +27,20 @@ class ImageCreate(ImageBase):
     user_id: int
 
 
-class ImageUpdate(ImageBase):
+class ImageUpdate(BaseModel):
     """Schema for updating an image - all fields optional"""
-    # Override ImageBase fields to make them optional for updates
+    filename: str | None = None
     ext: str | None = None
+    original_filename: str | None = None
     md5_hash: str | None = None
     filesize: int | None = None
     width: int | None = None
     height: int | None = None
+    caption: str | None = None
+    image_source: str | None = None
+    artist: str | None = None
+    characters: str | None = None
+    rating: float | None = None
 
 
 class ImageResponse(ImageBase):
@@ -79,3 +85,30 @@ class ImageSearchParams(BaseModel):
     sort_order: str = "DESC"
     page: int = 1
     per_page: int = 20
+
+
+class ImageTagItem(BaseModel):
+    """Schema for a single tag on an image"""
+    tag_id: int
+    tag: str
+    type_id: int
+
+
+class ImageTagsResponse(BaseModel):
+    """Schema for image tags response"""
+    image_id: int
+    tags: list[ImageTagItem]
+
+
+class ImageHashSearchResponse(BaseModel):
+    """Schema for hash search response"""
+    md5_hash: str
+    found: int
+    images: list[ImageResponse]
+
+
+class ImageStatsResponse(BaseModel):
+    """Schema for image statistics response"""
+    total_images: int
+    total_favorites: int
+    average_rating: float

@@ -26,7 +26,7 @@ app.add_middleware(
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, str]:
     """Root endpoint - API information"""
     return {
         "name": "Shuushuu API",
@@ -37,7 +37,7 @@ async def root():
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, str]:
     """Health check endpoint"""
     return {"status": "healthy"}
 
@@ -49,7 +49,7 @@ app.include_router(api_v1_router, prefix="/api/v1")
 
 
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     """Run on application startup"""
     print("🚀 Shuushuu API starting up...")
     print(f"📊 Environment: {settings.ENVIRONMENT}")
@@ -57,6 +57,6 @@ async def startup_event():
 
 
 @app.on_event("shutdown")
-async def shutdown_event():
+async def shutdown_event() -> None:
     """Run on application shutdown"""
     print("👋 Shuushuu API shutting down...")
