@@ -1,0 +1,176 @@
+# Docker Compose - MySQL + Redis Version
+# Credentials are loaded from .env file - see .env.example for reference
+
+services:
+  # MariaDB Database
+  mysql:
+    image: mariadb:12
+    container_name: shuushuu-mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-shuushuu}
+      MYSQL_USER: ${MYSQL_USER:-shuushuu}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-shuushuu_password}
+      # MARIADB_AUTO_UPGRADE: "1"
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=200
+      --innodb_buffer_pool_size=256M
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d  # Optional init scripts
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis (for caching + optional Arq)
+  redis:
+    image: redis:7-alpine
+    container_name: shuushuu-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # FastAPI Application
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shuushuu-api
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DATABASE_URL=mysql+aiomysql://${MYSQL_USER:-shuushuu}:${MYSQL_PASSWORD:-shuushuu_password}@mysql:3306/${MYSQL_DATABASE:-shuushuu}?charset=utf8mb4
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - SECRET_KEY=${SECRET_KEY}
+      - IQDB_HOST=iqdb
+      - IQDB_PORT=${IQDB_PORT:-5588}
+      - TASK_QUEUE_TYPE=${TASK_QUEUE_TYPE:-background}
+      - DEBUG=${DEBUG:-True}
+      # Prevent Python from writing pyc files and __pycache__ dirs
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - .:/app
+      - ./storage:/shuushuu/images
+      # Anonymous volumes to isolate container artifacts from host
+      - /app/.venv
+      - /app/.pytest_cache
+      - /app/.ruff_cache
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: rebuild
+          path: ./Dockerfile
+        - action: rebuild
+          path: ./pyproject.toml
+        - action: rebuild
+          path: ./uv.lock
+        - action: sync
+          path: ./app
+          target: /app/app
+        - action: sync
+          path: ./alembic
+          target: /app/alembic
+    restart: unless-stopped
+
+  # Arq Worker (optional - uncomment to enable)
+  # arq-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: shuushuu-arq-worker
+  #   command: uv run arq app.tasks.worker.WorkerSettings
+  #   environment:
+  #     - ENVIRONMENT=${ENVIRONMENT:-development}
+  #     - DATABASE_URL=mysql+aiomysql://${MYSQL_USER:-shuushuu}:${MYSQL_PASSWORD:-shuushuu_password}@mysql:3306/${MYSQL_DATABASE:-shuushuu}?charset=utf8mb4
+  #     - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+  #     - ARQ_REDIS_URL=${ARQ_REDIS_URL:-redis://redis:6379/1}
+  #     - SECRET_KEY=${SECRET_KEY}
+  #   volumes:
+  #     - .:/app
+  #     - ./storage:/shuushuu/images
+  #   depends_on:
+  #     - redis
+  #     - mysql
+  #   develop:
+  #     watch:
+  #       - action: rebuild
+  #         path: ./Dockerfile
+  #       - action: rebuild
+  #         path: ./pyproject.toml
+  #       - action: rebuild
+  #         path: ./uv.lock
+  #       - action: sync
+  #         path: ./app
+  #         target: /app/app
+  #   restart: unless-stopped
+
+  # IQDB (Image similarity search)
+  iqdb:
+    build: https://github.com/TheBobBobs/iqdb-rs.git#main
+    container_name: shuushuu-iqdb
+    ports:
+      - "5588:5588"
+    volumes:
+      - iqdb_data:/data
+    develop:
+      watch:
+        - action: rebuild
+          path: https://github.com/TheBobBobs/iqdb-rs.git#main
+    restart: unless-stopped
+
+  # Adminer (Database management UI)
+  adminer:
+    image: adminer:latest
+    container_name: shuushuu-adminer
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=mysql
+      - ADMINER_DESIGN=nette  # Nice theme
+    depends_on:
+      - mysql
+    restart: unless-stopped
+
+  # Redis Commander (Redis management UI - optional)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: shuushuu-redis-commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  iqdb_data:
+    driver: local
+
+networks:
+  shuushuu-network:
