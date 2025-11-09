@@ -3,11 +3,7 @@ Pydantic schemas for Tag endpoints
 """
 from pydantic import BaseModel, ConfigDict
 
-
-class TagBase(BaseModel):
-    """Base schema for Tag - shared fields"""
-    title: str  # Database field is 'title', not 'tag'
-    type: int  # Database field is 'type', not 'type_id'
+from app.models.tag import TagBase
 
 
 class TagCreate(TagBase):
@@ -24,8 +20,6 @@ class TagUpdate(BaseModel):
 class TagResponse(TagBase):
     """Schema for tag response - what API returns"""
     tag_id: int
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class TagWithStats(TagResponse):

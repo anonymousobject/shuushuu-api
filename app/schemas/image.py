@@ -3,23 +3,9 @@ Pydantic schemas for Image endpoints
 """
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
-
-class ImageBase(BaseModel):
-    """Base schema for Image - shared fields"""
-    filename: str | None = None
-    ext: str
-    original_filename: str | None = None
-    md5_hash: str
-    filesize: int
-    width: int
-    height: int
-    caption: str = ""
-    image_source: str | None = None
-    artist: str | None = None
-    characters: str | None = None
-    rating: float = 0.0
+from app.models.image import ImageBase
 
 
 class ImageCreate(ImageBase):
@@ -44,7 +30,12 @@ class ImageUpdate(BaseModel):
 
 
 class ImageResponse(ImageBase):
-    """Schema for image response - what API returns"""
+    """
+    Schema for image response - what API returns.
+
+    Inherits public fields from ImageBase and adds additional public metadata.
+    Does NOT include internal fields like IP, user agent, etc.
+    """
     image_id: int
     user_id: int
     date_added: datetime | None = None
@@ -56,17 +47,17 @@ class ImageResponse(ImageBase):
     num_ratings: int
 
     # Computed fields
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def url(self) -> str:
         """Generate image URL"""
         return f"/storage/fullsize/{self.filename}"
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def thumbnail_url(self) -> str:
         """Generate thumbnail URL"""
         return f"/storage/thumbs/{self.filename}"
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class ImageListResponse(BaseModel):

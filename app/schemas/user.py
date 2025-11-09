@@ -3,15 +3,9 @@ Pydantic schemas for User endpoints
 """
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 
-
-class UserBase(BaseModel):
-    """Base schema for User - shared fields"""
-    username: str
-    location: str | None = None
-    website: str | None = None
-    avatar: str | None = None
+from app.models.user import UserBase
 
 
 class UserCreate(UserBase):
@@ -36,11 +30,14 @@ class UserResponse(UserBase):
     date_joined: datetime | None = None
     active: bool
     admin: bool
-    posts: int
-    image_posts: int
-    favorites: int
 
-    model_config = ConfigDict(from_attributes=True)
+    @field_validator('active', 'admin', mode='before')
+    @classmethod
+    def convert_int_to_bool(cls, v: int | bool) -> bool:
+        """Convert database int (0/1) to boolean"""
+        if isinstance(v, bool):
+            return v
+        return bool(v)
 
 
 class UserListResponse(BaseModel):
