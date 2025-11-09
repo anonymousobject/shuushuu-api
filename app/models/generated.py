@@ -150,52 +150,52 @@ class Tips(Base):
     tip: Mapped[Optional[str]] = mapped_column(String(255))
 
 
-class TwClosest(Base):
-    __tablename__ = 'tw_closest'
-    __table_args__ = (
-        Index('cluster', 'cluster'),
-        Index('tag_id', 'tag_id')
-    )
+# class TwClosest(Base):
+#     __tablename__ = 'tw_closest'
+#     __table_args__ = (
+#         Index('cluster', 'cluster'),
+#         Index('tag_id', 'tag_id')
+#     )
 
-    cl_id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
-    tag_id: Mapped[Optional[int]] = mapped_column(INTEGER(11))
-    cluster: Mapped[Optional[int]] = mapped_column(INTEGER(11))
-    dist: Mapped[Optional[int]] = mapped_column(INTEGER(11))
-    rtag_id: Mapped[Optional[int]] = mapped_column(INTEGER(11))
-
-
-class TwTagcluster(Base):
-    __tablename__ = 'tw_tagcluster'
-    __table_args__ = (
-        Index('cluster', 'cluster'),
-    )
-
-    tag_id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
-    cluster: Mapped[Optional[int]] = mapped_column(INTEGER(11))
-    main: Mapped[Optional[str]] = mapped_column(CHAR(1))
-    user_id: Mapped[Optional[int]] = mapped_column(INTEGER(10))
+#     cl_id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
+#     tag_id: Mapped[Optional[int]] = mapped_column(INTEGER(11))
+#     cluster: Mapped[Optional[int]] = mapped_column(INTEGER(11))
+#     dist: Mapped[Optional[int]] = mapped_column(INTEGER(11))
+#     rtag_id: Mapped[Optional[int]] = mapped_column(INTEGER(11))
 
 
-class TwTaglink(Base):
-    __tablename__ = 'tw_taglink'
-    __table_args__ = (
-        Index('image_id', 'image_id'),
-        Index('tag_id', 'tag_id')
-    )
+# class TwTagcluster(Base):
+#     __tablename__ = 'tw_tagcluster'
+#     __table_args__ = (
+#         Index('cluster', 'cluster'),
+#     )
 
-    tag_link_id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
-    image_id: Mapped[Optional[int]] = mapped_column(INTEGER(11))
-    tag_id: Mapped[Optional[int]] = mapped_column(INTEGER(11))
+#     tag_id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
+#     cluster: Mapped[Optional[int]] = mapped_column(INTEGER(11))
+#     main: Mapped[Optional[str]] = mapped_column(CHAR(1))
+#     user_id: Mapped[Optional[int]] = mapped_column(INTEGER(10))
 
 
-class TwTags(Base):
-    __tablename__ = 'tw_tags'
-    __table_args__ = (
-        Index('title', 'title'),
-    )
+# class TwTaglink(Base):
+#     __tablename__ = 'tw_taglink'
+#     __table_args__ = (
+#         Index('image_id', 'image_id'),
+#         Index('tag_id', 'tag_id')
+#     )
 
-    tag_id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
-    title: Mapped[Optional[str]] = mapped_column(VARCHAR(150))
+#     tag_link_id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
+#     image_id: Mapped[Optional[int]] = mapped_column(INTEGER(11))
+#     tag_id: Mapped[Optional[int]] = mapped_column(INTEGER(11))
+
+
+# class TwTags(Base):
+#     __tablename__ = 'tw_tags'
+#     __table_args__ = (
+#         Index('title', 'title'),
+#     )
+
+#     tag_id: Mapped[int] = mapped_column(INTEGER(11), primary_key=True)
+#     title: Mapped[Optional[str]] = mapped_column(VARCHAR(150))
 
 
 class UserGroups(Base):
@@ -504,7 +504,7 @@ class Tags(Base):
     alias: Mapped[Optional[int]] = mapped_column(INTEGER(10))
     inheritedfrom_id: Mapped[Optional[int]] = mapped_column(INTEGER(10))
     user_id: Mapped[Optional[int]] = mapped_column(INTEGER(10))
-    tw_tagid: Mapped[Optional[int]] = mapped_column(INTEGER(11))
+    # tw_tagid: Mapped[Optional[int]] = mapped_column(INTEGER(11))
 
     tags: Mapped[Optional['Tags']] = relationship('Tags', remote_side=[tag_id], foreign_keys=[alias], back_populates='tags_reverse')
     tags_reverse: Mapped[list['Tags']] = relationship('Tags', remote_side=[alias], foreign_keys=[alias], back_populates='tags')

@@ -1,81 +1,85 @@
 """
-SQLAlchemy Models - Auto-generated from existing database schema.
+SQLAlchemy Models - Database schema models.
 
-These models were generated using sqlacodegen from the existing MySQL database.
-They represent the current state of the database schema.
+All models are now using SQLModel with inheritance-based security patterns.
+The generated.py file is no longer needed as all models have been migrated.
 
 For modifications:
-1. Make changes to the database schema first
-2. Regenerate models: uv run sqlacodegen mysql+pymysql://... --outfile app/models/generated.py
-3. Create an Alembic migration to track the change
+1. Edit the appropriate model file in app/models/
+2. Create an Alembic migration to reflect the changes
+3. Use Alembic to manage all schema changes going forward
 """
 
 from app.core.database import Base
-from app.models.generated import (
-    # Main models
-    Users,
-    Images,
-    Tags,
-    Posts,
-    # Junction tables
-    TagLinks,
-    Favorites,
-    ImageRatings,
-    ImageReports,
-    ImageReviews,
-    # Supporting models
+
+# Core entity models
+from app.models.image import Images
+from app.models.tag import Tags
+from app.models.user import Users
+from app.models.comment import Comments
+
+# Junction/relationship tables
+from app.models.favorite import Favorites
+from app.models.tag_link import TagLinks
+from app.models.tag_history import TagHistory
+from app.models.image_rating import ImageRatings
+from app.models.image_report import ImageReports
+from app.models.image_review import ImageReviews
+
+# User-related models
+from app.models.ban import Bans
+from app.models.user_session import UserSessions
+from app.models.privmsg import Privmsgs
+
+# Content models
+from app.models.news import News
+
+# Permission system
+from app.models.permissions import (
     Groups,
+    Perms,
     GroupPerms,
     UserGroups,
-    UserPerms,
-    UserSessions,
-    Bans,
+    UserPerms
+)
+
+# Utility models
+from app.models.misc import (
     Banners,
-    News,
-    Quicklinks,
-    Tips,
-    # Tag-related
-    TwTags,
-    TwTaglink,
-    TwTagcluster,
-    TwClosest,
-    TagHistory,
-    # Other
-    Privmsgs,
     EvaTheme,
+    Tips,
+    Quicklinks,
 )
 
 __all__ = [
     "Base",
-    # Main models
+    # Core entity models
     "Users",
     "Images",
     "Tags",
-    "Posts",
-    # Junction tables
-    "TagLinks",
+    "Comments",
+    # Junction/relationship tables
     "Favorites",
+    "TagLinks",
+    "TagHistory",
     "ImageRatings",
     "ImageReports",
     "ImageReviews",
-    # Supporting models
+    # User-related models
+    "Bans",
+    "UserSessions",
+    "Privmsgs",
+    # Content models
+    "News",
+    # Permission system
     "Groups",
+    "Perms",
     "GroupPerms",
     "UserGroups",
     "UserPerms",
-    "UserSessions",
-    "Bans",
-    "Banners",
-    "News",
     "Quicklinks",
-    "Tips",
-    # Tag-related
-    "TwTags",
-    "TwTaglink",
-    "TwTagcluster",
-    "TwClosest",
-    "TagHistory",
-    # Other
-    "Privmsgs",
+    # Utility models
+    "Banners",
     "EvaTheme",
+    "Tips",
 ]
