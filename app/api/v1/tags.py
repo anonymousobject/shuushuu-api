@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models import Images, TagLinks, Tags
+from app.models.image import ImageSortBy
 from app.schemas.image import ImageListResponse
-from app.schemas.tag import TagListResponse, TagWithStats
+from app.schemas.tag import TagListResponse, TagResponse, TagWithStats
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -27,7 +28,7 @@ async def resolve_tag_alias(db: AsyncSession, tag_id: int) -> tuple[Tags | None,
             - tag_object: The original tag object (or None if not found)
             - resolved_tag_id: The actual tag ID if this is an alias, otherwise the original tag_id
     """
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
     tag = tag_result.scalar_one_or_none()
 
     if not tag:
@@ -56,7 +57,7 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int) -> list[int]:
 
     # Find all tags that inherit from this tag (children)
     children_result = await db.execute(
-        select(Tags.tag_id).where(Tags.inheritedfrom_id == tag_id)
+        select(Tags.tag_id).where(Tags.inheritedfrom_id == tag_id)  # type: ignore[call-overload]
     )
     child_tag_ids = children_result.scalars().all()
 
@@ -77,7 +78,7 @@ async def get_images_by_tag(
     tag_id: int = Path(..., description="Tag ID"),
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: str = Query("image_id", description="Sort field"),
+    sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
     sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
     db: AsyncSession = Depends(get_db)
 ) -> ImageListResponse:
@@ -151,14 +152,14 @@ async def get_images_by_tag(
     sort_column = getattr(Images, sort_by, Images.image_id)
     query = (
         select(Images)
-        .join(image_id_subquery, Images.image_id == image_id_subquery.columns.image_id)
+        .join(image_id_subquery, Images.image_id == image_id_subquery.columns.image_id)  # type: ignore[arg-type]
     )
 
     # Apply sorting on main query
     if sort_order == "DESC":
-        query = query.order_by(desc(sort_column))
+        query = query.order_by(desc(sort_column))  # type: ignore[arg-type]
     else:
-        query = query.order_by(asc(sort_column))
+        query = query.order_by(asc(sort_column))  # type: ignore[arg-type]
 
     # Execute
     result = await db.execute(query)
@@ -192,9 +193,9 @@ async def list_tags(
 
     # Apply filters
     if search:
-        query = query.where(Tags.title.like(f"%{search}%"))
+        query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
     if type_id is not None:
-        query = query.where(Tags.type == type_id)
+        query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -202,7 +203,8 @@ async def list_tags(
     total = total_result.scalar()
 
     # Sort by tag date added
-    query = query.order_by(Tags.date_added.desc())
+    from sqlalchemy import desc as sql_desc
+    query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
 
     # Paginate
     offset = (page - 1) * per_page
@@ -216,7 +218,7 @@ async def list_tags(
         total=total or 0,
         page=page,
         per_page=per_page,
-        tags=tags
+        tags=[TagResponse.model_validate(tag) for tag in tags]
     )
 
 
@@ -252,7 +254,7 @@ async def get_tag(
 
     # Count direct children (tags that inherit from this tag)
     children_result = await db.execute(
-        select(func.count(Tags.tag_id)).where(Tags.inheritedfrom_id == resolved_tag_id)
+        select(func.count(Tags.tag_id)).where(Tags.inheritedfrom_id == resolved_tag_id)  # type: ignore[arg-type]
     )
     child_count = children_result.scalar()
 

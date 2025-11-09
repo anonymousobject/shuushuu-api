@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.tags import resolve_tag_alias
 from app.core.database import get_db
-from app.models import Images, TagLinks, Tags
+from app.models import Favorites, Images, TagLinks, Tags, Users
+from app.models.image import ImageSortBy  # Import from model
 from app.schemas.image import (
     ImageHashSearchResponse,
     ImageListResponse,
@@ -19,20 +20,9 @@ from app.schemas.image import (
     ImageTagItem,
     ImageTagsResponse,
 )
+from app.schemas.user import UserListResponse, UserResponse
 
 router = APIRouter(prefix="/images", tags=["images"])
-
-
-class ImageSortBy(str, Enum):
-    """Allowed sort fields for image queries."""
-    image_id = "image_id"
-    favorites = "favorites"
-    rating = "rating"
-    width = "width"
-    height = "height"
-    total_pixels = "total_pixels"
-    filesize = "filesize"
-    date_added = "date_added"
 
 
 class SortOrder(str, Enum):
@@ -53,7 +43,7 @@ async def get_image(
     ratings, and statistics.
     """
     result = await db.execute(
-        select(Images).where(Images.image_id == image_id)
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
     )
     image = result.scalar_one_or_none()
 
@@ -124,9 +114,9 @@ async def list_images(
 
     # Apply basic filters
     if user_id is not None:
-        query = query.where(Images.user_id == user_id)
+        query = query.where(Images.user_id == user_id)  # type: ignore[arg-type]
     if status is not None:
-        query = query.where(Images.status == status)
+        query = query.where(Images.status == status)  # type: ignore[arg-type]
 
     # Tag filtering
     if tags:
@@ -137,45 +127,45 @@ async def list_images(
                 for tag_id in tag_ids:
                     _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
                     query = query.where(
-                        Images.image_id.in_(
+                        Images.image_id.in_(  # type: ignore[union-attr]
                             select(TagLinks.image_id).where(TagLinks.tag_id == resolved_tag_id)
                         )
                     )
             else:
                 # Images must have ANY of the specified tags
                 query = query.where(
-                    Images.image_id.in_(
+                    Images.image_id.in_(  # type: ignore[union-attr]
                         select(TagLinks.image_id).where(TagLinks.tag_id.in_(tag_ids))
                     )
                 )
 
     # Date filtering
     if date_from:
-        query = query.where(Images.date_added >= date_from)
+        query = query.where(Images.date_added >= date_from)  # type: ignore[arg-type,operator]
     if date_to:
-        query = query.where(Images.date_added <= date_to)
+        query = query.where(Images.date_added <= date_to)  # type: ignore[arg-type,operator]
 
     # Size filtering
     if min_width:
-        query = query.where(Images.width >= min_width)
+        query = query.where(Images.width >= min_width)  # type: ignore[arg-type]
     if max_width:
-        query = query.where(Images.width <= max_width)
+        query = query.where(Images.width <= max_width)  # type: ignore[arg-type]
     if min_height:
-        query = query.where(Images.height >= min_height)
+        query = query.where(Images.height >= min_height)  # type: ignore[arg-type]
     if max_height:
-        query = query.where(Images.height <= max_height)
+        query = query.where(Images.height <= max_height)  # type: ignore[arg-type]
 
     # Rating filtering
     if min_rating is not None:
-        query = query.where(Images.rating >= min_rating)
+        query = query.where(Images.rating >= min_rating)  # type: ignore[arg-type]
     if min_favorites is not None:
-        query = query.where(Images.favorites >= min_favorites)
+        query = query.where(Images.favorites >= min_favorites)  # type: ignore[arg-type]
 
     # Content filtering
     if artist:
-        query = query.where(Images.artist.like(f"%{artist}%"))
+        query = query.where(Images.artist.like(f"%{artist}%"))  # type: ignore[union-attr]
     if characters:
-        query = query.where(Images.characters.like(f"%{characters}%"))
+        query = query.where(Images.characters.like(f"%{characters}%"))  # type: ignore[union-attr]
 
     # Count total results
     count_query = select(func.count()).select_from(query.subquery())
@@ -215,7 +205,7 @@ async def list_images(
 
     # Subquery: Apply all filters, sort, and limit to get matching image_ids
     image_id_subquery = (
-        query.with_only_columns(Images.image_id.label('image_id'))
+        query.with_only_columns(Images.image_id.label('image_id'))  # type: ignore[union-attr]
         .order_by(subquery_order)
         .offset(offset)
         .limit(per_page)
@@ -225,7 +215,7 @@ async def list_images(
     # Main query: Fetch full image data only for the limited set of IDs
     final_query = (
         select(Images)
-        .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)
+        .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
     )
 
     # Execute query
@@ -236,7 +226,7 @@ async def list_images(
         total=total or 0,
         page=page,
         per_page=per_page,
-        images=images
+        images=[ImageResponse.model_validate(img) for img in images]
     )
 
 
@@ -250,7 +240,7 @@ async def get_image_tags(
     """
     # First check if image exists
     image_result = await db.execute(
-        select(Images).where(Images.image_id == image_id)
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
     )
     image = image_result.scalar_one_or_none()
 
@@ -289,14 +279,14 @@ async def search_by_hash(
     Useful for duplicate detection and reverse image search.
     """
     result = await db.execute(
-        select(Images).where(Images.md5_hash == md5_hash)
+        select(Images).where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
     )
     images = result.scalars().all()
 
     return ImageHashSearchResponse(
         md5_hash=md5_hash,
         found=len(images),
-        images=list(images)
+        images=[ImageResponse.model_validate(img) for img in images]
     )
 
 
@@ -305,7 +295,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)) -> ImageStatsResponse:
     """
     Get overall image statistics.
     """
-    total_result = await db.execute(select(func.count(Images.image_id)))
+    total_result = await db.execute(select(func.count(Images.image_id)))  # type: ignore[arg-type]
     total_images = total_result.scalar()
 
     total_favorites_result = await db.execute(select(func.sum(Images.favorites)))
@@ -318,4 +308,54 @@ async def get_stats(db: AsyncSession = Depends(get_db)) -> ImageStatsResponse:
         total_images=total_images or 0,
         total_favorites=int(total_favorites),
         average_rating=round(float(avg_rating), 2)
+    )
+
+
+@router.get("/{image_id}/favorites", response_model=UserListResponse)
+async def get_image_favorites(
+    image_id: int,
+    page: int = Query(1, ge=1, description="Page number"),
+    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query("user_id", description="Sort field (user_id, date_joined, etc)"),
+    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
+    db: AsyncSession = Depends(get_db)
+) -> UserListResponse:
+    """
+    Get all users who have favorited a specific image.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    image = image_result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Get users who favorited the image
+    query = select(Users).join(Favorites).where(Favorites.image_id == image_id)  # type: ignore[arg-type]
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Apply sorting
+    sort_column = getattr(Users, sort_by, Users.user_id)
+    if sort_order == SortOrder.DESC:
+        query = query.order_by(desc(sort_column))  # type: ignore[arg-type]
+    else:
+        query = query.order_by(asc(sort_column))  # type: ignore[arg-type]
+
+    # Apply pagination
+    offset = (page - 1) * per_page
+    query = query.offset(offset).limit(per_page)
+
+    # Execute
+    result = await db.execute(query)
+    users = result.scalars().all()
+
+    return UserListResponse(
+        total=total or 0,
+        page=page,
+        per_page=per_page,
+        users=[UserResponse.model_validate(user) for user in users]
     )
