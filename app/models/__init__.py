@@ -77,9 +77,9 @@ __all__ = [
     "GroupPerms",
     "UserGroups",
     "UserPerms",
-    "Quicklinks",
     # Utility models
     "Banners",
     "EvaTheme",
     "Tips",
+    "Quicklinks",
 ]

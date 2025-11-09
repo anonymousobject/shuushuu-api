@@ -40,11 +40,6 @@ class PrivmsgBase(SQLModel):
     from_del: int = Field(default=0)
     to_del: int = Field(default=0)
 
-    # Message type and card info
-    type: int = Field(default=1)
-    card: int = Field(default=0)
-    cardpath: str = Field(default="", max_length=255)
-
 
 class Privmsgs(PrivmsgBase, table=True):
     """
