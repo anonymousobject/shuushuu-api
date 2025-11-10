@@ -1,10 +1,19 @@
 """
 Pydantic schemas for API responses and requests
 """
+
+from app.models.comment import CommentBase  # Re-export from models
 from app.models.image import ImageBase  # Re-export from models
 from app.models.tag import TagBase  # Re-export from models
 from app.models.user import UserBase  # Re-export from models
-from app.models.comment import CommentBase  # Re-export from models
+from app.schemas.comment import (
+    CommentCreate,
+    CommentListResponse,
+    CommentResponse,
+    CommentSearchParams,
+    CommentStatsResponse,
+    CommentUpdate,
+)
 from app.schemas.image import (
     ImageCreate,
     ImageHashSearchResponse,
@@ -15,6 +24,11 @@ from app.schemas.image import (
     ImageTagItem,
     ImageTagsResponse,
     ImageUpdate,
+)
+from app.schemas.privmsg import (
+    PrivmsgCreate,
+    PrivmsgMessage,
+    PrivmsgMessages,
 )
 from app.schemas.tag import (
     TagCreate,
@@ -28,14 +42,6 @@ from app.schemas.user import (
     UserListResponse,
     UserResponse,
     UserUpdate,
-)
-from app.schemas.comment import (
-    CommentCreate,
-    CommentListResponse,
-    CommentResponse,
-    CommentSearchParams,
-    CommentStatsResponse,
-    CommentUpdate,
 )
 
 __all__ = [
@@ -71,4 +77,8 @@ __all__ = [
     "CommentListResponse",
     "CommentSearchParams",
     "CommentStatsResponse",
+    # Privmsg schemas
+    "PrivmsgCreate",
+    "PrivmsgMessage",
+    "PrivmsgMessages",
 ]

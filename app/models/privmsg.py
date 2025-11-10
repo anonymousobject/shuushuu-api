@@ -12,6 +12,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 Note: Privmsgs are private messages between users.
 """
+
 from datetime import datetime
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -27,6 +28,7 @@ class PrivmsgBase(SQLModel):
     - API response schemas (PrivmsgResponse)
     - API request schemas (PrivmsgCreate, PrivmsgUpdate)
     """
+
     # Message details
     subject: str = Field(default="", max_length=255)
     text: str | None = Field(default=None, sa_column_kwargs={"name": "text"})
@@ -35,10 +37,8 @@ class PrivmsgBase(SQLModel):
     from_user_id: int
     to_user_id: int
 
-    # Message status
-    viewed: int = Field(default=0)
-    from_del: int = Field(default=0)
-    to_del: int = Field(default=0)
+    # Public timestamp
+    date: datetime
 
 
 class Privmsgs(PrivmsgBase, table=True):
@@ -52,7 +52,8 @@ class Privmsgs(PrivmsgBase, table=True):
 
     Note: 'text' is a reserved keyword, so we use sa_column_kwargs to map it.
     """
-    __tablename__ = 'privmsgs'
+
+    __tablename__ = "privmsgs"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -60,10 +61,22 @@ class Privmsgs(PrivmsgBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['from_user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_privmsgs_from_user_id'),
-        ForeignKeyConstraint(['to_user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_privmsgs_to_user_id'),
-        Index('fk_privmsgs_from_user_id', 'from_user_id'),
-        Index('fk_privmsgs_to_user_id', 'to_user_id')
+        ForeignKeyConstraint(
+            ["from_user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_privmsgs_from_user_id",
+        ),
+        ForeignKeyConstraint(
+            ["to_user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_privmsgs_to_user_id",
+        ),
+        Index("fk_privmsgs_from_user_id", "from_user_id"),
+        Index("fk_privmsgs_to_user_id", "to_user_id"),
     )
 
     # Primary key
@@ -73,8 +86,15 @@ class Privmsgs(PrivmsgBase, table=True):
     from_user_id: int = Field(foreign_key="users.user_id")
     to_user_id: int = Field(foreign_key="users.user_id")
 
+    # Message status
+    viewed: int = Field(default=0)
+    from_del: int = Field(default=0)
+    to_del: int = Field(default=0)
+
     # Public timestamp
-    date: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date: datetime = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

@@ -12,44 +12,38 @@ For modifications:
 
 from app.core.database import Base
 
-# Core entity models
-from app.models.image import Images
-from app.models.tag import Tags
-from app.models.user import Users
+# User-related models
+from app.models.ban import Bans
 from app.models.comment import Comments
 
 # Junction/relationship tables
 from app.models.favorite import Favorites
-from app.models.tag_link import TagLinks
-from app.models.tag_history import TagHistory
+
+# Core entity models
+from app.models.image import Images
 from app.models.image_rating import ImageRatings
 from app.models.image_report import ImageReports
 from app.models.image_review import ImageReviews
-
-# User-related models
-from app.models.ban import Bans
-from app.models.user_session import UserSessions
-from app.models.privmsg import Privmsgs
-
-# Content models
-from app.models.news import News
-
-# Permission system
-from app.models.permissions import (
-    Groups,
-    Perms,
-    GroupPerms,
-    UserGroups,
-    UserPerms
-)
 
 # Utility models
 from app.models.misc import (
     Banners,
     EvaTheme,
-    Tips,
     Quicklinks,
+    Tips,
 )
+
+# Content models
+from app.models.news import News
+
+# Permission system
+from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
+from app.models.privmsg import Privmsgs
+from app.models.tag import Tags
+from app.models.tag_history import TagHistory
+from app.models.tag_link import TagLinks
+from app.models.user import Users
+from app.models.user_session import UserSessions
 
 __all__ = [
     "Base",
