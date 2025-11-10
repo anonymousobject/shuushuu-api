@@ -10,11 +10,12 @@ This module defines the permissions system database models using SQLModel:
 
 This approach eliminates field duplication while maintaining security boundaries.
 """
+
 from sqlalchemy import ForeignKeyConstraint, Index
 from sqlmodel import Field, SQLModel
 
-
 # ===== Groups =====
+
 
 class GroupBase(SQLModel):
     """
@@ -22,6 +23,7 @@ class GroupBase(SQLModel):
 
     These fields are safe to expose via the API.
     """
+
     title: str | None = Field(default=None, max_length=50)
     desc: str | None = Field(default=None, max_length=75)
 
@@ -32,7 +34,8 @@ class Groups(GroupBase, table=True):
 
     Groups are collections of permissions that can be assigned to users.
     """
-    __tablename__ = 'groups'
+
+    __tablename__ = "groups"
 
     # Primary key
     group_id: int | None = Field(default=None, primary_key=True)
@@ -47,12 +50,14 @@ class Groups(GroupBase, table=True):
 
 # ===== Perms =====
 
+
 class PermBase(SQLModel):
     """
     Base model with shared public fields for Perms.
 
     These fields are safe to expose via the API.
     """
+
     title: str | None = Field(default=None, max_length=50)
     desc: str | None = Field(default=None, max_length=75)
 
@@ -63,7 +68,8 @@ class Perms(PermBase, table=True):
 
     Permissions define specific actions users can perform.
     """
-    __tablename__ = 'perms'
+
+    __tablename__ = "perms"
 
     # Primary key
     perm_id: int | None = Field(default=None, primary_key=True)
@@ -78,12 +84,14 @@ class Perms(PermBase, table=True):
 
 # ===== GroupPerms (Junction Table) =====
 
+
 class GroupPermBase(SQLModel):
     """
     Base model with shared public fields for GroupPerms.
 
     Junction table linking groups to permissions with a permission value.
     """
+
     group_id: int = Field(foreign_key="groups.group_id", primary_key=True)
     perm_id: int = Field(foreign_key="perms.perm_id", primary_key=True)
     permvalue: int | None = Field(default=None)
@@ -95,12 +103,25 @@ class GroupPerms(GroupPermBase, table=True):
 
     This is a junction table with a composite primary key and a permission value.
     """
-    __tablename__ = 'group_perms'
+
+    __tablename__ = "group_perms"
 
     __table_args__ = (
-        ForeignKeyConstraint(['group_id'], ['groups.group_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_group_perms_group_id'),
-        ForeignKeyConstraint(['perm_id'], ['perms.perm_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_group_perms_perm_id'),
-        Index('fk_group_perms_perm_id', 'perm_id')
+        ForeignKeyConstraint(
+            ["group_id"],
+            ["groups.group_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_group_perms_group_id",
+        ),
+        ForeignKeyConstraint(
+            ["perm_id"],
+            ["perms.perm_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_group_perms_perm_id",
+        ),
+        Index("fk_group_perms_perm_id", "perm_id"),
     )
 
     # Note: Relationships are intentionally omitted.
@@ -113,12 +134,14 @@ class GroupPerms(GroupPermBase, table=True):
 
 # ===== UserGroups (Junction Table) =====
 
+
 class UserGroupBase(SQLModel):
     """
     Base model with shared public fields for UserGroups.
 
     Junction table linking users to groups.
     """
+
     user_id: int = Field(primary_key=True)
     group_id: int = Field(primary_key=True)
 
@@ -129,7 +152,8 @@ class UserGroups(UserGroupBase, table=True):
 
     This is a simple junction table with a composite primary key.
     """
-    __tablename__ = 'user_groups'
+
+    __tablename__ = "user_groups"
 
     # Note: No foreign key constraints in schema, but logically references users and groups
     # Note: Relationships are intentionally omitted.
@@ -142,12 +166,14 @@ class UserGroups(UserGroupBase, table=True):
 
 # ===== UserPerms (Junction Table) =====
 
+
 class UserPermBase(SQLModel):
     """
     Base model with shared public fields for UserPerms.
 
     Junction table linking users to individual permissions.
     """
+
     user_id: int = Field(primary_key=True)
     perm_id: int = Field(primary_key=True)
     permvalue: int = Field(default=1)
@@ -159,7 +185,8 @@ class UserPerms(UserPermBase, table=True):
 
     Allows for user-specific permission overrides beyond group permissions.
     """
-    __tablename__ = 'user_perms'
+
+    __tablename__ = "user_perms"
 
     # Note: No foreign key constraints in schema, but logically references users and perms
     # Note: Relationships are intentionally omitted.

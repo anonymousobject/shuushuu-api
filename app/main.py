@@ -2,8 +2,10 @@
 FastAPI Application - Shuushuu API
 Modern backend for Shuushuu anime image board
 """
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.config import settings
 
 # Create FastAPI application
@@ -43,7 +45,7 @@ async def health() -> dict[str, str]:
 
 
 # Import and include routers
-from app.api.v1 import router as api_v1_router
+from app.api.v1 import router as api_v1_router  # noqa: E402
 
 app.include_router(api_v1_router, prefix="/api/v1")
 
@@ -53,7 +55,9 @@ async def startup_event() -> None:
     """Run on application startup"""
     print("🚀 Shuushuu API starting up...")
     print(f"📊 Environment: {settings.ENVIRONMENT}")
-    print(f"🗄️  Database: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}")
+    print(
+        f"🗄️  Database: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}"
+    )
 
 
 @app.on_event("shutdown")

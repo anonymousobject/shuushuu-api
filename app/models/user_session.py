@@ -12,6 +12,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 Note: UserSessions tracks active user sessions for authentication and activity monitoring.
 """
+
 from datetime import datetime
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -28,6 +29,7 @@ class UserSessionBase(SQLModel):
 
     Note: Most session fields are internal/sensitive, so the base is minimal.
     """
+
     # User reference
     user_id: int
 
@@ -51,7 +53,8 @@ class UserSessions(UserSessionBase, table=True):
     - lastpage: Internal tracking
     - last_search: Internal tracking
     """
-    __tablename__ = 'user_sessions'
+
+    __tablename__ = "user_sessions"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -59,9 +62,15 @@ class UserSessions(UserSessionBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_user_sessions_user_id'),
-        Index('fk_user_sessions_user_id', 'user_id'),
-        Index('ip', 'ip')
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_sessions_user_id",
+        ),
+        Index("fk_user_sessions_user_id", "user_id"),
+        Index("ip", "ip"),
     )
 
     # Primary key (session token - highly sensitive)
@@ -71,13 +80,17 @@ class UserSessions(UserSessionBase, table=True):
     user_id: int = Field(foreign_key="users.user_id")
 
     # Override to add server defaults
-    last_used: datetime = Field(sa_column_kwargs={"server_default": text('current_timestamp()')})
-    last_view_date: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    last_used: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    last_view_date: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
 
     # Internal tracking fields
     ip: str = Field(default="", max_length=16)
     lastpage: str | None = Field(default=None, max_length=200)
-    last_search: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    last_search: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

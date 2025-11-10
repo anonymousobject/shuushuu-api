@@ -10,10 +10,10 @@ ImageBase (shared public fields)
 
 This approach eliminates field duplication while maintaining security boundaries.
 """
+
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-
 from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -31,12 +31,13 @@ class ImageSortBy(str, Enum):
     usefulness in the API. Any route that allows sorting images should use
     this enum to validate the sort_by parameter.
     """
-    image_id = "image_id"           # Primary sort, essentially same as date_added
-    last_updated = "last_updated"   # Last modification date
-    last_post = "last_post"         # Last post activity
-    total_pixels = "total_pixels"   # Image size (width × height)
-    bayesian_rating = "bayesian_rating" # Calculated rating
-    favorites = "favorites"         # Popularity metric
+
+    image_id = "image_id"  # Primary sort, essentially same as date_added
+    last_updated = "last_updated"  # Last modification date
+    last_post = "last_post"  # Last post activity
+    total_pixels = "total_pixels"  # Image size (width × height)
+    bayesian_rating = "bayesian_rating"  # Calculated rating
+    favorites = "favorites"  # Popularity metric
 
 
 class ImageBase(SQLModel):
@@ -48,6 +49,7 @@ class ImageBase(SQLModel):
     - API response schemas (ImagePublic)
     - API request schemas (ImageCreate, ImageUpdate)
     """
+
     # File information
     filename: str | None = Field(default=None, max_length=120)
     ext: str = Field(max_length=10)
@@ -87,7 +89,8 @@ class Images(ImageBase, table=True):
     - total_pixels, miscmeta: Internal metadata
     - replacement_id: Internal reference
     """
-    __tablename__ = 'images'
+
+    __tablename__ = "images"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -95,20 +98,38 @@ class Images(ImageBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['replacement_id'], ['images.image_id'], ondelete='SET NULL', onupdate='CASCADE', name='fk_images_replacement_id'),
-        ForeignKeyConstraint(['status_user_id'], ['users.user_id'], ondelete='SET NULL', onupdate='CASCADE', name='fk_images_status_user_id'),
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_images_user_id'),
-        Index('change_id', 'change_id'),
-        Index('fk_images_replacement_id', 'replacement_id'),
-        Index('fk_images_status_user_id', 'status_user_id'),
-        Index('fk_images_user_id', 'user_id'),
-        Index('idx_bayesian_rating', 'bayesian_rating'),
-        Index('idx_favorites', 'favorites'),
-        Index('idx_filename', 'filename'),
-        Index('idx_last_post', 'last_post'),
-        Index('idx_status', 'status'),
-        Index('idx_top_images', 'num_ratings'),
-        Index('idx_total_pixels', 'total_pixels'),
+        ForeignKeyConstraint(
+            ["replacement_id"],
+            ["images.image_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_images_replacement_id",
+        ),
+        ForeignKeyConstraint(
+            ["status_user_id"],
+            ["users.user_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_images_status_user_id",
+        ),
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_images_user_id",
+        ),
+        Index("change_id", "change_id"),
+        Index("fk_images_replacement_id", "replacement_id"),
+        Index("fk_images_status_user_id", "status_user_id"),
+        Index("fk_images_user_id", "user_id"),
+        Index("idx_bayesian_rating", "bayesian_rating"),
+        Index("idx_favorites", "favorites"),
+        Index("idx_filename", "filename"),
+        Index("idx_last_post", "last_post"),
+        Index("idx_status", "status"),
+        Index("idx_top_images", "num_ratings"),
+        Index("idx_total_pixels", "total_pixels"),
     )
 
     # Primary key
@@ -126,7 +147,9 @@ class Images(ImageBase, table=True):
     num_ratings: int = Field(default=0)
 
     # Public timestamp
-    date_added: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date_added: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
 
     # Internal tracking fields (privacy-sensitive)
     useragent: str = Field(default="", max_length=255)
@@ -158,6 +181,6 @@ class Images(ImageBase, table=True):
     user: "Users" = Relationship(
         sa_relationship_kwargs={
             "lazy": "joined",  # Eagerly load user data with image
-            "foreign_keys": "[Images.user_id]"
+            "foreign_keys": "[Images.user_id]",
         }
     )

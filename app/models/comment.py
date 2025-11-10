@@ -13,6 +13,7 @@ This approach eliminates field duplication while maintaining security boundaries
 Note: The database table name remains 'posts' for backwards compatibility,
 but the model is named Comments and all references use 'comment' terminology.
 """
+
 from datetime import datetime
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -28,6 +29,7 @@ class CommentBase(SQLModel):
     - API response schemas (CommentResponse)
     - API request schemas (CommentCreate, CommentUpdate)
     """
+
     # Comment content
     post_text: str = Field(default="")
 
@@ -52,7 +54,8 @@ class Comments(CommentBase, table=True):
 
     Note: The database table name remains 'posts' for backwards compatibility.
     """
-    __tablename__ = 'posts'
+
+    __tablename__ = "posts"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -60,13 +63,31 @@ class Comments(CommentBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['image_id'], ['images.image_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_posts_image_id'),
-        ForeignKeyConstraint(['last_updated_user_id'], ['users.user_id'], ondelete='SET NULL', onupdate='CASCADE', name='fk_posts_last_updated_user_id'),
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_posts_user_id'),
-        Index('fk_posts_image_id', 'image_id'),
-        Index('fk_posts_last_updated_user_id', 'last_updated_user_id'),
-        Index('fk_posts_user_id', 'user_id'),
-        Index('idx_date', 'date')
+        ForeignKeyConstraint(
+            ["image_id"],
+            ["images.image_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_posts_image_id",
+        ),
+        ForeignKeyConstraint(
+            ["last_updated_user_id"],
+            ["users.user_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_posts_last_updated_user_id",
+        ),
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_posts_user_id",
+        ),
+        Index("fk_posts_image_id", "image_id"),
+        Index("fk_posts_last_updated_user_id", "last_updated_user_id"),
+        Index("fk_posts_user_id", "user_id"),
+        Index("idx_date", "date"),
     )
 
     # Primary key
@@ -76,7 +97,7 @@ class Comments(CommentBase, table=True):
     user_id: int = Field(foreign_key="users.user_id")
 
     # Public timestamp
-    date: datetime = Field(sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
 
     # Public update tracking
     update_count: int = Field(default=0)

@@ -12,6 +12,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 Note: ImageReviews track moderator approval/rejection votes for pending images.
 """
+
 from sqlalchemy import ForeignKeyConstraint, Index
 from sqlmodel import Field, SQLModel
 
@@ -25,6 +26,7 @@ class ImageReviewBase(SQLModel):
     - API response schemas (ImageReviewResponse)
     - API request schemas (ImageReviewCreate)
     """
+
     # References
     image_id: int | None = Field(default=None)
     user_id: int | None = Field(default=None)
@@ -42,7 +44,8 @@ class ImageReviews(ImageReviewBase, table=True):
     - Foreign key relationships
     - Unique constraint on (image_id, user_id) to prevent duplicate votes
     """
-    __tablename__ = 'image_reviews'
+
+    __tablename__ = "image_reviews"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -50,10 +53,22 @@ class ImageReviews(ImageReviewBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['image_id'], ['images.image_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_image_reviews_image_id'),
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_image_reviews_user_id'),
-        Index('fk_image_reviews_user_id', 'user_id'),
-        Index('image_id', 'image_id', 'user_id', unique=True)
+        ForeignKeyConstraint(
+            ["image_id"],
+            ["images.image_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_image_reviews_image_id",
+        ),
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_image_reviews_user_id",
+        ),
+        Index("fk_image_reviews_user_id", "user_id"),
+        Index("image_id", "image_id", "user_id", unique=True),
     )
 
     # Primary key

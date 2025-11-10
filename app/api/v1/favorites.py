@@ -6,14 +6,13 @@ Use the new RESTful routes instead:
 - GET /users/{user_id}/favorites - Get user's favorite images
 - GET /images/{image_id}/favorites - Get users who favorited an image
 """
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models import Images, Favorites, Users
+from app.models import Favorites, Images, Users
 from app.models.image import ImageSortBy
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.user import UserListResponse, UserResponse
@@ -28,7 +27,7 @@ async def get_favorite_images(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
     sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
     Get all images favorited by a specific user.
@@ -69,8 +68,9 @@ async def get_favorite_images(
         total=total or 0,
         page=page,
         per_page=per_page,
-        images=[ImageResponse.model_validate(img) for img in images]
+        images=[ImageResponse.model_validate(img) for img in images],
     )
+
 
 @router.get("/image/{image_id}", response_model=UserListResponse, deprecated=True)
 async def get_image_favorites(
@@ -79,7 +79,7 @@ async def get_image_favorites(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     sort_by: str = Query("user_id", description="Sort field (user_id, date_joined, etc)"),
     sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
     Get all users who have favorited a specific image.
@@ -120,5 +120,5 @@ async def get_image_favorites(
         total=total or 0,
         page=page,
         per_page=per_page,
-        users=[UserResponse.model_validate(user) for user in users]
+        users=[UserResponse.model_validate(user) for user in users],
     )

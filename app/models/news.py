@@ -10,6 +10,7 @@ NewsBase (shared public fields)
 
 This approach eliminates field duplication while maintaining security boundaries.
 """
+
 from datetime import datetime
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -25,6 +26,7 @@ class NewsBase(SQLModel):
     - API response schemas (NewsResponse)
     - API request schemas (NewsCreate, NewsUpdate)
     """
+
     # News content
     title: str | None = Field(default=None, max_length=128)
     news_text: str | None = Field(default=None)
@@ -46,7 +48,8 @@ class News(NewsBase, table=True):
     Internal fields (may be sensitive):
     - user_id: Author user ID (could be considered internal)
     """
-    __tablename__ = 'news'
+
+    __tablename__ = "news"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -54,8 +57,14 @@ class News(NewsBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_news_user_id'),
-        Index('fk_news_user_id', 'user_id')
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_news_user_id",
+        ),
+        Index("fk_news_user_id", "user_id"),
     )
 
     # Primary key
@@ -65,7 +74,9 @@ class News(NewsBase, table=True):
     user_id: int = Field(foreign_key="users.user_id")
 
     # Override to add server default
-    date: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

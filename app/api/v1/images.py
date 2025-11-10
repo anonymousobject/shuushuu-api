@@ -1,8 +1,8 @@
 """
 Images API endpoints
 """
+
 from enum import Enum
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import asc, desc, func, select
@@ -27,15 +27,13 @@ router = APIRouter(prefix="/images", tags=["images"])
 
 class SortOrder(str, Enum):
     """Sort order options."""
+
     ASC = "ASC"
     DESC = "DESC"
 
 
 @router.get("/{image_id}", response_model=ImageResponse)
-async def get_image(
-    image_id: int,
-    db: AsyncSession = Depends(get_db)
-) -> ImageResponse:
+async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageResponse:
     """
     Get a single image by ID.
 
@@ -58,38 +56,30 @@ async def list_images(
     # Pagination
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-
     # Sorting
     sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
     sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
-
     # Basic filters
     user_id: int | None = Query(None, description="Filter by uploader user ID"),
     status: int | None = Query(None, description="Filter by status (1=active, 2=pending, etc)"),
-
     # Tag filtering
     tags: str | None = Query(None, description="Comma-separated tag IDs (e.g., '1,2,3')"),
     tags_mode: str = Query("any", pattern="^(any|all)$", description="Match ANY or ALL tags"),
-
     # Date filtering
     date_from: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: str | None = Query(None, description="End date (YYYY-MM-DD)"),
-
     # Size filtering
     min_width: int | None = Query(None, ge=1, description="Minimum width in pixels"),
     max_width: int | None = Query(None, ge=1, description="Maximum width in pixels"),
     min_height: int | None = Query(None, ge=1, description="Minimum height in pixels"),
     max_height: int | None = Query(None, ge=1, description="Maximum height in pixels"),
-
     # Rating filtering
     min_rating: float | None = Query(None, ge=0, le=5, description="Minimum rating"),
     min_favorites: int | None = Query(None, ge=0, description="Minimum favorite count"),
-
     # Content filtering
     artist: str | None = Query(None, description="Filter by artist name (partial match)"),
     characters: str | None = Query(None, description="Filter by characters (partial match)"),
-
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
     Search and list images with comprehensive filtering.
@@ -195,7 +185,9 @@ async def list_images(
     # Apply sorting and pagination
     offset = (page - 1) * per_page
     sort_column = getattr(Images, sort_by.value)
-    if sort_column == Images.date_added: # image_ids are assigned by date so use that. `date_added` doesn't have its own index.
+    if (
+        sort_column == Images.date_added
+    ):  # image_ids are assigned by date so use that. `date_added` doesn't have its own index.
         sort_column = Images.image_id
 
     if sort_order == SortOrder.DESC:
@@ -205,17 +197,16 @@ async def list_images(
 
     # Subquery: Apply all filters, sort, and limit to get matching image_ids
     image_id_subquery = (
-        query.with_only_columns(Images.image_id.label('image_id'))  # type: ignore[union-attr]
+        query.with_only_columns(Images.image_id.label("image_id"))  # type: ignore[union-attr]
         .order_by(subquery_order)
         .offset(offset)
         .limit(per_page)
-        .subquery('imageset')
+        .subquery("imageset")
     )
 
     # Main query: Fetch full image data only for the limited set of IDs
     final_query = (
-        select(Images)
-        .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
+        select(Images).join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
     )
 
     # Execute query
@@ -226,15 +217,12 @@ async def list_images(
         total=total or 0,
         page=page,
         per_page=per_page,
-        images=[ImageResponse.model_validate(img) for img in images]
+        images=[ImageResponse.model_validate(img) for img in images],
     )
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)
-async def get_image_tags(
-    image_id: int,
-    db: AsyncSession = Depends(get_db)
-) -> ImageTagsResponse:
+async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageTagsResponse:
     """
     Get all tags for a specific image.
     """
@@ -257,21 +245,13 @@ async def get_image_tags(
 
     return ImageTagsResponse(
         image_id=image_id,
-        tags=[
-            ImageTagItem(
-                tag_id=tag.tag_id,
-                tag=tag.title,
-                type_id=tag.type
-            )
-            for tag in tags
-        ]
+        tags=[ImageTagItem(tag_id=tag.tag_id, tag=tag.title, type_id=tag.type) for tag in tags],
     )
 
 
 @router.get("/search/by-hash/{md5_hash}", response_model=ImageHashSearchResponse)
 async def search_by_hash(
-    md5_hash: str,
-    db: AsyncSession = Depends(get_db)
+    md5_hash: str, db: AsyncSession = Depends(get_db)
 ) -> ImageHashSearchResponse:
     """
     Search for an image by MD5 hash.
@@ -286,7 +266,7 @@ async def search_by_hash(
     return ImageHashSearchResponse(
         md5_hash=md5_hash,
         found=len(images),
-        images=[ImageResponse.model_validate(img) for img in images]
+        images=[ImageResponse.model_validate(img) for img in images],
     )
 
 
@@ -307,7 +287,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)) -> ImageStatsResponse:
     return ImageStatsResponse(
         total_images=total_images or 0,
         total_favorites=int(total_favorites),
-        average_rating=round(float(avg_rating), 2)
+        average_rating=round(float(avg_rating), 2),
     )
 
 
@@ -318,7 +298,7 @@ async def get_image_favorites(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     sort_by: str = Query("user_id", description="Sort field (user_id, date_joined, etc)"),
     sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
     Get all users who have favorited a specific image.
@@ -357,5 +337,5 @@ async def get_image_favorites(
         total=total or 0,
         page=page,
         per_page=per_page,
-        users=[UserResponse.model_validate(user) for user in users]
+        users=[UserResponse.model_validate(user) for user in users],
     )

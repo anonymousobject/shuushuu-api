@@ -10,6 +10,7 @@ UserBase (shared public fields)
 
 This approach eliminates field duplication while maintaining security boundaries.
 """
+
 from datetime import datetime
 from decimal import Decimal
 
@@ -26,6 +27,7 @@ class UserBase(SQLModel):
     - API response schemas (UserResponse)
     - API request schemas (UserCreate, UserUpdate)
     """
+
     # Basic information
     username: str = Field(max_length=30)
 
@@ -66,7 +68,8 @@ class Users(UserBase, table=True):
     - infected_by, date_infected: Internal tracking
     - bookmark: User-private reference
     """
-    __tablename__ = 'users'
+
+    __tablename__ = "users"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -74,17 +77,25 @@ class Users(UserBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['bookmark'], ['images.image_id'], ondelete='SET NULL', onupdate='CASCADE', name='fk_bookmark'),
-        Index('fk_bookmark', 'bookmark'),
-        Index('username', 'username', unique=True)
+        ForeignKeyConstraint(
+            ["bookmark"],
+            ["images.image_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_bookmark",
+        ),
+        Index("fk_bookmark", "bookmark"),
+        Index("username", "username", unique=True),
     )
 
     # Primary key
     user_id: int | None = Field(default=None, primary_key=True)
 
     # Public timestamps
-    date_joined: datetime = Field(sa_column_kwargs={"server_default": text('current_timestamp()')})
-    last_login: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date_joined: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    last_login: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
     last_login_new: datetime | None = Field(default=None)
 
     # Internal status fields

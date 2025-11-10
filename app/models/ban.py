@@ -10,6 +10,7 @@ BanBase (shared public fields)
 
 This approach eliminates field duplication while maintaining security boundaries.
 """
+
 from datetime import datetime
 from enum import Enum
 
@@ -19,6 +20,7 @@ from sqlmodel import Field, SQLModel
 
 class BanAction(str, Enum):
     """Enumeration of ban action types"""
+
     NONE = "None"
     ONE_WEEK = "One Week Ban"
     TWO_WEEK = "Two Week Ban"
@@ -35,6 +37,7 @@ class BanBase(SQLModel):
     - API response schemas (BanResponse)
     - API request schemas (BanCreate, BanUpdate)
     """
+
     # Ban details
     action: str | None = Field(default=None, max_length=50)
     reason: str | None = Field(default=None)
@@ -62,7 +65,8 @@ class Bans(BanBase, table=True):
     - ip: Privacy-sensitive
     - banned_by: Moderator user ID (may be sensitive)
     """
-    __tablename__ = 'bans'
+
+    __tablename__ = "bans"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -70,10 +74,22 @@ class Bans(BanBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['banned_by'], ['users.user_id'], ondelete='SET NULL', onupdate='CASCADE', name='fk_bans_banned_by'),
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_bans_user_id'),
-        Index('fk_bans_banned_by', 'banned_by'),
-        Index('fk_bans_user_id', 'user_id')
+        ForeignKeyConstraint(
+            ["banned_by"],
+            ["users.user_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_bans_banned_by",
+        ),
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_bans_user_id",
+        ),
+        Index("fk_bans_banned_by", "banned_by"),
+        Index("fk_bans_user_id", "user_id"),
     )
 
     # Primary key
@@ -83,7 +99,9 @@ class Bans(BanBase, table=True):
     user_id: int = Field(foreign_key="users.user_id")
 
     # Override to add server default
-    date: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
 
     # Internal fields
     banned_by: int | None = Field(default=None, foreign_key="users.user_id")

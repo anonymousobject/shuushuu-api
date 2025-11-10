@@ -1,6 +1,7 @@
 """
 Users API endpoints
 """
+
 from enum import Enum
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 class SortOrder(str, Enum):
     """Sort order options."""
+
     ASC = "ASC"
     DESC = "DESC"
 
@@ -29,7 +31,7 @@ async def get_user_images(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
     sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
     Get all images uploaded by a specific user.
@@ -71,14 +73,13 @@ async def get_user_images(
         total=total or 0,
         page=page,
         per_page=per_page,
-        images=[ImageResponse.model_validate(img) for img in images]
+        images=[ImageResponse.model_validate(img) for img in images],
     )
 
 
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
-    user_id: int = Path(..., description="User ID"),
-    db: AsyncSession = Depends(get_db)
+    user_id: int = Path(..., description="User ID"), db: AsyncSession = Depends(get_db)
 ) -> UserResponse:
     """
     Get user profile information.
@@ -91,11 +92,12 @@ async def get_user(
 
     return UserResponse.model_validate(user)
 
+
 @router.get("/", response_model=UserListResponse)
 async def list_users(
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
     List users with pagination.
@@ -122,7 +124,7 @@ async def list_users(
         total=total or 0,
         page=page,
         per_page=per_page,
-        users=[UserResponse.model_validate(user) for user in users]
+        users=[UserResponse.model_validate(user) for user in users],
     )
 
 
@@ -133,7 +135,7 @@ async def get_user_favorites(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
     sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
     Get all images favorited by a specific user.
@@ -172,5 +174,5 @@ async def get_user_favorites(
         total=total or 0,
         page=page,
         per_page=per_page,
-        images=[ImageResponse.model_validate(img) for img in images]
+        images=[ImageResponse.model_validate(img) for img in images],
     )

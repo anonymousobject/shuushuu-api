@@ -1,7 +1,6 @@
 """
 Tags API endpoints
 """
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import desc, func, select
@@ -80,7 +79,7 @@ async def get_images_by_tag(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
     sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
     Get all images with a specific tag.
@@ -133,17 +132,18 @@ async def get_images_by_tag(
     # Uses ONLY tag_links table for maximum speed - no Images join needed
     # Sorting is deferred to the main query for better performance
     image_id_subquery = (
-        select(TagLinks.image_id.distinct().label('image_id'))
+        select(TagLinks.image_id.distinct().label("image_id"))
         .where(TagLinks.tag_id.in_(tag_hierarchy))
         .limit(per_page)
         .offset(offset)
-        .subquery('imageset')
+        .subquery("imageset")
     )
 
     # Count total (fast - only counts tag_links, not full images join)
     count_result = await db.execute(
-        select(func.count(func.distinct(TagLinks.image_id)))
-        .where(TagLinks.tag_id.in_(tag_hierarchy))
+        select(func.count(func.distinct(TagLinks.image_id))).where(
+            TagLinks.tag_id.in_(tag_hierarchy)
+        )
     )
     total = count_result.scalar()
 
@@ -151,8 +151,9 @@ async def get_images_by_tag(
     # Apply sorting here on the small result set (e.g., 20 rows)
     sort_column = getattr(Images, sort_by, Images.image_id)
     query = (
-        select(Images)
-        .join(image_id_subquery, Images.image_id == image_id_subquery.columns.image_id)  # type: ignore[arg-type]
+        select(Images).join(
+            image_id_subquery, Images.image_id == image_id_subquery.columns.image_id
+        )  # type: ignore[arg-type]
     )
 
     # Apply sorting on main query
@@ -165,12 +166,7 @@ async def get_images_by_tag(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return ImageListResponse(
-        total=total or 0,
-        page=page,
-        per_page=per_page,
-        images=images
-    )
+    return ImageListResponse(total=total or 0, page=page, per_page=per_page, images=images)
 
 
 @router.get("/", response_model=TagListResponse)
@@ -179,7 +175,7 @@ async def list_tags(
     type_id: int | None = Query(None, description="Filter by tag type"),
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(50, ge=1, le=100, description="Items per page"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> TagListResponse:
     """
     List and search tags.
@@ -204,6 +200,7 @@ async def list_tags(
 
     # Sort by tag date added
     from sqlalchemy import desc as sql_desc
+
     query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
 
     # Paginate
@@ -218,14 +215,13 @@ async def list_tags(
         total=total or 0,
         page=page,
         per_page=per_page,
-        tags=[TagResponse.model_validate(tag) for tag in tags]
+        tags=[TagResponse.model_validate(tag) for tag in tags],
     )
 
 
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
-    tag_id: int = Path(..., description="Tag ID"),
-    db: AsyncSession = Depends(get_db)
+    tag_id: int = Path(..., description="Tag ID"), db: AsyncSession = Depends(get_db)
 ) -> TagWithStats:
     """
     Get a single tag by ID with usage statistics.
@@ -246,9 +242,7 @@ async def get_tag(
 
     # Count images tagged with any tag in the hierarchy
     count_result = await db.execute(
-        select(func.count(TagLinks.image_id.distinct())).where(
-            TagLinks.tag_id.in_(tag_hierarchy)
-        )
+        select(func.count(TagLinks.image_id.distinct())).where(TagLinks.tag_id.in_(tag_hierarchy))
     )
     image_count = count_result.scalar()
 

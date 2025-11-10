@@ -10,6 +10,7 @@ TagBase (shared public fields)
 
 This approach eliminates field duplication while maintaining security boundaries.
 """
+
 from datetime import datetime
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -25,6 +26,7 @@ class TagBase(SQLModel):
     - API response schemas (TagResponse)
     - API request schemas (TagCreate, TagUpdate)
     """
+
     # Basic information
     title: str | None = Field(default=None, max_length=150)
     desc: str | None = Field(default=None, max_length=200)
@@ -45,7 +47,8 @@ class Tags(TagBase, table=True):
     - tw_tagid: Internal tag wizard ID
     - user_id: Creator user (privacy-sensitive)
     """
-    __tablename__ = 'tags'
+
+    __tablename__ = "tags"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -53,20 +56,38 @@ class Tags(TagBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['alias'], ['tags.tag_id'], ondelete='SET NULL', onupdate='CASCADE', name='fk_tags_alias'),
-        ForeignKeyConstraint(['inheritedfrom_id'], ['tags.tag_id'], ondelete='SET NULL', onupdate='CASCADE', name='fk_tags_inheritedfrom_id'),
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='SET NULL', onupdate='CASCADE', name='fk_tags_user_id'),
-        Index('fk_tags_alias', 'alias'),
-        Index('fk_tags_inheritedfrom_id', 'inheritedfrom_id'),
-        Index('fk_tags_user_id', 'user_id'),
-        Index('type_alias', 'type', 'alias')
+        ForeignKeyConstraint(
+            ["alias"],
+            ["tags.tag_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_tags_alias",
+        ),
+        ForeignKeyConstraint(
+            ["inheritedfrom_id"],
+            ["tags.tag_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_tags_inheritedfrom_id",
+        ),
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_tags_user_id",
+        ),
+        Index("fk_tags_alias", "alias"),
+        Index("fk_tags_inheritedfrom_id", "inheritedfrom_id"),
+        Index("fk_tags_user_id", "user_id"),
+        Index("type_alias", "type", "alias"),
     )
 
     # Primary key
     tag_id: int | None = Field(default=None, primary_key=True)
 
     # Public timestamp
-    date_added: datetime = Field(sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date_added: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
 
     # Public relationship fields
     alias: int | None = Field(default=None, foreign_key="tags.tag_id")

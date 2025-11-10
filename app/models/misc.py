@@ -9,13 +9,14 @@ This module defines various utility database models using SQLModel:
 
 These are generally simple utility tables with minimal relationships.
 """
+
 from datetime import datetime
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
 
-
 # ===== Banners =====
+
 
 class BannerBase(SQLModel):
     """
@@ -23,6 +24,7 @@ class BannerBase(SQLModel):
 
     These fields are safe to expose via the API.
     """
+
     path: str = Field(default="", max_length=255)
     author: str = Field(default="", max_length=255)
     leftext: str = Field(default="png", max_length=3)
@@ -40,16 +42,20 @@ class Banners(BannerBase, table=True):
 
     Banners are displayed at the top of the site and can be themed or event-specific.
     """
-    __tablename__ = 'banners'
+
+    __tablename__ = "banners"
 
     # Primary key
     banner_id: int | None = Field(default=None, primary_key=True)
 
     # Override to add server default
-    date: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
 
 
 # ===== EvaTheme =====
+
 
 class EvaThemeBase(SQLModel):
     """
@@ -57,6 +63,7 @@ class EvaThemeBase(SQLModel):
 
     These fields are safe to expose via the API.
     """
+
     theme_name: str = Field(default="", max_length=255)
     banner: str = Field(default="", max_length=255)
     theme_content: str | None = Field(default=None)
@@ -75,7 +82,8 @@ class EvaTheme(EvaThemeBase, table=True):
 
     Stores seasonal/event themes that activate during specific date ranges.
     """
-    __tablename__ = 'eva_theme'
+
+    __tablename__ = "eva_theme"
 
     # Primary key
     theme_id: int | None = Field(default=None, primary_key=True)
@@ -83,12 +91,14 @@ class EvaTheme(EvaThemeBase, table=True):
 
 # ===== Tips =====
 
+
 class TipBase(SQLModel):
     """
     Base model with shared public fields for Tips.
 
     These fields are safe to expose via the API.
     """
+
     tip: str | None = Field(default=None, max_length=255)
     type: int = Field(default=0)
 
@@ -99,7 +109,8 @@ class Tips(TipBase, table=True):
 
     Tips are helpful messages displayed to users throughout the site.
     """
-    __tablename__ = 'tips'
+
+    __tablename__ = "tips"
 
     # Primary key
     id: int | None = Field(default=None, primary_key=True)
@@ -107,12 +118,14 @@ class Tips(TipBase, table=True):
 
 # ===== Donations (Table without model - view only) =====
 
+
 class DonationBase(SQLModel):
     """
     Base model for Donations table.
 
     This is a simple tracking table with no foreign key relationships.
     """
+
     date: datetime
     user_id: int | None = Field(default=None)
     nick: str | None = Field(default=None, max_length=30)
@@ -125,12 +138,14 @@ class DonationBase(SQLModel):
 
 # ===== Quicklinks =====
 
+
 class QuicklinkBase(SQLModel):
     """
     Base model with shared public fields for Quicklinks.
 
     Quicklinks are user-specific saved links or shortcuts.
     """
+
     user_id: int | None = Field(default=None)
     link: str | None = Field(default=None, max_length=32)
 
@@ -139,11 +154,18 @@ class Quicklinks(QuicklinkBase, table=True):
     """
     Database table for user quicklinks.
     """
-    __tablename__ = 'quicklinks'
+
+    __tablename__ = "quicklinks"
 
     __table_args__ = (
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_quicklinks_user_id'),
-        Index('fk_quicklinks_user_id', 'user_id')
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_quicklinks_user_id",
+        ),
+        Index("fk_quicklinks_user_id", "user_id"),
     )
 
     # Primary key

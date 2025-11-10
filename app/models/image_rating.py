@@ -12,6 +12,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 Note: ImageRatings is a junction table with composite primary key (user_id, image_id).
 """
+
 from datetime import datetime
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -27,6 +28,7 @@ class ImageRatingBase(SQLModel):
     - API response schemas (ImageRatingResponse)
     - API request schemas (ImageRatingCreate)
     """
+
     # Composite primary key
     user_id: int = Field(foreign_key="users.user_id", primary_key=True)
     image_id: int = Field(foreign_key="images.image_id", primary_key=True)
@@ -45,7 +47,8 @@ class ImageRatings(ImageRatingBase, table=True):
 
     All fields are public as this is user-generated content.
     """
-    __tablename__ = 'image_ratings'
+
+    __tablename__ = "image_ratings"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -53,13 +56,27 @@ class ImageRatings(ImageRatingBase, table=True):
     # these definitions may drift from the actual database structure over time. When in doubt,
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
-        ForeignKeyConstraint(['image_id'], ['images.image_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_image_ratings_image_id'),
-        ForeignKeyConstraint(['user_id'], ['users.user_id'], ondelete='CASCADE', onupdate='CASCADE', name='fk_image_ratings_user_id'),
-        Index('fk_image_ratings_image_id', 'image_id')
+        ForeignKeyConstraint(
+            ["image_id"],
+            ["images.image_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_image_ratings_image_id",
+        ),
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_image_ratings_user_id",
+        ),
+        Index("fk_image_ratings_image_id", "image_id"),
     )
 
     # Public timestamp
-    date: datetime | None = Field(default=None, sa_column_kwargs={"server_default": text('current_timestamp()')})
+    date: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
