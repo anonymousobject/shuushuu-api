@@ -2,16 +2,16 @@
 Images API endpoints
 """
 
-from enum import Enum
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
 from app.core.database import get_db
 from app.models import Favorites, Images, TagLinks, Tags, Users
-from app.models.image import ImageSortBy  # Import from model
 from app.schemas.image import (
     ImageHashSearchResponse,
     ImageListResponse,
@@ -25,60 +25,40 @@ from app.schemas.user import UserListResponse, UserResponse
 router = APIRouter(prefix="/images", tags=["images"])
 
 
-class SortOrder(str, Enum):
-    """Sort order options."""
-
-    ASC = "ASC"
-    DESC = "DESC"
-
-
-@router.get("/{image_id}", response_model=ImageResponse)
-async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageResponse:
-    """
-    Get a single image by ID.
-
-    Returns detailed information about an image including metadata,
-    ratings, and statistics.
-    """
-    result = await db.execute(
-        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
-    )
-    image = result.scalar_one_or_none()
-
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
-
-    return ImageResponse.model_validate(image)
-
-
 @router.get("/", response_model=ImageListResponse)
 async def list_images(
-    # Pagination
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    # Sorting
-    sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
-    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[ImageSortParams, Depends()],
     # Basic filters
-    user_id: int | None = Query(None, description="Filter by uploader user ID"),
-    status: int | None = Query(None, description="Filter by status (1=active, 2=pending, etc)"),
+    user_id: Annotated[int | None, Query(description="Filter by uploader user ID")] = None,
+    status: Annotated[
+        int | None, Query(description="Filter by status (1=active, 2=pending, etc)")
+    ] = None,
     # Tag filtering
-    tags: str | None = Query(None, description="Comma-separated tag IDs (e.g., '1,2,3')"),
-    tags_mode: str = Query("any", pattern="^(any|all)$", description="Match ANY or ALL tags"),
+    tags: Annotated[
+        str | None, Query(description="Comma-separated tag IDs (e.g., '1,2,3')")
+    ] = None,
+    tags_mode: Annotated[
+        str, Query(pattern="^(any|all)$", description="Match ANY or ALL tags")
+    ] = "any",
     # Date filtering
-    date_from: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
-    date_to: str | None = Query(None, description="End date (YYYY-MM-DD)"),
+    date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
+    date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
     # Size filtering
-    min_width: int | None = Query(None, ge=1, description="Minimum width in pixels"),
-    max_width: int | None = Query(None, ge=1, description="Maximum width in pixels"),
-    min_height: int | None = Query(None, ge=1, description="Minimum height in pixels"),
-    max_height: int | None = Query(None, ge=1, description="Maximum height in pixels"),
+    min_width: Annotated[int | None, Query(ge=1, description="Minimum width in pixels")] = None,
+    max_width: Annotated[int | None, Query(ge=1, description="Maximum width in pixels")] = None,
+    min_height: Annotated[int | None, Query(ge=1, description="Minimum height in pixels")] = None,
+    max_height: Annotated[int | None, Query(ge=1, description="Maximum height in pixels")] = None,
     # Rating filtering
-    min_rating: float | None = Query(None, ge=0, le=5, description="Minimum rating"),
-    min_favorites: int | None = Query(None, ge=0, description="Minimum favorite count"),
+    min_rating: Annotated[float | None, Query(ge=0, le=5, description="Minimum rating")] = None,
+    min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
     # Content filtering
-    artist: str | None = Query(None, description="Filter by artist name (partial match)"),
-    characters: str | None = Query(None, description="Filter by characters (partial match)"),
+    artist: Annotated[
+        str | None, Query(description="Filter by artist name (partial match)")
+    ] = None,
+    characters: Annotated[
+        str | None, Query(description="Filter by characters (partial match)")
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
@@ -183,14 +163,13 @@ async def list_images(
     # ) AS imageset ON images.image_id = imageset.image_id
 
     # Apply sorting and pagination
-    offset = (page - 1) * per_page
-    sort_column = getattr(Images, sort_by.value)
+    sort_column = getattr(Images, sorting.sort_by.value)
     if (
         sort_column == Images.date_added
     ):  # image_ids are assigned by date so use that. `date_added` doesn't have its own index.
         sort_column = Images.image_id
 
-    if sort_order == SortOrder.DESC:
+    if sorting.sort_order == "DESC":
         subquery_order = desc(sort_column)
     else:
         subquery_order = asc(sort_column)
@@ -199,8 +178,8 @@ async def list_images(
     image_id_subquery = (
         query.with_only_columns(Images.image_id.label("image_id"))  # type: ignore[union-attr]
         .order_by(subquery_order)
-        .offset(offset)
-        .limit(per_page)
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
         .subquery("imageset")
     )
 
@@ -215,10 +194,29 @@ async def list_images(
 
     return ImageListResponse(
         total=total or 0,
-        page=page,
-        per_page=per_page,
+        page=pagination.page,
+        per_page=pagination.per_page,
         images=[ImageResponse.model_validate(img) for img in images],
     )
+
+
+@router.get("/{image_id}", response_model=ImageResponse)
+async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageResponse:
+    """
+    Get a single image by ID.
+
+    Returns detailed information about an image including metadata,
+    ratings, and statistics.
+    """
+    result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return ImageResponse.model_validate(image)
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)
@@ -294,10 +292,8 @@ async def get_stats(db: AsyncSession = Depends(get_db)) -> ImageStatsResponse:
 @router.get("/{image_id}/favorites", response_model=UserListResponse)
 async def get_image_favorites(
     image_id: int,
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: str = Query("user_id", description="Sort field (user_id, date_joined, etc)"),
-    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[UserSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
@@ -319,15 +315,14 @@ async def get_image_favorites(
     total = total_result.scalar()
 
     # Apply sorting
-    sort_column = getattr(Users, sort_by, Users.user_id)
-    if sort_order == SortOrder.DESC:
+    sort_column = getattr(Users, sorting.sort_by, Users.user_id)
+    if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))  # type: ignore[arg-type]
     else:
         query = query.order_by(asc(sort_column))  # type: ignore[arg-type]
 
     # Apply pagination
-    offset = (page - 1) * per_page
-    query = query.offset(offset).limit(per_page)
+    query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Execute
     result = await db.execute(query)
@@ -335,7 +330,7 @@ async def get_image_favorites(
 
     return UserListResponse(
         total=total or 0,
-        page=page,
-        per_page=per_page,
+        page=pagination.page,
+        per_page=pagination.per_page,
         users=[UserResponse.model_validate(user) for user in users],
     )

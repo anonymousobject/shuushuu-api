@@ -2,12 +2,13 @@
 Comments API endpoints
 """
 
-from enum import Enum
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import CommentSortParams, PaginationParams
 from app.core.database import get_db
 from app.models import Comments, Images, Users
 from app.schemas.comment import (
@@ -19,62 +20,27 @@ from app.schemas.comment import (
 router = APIRouter(prefix="/comments", tags=["comments"])
 
 
-class SortOrder(str, Enum):
-    """Sort order options."""
-
-    ASC = "ASC"
-    DESC = "DESC"
-
-
-class CommentSortBy(str, Enum):
-    """Allowed sort fields for comment queries."""
-
-    post_id = "post_id"
-    date = "date"
-    update_count = "update_count"
-
-
-@router.get("/{comment_id}", response_model=CommentResponse)
-async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> CommentResponse:
-    """
-    Get a single comment by ID.
-
-    Returns detailed information about a comment including metadata
-    and update history.
-    """
-    result = await db.execute(
-        select(Comments).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
-    )
-    comment = result.scalar_one_or_none()
-
-    if not comment:
-        raise HTTPException(status_code=404, detail="Comment not found")
-
-    return CommentResponse.model_validate(comment)
-
-
 @router.get("/", response_model=CommentListResponse)
 async def list_comments(
-    # Pagination
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    # Sorting
-    sort_by: CommentSortBy = Query(CommentSortBy.date, description="Sort field"),
-    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[CommentSortParams, Depends()],
     # Filters
-    image_id: int | None = Query(None, description="Filter by image ID"),
-    user_id: int | None = Query(None, description="Filter by user ID"),
-    search_text: str | None = Query(None, description="Search in comment text"),
-    search_mode: str | None = Query(
-        None,
-        pattern="^(natural|boolean|like)$",
-        description="Search mode: natural (default), boolean fulltext, or LIKE",
-    ),
+    image_id: Annotated[int | None, Query(description="Filter by image ID")] = None,
+    user_id: Annotated[int | None, Query(description="Filter by user ID")] = None,
+    search_text: Annotated[str | None, Query(description="Search in comment text")] = None,
+    search_mode: Annotated[
+        str | None,
+        Query(
+            pattern="^(natural|boolean|like)$",
+            description="Search mode: natural (default), boolean fulltext, or LIKE",
+        ),
+    ] = None,
     # Date filtering
-    date_from: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
-    date_to: str | None = Query(None, description="End date (YYYY-MM-DD)"),
+    date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
+    date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
     db: AsyncSession = Depends(get_db),
 ) -> CommentListResponse:
+    # TODO: Add an automatic mode that detects the most efficient method based on input?
     """
     Search and list comments with filtering and flexible text search.
 
@@ -86,10 +52,9 @@ async def list_comments(
     - Multiple search modes (LIKE, natural fulltext, boolean fulltext)
 
     **Search Modes:**
-    - `like` (default): Simple pattern matching, works anywhere. Example: `?search_text=awesome`
-    - `natural`: MySQL fulltext natural language search (10-100x faster, relevance ranking)
+    - `natural` (default): MySQL fulltext natural language search (10-100x faster, relevance ranking)
     - `boolean`: MySQL fulltext boolean search with operators
-    # TODO: Add an automatic mode that detects the most efficient method based on input?
+    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`
 
     **Boolean Mode Examples:**
     - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
@@ -118,7 +83,7 @@ async def list_comments(
 
     # Text search with mode selection
     if search_text:
-        # Default to LIKE if no mode specified
+        # Default to natural if no mode specified
         effective_mode = search_mode or "natural"
 
         if effective_mode == "boolean":
@@ -145,16 +110,15 @@ async def list_comments(
     total = total_result.scalar()
 
     # Apply sorting
-    offset = (page - 1) * per_page
-    sort_column = getattr(Comments, sort_by.value)
+    sort_column = getattr(Comments, sorting.sort_by)
 
-    if sort_order == SortOrder.DESC:
+    if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))
     else:
         query = query.order_by(asc(sort_column))
 
     # Apply pagination
-    query = query.offset(offset).limit(per_page)
+    query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Execute query
     result = await db.execute(query)
@@ -162,19 +126,36 @@ async def list_comments(
 
     return CommentListResponse(
         total=total or 0,
-        page=page,
-        per_page=per_page,
+        page=pagination.page,
+        per_page=pagination.per_page,
         comments=[CommentResponse.model_validate(comment) for comment in comments],
     )
+
+
+@router.get("/{comment_id}", response_model=CommentResponse)
+async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> CommentResponse:
+    """
+    Get a single comment by ID.
+
+    Returns detailed information about a comment including metadata
+    and update history.
+    """
+    result = await db.execute(
+        select(Comments).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one_or_none()
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    return CommentResponse.model_validate(comment)
 
 
 @router.get("/image/{image_id}", response_model=CommentListResponse)
 async def get_image_comments(
     image_id: int,
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: CommentSortBy = Query(CommentSortBy.date, description="Sort field"),
-    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[CommentSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
 ) -> CommentListResponse:
     """
@@ -202,15 +183,14 @@ async def get_image_comments(
     total = total_result.scalar()
 
     # Apply sorting
-    sort_column = getattr(Comments, sort_by.value)
-    if sort_order == SortOrder.DESC:
+    sort_column = getattr(Comments, sorting.sort_by)
+    if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))
     else:
         query = query.order_by(asc(sort_column))
 
     # Apply pagination
-    offset = (page - 1) * per_page
-    query = query.offset(offset).limit(per_page)
+    query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Execute
     result = await db.execute(query)
@@ -218,8 +198,8 @@ async def get_image_comments(
 
     return CommentListResponse(
         total=total or 0,
-        page=page,
-        per_page=per_page,
+        page=pagination.page,
+        per_page=pagination.per_page,
         comments=[CommentResponse.model_validate(comment) for comment in comments],
     )
 
@@ -227,10 +207,8 @@ async def get_image_comments(
 @router.get("/user/{user_id}", response_model=CommentListResponse)
 async def get_user_comments(
     user_id: int,
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: CommentSortBy = Query(CommentSortBy.date, description="Sort field"),
-    sort_order: SortOrder = Query(SortOrder.DESC, description="Sort order"),
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[CommentSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
 ) -> CommentListResponse:
     """
@@ -257,15 +235,14 @@ async def get_user_comments(
     total = total_result.scalar()
 
     # Apply sorting
-    sort_column = getattr(Comments, sort_by.value)
-    if sort_order == SortOrder.DESC:
+    sort_column = getattr(Comments, sorting.sort_by)
+    if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))
     else:
         query = query.order_by(asc(sort_column))
 
     # Apply pagination
-    offset = (page - 1) * per_page
-    query = query.offset(offset).limit(per_page)
+    query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Execute
     result = await db.execute(query)
@@ -273,8 +250,8 @@ async def get_user_comments(
 
     return CommentListResponse(
         total=total or 0,
-        page=page,
-        per_page=per_page,
+        page=pagination.page,
+        per_page=pagination.per_page,
         comments=[CommentResponse.model_validate(comment) for comment in comments],
     )
 

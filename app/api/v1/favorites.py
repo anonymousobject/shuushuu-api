@@ -7,13 +7,15 @@ Use the new RESTful routes instead:
 - GET /images/{image_id}/favorites - Get users who favorited an image
 """
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.core.database import get_db
 from app.models import Favorites, Images, Users
-from app.models.image import ImageSortBy
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.user import UserListResponse, UserResponse
 
@@ -22,11 +24,9 @@ router = APIRouter(prefix="/favorites", tags=["favorites (deprecated)"])
 
 @router.get("/user/{user_id}", response_model=ImageListResponse, deprecated=True)
 async def get_favorite_images(
-    user_id: int = Path(..., description="User ID"),
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
-    sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
+    user_id: Annotated[int, Path(description="User ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[ImageSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
@@ -50,15 +50,14 @@ async def get_favorite_images(
     total = total_result.scalar()
 
     # Apply sorting
-    sort_column = getattr(Images, sort_by, Images.image_id)
-    if sort_order == "DESC":
+    sort_column = getattr(Images, sorting.sort_by.value)
+    if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))  # type: ignore[arg-type]
     else:
         query = query.order_by(asc(sort_column))  # type: ignore[arg-type]
 
     # Apply pagination
-    offset = (page - 1) * per_page
-    query = query.offset(offset).limit(per_page)
+    query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Execute
     result = await db.execute(query)
@@ -66,19 +65,17 @@ async def get_favorite_images(
 
     return ImageListResponse(
         total=total or 0,
-        page=page,
-        per_page=per_page,
+        page=pagination.page,
+        per_page=pagination.per_page,
         images=[ImageResponse.model_validate(img) for img in images],
     )
 
 
 @router.get("/image/{image_id}", response_model=UserListResponse, deprecated=True)
 async def get_image_favorites(
-    image_id: int = Path(..., description="Image ID"),
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: str = Query("user_id", description="Sort field (user_id, date_joined, etc)"),
-    sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
+    image_id: Annotated[int, Path(description="Image ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[UserSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
@@ -102,15 +99,14 @@ async def get_image_favorites(
     total = total_result.scalar()
 
     # Apply sorting
-    sort_column = getattr(Users, sort_by, Users.user_id)
-    if sort_order == "DESC":
+    sort_column = getattr(Users, sorting.sort_by, Users.user_id)
+    if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))  # type: ignore[arg-type]
     else:
         query = query.order_by(asc(sort_column))  # type: ignore[arg-type]
 
     # Apply pagination
-    offset = (page - 1) * per_page
-    query = query.offset(offset).limit(per_page)
+    query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Execute
     result = await db.execute(query)
@@ -118,7 +114,7 @@ async def get_image_favorites(
 
     return UserListResponse(
         total=total or 0,
-        page=page,
-        per_page=per_page,
+        page=pagination.page,
+        per_page=pagination.per_page,
         users=[UserResponse.model_validate(user) for user in users],
     )

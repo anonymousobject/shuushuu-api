@@ -2,13 +2,15 @@
 Tags API endpoints
 """
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import ImageSortParams, PaginationParams
 from app.core.database import get_db
 from app.models import Images, TagLinks, Tags
-from app.models.image import ImageSortBy
 from app.schemas.image import ImageListResponse
 from app.schemas.tag import TagListResponse, TagResponse, TagWithStats
 
@@ -72,13 +74,64 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int) -> list[int]:
     return tag_ids
 
 
+@router.get("/", response_model=TagListResponse)
+async def list_tags(
+    pagination: Annotated[PaginationParams, Depends()],
+    search: Annotated[str | None, Query(description="Search tags by name")] = None,
+    type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
+    db: AsyncSession = Depends(get_db),
+) -> TagListResponse:
+    """
+    List and search tags.
+
+    Supports:
+    - Searching by tag name (partial match)
+    - Filtering by tag type
+    - Pagination
+
+    **Examples:**
+    - Get all tags: `/tags`
+    - Search tags with "cat": `/tags?search=cat`
+    - Filter by type (e.g., type_id=1 for general tags): `/tags?type_id=1`
+    """
+    query = select(Tags)
+
+    # Apply filters
+    if search:
+        query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
+    if type_id is not None:
+        query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Sort by tag date added
+    from sqlalchemy import desc as sql_desc
+
+    query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
+
+    # Paginate
+    query = query.offset(pagination.offset).limit(pagination.per_page)
+
+    # Execute
+    result = await db.execute(query)
+    tags = result.scalars().all()
+
+    return TagListResponse(
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        tags=[TagResponse.model_validate(tag) for tag in tags],
+    )
+
+
 @router.get("/{tag_id}/images", response_model=ImageListResponse)
 async def get_images_by_tag(
-    tag_id: int = Path(..., description="Tag ID"),
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: ImageSortBy = Query(ImageSortBy.image_id, description="Sort field"),
-    sort_order: str = Query("DESC", pattern="^(ASC|DESC)$", description="Sort order"),
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[ImageSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
@@ -126,16 +179,14 @@ async def get_images_by_tag(
     # ORDER BY images.image_id DESC
     from sqlalchemy import asc
 
-    offset = (page - 1) * per_page
-
     # Subquery: Fast index scan to get matching image_ids with limit/offset
     # Uses ONLY tag_links table for maximum speed - no Images join needed
     # Sorting is deferred to the main query for better performance
     image_id_subquery = (
         select(TagLinks.image_id.distinct().label("image_id"))
         .where(TagLinks.tag_id.in_(tag_hierarchy))
-        .limit(per_page)
-        .offset(offset)
+        .limit(pagination.per_page)
+        .offset(pagination.offset)
         .subquery("imageset")
     )
 
@@ -149,15 +200,14 @@ async def get_images_by_tag(
 
     # Main query: Join full image data only for the limited set of IDs
     # Apply sorting here on the small result set (e.g., 20 rows)
-    sort_column = getattr(Images, sort_by, Images.image_id)
-    query = (
-        select(Images).join(
-            image_id_subquery, Images.image_id == image_id_subquery.columns.image_id
-        )  # type: ignore[arg-type]
+    sort_column = getattr(Images, sorting.sort_by.value)
+    query = select(Images).join(
+        image_id_subquery,
+        Images.image_id == image_id_subquery.columns.image_id,  # type: ignore[arg-type]
     )
 
     # Apply sorting on main query
-    if sort_order == "DESC":
+    if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))  # type: ignore[arg-type]
     else:
         query = query.order_by(asc(sort_column))  # type: ignore[arg-type]
@@ -166,62 +216,15 @@ async def get_images_by_tag(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return ImageListResponse(total=total or 0, page=page, per_page=per_page, images=images)
-
-
-@router.get("/", response_model=TagListResponse)
-async def list_tags(
-    search: str | None = Query(None, description="Search tags by name"),
-    type_id: int | None = Query(None, description="Filter by tag type"),
-    page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(50, ge=1, le=100, description="Items per page"),
-    db: AsyncSession = Depends(get_db),
-) -> TagListResponse:
-    """
-    List and search tags.
-
-    Supports:
-    - Searching by tag name (partial match)
-    - Filtering by tag type
-    - Pagination
-    """
-    query = select(Tags)
-
-    # Apply filters
-    if search:
-        query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
-    if type_id is not None:
-        query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
-
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
-    total_result = await db.execute(count_query)
-    total = total_result.scalar()
-
-    # Sort by tag date added
-    from sqlalchemy import desc as sql_desc
-
-    query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
-
-    # Paginate
-    offset = (page - 1) * per_page
-    query = query.offset(offset).limit(per_page)
-
-    # Execute
-    result = await db.execute(query)
-    tags = result.scalars().all()
-
-    return TagListResponse(
-        total=total or 0,
-        page=page,
-        per_page=per_page,
-        tags=[TagResponse.model_validate(tag) for tag in tags],
+    return ImageListResponse(
+        total=total or 0, page=pagination.page, per_page=pagination.per_page, images=images
     )
 
 
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
-    tag_id: int = Path(..., description="Tag ID"), db: AsyncSession = Depends(get_db)
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    db: AsyncSession = Depends(get_db),
 ) -> TagWithStats:
     """
     Get a single tag by ID with usage statistics.
