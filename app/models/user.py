@@ -103,11 +103,16 @@ class Users(UserBase, table=True):
     admin: int = Field(default=0)
 
     # Authentication (highly sensitive - never expose)
-    password: str = Field(max_length=40)
+    password: str = Field(max_length=255)  # Extended for bcrypt (60 chars needed)
+    password_type: str = Field(default="md5", max_length=10)  # 'md5' or 'bcrypt'
     salt: str = Field(max_length=16)
     newpassword: str | None = Field(default=None, max_length=40)
     newsalt: str | None = Field(default=None, max_length=16)
     actkey: str = Field(default="", max_length=32)
+
+    # Account lockout (security)
+    failed_login_attempts: int = Field(default=0)
+    lockout_until: datetime | None = Field(default=None)
 
     # Contact info (privacy-sensitive)
     email: str = Field(max_length=120)
