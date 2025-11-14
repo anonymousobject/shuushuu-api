@@ -39,6 +39,7 @@ from app.models.news import News
 # Permission system
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
 from app.models.privmsg import Privmsgs
+from app.models.refresh_token import RefreshTokens
 from app.models.tag import Tags
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
@@ -62,6 +63,7 @@ __all__ = [
     # User-related models
     "Bans",
     "UserSessions",
+    "RefreshTokens",
     "Privmsgs",
     # Content models
     "News",

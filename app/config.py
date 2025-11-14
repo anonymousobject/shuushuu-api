@@ -25,11 +25,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     # Security
-    SECRET_KEY: str = Field(
-        default="CHANGE-ME-IN-.ENV-FILE-OR-DOCKER-COMPOSE-32-CHARS-LONG",
-        min_length=32,
-        description="Secret key for JWT tokens - MUST be changed in production",
-    )
+    SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -42,13 +38,9 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: str | list[str] = Field(default=["*"])
 
     # MySQL Database - UPDATED!
-    DATABASE_URL: str = Field(
-        default="mysql+aiomysql://shuushuu:password@localhost:3306/shuushuu?charset=utf8mb4"
-    )
+    DATABASE_URL: str
     # Sync URL for Alembic migrations
-    DATABASE_URL_SYNC: str = Field(
-        default="mysql+pymysql://shuushuu:password@localhost:3306/shuushuu?charset=utf8mb4"
-    )
+    DATABASE_URL_SYNC: str
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_ECHO: bool = False

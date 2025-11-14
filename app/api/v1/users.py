@@ -9,6 +9,7 @@ from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
+from app.core.auth import get_current_user_id
 from app.core.database import get_db
 from app.models import Favorites, Images, Users
 from app.schemas.image import ImageListResponse, ImageResponse
@@ -49,6 +50,23 @@ async def list_users(
         per_page=pagination.per_page,
         users=[UserResponse.model_validate(user) for user in users],
     )
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_current_user_profile(
+    current_user_id: Annotated[int, Depends(get_current_user_id)],
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """
+    Get the profile of the currently authenticated user.
+    """
+    user_result = await db.execute(select(Users).where(Users.user_id == current_user_id))  # type: ignore[arg-type]
+    user = user_result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return UserResponse.model_validate(user)
 
 
 @router.get("/{user_id}/images", response_model=ImageListResponse)
