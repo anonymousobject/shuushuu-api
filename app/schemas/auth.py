@@ -24,9 +24,7 @@ class TokenResponse(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
-    expires_in: int = Field(
-        ..., description="Access token expiration time in seconds from now"
-    )
+    expires_in: int = Field(..., description="Access token expiration time in seconds from now")
 
 
 class RefreshRequest(BaseModel):

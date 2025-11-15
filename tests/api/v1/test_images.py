@@ -9,7 +9,6 @@ These tests cover the /api/v1/images endpoints including:
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.generated import Images
@@ -21,7 +20,7 @@ class TestImagesList:
 
     async def test_list_images_empty(self, client: AsyncClient):
         """Test listing images when database is empty."""
-        response = await client.get("/api/v1/images/")
+        await client.get("/api/v1/images/")
 
         # assert response.status_code == 200
         # data = response.json()
@@ -170,7 +169,7 @@ class TestImagesFiltering:
         for rating in [0.0, 2.5, 5.0, 7.5, 10.0]:
             image_data = sample_image_data.copy()
             image_data["filename"] = f"rating-{rating}"
-            image_data["md5_hash"] = f"rating{int(rating*10):021d}"
+            image_data["md5_hash"] = f"rating{int(rating * 10):021d}"
             image_data["rating"] = rating
             db_session.add(Images(**image_data))
 
@@ -208,7 +207,7 @@ class TestImagesSorting:
         response = await client.get("/api/v1/images/?sort_by=date_added&sort_order=DESC")
         assert response.status_code == 200
         data = response.json()
-        
+
         assert data["images"][0]["date_added"].startswith("2024-12-31")
         assert data["images"][-1]["date_added"].startswith("2024-01-01")
 

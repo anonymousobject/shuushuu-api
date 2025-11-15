@@ -3,10 +3,28 @@ FastAPI Application - Shuushuu API
 Modern backend for Shuushuu anime image board
 """
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Lifespan context manager for startup and shutdown events"""
+    # Startup
+    print("🚀 Shuushuu API starting up...")
+    print(f"📊 Environment: {settings.ENVIRONMENT}")
+    print(
+        f"🗄️  Database: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}"
+    )
+    yield
+    # Shutdown
+    print("👋 Shuushuu API shutting down...")
+
 
 # Create FastAPI application
 app = FastAPI(
@@ -15,6 +33,7 @@ app = FastAPI(
     version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # Configure CORS
@@ -48,19 +67,3 @@ async def health() -> dict[str, str]:
 from app.api.v1 import router as api_v1_router  # noqa: E402
 
 app.include_router(api_v1_router, prefix="/api/v1")
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Run on application startup"""
-    print("🚀 Shuushuu API starting up...")
-    print(f"📊 Environment: {settings.ENVIRONMENT}")
-    print(
-        f"🗄️  Database: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}"
-    )
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    """Run on application shutdown"""
-    print("👋 Shuushuu API shutting down...")

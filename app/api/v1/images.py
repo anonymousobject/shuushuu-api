@@ -4,14 +4,15 @@ Images API endpoints
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import asc, desc, func, select
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from sqlalchemy import asc, delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
+from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.models import Favorites, Images, TagLinks, Tags, Users
+from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 from app.schemas.image import (
     ImageHashSearchResponse,
     ImageListResponse,
@@ -21,6 +22,7 @@ from app.schemas.image import (
     ImageTagsResponse,
 )
 from app.schemas.user import UserListResponse, UserResponse
+from app.services.rating import schedule_rating_recalculation
 
 router = APIRouter(prefix="/images", tags=["images"])
 
@@ -31,8 +33,8 @@ async def list_images(
     sorting: Annotated[ImageSortParams, Depends()],
     # Basic filters
     user_id: Annotated[int | None, Query(description="Filter by uploader user ID")] = None,
-    status: Annotated[
-        int | None, Query(description="Filter by status (1=active, 2=pending, etc)")
+    image_status: Annotated[
+        int | None, Query(description="Filter by status (1=active, 2=pending, etc)", alias="status")
     ] = None,
     # Tag filtering
     tags: Annotated[
@@ -85,8 +87,8 @@ async def list_images(
     # Apply basic filters
     if user_id is not None:
         query = query.where(Images.user_id == user_id)  # type: ignore[arg-type]
-    if status is not None:
-        query = query.where(Images.status == status)  # type: ignore[arg-type]
+    if image_status is not None:
+        query = query.where(Images.status == image_status)  # type: ignore[arg-type]
 
     # Tag filtering
     if tags:
@@ -98,14 +100,14 @@ async def list_images(
                     _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
                     query = query.where(
                         Images.image_id.in_(  # type: ignore[union-attr]
-                            select(TagLinks.image_id).where(TagLinks.tag_id == resolved_tag_id)
+                            select(TagLinks.image_id).where(TagLinks.tag_id == resolved_tag_id)  # type: ignore[call-overload]
                         )
                     )
             else:
                 # Images must have ANY of the specified tags
                 query = query.where(
                     Images.image_id.in_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id).where(TagLinks.tag_id.in_(tag_ids))
+                        select(TagLinks.image_id).where(TagLinks.tag_id.in_(tag_ids))  # type: ignore[call-overload,attr-defined]
                     )
                 )
 
@@ -127,7 +129,7 @@ async def list_images(
 
     # Rating filtering
     if min_rating is not None:
-        query = query.where(Images.rating >= min_rating)  # type: ignore[arg-type]
+        query = query.where(Images.bayesian_rating >= min_rating)  # type: ignore[arg-type]
     if min_favorites is not None:
         query = query.where(Images.favorites >= min_favorites)  # type: ignore[arg-type]
 
@@ -236,8 +238,8 @@ async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> I
     # Get tags through tag_links
     result = await db.execute(
         select(Tags)
-        .join(TagLinks, TagLinks.tag_id == Tags.tag_id)
-        .where(TagLinks.image_id == image_id)
+        .join(TagLinks, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+        .where(TagLinks.image_id == image_id)  # type: ignore[arg-type]
     )
     tags = result.scalars().all()
 
@@ -334,3 +336,192 @@ async def get_image_favorites(
         per_page=pagination.per_page,
         users=[UserResponse.model_validate(user) for user in users],
     )
+
+
+@router.get("/bookmark/me", response_model=ImageResponse)
+async def get_bookmark_image(
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> ImageResponse:
+    """
+    Get the user's current bookmarked image from their profile.
+    """
+
+    if not current_user.bookmark:
+        raise HTTPException(status_code=404, detail="No bookmarked image set for user")
+
+    result = await db.execute(
+        select(Images).where(Images.image_id == current_user.bookmark)  # type: ignore[arg-type]
+    )
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Bookmarked image not found")
+
+    return ImageResponse.model_validate(image)
+
+
+@router.post("/{image_id}/tags/{tag_id}", status_code=status.HTTP_201_CREATED)
+async def add_tag_to_image(
+    image_id: Annotated[int, Path(description="Image ID")],
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """
+    Add a tag to an image.
+
+    - Regular users can only tag their own images
+    - Admins can tag any image
+
+    Returns:
+        Success message
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    image = image_result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Permission check: user owns image or is admin
+    if image.user_id != current_user.user_id and not current_user.admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to tag this image",
+        )
+
+    # Verify tag exists
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    tag = tag_result.scalar_one_or_none()
+
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Check if tag link already exists
+    existing_link = await db.execute(
+        select(TagLinks).where(
+            TagLinks.image_id == image_id,  # type: ignore[arg-type]
+            TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+        )
+    )
+    if existing_link.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Tag already linked to this image")
+
+    # Create tag link
+    tag_link = TagLinks(
+        image_id=image_id,
+        tag_id=tag_id,
+        user_id=current_user.user_id,
+    )
+    db.add(tag_link)
+    await db.commit()
+
+    return {"message": "Tag added successfully"}
+
+
+@router.delete("/{image_id}/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_tag_from_image(
+    image_id: Annotated[int, Path(description="Image ID")],
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Remove a tag from an image.
+
+    - Regular users can only remove tags from their own images
+    - Admins can remove tags from any image
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    image = image_result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Permission check: user owns image or is admin
+    if image.user_id != current_user.user_id and not current_user.admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to remove tags from this image",
+        )
+
+    # Check if tag link exists
+    link_result = await db.execute(
+        select(TagLinks).where(
+            TagLinks.image_id == image_id,  # type: ignore[arg-type]
+            TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+        )
+    )
+    tag_link = link_result.scalar_one_or_none()
+
+    if not tag_link:
+        raise HTTPException(status_code=404, detail="Tag not linked to this image")
+
+    # Delete tag link
+    await db.execute(
+        delete(TagLinks).where(
+            TagLinks.image_id == image_id,  # type: ignore[arg-type]
+            TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+        )
+    )
+    await db.commit()
+
+
+@router.post("/{image_id}/rating", status_code=status.HTTP_201_CREATED)
+async def rate_image(
+    image_id: Annotated[int, Path(description="Image ID")],
+    rating: Annotated[int, Query(ge=0, le=10, description="Rating value (0-10)")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """
+    Rate an image (0-10 scale).
+
+    Users can rate any image once. If they rate again, their previous rating is updated.
+
+    Args:
+        image_id: The image to rate
+        rating: Rating value from 0 to 10
+
+    Returns:
+        Success message indicating if rating was created or updated
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    image = image_result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Check if user already rated this image
+    existing_rating = await db.execute(
+        select(ImageRatings).where(
+            ImageRatings.user_id == current_user.user_id,  # type: ignore[arg-type]
+            ImageRatings.image_id == image_id,  # type: ignore[arg-type]
+        )
+    )
+    existing = existing_rating.scalar_one_or_none()
+
+    if existing:
+        # Update existing rating
+        existing.rating = rating
+        message = "Rating updated successfully"
+    else:
+        # Create new rating
+        new_rating = ImageRatings(
+            user_id=current_user.user_id,
+            image_id=image_id,
+            rating=rating,
+        )
+        db.add(new_rating)
+        message = "Rating added successfully"
+
+    # Commit the rating first
+    await db.commit()
+
+    # Schedule background recalculation (non-blocking)
+    schedule_rating_recalculation(image_id)
+
+    return {"message": message}

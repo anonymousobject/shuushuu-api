@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.database import Base, get_db
 from app.main import app as main_app
 
-
 # Test Database URL - use a separate test database
 TEST_DATABASE_URL = (
     "mysql+aiomysql://shuushuu:shuushuu_dev_password@localhost:3306/shuushuu_test?charset=utf8mb4"
@@ -116,6 +115,7 @@ def app(db_session: AsyncSession) -> FastAPI:
 
     This overrides the database dependency to use the test session.
     """
+
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
@@ -144,6 +144,7 @@ async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
 
 
 # Sample data fixtures for common test scenarios
+
 
 @pytest.fixture
 def sample_image_data() -> dict:

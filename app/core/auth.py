@@ -24,7 +24,9 @@ security = HTTPBearer()
 
 async def get_current_user_id(
     access_token: Annotated[str | None, Cookie()] = None,
-    _credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))] = None,
+    _credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))
+    ] = None,
 ) -> int:
     """
     Extract and verify JWT access token from cookie.

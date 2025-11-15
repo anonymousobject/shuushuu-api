@@ -61,7 +61,7 @@ class Users(UserBase, table=True):
 
     Internal/sensitive fields (should NOT be exposed via public API):
     - password, salt, newpassword, newsalt: Authentication (highly sensitive)
-    - email, show_email: Privacy-sensitive
+    - email: Privacy-sensitive
     - actkey: Activation key (security-sensitive)
     - admin, active: Moderation/access control
     - All preference fields: User-private settings
@@ -89,7 +89,7 @@ class Users(UserBase, table=True):
     )
 
     # Primary key
-    user_id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(primary_key=True)
 
     # Public timestamps
     date_joined: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
@@ -116,8 +116,6 @@ class Users(UserBase, table=True):
 
     # Contact info (privacy-sensitive)
     email: str = Field(max_length=120)
-    show_email: int = Field(default=0)
-    aim: str | None = Field(default=None, max_length=50)
 
     # User preferences (private)
     timezone: Decimal = Field(default=Decimal("0.00"))
@@ -128,9 +126,6 @@ class Users(UserBase, table=True):
     sorting_pref_order: str = Field(default="DESC", max_length=10)
     images_per_page: int = Field(default=10)
     show_all_images: int = Field(default=0)
-    show_all_meta: int = Field(default=0)
-    show_all_posts: int = Field(default=0)
-    show_ip: int = Field(default=0)
 
     # Rate limiting
     maximgperday: int = Field(default=15)

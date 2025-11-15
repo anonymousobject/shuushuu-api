@@ -9,9 +9,10 @@ from pydantic import BaseModel, EmailStr, field_validator
 from app.models.user import UserBase
 
 
-class UserCreate(UserBase):
+class UserCreate(BaseModel):
     """Schema for creating a new user"""
 
+    username: str
     email: EmailStr  # Required for user creation
     password: str
 
@@ -19,12 +20,22 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     """Schema for updating a user profile - all fields optional"""
 
-    username: str | None = None
     location: str | None = None
     website: str | None = None
+    interests: str | None = None
+    user_title: str | None = None
     avatar: str | None = None
+    gender: str | None = None
     email: EmailStr | None = None
     password: str | None = None
+
+    @field_validator("gender")
+    @classmethod
+    def validate_gender(cls, v: str | None) -> str | None:
+        """Validate gender is one of the allowed values"""
+        if v is not None and v not in ["", "M", "F", "O"]:
+            raise ValueError("Gender must be 'M', 'F', 'O', or empty")
+        return v
 
 
 class UserResponse(UserBase):

@@ -13,8 +13,11 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import datetime
 
+from pydantic import field_validator
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.config import TagType
 
 
 class TagBase(SQLModel):
@@ -30,7 +33,28 @@ class TagBase(SQLModel):
     # Basic information
     title: str | None = Field(default=None, max_length=150)
     desc: str | None = Field(default=None, max_length=200)
-    type: int = Field(default=1)
+    type: int = Field(
+        default=TagType.THEME,
+        description="Tag type: 0=All, 1=Theme, 2=Source, 3=Artist, 4=Character",
+    )
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: int) -> int:
+        """Validate that type is one of the allowed TagType constants."""
+        valid_types = {
+            TagType.ALL,
+            TagType.THEME,
+            TagType.SOURCE,
+            TagType.ARTIST,
+            TagType.CHARACTER,
+        }
+        if v not in valid_types:
+            raise ValueError(
+                f"Invalid tag type: {v}. Must be one of {valid_types} "
+                f"(0=All, 1=Theme, 2=Source, 3=Artist, 4=Character)"
+            )
+        return v
 
 
 class Tags(TagBase, table=True):

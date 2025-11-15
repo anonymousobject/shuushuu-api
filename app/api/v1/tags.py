@@ -9,10 +9,12 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams, PaginationParams
+from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models import Images, TagLinks, Tags
+from app.models.generated import Users
 from app.schemas.image import ImageListResponse
-from app.schemas.tag import TagListResponse, TagResponse, TagWithStats
+from app.schemas.tag import TagCreate, TagListResponse, TagResponse, TagWithStats
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -183,8 +185,8 @@ async def get_images_by_tag(
     # Uses ONLY tag_links table for maximum speed - no Images join needed
     # Sorting is deferred to the main query for better performance
     image_id_subquery = (
-        select(TagLinks.image_id.distinct().label("image_id"))
-        .where(TagLinks.tag_id.in_(tag_hierarchy))
+        select(TagLinks.image_id.distinct().label("image_id"))  # type: ignore[attr-defined]
+        .where(TagLinks.tag_id.in_(tag_hierarchy))  # type: ignore[attr-defined]
         .limit(pagination.per_page)
         .offset(pagination.offset)
         .subquery("imageset")
@@ -193,7 +195,7 @@ async def get_images_by_tag(
     # Count total (fast - only counts tag_links, not full images join)
     count_result = await db.execute(
         select(func.count(func.distinct(TagLinks.image_id))).where(
-            TagLinks.tag_id.in_(tag_hierarchy)
+            TagLinks.tag_id.in_(tag_hierarchy)  # type: ignore[attr-defined]
         )
     )
     total = count_result.scalar()
@@ -208,9 +210,9 @@ async def get_images_by_tag(
 
     # Apply sorting on main query
     if sorting.sort_order == "DESC":
-        query = query.order_by(desc(sort_column))  # type: ignore[arg-type]
+        query = query.order_by(desc(sort_column))
     else:
-        query = query.order_by(asc(sort_column))  # type: ignore[arg-type]
+        query = query.order_by(asc(sort_column))
 
     # Execute
     result = await db.execute(query)
@@ -245,7 +247,7 @@ async def get_tag(
 
     # Count images tagged with any tag in the hierarchy
     count_result = await db.execute(
-        select(func.count(TagLinks.image_id.distinct())).where(TagLinks.tag_id.in_(tag_hierarchy))
+        select(func.count(TagLinks.image_id.distinct())).where(TagLinks.tag_id.in_(tag_hierarchy))  # type: ignore[attr-defined]
     )
     image_count = count_result.scalar()
 
@@ -265,6 +267,7 @@ async def get_tag(
     return TagWithStats(
         tag_id=tag.tag_id,
         title=tag.title,
+        desc=tag.desc,
         type=tag.type,
         image_count=image_count or 0,
         is_alias=is_alias,
@@ -272,3 +275,130 @@ async def get_tag(
         parent_tag_id=parent_tag_id,
         child_count=child_count or 0,
     )
+
+
+@router.post("/", response_model=TagResponse)
+async def create_tag(
+    tag_data: TagCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> TagResponse:
+    """
+    Create a new tag.
+    """
+
+    # Only admins can create tags
+    if not current_user.admin:
+        raise HTTPException(status_code=403, detail="Not authorized to create tags")
+
+    # check if tag already exists
+    existing_tag_result = await db.execute(
+        select(Tags).where(Tags.title == tag_data.title).where(Tags.type == tag_data.type)  # type: ignore[arg-type]
+    )
+    if existing_tag_result.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Tag already exists")
+
+    # if inherited_from is set, ensure that tag exists
+    if tag_data.inheritedfrom_id:
+        parent_tag_result = await db.execute(
+            select(Tags).where(Tags.tag_id == tag_data.inheritedfrom_id)  # type: ignore[arg-type]
+        )
+        if not parent_tag_result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Parent tag does not exist")
+
+    # if alias is set, ensure that tag exists
+    if tag_data.alias:
+        alias_tag_result = await db.execute(
+            select(Tags).where(Tags.tag_id == tag_data.alias)  # type: ignore[arg-type]
+        )
+        if not alias_tag_result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Alias tag does not exist")
+
+    new_tag = Tags(
+        title=tag_data.title,
+        type=tag_data.type,
+        desc=tag_data.desc,
+        inheritedfrom_id=tag_data.inheritedfrom_id,
+        alias=tag_data.alias,
+    )
+    db.add(new_tag)
+    await db.commit()
+    await db.refresh(new_tag)
+
+    return TagResponse.model_validate(new_tag)
+
+
+@router.put("/{tag_id}", response_model=TagResponse)
+async def update_tag(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    tag_data: TagCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> TagResponse:
+    """
+    Update an existing tag.
+    """
+
+    # Only admins can update tags
+    if not current_user.admin:
+        raise HTTPException(status_code=403, detail="Not authorized to update tags")
+
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    tag = tag_result.scalar_one_or_none()
+
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    update_data = tag_data.model_dump(exclude_unset=True)
+
+    # Validate inheritedfrom_id and alias fields if present
+    inheritedfrom_id = update_data.get("inheritedfrom_id")
+    if inheritedfrom_id is not None:
+        parent_result = await db.execute(select(Tags).where(Tags.tag_id == inheritedfrom_id))
+        parent_tag = parent_result.scalar_one_or_none()
+        if not parent_tag:
+            raise HTTPException(
+                status_code=400, detail=f"Parent tag with id {inheritedfrom_id} does not exist"
+            )
+
+    alias_id = update_data.get("alias")
+    if alias_id is not None:
+        alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_id))
+        alias_tag = alias_result.scalar_one_or_none()
+        if not alias_tag:
+            raise HTTPException(
+                status_code=400, detail=f"Alias tag with id {alias_id} does not exist"
+            )
+    # Update fields
+    for key, value in update_data.items():
+        setattr(tag, key, value)
+
+    db.add(tag)
+    await db.commit()
+    await db.refresh(tag)
+
+    return TagResponse.model_validate(tag)
+
+
+@router.delete("/{tag_id}", status_code=204)
+async def delete_tag(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Delete a tag.
+    """
+
+    # Only admins can delete tags
+    if not current_user.admin:
+        raise HTTPException(status_code=403, detail="Not authorized to delete tags")
+
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    tag = tag_result.scalar_one_or_none()
+
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    await db.delete(tag)
+    await db.commit()

@@ -10,7 +10,9 @@ from app.models.tag import TagBase
 class TagCreate(TagBase):
     """Schema for creating a new tag"""
 
-    pass
+    inheritedfrom_id: int | None = None
+    alias: int | None = None
+    desc: str | None = None
 
 
 class TagUpdate(BaseModel):

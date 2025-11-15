@@ -48,5 +48,17 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
-        finally:
-            await session.close()
+
+
+def get_async_session() -> AsyncSession:
+    """
+    Get a standalone async database session for background tasks.
+
+    This is a context manager that should be used with 'async with':
+        async with get_async_session() as db:
+            await db.execute(...)
+            await db.commit()
+
+    Note: Caller is responsible for committing/rolling back.
+    """
+    return AsyncSessionLocal()

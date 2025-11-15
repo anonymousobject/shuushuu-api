@@ -16,8 +16,11 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from pydantic import field_validator
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
+
+from app.config import ImageStatus
 
 if TYPE_CHECKING:
     from app.models.user import Users
@@ -67,8 +70,33 @@ class ImageBase(SQLModel):
     artist: str | None = Field(default=None, max_length=200)
     characters: str | None = Field(default=None)
 
+    # Status
+    status: int = Field(
+        default=ImageStatus.ACTIVE,
+        description="Image status: -4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler",
+    )
+
     # Rating
     rating: float = Field(default=0.0)
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: int) -> int:
+        """Validate that status is one of the allowed ImageStatus constants."""
+        valid_statuses = {
+            ImageStatus.REVIEW,
+            ImageStatus.INAPPROPRIATE,
+            ImageStatus.REPOST,
+            ImageStatus.OTHER,
+            ImageStatus.ACTIVE,
+            ImageStatus.SPOILER,
+        }
+        if v not in valid_statuses:
+            raise ValueError(
+                f"Invalid image status: {v}. Must be one of {valid_statuses} "
+                f"(-4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler)"
+            )
+        return v
 
 
 class Images(ImageBase, table=True):
@@ -139,7 +167,6 @@ class Images(ImageBase, table=True):
     user_id: int = Field(foreign_key="users.user_id")
 
     # Public status/stats fields
-    status: int = Field(default=1)
     locked: int = Field(default=0)
     posts: int = Field(default=0)
     favorites: int = Field(default=0)
