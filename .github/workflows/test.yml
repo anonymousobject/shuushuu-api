@@ -48,7 +48,7 @@ jobs:
 
       - name: Wait for MySQL to be ready
         run: |
-          until docker exec $(docker ps -q --filter ancestor=mariadb:11) mysqladmin ping -h localhost --silent; do
+          until docker exec $(docker ps -q --filter ancestor=mariadb:12) mysqladmin ping -h localhost --silent; do
             echo "Waiting for MySQL..."
             sleep 2
           done
