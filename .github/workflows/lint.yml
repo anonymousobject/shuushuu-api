@@ -32,11 +32,11 @@ jobs:
 
       - name: Run Ruff linter
         run: |
-          uv run ruff check app/ tests/
+          uv run ruff check
 
       - name: Run Ruff formatter (check only)
         run: |
-          uv run ruff format --check app/ tests/
+          uv run ruff format --check
 
       - name: Run mypy type checker
         run: |
