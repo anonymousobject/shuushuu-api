@@ -2,16 +2,33 @@
 Images API endpoints
 """
 
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path as FilePath
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy import asc, delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
+from app.config import settings
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.logging import get_logger
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 from app.schemas.image import (
     ImageHashSearchResponse,
@@ -20,11 +37,31 @@ from app.schemas.image import (
     ImageStatsResponse,
     ImageTagItem,
     ImageTagsResponse,
+    ImageUploadResponse,
 )
 from app.schemas.user import UserListResponse, UserResponse
+from app.services.image_processing import (
+    create_large_variant,
+    create_medium_variant,
+    create_thumbnail,
+    get_image_dimensions,
+)
+from app.services.iqdb import add_to_iqdb, check_iqdb_similarity
 from app.services.rating import schedule_rating_recalculation
+from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/images", tags=["images"])
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP address from request, checking X-Forwarded-For first."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        # X-Forwarded-For can contain multiple IPs, first one is the client
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "0.0.0.0"
 
 
 @router.get("/", response_model=ImageListResponse)
@@ -133,12 +170,6 @@ async def list_images(
     if min_favorites is not None:
         query = query.where(Images.favorites >= min_favorites)  # type: ignore[arg-type]
 
-    # Content filtering
-    if artist:
-        query = query.where(Images.artist.like(f"%{artist}%"))  # type: ignore[union-attr]
-    if characters:
-        query = query.where(Images.characters.like(f"%{characters}%"))  # type: ignore[union-attr]
-
     # Count total results
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -165,11 +196,9 @@ async def list_images(
     # ) AS imageset ON images.image_id = imageset.image_id
 
     # Apply sorting and pagination
-    sort_column = getattr(Images, sorting.sort_by.value)
-    if (
-        sort_column == Images.date_added
-    ):  # image_ids are assigned by date so use that. `date_added` doesn't have its own index.
-        sort_column = Images.image_id
+    # Use the centralized get_column() method which handles field aliasing
+    # (e.g., maps date_added -> image_id for performance)
+    sort_column = sorting.sort_by.get_column(Images)
 
     if sorting.sort_order == "DESC":
         subquery_order = desc(sort_column)
@@ -186,8 +215,11 @@ async def list_images(
     )
 
     # Main query: Fetch full image data only for the limited set of IDs
+    # Note: Must re-apply ORDER BY since JOIN doesn't preserve subquery order
     final_query = (
-        select(Images).join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
+        select(Images)
+        .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
+        .order_by(subquery_order)  # Re-apply same sort order
     )
 
     # Execute query
@@ -525,3 +557,268 @@ async def rate_image(
     schedule_rating_recalculation(image_id)
 
     return {"message": message}
+
+
+@router.post("/upload", response_model=ImageUploadResponse, status_code=status.HTTP_201_CREATED)
+async def upload_image(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    file: Annotated[UploadFile, File(description="Image file to upload")],
+    caption: Annotated[str, Form(max_length=35)] = "",
+    tag_ids: Annotated[str, Form(description="Comma-separated tag IDs (e.g., '1,2,3')")] = "",
+    db: AsyncSession = Depends(get_db),
+) -> ImageUploadResponse:
+    """
+    Upload a new image with metadata and tags.
+
+    Requires authentication.
+
+    Process:
+    1. Create temporary image record to get image_id
+    2. Validate image file (type, size, extension) using PIL
+    3. Check for duplicate (MD5 hash)
+    4. Save image to storage (filename: YYYY-MM-DD-{image_id}.{ext})
+    5. Extract image dimensions
+    6. Update image record with metadata
+    7. Link tags to image
+    8. Schedule thumbnail generation (background)
+    9. Return created image details
+
+    Security:
+    - Requires authentication
+    - Validates file is actually an image using PIL (prevents malicious uploads)
+    - Validates file type, size, and extension
+    - Prevents duplicate images (MD5 check)
+
+    Filename Format:
+    - Main image: YYYY-MM-DD-{image_id}.{ext} (e.g., 2025-11-15-1111881.jpeg)
+    - Thumbnail: YYYY-MM-DD-{image_id}.{ext} (same format, in thumbs/ directory)
+    """
+    logger.info(
+        "image_upload_started",
+        user_id=current_user.user_id,
+        filename=file.filename,
+        content_type=file.content_type,
+    )
+
+    # Check upload rate limit (skip for admins/moderators)
+    if not current_user.admin:
+        await check_upload_rate_limit(current_user.user_id, db)
+
+    # Get client IP address for logging
+    client_ip = _get_client_ip(request)
+
+    # Create temporary image record to get image_id for filename
+    temp_image = Images(
+        filename="temp",  # Will be updated after save
+        ext="tmp",
+        original_filename=file.filename or "unknown",
+        md5_hash="",  # Will be calculated during save
+        filesize=0,
+        width=0,
+        height=0,
+        user_id=current_user.user_id,
+        ip=client_ip,  # Log IP address
+        status=1,
+        locked=0,
+    )
+    db.add(temp_image)
+    await db.flush()  # Get image_id
+    image_id: int = temp_image.image_id  # type: ignore[assignment]
+
+    logger.info("image_record_created", image_id=image_id)
+
+    try:
+        # Save image to storage (validates and calculates hash)
+        # If validation fails, this will raise HTTPException
+        file_path, ext, md5_hash = await save_uploaded_image(file, settings.STORAGE_PATH, image_id)
+        logger.info("image_saved", image_id=image_id, file_path=str(file_path), md5_hash=md5_hash)
+
+        # Check for duplicate image (MD5)
+        existing_result = await db.execute(
+            select(Images).where(
+                Images.md5_hash == md5_hash,  # type: ignore[arg-type]
+                Images.image_id != image_id,  # type: ignore[arg-type]
+            )
+        )
+        existing_image = existing_result.scalar_one_or_none()
+
+        if existing_image:
+            # Delete the uploaded file and temp record since it's a duplicate
+            logger.warning(
+                "duplicate_image_detected",
+                image_id=image_id,
+                duplicate_of=existing_image.image_id,
+                md5_hash=md5_hash,
+            )
+            # Don't rollback here - let the exception handler do it
+            # Just raise the exception and the handler will clean up
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Image already exists with ID {existing_image.image_id}",
+            )
+
+        # Get image dimensions and update record
+        width, height = get_image_dimensions(file_path)
+        filesize = file_path.stat().st_size
+
+        # Calculate total pixels (in megapixels)
+        total_pixels = Decimal((width * height) / 1_000_000)
+
+        # Generate filename for storage (date-id format)
+        date_prefix = datetime.now().strftime("%Y-%m-%d")
+        filename = f"{date_prefix}-{image_id}"  # Store without extension
+
+        # Check IQDB for similar images (runs in main thread, ~100-300ms)
+        # Uses the main uploaded file for similarity check
+        similar_images = await check_iqdb_similarity(file_path, db)
+
+        # TODO: If similar_images has high-scoring matches:
+        # - Show them to user for confirmation (return 409 with list of matches)
+        # - Allow user to confirm upload anyway (add skip_similarity_check param)
+        # - Example: if similar_images and not skip_similarity_check:
+        #     raise HTTPException(409, {"matches": similar_images, "message": "Similar images found"})
+        # For now, we just check but don't block the upload
+
+        # Determine if medium/large variants should be created
+        has_medium = 1 if (width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE) else 0
+        has_large = 1 if (width > settings.LARGE_EDGE or height > settings.LARGE_EDGE) else 0
+
+        # Update temporary record with actual data
+        temp_image.filename = filename
+        temp_image.ext = ext
+        temp_image.md5_hash = md5_hash
+        temp_image.filesize = filesize
+        temp_image.width = width
+        temp_image.height = height
+        temp_image.total_pixels = total_pixels
+        temp_image.medium = has_medium
+        temp_image.large = has_large
+        temp_image.caption = caption
+
+        # Link tags if provided
+        if tag_ids.strip():
+            try:
+                tag_id_list = [int(tid.strip()) for tid in tag_ids.split(",") if tid.strip()]
+                await link_tags_to_image(image_id, tag_id_list, current_user.user_id, db)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid tag IDs format. Must be comma-separated integers.",
+                ) from e
+
+        # Commit all changes
+        await db.commit()
+        await db.refresh(temp_image)
+
+        logger.info(
+            "image_upload_completed",
+            image_id=image_id,
+            width=width,
+            height=height,
+            filesize=filesize,
+            md5_hash=md5_hash,
+            has_tags=bool(tag_ids.strip()),
+        )
+
+        # Schedule thumbnail generation in background
+        background_tasks.add_task(
+            create_thumbnail,
+            source_path=file_path,
+            image_id=image_id,
+            ext=ext,
+            storage_path=settings.STORAGE_PATH,
+        )
+        logger.debug("thumbnail_task_scheduled", image_id=image_id)
+
+        # Schedule medium variant generation if needed (placeholder)
+        if has_medium:
+            background_tasks.add_task(
+                create_medium_variant,
+                source_path=file_path,
+                image_id=image_id,
+                ext=ext,
+                storage_path=settings.STORAGE_PATH,
+                width=width,
+                height=height,
+            )
+
+        # Schedule large variant generation if needed (placeholder)
+        if has_large:
+            background_tasks.add_task(
+                create_large_variant,
+                source_path=file_path,
+                image_id=image_id,
+                ext=ext,
+                storage_path=settings.STORAGE_PATH,
+                width=width,
+                height=height,
+            )
+
+        # Add to IQDB index for future similarity searches (placeholder)
+        thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{date_prefix}-{image_id}.{ext}"
+        background_tasks.add_task(
+            add_to_iqdb,
+            image_id=image_id,
+            thumb_path=thumb_path,
+        )
+
+        # Build response
+        image_response = ImageResponse(
+            image_id=temp_image.image_id,
+            filename=temp_image.filename,
+            ext=temp_image.ext,
+            original_filename=temp_image.original_filename,
+            md5_hash=temp_image.md5_hash,
+            filesize=temp_image.filesize,
+            width=temp_image.width,
+            height=temp_image.height,
+            caption=temp_image.caption,
+            rating=temp_image.rating,
+            user_id=temp_image.user_id,
+            date_added=temp_image.date_added,
+            status=temp_image.status,
+            locked=temp_image.locked,
+            posts=temp_image.posts,
+            favorites=temp_image.favorites,
+            bayesian_rating=temp_image.bayesian_rating,
+            num_ratings=temp_image.num_ratings,
+        )
+
+        return ImageUploadResponse(
+            message="Image uploaded successfully",
+            image_id=temp_image.image_id,
+            image=image_response,
+        )
+
+    except HTTPException as he:
+        # Clean up file and database record on validation error
+        logger.warning(
+            "image_upload_failed",
+            image_id=image_id if "image_id" in locals() else None,
+            error=he.detail,
+            status_code=he.status_code,
+        )
+        # Rollback database first, then delete file
+        await db.rollback()
+        if "file_path" in locals() and file_path.exists():
+            file_path.unlink()
+        raise
+    except Exception as e:
+        # Clean up file and database record on any error
+        logger.error(
+            "image_upload_error",
+            image_id=image_id if "image_id" in locals() else None,
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
+        # Rollback database first, then delete file
+        await db.rollback()
+        if "file_path" in locals() and file_path.exists():
+            file_path.unlink()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload image: {str(e)}",
+        ) from e

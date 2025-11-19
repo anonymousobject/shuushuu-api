@@ -55,19 +55,52 @@ uv run pytest -v
 uv run pytest -vv  # Extra verbose
 ```
 
-## Test Database
+## Test Database Configuration
 
-Tests use a separate test database (`shuushuu_test`) to avoid affecting development data.
+Tests use a **dedicated test database** to ensure complete isolation from development and production environments.
 
-### Create test database
+### Required Environment Variables
+
+Add these to your `.env` file:
+
 ```bash
-docker compose exec mysql mysql -u root -proot_password -e "CREATE DATABASE IF NOT EXISTS shuushuu_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+# Test Database Configuration
+TEST_DATABASE_URL=mysql+aiomysql://user:password@localhost:3306/shuushuu_test?charset=utf8mb4
+TEST_DATABASE_URL_SYNC=mysql+pymysql://user:password@localhost:3306/shuushuu_test?charset=utf8mb4
 ```
 
-### Drop test database
-```bash
-docker compose exec mysql mysql -u root -proot_password -e "DROP DATABASE IF EXISTS shuushuu_test;"
-```
+### Why Separate Test Credentials?
+
+1. **Safety** - Prevents accidentally testing against dev/prod databases
+2. **Isolation** - Test database is completely independent
+3. **Flexibility** - Easy to use different credentials in CI/CD vs local
+4. **Standard Practice** - Explicit configuration is clearer than auto-derivation
+
+### Local Development
+
+For local development, you can use the same MySQL server and credentials as your dev environment:
+- Same host, user, and password as `DATABASE_URL`
+- Different database name (`shuushuu_test` vs `shuushuu`)
+
+### CI/CD
+
+In CI/CD environments, set `TEST_DATABASE_URL` environment variable to point to your CI test database.
+
+### Test Database Lifecycle
+
+1. **Session Setup** (`setup_test_database` fixture):
+   - Drops and recreates `shuushuu_test` database
+   - Creates all tables from SQLModel metadata
+   - Runs once per test session
+
+2. **Test Execution** (each test function):
+   - Creates test users (IDs 1, 2, 3) for foreign key constraints
+   - Test runs with isolated data
+   - Tables truncated after test completes
+
+3. **Session Teardown**:
+   - Test database is left intact for inspection
+   - Uncomment cleanup code in `conftest.py` to auto-drop
 
 ## Writing Tests
 
@@ -104,20 +137,53 @@ async def test_slow_operation():
 
 Common fixtures from `conftest.py`:
 
+#### Database Fixtures
+- `db_session` - Database session (includes 3 base test users: IDs 1, 2, 3)
+- `engine` - Database engine
+- `client` - HTTP client for testing API endpoints
+- `app` - FastAPI app instance
+
+#### Data Fixtures (create DB objects)
+- `test_user` - Creates a user in the database
+- `test_image` - Creates an image (depends on `test_user`)
+- `test_tag` - Creates a tag in the database
+
+#### Dictionary Fixtures (for API payloads)
+- `sample_image_data` - Dictionary of image data
+- `sample_tag_data` - Dictionary of tag data
+- `sample_user_data` - Dictionary of user registration data
+
+#### Example Usage
+
 ```python
 async def test_with_client(client: AsyncClient):
     """Use the HTTP client fixture."""
     response = await client.get("/api/v1/images")
     assert response.status_code == 200
 
-async def test_with_database(db_session: AsyncSession, sample_image_data: dict):
-    """Use database session and sample data fixtures."""
-    from app.models.generated import Images
+async def test_with_fixtures(test_user, test_image, db_session):
+    """Use data fixtures - they're already created in the DB."""
+    # test_user and test_image are already committed
+    assert test_image.user_id == test_user.user_id
 
-    image = Images(**sample_image_data)
+async def test_create_custom_data(test_user, db_session):
+    """Create custom test data for this specific test."""
+    from app.models.image import Image
+
+    image = Image(
+        filename="custom-test",
+        ext="jpg",
+        user_id=test_user.user_id,
+        # ... other fields
+    )
     db_session.add(image)
     await db_session.commit()
+
+    # Test with the custom image
+    assert image.image_id is not None
 ```
+
+See [test_fixtures_example.py](test_fixtures_example.py) for more examples.
 
 ### Test Naming Convention
 

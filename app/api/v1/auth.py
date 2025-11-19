@@ -71,7 +71,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
             httponly=True,  # Prevent JavaScript access (XSS protection)
             secure=False,  # Allow HTTP in development
             samesite="strict",  # CSRF protection
-            max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # seconds
+            max_age=30 * 24 * 60 * 60,  # 30 days in seconds
         )
 
 
@@ -163,7 +163,7 @@ async def login(
     - Resets lockout after successful login
     """
     # Find user by username
-    result = await db.execute(select(Users).where(Users.username == credentials.username))
+    result = await db.execute(select(Users).where(Users.username == credentials.username))  # type: ignore[arg-type]
     user = result.scalar_one_or_none()
 
     if not user:
@@ -272,7 +272,7 @@ async def refresh_token(
     token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
 
     # Look up token in database
-    result = await db.execute(select(RefreshTokens).where(RefreshTokens.token_hash == token_hash))
+    result = await db.execute(select(RefreshTokens).where(RefreshTokens.token_hash == token_hash))  # type: ignore[arg-type]
     db_token = result.scalar_one_or_none()
 
     if not db_token:
@@ -282,7 +282,8 @@ async def refresh_token(
         )
 
     # Check if token is expired
-    if db_token.expires_at < datetime.now(UTC):
+    # Note: MySQL DATETIME is timezone-naive, so we compare with naive datetime
+    if db_token.expires_at < datetime.now(UTC).replace(tzinfo=None):
         # Clean up expired token
         await db.delete(db_token)
         await db.commit()
@@ -294,7 +295,7 @@ async def refresh_token(
     # SECURITY: Check if token was already used (potential theft!)
     if db_token.revoked:
         # Token reuse detected! Revoke all tokens in this family
-        await db.execute(delete(RefreshTokens).where(RefreshTokens.family_id == db_token.family_id))
+        await db.execute(delete(RefreshTokens).where(RefreshTokens.family_id == db_token.family_id))  # type: ignore[arg-type]
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -302,7 +303,7 @@ async def refresh_token(
         )
 
     # Load user
-    result_user = await db.execute(select(Users).where(Users.user_id == db_token.user_id))
+    result_user = await db.execute(select(Users).where(Users.user_id == db_token.user_id))  # type: ignore[arg-type]
     user = result_user.scalar_one_or_none()
 
     if not user or not user.active:
@@ -364,7 +365,7 @@ async def logout(
     token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
 
     # Find and revoke token
-    result = await db.execute(select(RefreshTokens).where(RefreshTokens.token_hash == token_hash))
+    result = await db.execute(select(RefreshTokens).where(RefreshTokens.token_hash == token_hash))  # type: ignore[arg-type]
     db_token = result.scalar_one_or_none()
 
     if db_token and not db_token.revoked:
@@ -396,7 +397,7 @@ async def logout_all_devices(
         raise ValueError("User ID cannot be None")
 
     # Revoke all user's refresh tokens
-    await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == current_user.user_id))
+    await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == current_user.user_id))  # type: ignore[arg-type]
     await db.commit()
 
     # Clear authentication cookies
@@ -462,7 +463,7 @@ async def change_password(
         raise ValueError("User ID cannot be None")
 
     # Revoke all refresh tokens (force re-login everywhere)
-    await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == current_user.user_id))
+    await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == current_user.user_id))  # type: ignore[arg-type]
 
     await db.commit()
 

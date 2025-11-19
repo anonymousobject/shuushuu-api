@@ -12,7 +12,7 @@ from app.api.dependencies import ImageSortParams, PaginationParams
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models import Images, TagLinks, Tags
-from app.models.generated import Users
+from app.models.user import Users
 from app.schemas.image import ImageListResponse
 from app.schemas.tag import TagCreate, TagListResponse, TagResponse, TagWithStats
 
@@ -202,7 +202,7 @@ async def get_images_by_tag(
 
     # Main query: Join full image data only for the limited set of IDs
     # Apply sorting here on the small result set (e.g., 20 rows)
-    sort_column = getattr(Images, sorting.sort_by.value)
+    sort_column = sorting.sort_by.get_column(Images)
     query = select(Images).join(
         image_id_subquery,
         Images.image_id == image_id_subquery.columns.image_id,  # type: ignore[arg-type]

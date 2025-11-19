@@ -50,11 +50,11 @@ async def get_favorite_images(
     total = total_result.scalar()
 
     # Apply sorting
-    sort_column = getattr(Images, sorting.sort_by.value)
+    sort_column = sorting.sort_by.get_column(Images)
     if sorting.sort_order == "DESC":
-        query = query.order_by(desc(sort_column))  # type: ignore[arg-type]
+        query = query.order_by(desc(sort_column))
     else:
-        query = query.order_by(asc(sort_column))  # type: ignore[arg-type]
+        query = query.order_by(asc(sort_column))
 
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)

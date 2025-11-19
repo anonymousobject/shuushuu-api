@@ -116,7 +116,7 @@ class Tips(TipBase, table=True):
     id: int | None = Field(default=None, primary_key=True)
 
 
-# ===== Donations (Table without model - view only) =====
+# ===== Donations =====
 
 
 class DonationBase(SQLModel):
@@ -124,16 +124,58 @@ class DonationBase(SQLModel):
     Base model for Donations table.
 
     This is a simple tracking table with no foreign key relationships.
+    Note: Original table has no primary key, but we need one for SQLModel.
     """
 
-    date: datetime
+    date: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
     user_id: int | None = Field(default=None)
     nick: str | None = Field(default=None, max_length=30)
     amount: int | None = Field(default=None)
 
 
-# Note: Donations table has no primary key in the schema, so we'll treat it as a view
-# If you need to insert/update, you may want to add an auto-increment ID column via migration
+class Donations(DonationBase, table=True):
+    """
+    Database table for tracking donations.
+
+    Note: This table uses a composite of all columns as the natural key since
+    the original schema has no primary key. For SQLModel, we add an ID column.
+    """
+
+    __tablename__ = "donations"
+
+    __table_args__ = (Index("idx_date", "date"),)
+
+    # SQLModel requires a primary key, but original table has none
+    # We'll make this auto-increment for new inserts
+    id: int | None = Field(default=None, primary_key=True, exclude=True)
+
+
+# ===== Image Ratings Average =====
+
+
+class ImageRatingsAvgBase(SQLModel):
+    """
+    Base model for Image Ratings Average table.
+
+    Stores aggregated rating statistics by type.
+    """
+
+    type: str | None = Field(default=None, max_length=3)
+    avg: float | None = Field(default=None)
+
+
+class ImageRatingsAvg(ImageRatingsAvgBase, table=True):
+    """
+    Database table for aggregated image rating statistics.
+
+    This table stores average ratings grouped by type.
+    """
+
+    __tablename__ = "image_ratings_avg"
+
+    # Note: Original table has no primary key
+    # We'll use type as a unique identifier for SQLModel
+    type: str = Field(primary_key=True, max_length=3)
 
 
 # ===== Quicklinks =====

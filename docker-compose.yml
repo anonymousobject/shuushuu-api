@@ -67,7 +67,7 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - .:/app
-      - ./storage:/shuushuu/images
+      - ${STORAGE_PATH:-/sakura/shuushuu/images}:${STORAGE_PATH:-/sakura/shuushuu/images}
       # Anonymous volumes to isolate container artifacts from host
       - /app/.venv
       - /app/.pytest_cache
@@ -129,6 +129,7 @@ services:
   iqdb:
     build: https://github.com/TheBobBobs/iqdb-rs.git#main
     container_name: shuushuu-iqdb
+    command: ["--database", "/data/iqdb.sqlite"]
     ports:
       - "5588:5588"
     volumes:
