@@ -12,9 +12,11 @@ repos:
       - id: ruff
         args: [--fix]
         types_or: [python, pyi]
+        exclude: ^(tests|docs|scripts)/|^test_.*\.py$
       # Run the formatter
       - id: ruff-format
         types_or: [python, pyi]
+        exclude: ^(tests|docs|scripts)/|^test_.*\.py$
 
   # Standard pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks

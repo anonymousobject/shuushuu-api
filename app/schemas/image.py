@@ -26,9 +26,6 @@ class ImageUpdate(BaseModel):
     width: int | None = None
     height: int | None = None
     caption: str | None = None
-    image_source: str | None = None
-    artist: str | None = None
-    characters: str | None = None
     rating: float | None = None
 
 
@@ -71,6 +68,14 @@ class ImageListResponse(BaseModel):
     page: int
     per_page: int
     images: list[ImageResponse]
+
+
+class ImageUploadResponse(BaseModel):
+    """Schema for image upload response"""
+
+    message: str
+    image_id: int
+    image: ImageResponse
 
 
 class ImageSearchParams(BaseModel):

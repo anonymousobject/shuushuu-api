@@ -3,27 +3,63 @@ FastAPI Application - Shuushuu API
 Modern backend for Shuushuu anime image board
 """
 
+import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+from app.core.logging import (
+    clear_request_context,
+    configure_logging,
+    get_logger,
+    set_request_context,
+)
+
+# Configure logging on module import
+configure_logging()
+logger = get_logger(__name__)
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware to add request ID and logging context to each request."""
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        """Add request tracking context to each request."""
+        # Generate unique request ID
+        request_id = str(uuid.uuid4())
+
+        # Set context for this request (will be included in all logs)
+        set_request_context(request_id)
+
+        # Add request ID to request state for access in endpoints
+        request.state.request_id = request_id
+
+        try:
+            response = await call_next(request)
+            # Add request ID to response headers for debugging
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            # Clear context after request completes
+            clear_request_context()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for startup and shutdown events"""
     # Startup
-    print("🚀 Shuushuu API starting up...")
-    print(f"📊 Environment: {settings.ENVIRONMENT}")
-    print(
-        f"🗄️  Database: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'configured'}"
+    logger.info(
+        "application_starting",
+        environment=settings.ENVIRONMENT,
+        version="2.0.0",
     )
     yield
     # Shutdown
-    print("👋 Shuushuu API shutting down...")
+    logger.info("application_shutting_down")
 
 
 # Create FastAPI application
@@ -35,6 +71,9 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Add request logging middleware (before CORS)
+app.add_middleware(RequestLoggingMiddleware)
 
 # Configure CORS
 app.add_middleware(

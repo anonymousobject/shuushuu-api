@@ -55,6 +55,14 @@ class UserResponse(UserBase):
         return bool(v)
 
 
+class UserCreateResponse(UserBase):
+    """Schema for user creation response"""
+
+    user_id: int
+    username: str
+    email: EmailStr
+
+
 class UserListResponse(BaseModel):
     """Schema for paginated user list"""
 

@@ -14,7 +14,7 @@ This approach eliminates field duplication while maintaining security boundaries
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import field_validator
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -36,11 +36,43 @@ class ImageSortBy(str, Enum):
     """
 
     image_id = "image_id"  # Primary sort, essentially same as date_added
+    date_added = "date_added"  # Date added
     last_updated = "last_updated"  # Last modification date
     last_post = "last_post"  # Last post activity
     total_pixels = "total_pixels"  # Image size (width × height)
     bayesian_rating = "bayesian_rating"  # Calculated rating
     favorites = "favorites"  # Popularity metric
+
+    def get_column(self, model_class: type[SQLModel]) -> Any:
+        """
+        Get the actual database column to use for sorting.
+
+        This method handles field aliasing for performance optimization.
+        For example, 'date_added' is mapped to 'image_id' because:
+        - image_ids are auto-incrementing and assigned chronologically
+        - image_id has an index (primary key), date_added doesn't
+        - Sorting by image_id gives identical results but much faster
+
+        Args:
+            model_class: The SQLModel class (e.g., Images)
+
+        Returns:
+            The SQLAlchemy column object to use in ORDER BY clause
+
+        Example:
+            sort_by = ImageSortBy.date_added
+            column = sort_by.get_column(Images)  # Returns Images.image_id
+        """
+        # Map user-facing field names to actual database columns for performance
+        field_mapping = {
+            "date_added": "image_id",  # Use indexed image_id instead of date_added
+        }
+
+        # Get the actual field name to use (mapped or original)
+        actual_field = field_mapping.get(self.value, self.value)
+
+        # Return the column from the model
+        return getattr(model_class, actual_field)
 
 
 class ImageBase(SQLModel):
@@ -66,9 +98,6 @@ class ImageBase(SQLModel):
 
     # Metadata
     caption: str = Field(default="", max_length=35)
-    image_source: str | None = Field(default=None, max_length=255)
-    artist: str | None = Field(default=None, max_length=200)
-    characters: str | None = Field(default=None)
 
     # Status
     status: int = Field(

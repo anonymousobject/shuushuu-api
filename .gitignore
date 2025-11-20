@@ -98,3 +98,6 @@ Thumbs.db
 
 # Redis dumps
 dump.rdb
+
+# PHP codebase
+shuu-php/

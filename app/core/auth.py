@@ -24,19 +24,20 @@ security = HTTPBearer()
 
 async def get_current_user_id(
     access_token: Annotated[str | None, Cookie()] = None,
-    _credentials: Annotated[
+    credentials: Annotated[
         HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))
     ] = None,
 ) -> int:
     """
-    Extract and verify JWT access token from cookie.
+    Extract and verify JWT access token from Authorization header or cookie.
 
-    Note: The _credentials parameter is for OpenAPI documentation only.
-    Actual authentication uses the access_token cookie.
+    Checks both Authorization header (Bearer token) and access_token cookie,
+    preferring the header if both are present. This allows the API to work
+    with both Swagger UI (header) and browser requests (cookie).
 
     Args:
         access_token: Access token from cookie
-        _credentials: Unused, only for OpenAPI documentation
+        credentials: HTTP Bearer credentials from Authorization header
 
     Returns:
         User ID from valid token
@@ -44,7 +45,14 @@ async def get_current_user_id(
     Raises:
         HTTPException: 401 if token is missing, invalid, or expired
     """
-    if not access_token:
+    # Prefer Authorization header, fall back to cookie
+    token = None
+    if credentials:
+        token = credentials.credentials
+    elif access_token:
+        token = access_token
+
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
@@ -52,7 +60,7 @@ async def get_current_user_id(
         )
 
     # Verify token and extract user_id
-    user_id = verify_access_token(access_token)
+    user_id = verify_access_token(token)
     if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -80,7 +88,7 @@ async def get_current_user(
     Raises:
         HTTPException: 401 if user not found or inactive
     """
-    result = await db.execute(select(Users).where(Users.user_id == user_id))
+    result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
     user = result.scalar_one_or_none()
 
     if user is None:
@@ -125,7 +133,7 @@ async def get_optional_current_user(
         user_id = verify_access_token(token)
         if user_id is None:
             return None
-        result = await db.execute(select(Users).where(Users.user_id == user_id))
+        result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
         user = result.scalar_one_or_none()
         return user if user and user.active else None
     except HTTPException:

@@ -15,7 +15,13 @@ from app.core.database import get_db
 from app.core.security import get_password_hash, validate_password_strength
 from app.models import Favorites, Images, Users
 from app.schemas.image import ImageListResponse, ImageResponse
-from app.schemas.user import UserCreate, UserListResponse, UserResponse, UserUpdate
+from app.schemas.user import (
+    UserCreate,
+    UserCreateResponse,
+    UserListResponse,
+    UserResponse,
+    UserUpdate,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -195,7 +201,7 @@ async def get_user_images(
     total = total_result.scalar()
 
     # Apply sorting
-    sort_column = getattr(Images, sorting.sort_by.value)
+    sort_column = sorting.sort_by.get_column(Images)
     if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))
     else:
@@ -259,7 +265,7 @@ async def get_user_favorites(
     total = total_result.scalar()
 
     # Apply sorting
-    sort_column = getattr(Images, sorting.sort_by.value)
+    sort_column = sorting.sort_by.get_column(Images)
     if sorting.sort_order == "DESC":
         query = query.order_by(desc(sort_column))
     else:
@@ -280,11 +286,11 @@ async def get_user_favorites(
     )
 
 
-@router.post("/", response_model=UserResponse)
+@router.post("/", response_model=UserCreateResponse)
 async def create_user(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db),
-) -> UserResponse:
+) -> UserCreateResponse:
     """
     Create a new user.
     """
@@ -304,7 +310,7 @@ async def create_user(
             )
         )
     )
-    if existing_user.scalar_one_or_none():
+    if existing_user.scalar():
         raise HTTPException(status_code=409, detail="Username or email already exists")
 
     # Check the password strength
@@ -326,4 +332,4 @@ async def create_user(
     await db.commit()
     await db.refresh(new_user)
 
-    return UserResponse.model_validate(new_user)
+    return UserCreateResponse.model_validate(new_user)
