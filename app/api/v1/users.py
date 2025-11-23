@@ -3,9 +3,11 @@ Users API endpoints
 """
 
 import re
+import tempfile
+from pathlib import Path as FilePath
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, File, HTTPException, Path, UploadFile, status
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +23,12 @@ from app.schemas.user import (
     UserListResponse,
     UserResponse,
     UserUpdate,
+)
+from app.services.avatar import (
+    delete_avatar_if_orphaned,
+    resize_avatar,
+    save_avatar,
+    validate_avatar_upload,
 )
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -89,6 +97,174 @@ async def update_current_user_profile(
     All fields are optional. Only provided fields will be updated.
     """
     return await _update_user_profile(current_user_id, user_data, current_user_id, db)
+
+
+@router.post("/me/avatar", response_model=UserResponse)
+async def upload_current_user_avatar(
+    avatar: Annotated[UploadFile, File(description="Avatar image file")],
+    current_user_id: Annotated[int, Depends(get_current_user_id)],
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """
+    Upload avatar for the currently authenticated user.
+
+    Accepts JPG, PNG, or GIF (animated supported). Images are resized to fit
+    within 200x200 pixels while preserving aspect ratio. Maximum file size is 1MB.
+    """
+    return await _upload_avatar(current_user_id, avatar, db)
+
+
+@router.post("/{user_id}/avatar", response_model=UserResponse)
+async def upload_user_avatar(
+    user_id: Annotated[int, Path(description="User ID")],
+    avatar: Annotated[UploadFile, File(description="Avatar image file")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """
+    Upload avatar for a specified user.
+
+    - Regular users can only upload their own avatar (user_id must match their ID)
+    - Admins can upload avatars for any user
+
+    Accepts JPG, PNG, or GIF (animated supported). Images are resized to fit
+    within 200x200 pixels while preserving aspect ratio. Maximum file size is 1MB.
+    """
+    # Check permission: user can update themselves, or must be admin
+    if current_user.user_id != user_id and not current_user.admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this user's avatar",
+        )
+
+    return await _upload_avatar(user_id, avatar, db)
+
+
+async def _upload_avatar(
+    user_id: int,
+    avatar: UploadFile,
+    db: AsyncSession,
+) -> UserResponse:
+    """
+    Internal function to handle avatar upload.
+
+    Args:
+        user_id: ID of user to update
+        avatar: Uploaded avatar file
+        db: Database session
+
+    Returns:
+        Updated user response
+    """
+    # Get user
+    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user = user_result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Save old avatar filename for potential cleanup
+    old_avatar = user.avatar
+
+    # Save uploaded file to temp location for validation
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_path = FilePath(temp_file.name)
+        content = await avatar.read()
+        temp_file.write(content)
+
+    try:
+        # Validate the upload
+        validate_avatar_upload(avatar, temp_path)
+
+        # Resize and process
+        processed_content, ext = resize_avatar(temp_path)
+
+        # Save to permanent storage
+        new_filename = save_avatar(processed_content, ext)
+
+        # Update user record
+        user.avatar = new_filename
+        await db.commit()
+        await db.refresh(user)
+
+        # Clean up old avatar if orphaned (after commit to ensure new one is saved)
+        if old_avatar and old_avatar != new_filename:
+            await delete_avatar_if_orphaned(old_avatar, db)
+
+    finally:
+        # Clean up temp file
+        temp_path.unlink(missing_ok=True)
+
+    return UserResponse.model_validate(user)
+
+
+@router.delete("/me/avatar", response_model=UserResponse)
+async def delete_current_user_avatar(
+    current_user_id: Annotated[int, Depends(get_current_user_id)],
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """
+    Remove avatar for the currently authenticated user.
+    """
+    return await _delete_avatar(current_user_id, db)
+
+
+@router.delete("/{user_id}/avatar", response_model=UserResponse)
+async def delete_user_avatar(
+    user_id: Annotated[int, Path(description="User ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """
+    Remove avatar for a specified user.
+
+    - Regular users can only delete their own avatar (user_id must match their ID)
+    - Admins can delete avatars for any user
+    """
+    # Check permission: user can update themselves, or must be admin
+    if current_user.user_id != user_id and not current_user.admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to delete this user's avatar",
+        )
+
+    return await _delete_avatar(user_id, db)
+
+
+async def _delete_avatar(
+    user_id: int,
+    db: AsyncSession,
+) -> UserResponse:
+    """
+    Internal function to handle avatar deletion.
+
+    Args:
+        user_id: ID of user to update
+        db: Database session
+
+    Returns:
+        Updated user response
+    """
+    # Get user
+    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user = user_result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Save old avatar filename for cleanup
+    old_avatar = user.avatar
+
+    # Clear avatar
+    user.avatar = ""
+    await db.commit()
+    await db.refresh(user)
+
+    # Clean up old avatar file if orphaned
+    if old_avatar:
+        await delete_avatar_if_orphaned(old_avatar, db)
+
+    return UserResponse.model_validate(user)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)

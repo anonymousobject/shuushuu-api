@@ -18,13 +18,16 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    """Schema for updating a user profile - all fields optional"""
+    """Schema for updating a user profile - all fields optional
+
+    Note: Avatar updates are handled via dedicated /users/{id}/avatar routes,
+    not through this schema.
+    """
 
     location: str | None = None
     website: str | None = None
     interests: str | None = None
     user_title: str | None = None
-    avatar: str | None = None
     gender: str | None = None
     email: EmailStr | None = None
     password: str | None = None
