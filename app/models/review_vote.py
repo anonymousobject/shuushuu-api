@@ -15,7 +15,7 @@ on review sessions. The actual review sessions are now in the `image_reviews` ta
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
 
@@ -56,27 +56,9 @@ class ReviewVotes(ReviewVoteBase, table=True):
     __tablename__ = "review_votes"
 
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["image_id"],
-            ["images.image_id"],
-            ondelete="CASCADE",
-            onupdate="CASCADE",
-            name="fk_review_votes_image_id",
-        ),
-        ForeignKeyConstraint(
-            ["user_id"],
-            ["users.user_id"],
-            ondelete="CASCADE",
-            onupdate="CASCADE",
-            name="fk_review_votes_user_id",
-        ),
-        ForeignKeyConstraint(
-            ["review_id"],
-            ["image_reviews.review_id"],
-            ondelete="CASCADE",
-            onupdate="CASCADE",
-            name="fk_review_votes_review_id",
-        ),
+        # Note: ForeignKeyConstraints are defined directly on columns using sa_column
+        # with ForeignKey() to ensure CASCADE behavior is properly applied when
+        # tables are created via SQLModel.metadata.create_all()
         Index("fk_review_votes_user_id", "user_id"),
         Index("fk_review_votes_review_id", "review_id"),
         # Legacy unique constraint on (image_id, user_id)
@@ -88,10 +70,31 @@ class ReviewVotes(ReviewVoteBase, table=True):
     # Primary key
     vote_id: int | None = Field(default=None, primary_key=True)
 
-    # References
-    image_id: int | None = Field(default=None, foreign_key="images.image_id")
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
-    review_id: int | None = Field(default=None, foreign_key="image_reviews.review_id")
+    # References - all with CASCADE delete behavior
+    image_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("images.image_id", ondelete="CASCADE", onupdate="CASCADE"),
+            nullable=True,
+        ),
+    )
+    user_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("users.user_id", ondelete="CASCADE", onupdate="CASCADE"),
+            nullable=True,
+        ),
+    )
+    review_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("image_reviews.review_id", ondelete="CASCADE", onupdate="CASCADE"),
+            nullable=True,
+        ),
+    )
 
     # Timestamp
     created_at: datetime | None = Field(

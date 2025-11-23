@@ -107,7 +107,7 @@ jobs:
           DEBUG: "True"
           REDIS_URL: redis://localhost:6379/0
         run: |
-          uv run pytest tests/ -v --tb=short --maxfail=5
+          uv run pytest tests/ -v --tb=short --maxfail=5 --schema-sync
 
       - name: Upload test results
         if: always()

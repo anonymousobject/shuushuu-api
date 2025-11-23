@@ -13,7 +13,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
 from app.config import ReportStatus
@@ -57,27 +57,9 @@ class ImageReports(ImageReportBase, table=True):
     __tablename__ = "image_reports"
 
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["image_id"],
-            ["images.image_id"],
-            ondelete="CASCADE",
-            onupdate="CASCADE",
-            name="fk_image_reports_image_id",
-        ),
-        ForeignKeyConstraint(
-            ["user_id"],
-            ["users.user_id"],
-            ondelete="CASCADE",
-            onupdate="CASCADE",
-            name="fk_image_reports_user_id",
-        ),
-        ForeignKeyConstraint(
-            ["reviewed_by"],
-            ["users.user_id"],
-            ondelete="SET NULL",
-            onupdate="CASCADE",
-            name="fk_image_reports_reviewed_by",
-        ),
+        # Note: ForeignKeyConstraints for image_id and user_id are defined directly
+        # on the columns using sa_column with ForeignKey() to ensure CASCADE behavior
+        # is properly applied when tables are created via SQLModel.metadata.create_all()
         Index("fk_image_reports_image_id", "image_id"),
         Index("fk_image_reports_user_id", "user_id"),
         Index("fk_image_reports_reviewed_by", "reviewed_by"),
@@ -87,9 +69,23 @@ class ImageReports(ImageReportBase, table=True):
     # Primary key
     report_id: int | None = Field(default=None, primary_key=True)
 
-    # Override to add foreign keys
-    image_id: int = Field(foreign_key="images.image_id")
-    user_id: int = Field(foreign_key="users.user_id")
+    # Override to add foreign keys with CASCADE behavior
+    # Note: We use sa_column to explicitly set ondelete="CASCADE" because Field(foreign_key=...)
+    # creates constraints without CASCADE, which conflicts with ForeignKeyConstraint in __table_args__
+    image_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("images.image_id", ondelete="CASCADE", onupdate="CASCADE"),
+            nullable=False,
+        )
+    )
+    user_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("users.user_id", ondelete="CASCADE", onupdate="CASCADE"),
+            nullable=False,
+        )
+    )
 
     # Public timestamp
     created_at: datetime | None = Field(
@@ -97,7 +93,14 @@ class ImageReports(ImageReportBase, table=True):
     )
 
     # Review tracking
-    reviewed_by: int | None = Field(default=None, foreign_key="users.user_id")
+    reviewed_by: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("users.user_id", ondelete="SET NULL", onupdate="CASCADE"),
+            nullable=True,
+        ),
+    )
     reviewed_at: datetime | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.

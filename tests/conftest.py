@@ -18,41 +18,86 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.database import get_db
 from app.main import app as main_app
 
-# Load .env file at module import time to make TEST_DATABASE_URL available
-# This must happen before _get_test_database_url() is called
+# =============================================================================
+# Test Database Configuration
+# =============================================================================
+# Default credentials match CI workflow (.github/workflows/ci.yml)
+# Override via environment variables if your local setup differs
+
+DEFAULT_TEST_DB_USER = "shuushuu"
+DEFAULT_TEST_DB_PASSWORD = "shuushuu_dev_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
+DEFAULT_TEST_DB_HOST = "localhost"
+DEFAULT_TEST_DB_PORT = "3306"
+DEFAULT_TEST_DB_NAME = "shuushuu_test"
+DEFAULT_ROOT_PASSWORD = "root_password"
+
+
+# Load .env file if present (optional - defaults work without it)
 env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
     load_dotenv(env_path)
 
 
+# =============================================================================
+# Pytest Hooks for Custom Markers
+# =============================================================================
+
+
+def pytest_addoption(parser):
+    """Add custom command line options."""
+    parser.addoption(
+        "--schema-sync",
+        action="store_true",
+        default=False,
+        help="Run schema sync tests (compares models vs migrations)",
+    )
+
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers",
+        "schema_sync: marks tests that compare model schema vs migration schema (run with --schema-sync)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip schema_sync tests unless --schema-sync is passed."""
+    if config.getoption("--schema-sync"):
+        # --schema-sync given: don't skip schema_sync tests
+        return
+
+    skip_schema_sync = pytest.mark.skip(reason="need --schema-sync option to run")
+    for item in items:
+        if "schema_sync" in item.keywords:
+            item.add_marker(skip_schema_sync)
+
+
 def _get_test_database_url() -> tuple[str, str]:
     """
-    Get test database URLs from environment variables.
+    Get test database URLs with sensible defaults.
 
-    Tests MUST use explicit TEST_DATABASE_URL to avoid accidentally
-    testing against dev/prod databases. This ensures safe test isolation.
+    Uses hardcoded defaults that match CI workflow. Override via environment
+    variables if your local setup differs:
+    - TEST_DATABASE_URL: Full async URL (overrides all other settings)
+    - TEST_DATABASE_URL_SYNC: Full sync URL
+    - TEST_DB_USER, TEST_DB_PASSWORD, TEST_DB_HOST, TEST_DB_PORT, TEST_DB_NAME:
+      Individual components (used if TEST_DATABASE_URL not set)
 
-    Required environment variables:
-    - TEST_DATABASE_URL: Async database URL (e.g., mysql+aiomysql://...)
-    - TEST_DATABASE_URL_SYNC: (Optional) Sync database URL, defaults to async URL
-      with driver changed from aiomysql to pymysql
-
-    Example .env:
-        TEST_DATABASE_URL=mysql+aiomysql://user:pass@localhost:3306/shuushuu_test?charset=utf8mb4
-        TEST_DATABASE_URL_SYNC=mysql+pymysql://user:pass@localhost:3306/shuushuu_test?charset=utf8mb4
-
-    Raises:
-        ValueError: If TEST_DATABASE_URL is not set
+    Returns:
+        Tuple of (async_url, sync_url)
     """
+    # Check for full URL override first
     test_url = os.getenv("TEST_DATABASE_URL")
+
     if not test_url:
-        raise ValueError(
-            "TEST_DATABASE_URL environment variable is required for running tests.\n"
-            "Tests should use dedicated test database credentials to ensure isolation.\n"
-            "Add to your .env file:\n"
-            "  TEST_DATABASE_URL=mysql+aiomysql://user:pass@localhost:3306/shuushuu_test?charset=utf8mb4\n"
-            "  TEST_DATABASE_URL_SYNC=mysql+pymysql://user:pass@localhost:3306/shuushuu_test?charset=utf8mb4"
-        )
+        # Build URL from individual components with defaults
+        user = os.getenv("TEST_DB_USER", DEFAULT_TEST_DB_USER)
+        password = os.getenv("TEST_DB_PASSWORD", DEFAULT_TEST_DB_PASSWORD)
+        host = os.getenv("TEST_DB_HOST", DEFAULT_TEST_DB_HOST)
+        port = os.getenv("TEST_DB_PORT", DEFAULT_TEST_DB_PORT)
+        db = os.getenv("TEST_DB_NAME", DEFAULT_TEST_DB_NAME)
+        test_url = f"mysql+aiomysql://{user}:{password}@{host}:{port}/{db}?charset=utf8mb4"
 
     # Allow sync URL to be derived from async URL if not explicitly set
     test_url_sync = os.getenv("TEST_DATABASE_URL_SYNC", test_url.replace("+aiomysql", "+pymysql"))
@@ -60,7 +105,7 @@ def _get_test_database_url() -> tuple[str, str]:
     return test_url, test_url_sync
 
 
-# Get test database URLs (no hardcoded credentials!)
+# Get test database URLs (uses defaults if env vars not set)
 TEST_DATABASE_URL, TEST_DATABASE_URL_SYNC = _get_test_database_url()
 
 
@@ -112,6 +157,8 @@ def setup_test_database():
     # so we use the ORM models as source of truth for the schema
     from sqlmodel import SQLModel
 
+    from app.models.admin_action import AdminActions  # noqa: F401
+
     # Import ALL SQLModel-based models to register them with SQLModel.metadata
     # This ensures all tables are created in the test database
     from app.models.ban import Bans  # noqa: F401
@@ -121,8 +168,6 @@ def setup_test_database():
     from app.models.image_rating import ImageRatings  # noqa: F401
     from app.models.image_report import ImageReports  # noqa: F401
     from app.models.image_review import ImageReviews  # noqa: F401
-    from app.models.review_vote import ReviewVotes  # noqa: F401
-    from app.models.admin_action import AdminActions  # noqa: F401
     from app.models.misc import (  # noqa: F401
         Banners,
         Donations,
@@ -140,6 +185,7 @@ def setup_test_database():
     )
     from app.models.privmsg import Privmsgs  # noqa: F401
     from app.models.refresh_token import RefreshTokens  # noqa: F401
+    from app.models.review_vote import ReviewVotes  # noqa: F401
     from app.models.tag import Tags  # noqa: F401
     from app.models.tag_history import TagHistory  # noqa: F401
     from app.models.tag_link import TagLinks  # noqa: F401
