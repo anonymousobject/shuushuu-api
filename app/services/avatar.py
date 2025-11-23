@@ -83,7 +83,7 @@ def resize_avatar(file_path: Path) -> tuple[bytes, str]:
         # Convert RGBA to RGB for JPEG
         if ext == "jpg" and img.mode in ("RGBA", "LA", "P"):
             background = Image.new("RGB", img.size, (255, 255, 255))
-            if img.mode == "P":
+            if img.mode in ("P", "LA"):
                 img = img.convert("RGBA")
             background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
             img = background
