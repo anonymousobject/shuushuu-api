@@ -21,10 +21,6 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlmodel import SQLModel
 
-# Import all models to populate SQLModel.metadata
-# This single import loads all models via app/models/__init__.py
-import app.models  # noqa: F401
-
 # Import defaults from conftest (single source of truth)
 from tests.conftest import (
     DEFAULT_ROOT_PASSWORD,
@@ -44,8 +40,8 @@ def get_foreign_keys(inspector, table_name: str) -> dict[str, dict]:
         fks[key] = {
             "referred_table": fk["referred_table"],
             "referred_columns": tuple(sorted(fk["referred_columns"])),
-            "ondelete": (fk.get("options", {}).get("ondelete") or "").upper() or None,
-            "onupdate": (fk.get("options", {}).get("onupdate") or "").upper() or None,
+            "ondelete": fk.get("options", {}).get("ondelete"),
+            "onupdate": fk.get("options", {}).get("onupdate"),
         }
     return fks
 
