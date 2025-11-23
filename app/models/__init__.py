@@ -11,6 +11,7 @@ For modifications:
 """
 
 from app.core.database import Base
+from app.models.admin_action import AdminActions
 
 # User-related models
 from app.models.ban import Bans
@@ -40,6 +41,7 @@ from app.models.news import News
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
 from app.models.privmsg import Privmsgs
 from app.models.refresh_token import RefreshTokens
+from app.models.review_vote import ReviewVotes
 from app.models.tag import Tags
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
@@ -60,6 +62,8 @@ __all__ = [
     "ImageRatings",
     "ImageReports",
     "ImageReviews",
+    "ReviewVotes",
+    "AdminActions",
     # User-related models
     "Bans",
     "UserSessions",

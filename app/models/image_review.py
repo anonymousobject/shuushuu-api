@@ -8,13 +8,22 @@ ImageReviewBase (shared public fields)
     ├─> ImageReviews (database table)
     └─> ImageReviewCreate/ImageReviewResponse (API schemas, defined in app/schemas)
 
-This approach eliminates field duplication while maintaining security boundaries.
+Note: This is a NEW table for review sessions. The original `image_reviews` table
+(which stored individual votes) has been renamed to `review_votes`.
 
-Note: ImageReviews track moderator approval/rejection votes for pending images.
+ImageReviews represent voting sessions for appropriateness decisions, with:
+- A deadline for voting
+- Extension capability (one extension allowed)
+- Status tracking (open/closed)
+- Outcome recording (pending/keep/remove)
 """
 
-from sqlalchemy import ForeignKeyConstraint, Index
+from datetime import datetime
+
+from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.config import ReviewOutcome, ReviewStatus, ReviewType
 
 
 class ImageReviewBase(SQLModel):
@@ -27,31 +36,37 @@ class ImageReviewBase(SQLModel):
     - API request schemas (ImageReviewCreate)
     """
 
-    # References
-    image_id: int | None = Field(default=None)
-    user_id: int | None = Field(default=None)
+    # Review type (extensible for future types)
+    review_type: int = Field(default=ReviewType.APPROPRIATENESS)
 
-    # Vote: 1 for approve, 0 for reject, or similar convention
-    vote: int | None = Field(default=None)
+    # Status: 0=open, 1=closed
+    status: int = Field(default=ReviewStatus.OPEN)
+
+    # Outcome: 0=pending, 1=keep, 2=remove
+    outcome: int = Field(default=ReviewOutcome.PENDING)
+
+    # Whether the deadline has been extended
+    extension_used: int = Field(default=0)
 
 
 class ImageReviews(ImageReviewBase, table=True):
     """
-    Database table for image reviews.
+    Database table for image review sessions.
 
     Extends ImageReviewBase with:
     - Primary key
     - Foreign key relationships
-    - Unique constraint on (image_id, user_id) to prevent duplicate votes
+    - Timestamps and deadline
+
+    This table represents voting sessions where admins vote on whether to
+    keep or remove an image. Individual votes are stored in `review_votes`.
+
+    Constraints:
+    - Only one open review per image at a time (enforced at application level)
     """
 
     __tablename__ = "image_reviews"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["image_id"],
@@ -61,22 +76,46 @@ class ImageReviews(ImageReviewBase, table=True):
             name="fk_image_reviews_image_id",
         ),
         ForeignKeyConstraint(
-            ["user_id"],
-            ["users.user_id"],
-            ondelete="CASCADE",
+            ["source_report_id"],
+            ["image_reports.report_id"],
+            ondelete="SET NULL",
             onupdate="CASCADE",
-            name="fk_image_reviews_user_id",
+            name="fk_image_reviews_source_report_id",
         ),
-        Index("fk_image_reviews_user_id", "user_id"),
-        Index("image_id", "image_id", "user_id", unique=True),
+        ForeignKeyConstraint(
+            ["initiated_by"],
+            ["users.user_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_image_reviews_initiated_by",
+        ),
+        Index("fk_image_reviews_image_id", "image_id"),
+        Index("fk_image_reviews_source_report_id", "source_report_id"),
+        Index("fk_image_reviews_initiated_by", "initiated_by"),
+        Index("idx_image_reviews_status", "status"),
+        Index("idx_image_reviews_deadline", "deadline"),
     )
 
     # Primary key
-    image_review_id: int | None = Field(default=None, primary_key=True)
+    review_id: int | None = Field(default=None, primary_key=True)
 
-    # Override to add foreign keys
-    image_id: int | None = Field(default=None, foreign_key="images.image_id")
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    # Image under review
+    image_id: int = Field(foreign_key="images.image_id")
+
+    # Report that triggered this review (null if initiated directly)
+    source_report_id: int | None = Field(default=None, foreign_key="image_reports.report_id")
+
+    # Admin who started the review
+    initiated_by: int | None = Field(default=None, foreign_key="users.user_id")
+
+    # Voting deadline
+    deadline: datetime | None = Field(default=None)
+
+    # Timestamps
+    created_at: datetime | None = Field(
+        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+    )
+    closed_at: datetime | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

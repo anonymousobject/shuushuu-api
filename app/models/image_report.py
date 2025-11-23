@@ -16,6 +16,8 @@ from datetime import datetime
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
 
+from app.config import ReportStatus
+
 
 class ImageReportBase(SQLModel):
     """
@@ -33,10 +35,10 @@ class ImageReportBase(SQLModel):
 
     # Report details
     category: int | None = Field(default=None)
-    text: str | None = Field(default=None, sa_column_kwargs={"name": "text"})
+    reason_text: str | None = Field(default=None)
 
-    # Status
-    open: int = Field(default=1)
+    # Status: 0=pending, 1=reviewed, 2=dismissed
+    status: int = Field(default=ReportStatus.PENDING)
 
 
 class ImageReports(ImageReportBase, table=True):
@@ -46,18 +48,14 @@ class ImageReports(ImageReportBase, table=True):
     Extends ImageReportBase with:
     - Primary key
     - Foreign key relationships
-    - Timestamp
+    - Timestamps
+    - Review tracking fields
 
-    Note: 'text' is a reserved keyword, so we use sa_column_kwargs to map it.
+    Note: 'reason_text' was renamed from 'text' to avoid reserved keyword issues.
     """
 
     __tablename__ = "image_reports"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["image_id"],
@@ -73,22 +71,34 @@ class ImageReports(ImageReportBase, table=True):
             onupdate="CASCADE",
             name="fk_image_reports_user_id",
         ),
+        ForeignKeyConstraint(
+            ["reviewed_by"],
+            ["users.user_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_image_reports_reviewed_by",
+        ),
         Index("fk_image_reports_image_id", "image_id"),
         Index("fk_image_reports_user_id", "user_id"),
-        Index("open", "open"),
+        Index("fk_image_reports_reviewed_by", "reviewed_by"),
+        Index("idx_image_reports_status", "status"),
     )
 
     # Primary key
-    image_report_id: int | None = Field(default=None, primary_key=True)
+    report_id: int | None = Field(default=None, primary_key=True)
 
     # Override to add foreign keys
     image_id: int = Field(foreign_key="images.image_id")
     user_id: int = Field(foreign_key="users.user_id")
 
     # Public timestamp
-    date: datetime | None = Field(
+    created_at: datetime | None = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
     )
+
+    # Review tracking
+    reviewed_by: int | None = Field(default=None, foreign_key="users.user_id")
+    reviewed_at: datetime | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
