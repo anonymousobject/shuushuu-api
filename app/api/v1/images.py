@@ -25,11 +25,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
-from app.config import settings
-from app.core.auth import get_current_user
+from app.config import ReportStatus, settings
+from app.core.auth import CurrentUser, get_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
-from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
+from app.core.permissions import Permission, has_permission
+from app.models import Favorites, ImageRatings, ImageReports, Images, TagLinks, Tags, Users
 from app.schemas.image import (
     ImageHashSearchResponse,
     ImageListResponse,
@@ -39,6 +40,7 @@ from app.schemas.image import (
     ImageTagsResponse,
     ImageUploadResponse,
 )
+from app.schemas.report import ReportCreate, ReportResponse
 from app.schemas.user import UserListResponse, UserResponse
 from app.services.image_processing import (
     create_large_variant,
@@ -403,8 +405,10 @@ async def add_tag_to_image(
     """
     Add a tag to an image.
 
-    - Regular users can only tag their own images
-    - Admins can tag any image
+    Tags can be added to images if:
+    - The user owns the image
+    - The user has admin privileges
+    - The user has the IMAGE_TAG_ADD permission
 
     Returns:
         Success message
@@ -416,12 +420,12 @@ async def add_tag_to_image(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Permission check: user owns image or is admin
-    if image.user_id != current_user.user_id and not current_user.admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to tag this image",
-        )
+    # Check ownership or permission
+    is_owner = image.user_id == current_user.user_id
+    has_edit_permission = await has_permission(db, current_user.user_id, Permission.IMAGE_TAG_ADD)
+
+    if not is_owner and not has_edit_permission:
+        raise HTTPException(403, "Not authorized to edit this image")
 
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -456,14 +460,16 @@ async def add_tag_to_image(
 async def remove_tag_from_image(
     image_id: Annotated[int, Path(description="Image ID")],
     tag_id: Annotated[int, Path(description="Tag ID")],
-    current_user: Annotated[Users, Depends(get_current_user)],
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """
     Remove a tag from an image.
 
-    - Regular users can only remove tags from their own images
-    - Admins can remove tags from any image
+    Tags can be removed from images if:
+    - The user owns the image
+    - The user has admin privileges
+    - The user has the IMAGE_TAG_REMOVE permission
     """
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
@@ -472,12 +478,14 @@ async def remove_tag_from_image(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Permission check: user owns image or is admin
-    if image.user_id != current_user.user_id and not current_user.admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to remove tags from this image",
-        )
+    # Check ownership or permission
+    is_owner = image.user_id == current_user.user_id
+    has_edit_permission = await has_permission(
+        db, current_user.user_id, Permission.IMAGE_TAG_REMOVE
+    )
+
+    if not is_owner and not has_edit_permission:
+        raise HTTPException(403, "Not authorized to edit this image")
 
     # Check if tag link exists
     link_result = await db.execute(
@@ -822,3 +830,71 @@ async def upload_image(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload image: {str(e)}",
         ) from e
+
+
+@router.post(
+    "/{image_id}/report", response_model=ReportResponse, status_code=status.HTTP_201_CREATED
+)
+async def report_image(
+    image_id: Annotated[int, Path(description="Image ID to report")],
+    report_data: ReportCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> ReportResponse:
+    """
+    Report an image for review.
+
+    Users can report images for various reasons:
+    - 1: Repost (duplicate of another image)
+    - 2: Inappropriate content
+    - 3: Spam
+    - 4: Missing tags
+    - 127: Other
+
+    A user can only have one pending report per image. The report goes into
+    a triage queue for admin review.
+
+    Requires authentication.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    image = image_result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Check if user already has a pending report for this image
+    existing_report = await db.execute(
+        select(ImageReports).where(
+            ImageReports.image_id == image_id,  # type: ignore[arg-type]
+            ImageReports.user_id == current_user.user_id,  # type: ignore[arg-type]
+            ImageReports.status == ReportStatus.PENDING,  # type: ignore[arg-type]
+        )
+    )
+    if existing_report.scalar_one_or_none():
+        raise HTTPException(
+            status_code=409,
+            detail="You already have a pending report for this image",
+        )
+
+    # Create the report
+    new_report = ImageReports(
+        image_id=image_id,
+        user_id=current_user.user_id,
+        category=report_data.category,
+        reason_text=report_data.reason_text,
+        status=ReportStatus.PENDING,
+    )
+    db.add(new_report)
+    await db.commit()
+    await db.refresh(new_report)
+
+    logger.info(
+        "image_reported",
+        report_id=new_report.report_id,
+        image_id=image_id,
+        user_id=current_user.user_id,
+        category=report_data.category,
+    )
+
+    return ReportResponse.model_validate(new_report)

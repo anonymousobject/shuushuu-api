@@ -121,6 +121,8 @@ def setup_test_database():
     from app.models.image_rating import ImageRatings  # noqa: F401
     from app.models.image_report import ImageReports  # noqa: F401
     from app.models.image_review import ImageReviews  # noqa: F401
+    from app.models.review_vote import ReviewVotes  # noqa: F401
+    from app.models.admin_action import AdminActions  # noqa: F401
     from app.models.misc import (  # noqa: F401
         Banners,
         Donations,

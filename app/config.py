@@ -1,5 +1,5 @@
 """
-Application Configuration - MySQL Version
+Application Configuration - MariaDB Version
 Uses Pydantic Settings for environment-based configuration
 """
 
@@ -14,7 +14,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore",  # Ignore extra env vars like MYSQL_* used by docker-compose
+        extra="ignore",  # Ignore extra env vars like MARIADB_* used by docker-compose
     )
 
     # Application
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     )
     ALLOWED_HOSTS: str | list[str] = Field(default=["*"])
 
-    # MySQL Database - UPDATED!
+    # MariaDB Database - UPDATED!
     DATABASE_URL: str
     # Sync URL for Alembic migrations
     DATABASE_URL_SYNC: str
@@ -109,6 +109,11 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
 
+    # Review System
+    REVIEW_DEADLINE_DAYS: int = 7  # Default deadline for review voting
+    REVIEW_EXTENSION_DAYS: int = 3  # Extension period when deadline expires without quorum
+    REVIEW_QUORUM: int = 3  # Minimum votes required for a decision
+
     # Frontend URL (for email links, etc.)
     FRONTEND_URL: str = "http://localhost:3000"
 
@@ -138,11 +143,52 @@ class ImageStatus:
     """Image status constants"""
 
     REVIEW = -4
+    LOW_QUALITY = -3
     INAPPROPRIATE = -2
     REPOST = -1
     OTHER = 0
     ACTIVE = 1
     SPOILER = 2
+
+
+class ReportStatus:
+    """Report status constants"""
+
+    PENDING = 0
+    REVIEWED = 1
+    DISMISSED = 2
+
+
+class ReviewStatus:
+    """Review session status constants"""
+
+    OPEN = 0
+    CLOSED = 1
+
+
+class ReviewOutcome:
+    """Review outcome constants"""
+
+    PENDING = 0
+    KEEP = 1
+    REMOVE = 2
+
+
+class ReviewType:
+    """Review type constants"""
+
+    APPROPRIATENESS = 1
+
+
+class AdminActionType:
+    """Admin action type constants for audit logging"""
+
+    REPORT_DISMISS = 1
+    REPORT_ACTION = 2
+    REVIEW_START = 3
+    REVIEW_VOTE = 4
+    REVIEW_CLOSE = 5
+    REVIEW_EXTEND = 6
 
 
 class TagType:
