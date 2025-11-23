@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import TagType
 from app.core.security import get_password_hash
 from app.models.image import Images
+from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
@@ -154,7 +155,13 @@ class TestCreateTag:
     async def test_create_tag_as_admin(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test admin creating a tag."""
+        """Test creating a tag as admin."""
+        # Create TAG_CREATE permission
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
         # Create admin user
         admin = Users(
             username="adminuser",
@@ -166,6 +173,16 @@ class TestCreateTag:
             admin=1,
         )
         db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_CREATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
         await db_session.commit()
 
         # Login as admin
@@ -242,6 +259,12 @@ class TestCreateTag:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Test creating a duplicate tag."""
+        # Create TAG_CREATE permission
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
         # Create admin user
         admin = Users(
             username="adminuser2",
@@ -253,6 +276,16 @@ class TestCreateTag:
             admin=1,
         )
         db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_CREATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
 
         # Create existing tag
         existing_tag = Tags(title="existing", desc="Already exists", type=TagType.THEME)
@@ -288,6 +321,12 @@ class TestUpdateTag:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Test admin updating a tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
         # Create admin user
         admin = Users(
             username="adminupdate",
@@ -299,6 +338,16 @@ class TestUpdateTag:
             admin=1,
         )
         db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
 
         # Create tag to update
         tag = Tags(title="old title", desc="old description", type=TagType.THEME)
@@ -380,6 +429,12 @@ class TestDeleteTag:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Test admin deleting a tag."""
+        # Create TAG_DELETE permission
+        perm = Perms(title="tag_delete", desc="Delete tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
         # Create admin user
         admin = Users(
             username="admindelete",
@@ -391,6 +446,16 @@ class TestDeleteTag:
             admin=1,
         )
         db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_DELETE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
 
         # Create tag to delete
         tag = Tags(title="tag to delete", desc="will be deleted", type=TagType.THEME)
