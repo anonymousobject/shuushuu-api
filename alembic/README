@@ -1,1 +1,102 @@
-Generic single-database configuration.
+# Alembic Migrations
+
+Database migrations for shuushuu-api using Alembic.
+
+## Setup for Different Scenarios
+
+### New Developer (Empty Database)
+
+If you're starting fresh with an empty database:
+
+```bash
+# Run all migrations from baseline to head
+uv run alembic upgrade head
+```
+
+This creates all tables and applies all schema changes.
+
+### Existing Database (Legacy PHP Dump)
+
+If you're restoring from a legacy PHP database dump:
+
+```bash
+# 1. Restore your database from the SQL dump
+mysql -u user -p database_name < legacy_dump.sql
+
+# 2. Mark all migrations as applied (without running them)
+uv run alembic stamp head
+```
+
+This tells Alembic that the database is already at the latest schema version.
+
+## Common Commands
+
+```bash
+# Show current migration version
+uv run alembic current
+
+# Show migration history
+uv run alembic history
+
+# Upgrade to latest
+uv run alembic upgrade head
+
+# Upgrade one step
+uv run alembic upgrade +1
+
+# Downgrade one step
+uv run alembic downgrade -1
+
+# Show pending migrations
+uv run alembic history --indicate-current
+```
+
+## Creating New Migrations
+
+```bash
+# Auto-generate migration from model changes
+uv run alembic revision --autogenerate -m "description of changes"
+
+# Create empty migration for manual edits
+uv run alembic revision -m "description of changes"
+```
+
+After generating, review the migration file in `alembic/versions/` and adjust as needed.
+
+## Migration Notes
+
+### Column Types for MariaDB
+
+When creating foreign keys that reference existing tables, ensure column types match exactly:
+
+- `users.user_id` is `INT(10) UNSIGNED` - use `mysql.INTEGER(unsigned=True)`
+- `images.image_id` is `INT(10) UNSIGNED` - use `mysql.INTEGER(unsigned=True)`
+- `image_reports.report_id` is `INT(10) UNSIGNED` - use `mysql.INTEGER(unsigned=True)`
+
+Example:
+```python
+from sqlalchemy.dialects import mysql
+
+op.add_column(
+    "my_table",
+    sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=True),
+)
+```
+
+### Column Renames
+
+To rename columns without changing their type, use raw SQL:
+
+```python
+op.execute("ALTER TABLE my_table RENAME COLUMN `old_name` TO `new_name`")
+```
+
+This preserves the exact column definition (unsigned, nullable, default, etc.).
+
+## Environment Variables
+
+Alembic uses `DATABASE_URL_SYNC` from your environment or `.env` file:
+
+```
+DATABASE_URL_SYNC=mysql+pymysql://user:password@localhost:3306/database?charset=utf8mb4
+```

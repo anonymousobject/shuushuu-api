@@ -68,7 +68,6 @@ class Tags(TagBase, table=True):
     - Internal metadata
 
     Internal fields (should NOT be exposed via public API):
-    - tw_tagid: Internal tag wizard ID
     - user_id: Creator user (privacy-sensitive)
     """
 
@@ -119,7 +118,6 @@ class Tags(TagBase, table=True):
 
     # Internal fields
     user_id: int | None = Field(default=None, foreign_key="users.user_id")
-    tw_tagid: int | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

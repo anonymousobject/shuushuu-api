@@ -74,8 +74,6 @@ dmypy.json
 # UV lock file (optional - some prefer to commit this)
 # uv.lock
 
-# Alembic
-/alembic/versions/
 
 # Storage directories
 /storage/
