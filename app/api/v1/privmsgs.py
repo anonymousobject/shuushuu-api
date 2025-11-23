@@ -11,10 +11,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import PaginationParams
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.permissions import Permission, has_permission
 from app.models import Privmsgs, Users
-from app.schemas.privmsg import PrivmsgMessage, PrivmsgMessages
+from app.schemas.privmsg import PrivmsgCreate, PrivmsgMessage, PrivmsgMessages
 
 router = APIRouter(prefix="/privmsgs", tags=["privmsgs"])
+
+
+@router.post("/", response_model=PrivmsgMessage, status_code=status.HTTP_201_CREATED)
+async def send_privmsg(
+    privmsg: PrivmsgCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> PrivmsgMessage:
+    """
+    Create a new private message.
+    """
+
+    # Create Privmsgs model instance (note: 'message' field maps to 'text' column)
+    new_privmsg = Privmsgs(
+        from_user_id=current_user.user_id,
+        to_user_id=privmsg.to_user_id,
+        subject=privmsg.subject,
+        text=privmsg.message,
+    )
+
+    db.add(new_privmsg)
+    await db.commit()
+    await db.refresh(new_privmsg)
+    return PrivmsgMessage.model_validate(new_privmsg)
 
 
 @router.get("/received", response_model=PrivmsgMessages)
@@ -28,18 +53,18 @@ async def get_received_privmsgs(
     Retrieve received private messages.
 
     Regular users can only see their own received messages.
-    Admins can view received messages for any user by specifying user_id parameter.
+    Users with PRIVMSG_VIEW permission can view received messages for any user by specifying user_id parameter.
 
     **Examples:**
     - `/privmsgs/received` - Get your own received messages
-    - `/privmsgs/received?user_id=5` - (Admin only) Get received messages for user 5
+    - `/privmsgs/received?user_id=5` - (With PRIVMSG_VIEW permission) Get received messages for user 5
     """
     # Determine which user's messages to retrieve
     target_user_id = current_user.user_id
 
-    # Admin can filter by any user_id
+    # Users with PRIVMSG_VIEW permission can filter by any user_id
     if user_id is not None:
-        if not current_user.admin:
+        if not await has_permission(db, current_user.user_id, Permission.PRIVMSG_VIEW):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view other users' messages",
@@ -82,18 +107,18 @@ async def get_sent_privmsgs(
     Retrieve sent private messages.
 
     Regular users can only see their own sent messages.
-    Admins can view sent messages for any user by specifying user_id parameter.
+    Users with PRIVMSG_VIEW permission can view sent messages for any user by specifying user_id parameter.
 
     **Examples:**
     - `/privmsgs/sent` - Get your own sent messages
-    - `/privmsgs/sent?user_id=5` - (Admin only) Get sent messages for user 5
+    - `/privmsgs/sent?user_id=5` - (With PRIVMSG_VIEW permission) Get sent messages for user 5
     """
     # Determine which user's messages to retrieve
     target_user_id = current_user.user_id
 
-    # Admin can filter by any user_id
+    # Users with PRIVMSG_VIEW permission can filter by any user_id
     if user_id is not None:
-        if not current_user.admin:
+        if not await has_permission(db, current_user.user_id, Permission.PRIVMSG_VIEW):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view other users' messages",

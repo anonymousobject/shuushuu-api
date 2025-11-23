@@ -4,9 +4,10 @@ Pydantic schemas for Comment endpoints
 
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, computed_field, field_validator
 
 from app.models.comment import CommentBase
+from app.utils.markdown import parse_markdown
 
 
 class CommentCreate(CommentBase):
@@ -35,6 +36,12 @@ class CommentResponse(CommentBase):
     update_count: int
     last_updated: datetime | None = None
     last_updated_user_id: int | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def post_text_html(self) -> str:
+        """Rendered HTML from markdown post_text"""
+        return parse_markdown(self.post_text)
 
 
 class CommentListResponse(BaseModel):

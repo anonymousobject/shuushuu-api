@@ -4,14 +4,14 @@ version = "2.0.0"
 description = "Modern FastAPI backend for Shuushuu anime image board"
 # readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "MIT"}
+license = {text = "GPL-3.0-or-later"}
 authors = [
     {name = "anonymous_object", email = "admin@e-shuushuu.net"}
 ]
 
 dependencies = [
     # Core Framework
-    "fastapi[standard]>=0.115.0",
+    "fastapi[standard]>=0.115.0,<0.121.3",
     # Database (MySQL)
     "sqlalchemy[asyncio]>=2.0.0",
     "aiomysql>=0.2.0",

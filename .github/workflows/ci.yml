@@ -52,10 +52,10 @@ jobs:
       mysql:
         image: mariadb:12
         env:
-          MYSQL_ROOT_PASSWORD: root_password
-          MYSQL_DATABASE: shuushuu_test
-          MYSQL_USER: shuushuu
-          MYSQL_PASSWORD: shuushuu_ci_password
+          MARIADB_ROOT_PASSWORD: root_password
+          MARIADB_DATABASE: shuushuu_test
+          MARIADB_USER: shuushuu
+          MARIADB_PASSWORD: shuushuu_ci_password
         ports:
           - 3306:3306
         options: >-
@@ -115,7 +115,6 @@ jobs:
         with:
           name: test-results-${{ matrix.python-version }}
           path: |
-            .pytest_cache/
             htmlcov/
           retention-days: 7
 
@@ -138,7 +137,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'

@@ -1,16 +1,16 @@
-# Docker Compose - MySQL + Redis Version
+# Docker Compose - MariaDB + Redis Version
 # Credentials are loaded from .env file - see .env.example for reference
 
 services:
   # MariaDB Database
-  mysql:
+  mariadb:
     image: mariadb:12
     container_name: shuushuu-mariadb
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-shuushuu}
-      MYSQL_USER: ${MYSQL_USER:-shuushuu}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-shuushuu_password}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root_password}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-shuushuu}
+      MARIADB_USER: ${MARIADB_USER:-shuushuu}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-shuushuu_password}
       # MARIADB_AUTO_UPGRADE: "1"
     command: >
       --character-set-server=utf8mb4
@@ -20,8 +20,8 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
-      - ./docker/mysql-init:/docker-entrypoint-initdb.d  # Optional init scripts
+      - mariadb_data:/var/lib/mariadb
+      - ./docker/mariadb-init:/docker-entrypoint-initdb.d  # Optional init scripts
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -56,7 +56,7 @@ services:
       - "8000:8000"
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-development}
-      - DATABASE_URL=mysql+aiomysql://${MYSQL_USER:-shuushuu}:${MYSQL_PASSWORD:-shuushuu_password}@mysql:3306/${MYSQL_DATABASE:-shuushuu}?charset=utf8mb4
+      - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - SECRET_KEY=${SECRET_KEY}
       - IQDB_HOST=iqdb
@@ -73,7 +73,7 @@ services:
       - /app/.pytest_cache
       - /app/.ruff_cache
     depends_on:
-      mysql:
+      mariadb:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -102,7 +102,7 @@ services:
   #   command: uv run arq app.tasks.worker.WorkerSettings
   #   environment:
   #     - ENVIRONMENT=${ENVIRONMENT:-development}
-  #     - DATABASE_URL=mysql+aiomysql://${MYSQL_USER:-shuushuu}:${MYSQL_PASSWORD:-shuushuu_password}@mysql:3306/${MYSQL_DATABASE:-shuushuu}?charset=utf8mb4
+  #     - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
   #     - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
   #     - ARQ_REDIS_URL=${ARQ_REDIS_URL:-redis://redis:6379/1}
   #     - SECRET_KEY=${SECRET_KEY}
@@ -111,7 +111,7 @@ services:
   #     - ./storage:/shuushuu/images
   #   depends_on:
   #     - redis
-  #     - mysql
+  #     - mariadb
   #   develop:
   #     watch:
   #       - action: rebuild
@@ -147,10 +147,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - ADMINER_DEFAULT_SERVER=mysql
+      - ADMINER_DEFAULT_SERVER=mariadb
       - ADMINER_DESIGN=nette  # Nice theme
     depends_on:
-      - mysql
+      - mariadb
     restart: unless-stopped
 
   # Redis Commander (Redis management UI - optional)
@@ -166,7 +166,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  mysql_data:
+  mariadb_data:
     driver: local
   redis_data:
     driver: local
