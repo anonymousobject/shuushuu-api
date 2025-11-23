@@ -1,10 +1,5 @@
 name: CI
 
-# Permissions for security scanning
-permissions:
-  contents: read
-  security-events: write
-
 on:
   push:
     branches: [main, dev]
@@ -127,6 +122,9 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - name: Checkout code
