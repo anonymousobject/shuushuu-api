@@ -327,3 +327,341 @@ class TestGetUserFavorites:
         """Test getting favorites for non-existent user."""
         response = await client.get("/api/v1/users/999999/favorites")
         assert response.status_code == 404
+
+
+@pytest.mark.api
+class TestAvatarUpload:
+    """Tests for POST /api/v1/users/me/avatar and /api/v1/users/{user_id}/avatar endpoints."""
+
+    async def test_upload_avatar_own_profile(
+        self, client: AsyncClient, db_session: AsyncSession, tmp_path
+    ):
+        """Test uploading avatar to own profile."""
+        from io import BytesIO
+        from unittest.mock import patch
+
+        from PIL import Image
+
+        # Create user and login
+        user = Users(
+            username="avataruser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="avatar@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "avataruser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create a test image
+        img = Image.new("RGB", (100, 100), color="red")
+        img_bytes = BytesIO()
+        img.save(img_bytes, format="PNG")
+        img_bytes.seek(0)
+
+        # Upload avatar (mock storage path to use tmp_path)
+        with patch("app.services.avatar.settings") as mock_settings:
+            mock_settings.AVATAR_STORAGE_PATH = str(tmp_path)
+            mock_settings.MAX_AVATAR_SIZE = 1024 * 1024
+            mock_settings.MAX_AVATAR_DIMENSION = 200
+
+            response = await client.post(
+                "/api/v1/users/me/avatar",
+                files={"avatar": ("test.png", img_bytes, "image/png")},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["avatar"] != ""
+        assert data["avatar"].endswith(".png")
+
+    async def test_upload_avatar_unauthenticated(self, client: AsyncClient):
+        """Test uploading avatar without authentication fails."""
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("RGB", (100, 100), color="red")
+        img_bytes = BytesIO()
+        img.save(img_bytes, format="PNG")
+        img_bytes.seek(0)
+
+        response = await client.post(
+            "/api/v1/users/me/avatar",
+            files={"avatar": ("test.png", img_bytes, "image/png")},
+        )
+        assert response.status_code == 401
+
+    async def test_upload_avatar_invalid_file_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test uploading non-image file fails."""
+        # Create user and login
+        user = Users(
+            username="avataruser2",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="avatar2@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "avataruser2", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to upload text file
+        response = await client.post(
+            "/api/v1/users/me/avatar",
+            files={"avatar": ("test.txt", b"not an image", "text/plain")},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+
+    async def test_upload_avatar_other_user_forbidden(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test uploading avatar to another user's profile is forbidden."""
+        from io import BytesIO
+
+        from PIL import Image
+
+        # Create two users
+        user1 = Users(
+            username="avataruser3",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="avatar3@example.com",
+            active=1,
+        )
+        user2 = Users(
+            username="avataruser4",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="avatar4@example.com",
+            active=1,
+        )
+        db_session.add(user1)
+        db_session.add(user2)
+        await db_session.commit()
+        await db_session.refresh(user2)
+
+        # Login as user1
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "avataruser3", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create test image
+        img = Image.new("RGB", (100, 100), color="red")
+        img_bytes = BytesIO()
+        img.save(img_bytes, format="PNG")
+        img_bytes.seek(0)
+
+        # Try to upload to user2's profile
+        response = await client.post(
+            f"/api/v1/users/{user2.user_id}/avatar",
+            files={"avatar": ("test.png", img_bytes, "image/png")},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+
+    async def test_upload_avatar_admin_can_update_other(
+        self, client: AsyncClient, db_session: AsyncSession, tmp_path
+    ):
+        """Test admin can upload avatar for other users."""
+        from io import BytesIO
+        from unittest.mock import patch
+
+        from PIL import Image
+
+        # Create admin user
+        admin = Users(
+            username="avataradmin",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="avataradmin@example.com",
+            active=1,
+            admin=1,
+        )
+        # Create regular user
+        user = Users(
+            username="avataruser5",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="avatar5@example.com",
+            active=1,
+        )
+        db_session.add(admin)
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "avataradmin", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create test image
+        img = Image.new("RGB", (100, 100), color="blue")
+        img_bytes = BytesIO()
+        img.save(img_bytes, format="PNG")
+        img_bytes.seek(0)
+
+        # Admin uploads to regular user's profile (mock storage path)
+        with patch("app.services.avatar.settings") as mock_settings:
+            mock_settings.AVATAR_STORAGE_PATH = str(tmp_path)
+            mock_settings.MAX_AVATAR_SIZE = 1024 * 1024
+            mock_settings.MAX_AVATAR_DIMENSION = 200
+
+            response = await client.post(
+                f"/api/v1/users/{user.user_id}/avatar",
+                files={"avatar": ("test.png", img_bytes, "image/png")},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        assert response.status_code == 200
+
+
+@pytest.mark.api
+class TestAvatarDelete:
+    """Tests for DELETE /api/v1/users/me/avatar and /api/v1/users/{user_id}/avatar endpoints."""
+
+    async def test_delete_avatar_own_profile(self, client: AsyncClient, db_session: AsyncSession):
+        """Test deleting avatar from own profile."""
+        # Create user with avatar
+        user = Users(
+            username="delavataruser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="delavatar@example.com",
+            active=1,
+            avatar="existing_avatar.png",
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "delavataruser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Delete avatar
+        response = await client.delete(
+            "/api/v1/users/me/avatar",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["avatar"] == ""
+
+    async def test_delete_avatar_unauthenticated(self, client: AsyncClient):
+        """Test deleting avatar without authentication fails."""
+        response = await client.delete("/api/v1/users/me/avatar")
+        assert response.status_code == 401
+
+    async def test_delete_avatar_other_user_forbidden(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test deleting another user's avatar is forbidden."""
+        # Create two users
+        user1 = Users(
+            username="delavataruser2",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="delavatar2@example.com",
+            active=1,
+        )
+        user2 = Users(
+            username="delavataruser3",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="delavatar3@example.com",
+            active=1,
+            avatar="user2_avatar.png",
+        )
+        db_session.add(user1)
+        db_session.add(user2)
+        await db_session.commit()
+        await db_session.refresh(user2)
+
+        # Login as user1
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "delavataruser2", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to delete user2's avatar
+        response = await client.delete(
+            f"/api/v1/users/{user2.user_id}/avatar",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+
+    async def test_delete_avatar_admin_can_delete_other(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test admin can delete another user's avatar."""
+        # Create admin user
+        admin = Users(
+            username="delavataradmin",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="delavataradmin@example.com",
+            active=1,
+            admin=1,
+        )
+        # Create regular user with avatar
+        user = Users(
+            username="delavataruser4",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="delavatar4@example.com",
+            active=1,
+            avatar="user_avatar.png",
+        )
+        db_session.add(admin)
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "delavataradmin", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Admin deletes regular user's avatar
+        response = await client.delete(
+            f"/api/v1/users/{user.user_id}/avatar",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["avatar"] == ""

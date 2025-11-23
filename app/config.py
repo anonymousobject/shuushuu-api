@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     THUMBNAIL_QUALITY: int = 80
     LARGE_QUALITY: int = 90
 
+    # Avatar Settings
+    AVATAR_STORAGE_PATH: str = "/shuushuu/avatars"
+    MAX_AVATAR_SIZE: int = 1 * 1024 * 1024  # 1MB max upload size
+    MAX_AVATAR_DIMENSION: int = 200  # Max width/height after resize
+
     # IQDB (Image Query Database)
     IQDB_HOST: str = "localhost"
     IQDB_PORT: int = 5588
