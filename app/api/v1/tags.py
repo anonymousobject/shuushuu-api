@@ -9,14 +9,16 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams, PaginationParams
-from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.permission_deps import require_permission
+from app.core.permissions import Permission
 from app.models import Images, TagLinks, Tags
-from app.models.user import Users
 from app.schemas.image import ImageListResponse
 from app.schemas.tag import TagCreate, TagListResponse, TagResponse, TagWithStats
 
 router = APIRouter(prefix="/tags", tags=["tags"])
+
+# TODO: Create tag proposal/review system. Let users petition for new tags, and allow admins to review and approve them.
 
 
 async def resolve_tag_alias(db: AsyncSession, tag_id: int) -> tuple[Tags | None, int]:
@@ -280,16 +282,12 @@ async def get_tag(
 @router.post("/", response_model=TagResponse)
 async def create_tag(
     tag_data: TagCreate,
-    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagResponse:
     """
     Create a new tag.
     """
-
-    # Only admins can create tags
-    if not current_user.admin:
-        raise HTTPException(status_code=403, detail="Not authorized to create tags")
 
     # check if tag already exists
     existing_tag_result = await db.execute(
@@ -332,16 +330,12 @@ async def create_tag(
 async def update_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     tag_data: TagCreate,
-    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagResponse:
     """
     Update an existing tag.
     """
-
-    # Only admins can update tags
-    if not current_user.admin:
-        raise HTTPException(status_code=403, detail="Not authorized to update tags")
 
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
     tag = tag_result.scalar_one_or_none()
@@ -383,16 +377,12 @@ async def update_tag(
 @router.delete("/{tag_id}", status_code=204)
 async def delete_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
-    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_DELETE))],
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """
     Delete a tag.
     """
-
-    # Only admins can delete tags
-    if not current_user.admin:
-        raise HTTPException(status_code=403, detail="Not authorized to delete tags")
 
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
     tag = tag_result.scalar_one_or_none()

@@ -4,7 +4,7 @@ Tests for private messages API endpoints.
 These tests cover the /api/v1/privmsgs endpoints including:
 - Get received private messages
 - Get sent private messages
-- Admin filtering by user_id
+- Permission-based filtering by user_id
 - Permission checks (users can only see their own messages)
 """
 
@@ -15,6 +15,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_password_hash
+from app.models.permissions import Perms, UserPerms
 from app.models.privmsg import Privmsgs
 from app.models.user import Users
 
@@ -89,18 +90,33 @@ class TestGetReceivedPrivmsgs:
     async def test_admin_get_other_user_received_messages(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test admin viewing another user's received messages."""
-        # Create admin user
-        admin = Users(
+        """Test user with PRIVMSG_VIEW permission viewing another user's received messages."""
+        # Create PRIVMSG_VIEW permission if it doesn't exist
+        perm = Perms(title="privmsg_view", desc="View private messages")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create user with PRIVMSG_VIEW permission
+        user_with_perm = Users(
             username="adminuser",
             password=get_password_hash("AdminPassword123!"),
             password_type="bcrypt",
             salt="",
             email="admin@example.com",
             active=1,
-            admin=1,
         )
-        db_session.add(admin)
+        db_session.add(user_with_perm)
+        await db_session.commit()
+        await db_session.refresh(user_with_perm)
+
+        # Grant PRIVMSG_VIEW permission
+        user_perm = UserPerms(
+            user_id=user_with_perm.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
         await db_session.commit()
 
         # Create message to user 2
@@ -113,7 +129,7 @@ class TestGetReceivedPrivmsgs:
         db_session.add(msg)
         await db_session.commit()
 
-        # Login as admin
+        # Login as user with permission
         login_response = await client.post(
             "/api/v1/auth/login",
             json={"username": "adminuser", "password": "AdminPassword123!"},
@@ -233,18 +249,33 @@ class TestGetSentPrivmsgs:
     async def test_admin_get_other_user_sent_messages(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test admin viewing another user's sent messages."""
-        # Create admin user
-        admin = Users(
+        """Test user with PRIVMSG_VIEW permission viewing another user's sent messages."""
+        # Create PRIVMSG_VIEW permission if it doesn't exist
+        perm = Perms(title="privmsg_view", desc="View private messages")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create user with PRIVMSG_VIEW permission
+        user_with_perm = Users(
             username="adminuser2",
             password=get_password_hash("AdminPassword123!"),
             password_type="bcrypt",
             salt="",
             email="admin2@example.com",
             active=1,
-            admin=1,
         )
-        db_session.add(admin)
+        db_session.add(user_with_perm)
+        await db_session.commit()
+        await db_session.refresh(user_with_perm)
+
+        # Grant PRIVMSG_VIEW permission
+        user_perm = UserPerms(
+            user_id=user_with_perm.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
         await db_session.commit()
 
         # Create message from user 1
@@ -257,7 +288,7 @@ class TestGetSentPrivmsgs:
         db_session.add(msg)
         await db_session.commit()
 
-        # Login as admin
+        # Login as user with permission
         login_response = await client.post(
             "/api/v1/auth/login",
             json={"username": "adminuser2", "password": "AdminPassword123!"},
