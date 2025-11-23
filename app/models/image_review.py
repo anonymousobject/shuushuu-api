@@ -20,7 +20,7 @@ ImageReviews represent voting sessions for appropriateness decisions, with:
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
 from app.config import ReviewOutcome, ReviewStatus, ReviewType
@@ -68,27 +68,9 @@ class ImageReviews(ImageReviewBase, table=True):
     __tablename__ = "image_reviews"
 
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["image_id"],
-            ["images.image_id"],
-            ondelete="CASCADE",
-            onupdate="CASCADE",
-            name="fk_image_reviews_image_id",
-        ),
-        ForeignKeyConstraint(
-            ["source_report_id"],
-            ["image_reports.report_id"],
-            ondelete="SET NULL",
-            onupdate="CASCADE",
-            name="fk_image_reviews_source_report_id",
-        ),
-        ForeignKeyConstraint(
-            ["initiated_by"],
-            ["users.user_id"],
-            ondelete="SET NULL",
-            onupdate="CASCADE",
-            name="fk_image_reviews_initiated_by",
-        ),
+        # Note: ForeignKeyConstraints are defined directly on columns using sa_column
+        # with ForeignKey() to ensure CASCADE behavior is properly applied when
+        # tables are created via SQLModel.metadata.create_all()
         Index("fk_image_reviews_image_id", "image_id"),
         Index("fk_image_reviews_source_report_id", "source_report_id"),
         Index("fk_image_reviews_initiated_by", "initiated_by"),
@@ -99,14 +81,34 @@ class ImageReviews(ImageReviewBase, table=True):
     # Primary key
     review_id: int | None = Field(default=None, primary_key=True)
 
-    # Image under review
-    image_id: int = Field(foreign_key="images.image_id")
+    # Image under review - CASCADE delete when image is deleted
+    image_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("images.image_id", ondelete="CASCADE", onupdate="CASCADE"),
+            nullable=False,
+        )
+    )
 
     # Report that triggered this review (null if initiated directly)
-    source_report_id: int | None = Field(default=None, foreign_key="image_reports.report_id")
+    source_report_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("image_reports.report_id", ondelete="SET NULL", onupdate="CASCADE"),
+            nullable=True,
+        ),
+    )
 
     # Admin who started the review
-    initiated_by: int | None = Field(default=None, foreign_key="users.user_id")
+    initiated_by: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("users.user_id", ondelete="SET NULL", onupdate="CASCADE"),
+            nullable=True,
+        ),
+    )
 
     # Voting deadline
     deadline: datetime | None = Field(default=None)
