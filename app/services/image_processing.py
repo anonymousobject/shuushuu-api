@@ -31,12 +31,28 @@ def get_image_dimensions(file_path: FilePath) -> tuple[int, int]:
         return width, height
 
 
-def validate_image_file(file: UploadFile, file_path: FilePath) -> None:
+DEFAULT_ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif"}
+
+
+def validate_image_file(
+    file: UploadFile,
+    file_path: FilePath,
+    allowed_extensions: set[str] | None = None,
+) -> None:
     """Validate uploaded image file using both headers and actual file content.
 
     Security: Content-Type and filename are user-controlled and can be spoofed.
     This function verifies the file is actually an image by attempting to open it with PIL.
+
+    Args:
+        file: The uploaded file object
+        file_path: Path where file has been saved temporarily
+        allowed_extensions: Set of allowed extensions (e.g., {".jpg", ".png"}).
+                          Defaults to DEFAULT_ALLOWED_EXTENSIONS if not provided.
     """
+    if allowed_extensions is None:
+        allowed_extensions = DEFAULT_ALLOWED_EXTENSIONS
+
     # Check content type (basic check, not sufficient alone)
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
@@ -45,13 +61,12 @@ def validate_image_file(file: UploadFile, file_path: FilePath) -> None:
         )
 
     # Check file extension (basic check, not sufficient alone)
-    allowed_extensions = {".jpg", ".jpeg", ".png", ".gif"}
     if file.filename:
         ext = FilePath(file.filename).suffix.lower()
         if ext not in allowed_extensions:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File extension {ext} not allowed. Allowed: {', '.join(allowed_extensions)}",
+                detail=f"File extension {ext} not allowed. Allowed: {', '.join(sorted(allowed_extensions))}",
             )
 
     # CRITICAL: Verify file is actually an image by attempting to open it with PIL

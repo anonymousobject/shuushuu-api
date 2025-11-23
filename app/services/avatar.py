@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.logging import get_logger
 from app.models import Users
+from app.services.image_processing import validate_image_file
 
 logger = get_logger(__name__)
 
@@ -26,9 +27,9 @@ def validate_avatar_upload(file: UploadFile, temp_path: Path) -> None:
     """Validate uploaded avatar file.
 
     Checks:
+    - File size is within MAX_AVATAR_SIZE limit
     - Content-Type header starts with image/
     - File extension is allowed (.jpg, .jpeg, .png, .gif)
-    - File size is within MAX_AVATAR_SIZE limit
     - File is actually a valid image (PIL verification)
 
     Args:
@@ -38,23 +39,7 @@ def validate_avatar_upload(file: UploadFile, temp_path: Path) -> None:
     Raises:
         HTTPException: 400 for invalid file type, 413 for file too large
     """
-    # Check content type
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an image",
-        )
-
-    # Check file extension
-    if file.filename:
-        ext = Path(file.filename).suffix.lower()
-        if ext not in ALLOWED_AVATAR_EXTENSIONS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File extension {ext} not allowed. Allowed: {', '.join(ALLOWED_AVATAR_EXTENSIONS)}",
-            )
-
-    # Check file size
+    # Check file size first (avatar-specific limit)
     file_size = temp_path.stat().st_size
     if file_size > settings.MAX_AVATAR_SIZE:
         raise HTTPException(
@@ -62,15 +47,8 @@ def validate_avatar_upload(file: UploadFile, temp_path: Path) -> None:
             detail=f"Avatar file too large. Maximum size is {settings.MAX_AVATAR_SIZE // 1024}KB",
         )
 
-    # Verify file is actually a valid image using PIL
-    try:
-        with Image.open(temp_path) as img:
-            img.verify()
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File is not a valid image",
-        ) from e
+    # Reuse shared validation for content-type, extension, and PIL verification
+    validate_image_file(file, temp_path, allowed_extensions=ALLOWED_AVATAR_EXTENSIONS)
 
 
 def resize_avatar(file_path: Path) -> tuple[bytes, str]:
