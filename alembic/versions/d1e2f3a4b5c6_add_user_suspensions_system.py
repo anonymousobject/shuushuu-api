@@ -97,12 +97,16 @@ def upgrade() -> None:
 
         # Set users.active=0 for currently active bans
         # Active ban = expires IS NULL (permanent) OR expires > NOW()
+        # Use EXISTS to properly handle users with multiple ban records
         connection.execute(
             sa.text("""
                 UPDATE users u
-                INNER JOIN bans b ON u.user_id = b.user_id
                 SET u.active = 0
-                WHERE b.expires IS NULL OR b.expires > NOW()
+                WHERE EXISTS (
+                    SELECT 1 FROM bans b
+                    WHERE b.user_id = u.user_id
+                    AND (b.expires IS NULL OR b.expires > NOW())
+                )
             """)
         )
 
