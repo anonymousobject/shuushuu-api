@@ -6,7 +6,10 @@ These tests cover the /api/v1/auth endpoints including:
 - Token refresh
 - Logout
 - Change password
+- Suspension checks during login and refresh
 """
+
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -16,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash
 from app.models.refresh_token import RefreshTokens
 from app.models.user import Users
+from app.models.user_suspension import UserSuspensions
 
 
 @pytest.mark.api
@@ -347,3 +351,290 @@ class TestChangePassword:
             },
         )
         assert response.status_code == 401
+
+
+@pytest.mark.api
+class TestLoginSuspensionCheck:
+    """Tests for suspension checking during login."""
+
+    async def test_login_blocked_by_active_suspension(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that login is blocked when user has an active suspension."""
+        # Create suspended user
+        user = Users(
+            username="suspendedlogin",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="suspended@example.com",
+            active=0,  # Suspended
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create active suspension record (use naive datetime for DB storage)
+        suspend_until = (datetime.now(UTC) + timedelta(days=7)).replace(tzinfo=None)
+        suspension = UserSuspensions(
+            user_id=user.user_id,
+            action="suspended",
+            actioned_by=1,
+            reason="You violated our terms of service",
+            suspended_until=suspend_until,
+        )
+        db_session.add(suspension)
+        await db_session.commit()
+
+        # Attempt login
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "suspendedlogin", "password": "TestPassword123!"},
+        )
+
+        assert response.status_code == 403
+        assert "violated our terms" in response.json()["detail"].lower()
+
+    async def test_login_blocked_by_permanent_suspension(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that login is blocked when user has a permanent suspension."""
+        user = Users(
+            username="permaban",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="permaban@example.com",
+            active=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Permanent suspension (no expiration)
+        suspension = UserSuspensions(
+            user_id=user.user_id,
+            action="suspended",
+            actioned_by=1,
+            reason="Permanent ban for severe violations",
+            suspended_until=None,
+        )
+        db_session.add(suspension)
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "permaban", "password": "TestPassword123!"},
+        )
+
+        assert response.status_code == 403
+        assert "permanent" in response.json()["detail"].lower()
+
+    async def test_login_auto_reactivates_expired_suspension(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that login auto-reactivates user when suspension has expired."""
+        user = Users(
+            username="expiredban",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="expired@example.com",
+            active=0,  # Still inactive from old suspension
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create expired suspension record (use naive datetime)
+        suspend_until = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
+        suspension = UserSuspensions(
+            user_id=user.user_id,
+            action="suspended",
+            actioned_by=1,
+            reason="Old suspension",
+            suspended_until=suspend_until,  # Expired yesterday
+        )
+        db_session.add(suspension)
+        await db_session.commit()
+
+        # Login should succeed and auto-reactivate
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "expiredban", "password": "TestPassword123!"},
+        )
+
+        assert response.status_code == 200
+        assert "access_token" in response.json()
+
+        # Verify user was reactivated
+        await db_session.refresh(user)
+        assert user.active == 1
+
+        # Verify reactivation record was created
+        result = await db_session.execute(
+            select(UserSuspensions)
+            .where(UserSuspensions.user_id == user.user_id)
+            .where(UserSuspensions.action == "reactivated")
+        )
+        reactivation = result.scalar_one()
+        assert reactivation.actioned_by is None  # Auto-reactivated
+
+    async def test_login_inactive_user_without_suspension(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that inactive users without suspension records get appropriate error."""
+        user = Users(
+            username="inactivenosuspension",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="inactivenosuspension@example.com",
+            active=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        # No suspension record created
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "inactivenosuspension", "password": "TestPassword123!"},
+        )
+
+        assert response.status_code == 401
+        assert "inactive" in response.json()["detail"].lower()
+
+
+@pytest.mark.api
+class TestRefreshSuspensionCheck:
+    """Tests for suspension checking during token refresh."""
+
+    async def test_refresh_blocked_by_active_suspension(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that token refresh is blocked when user has an active suspension."""
+        # Create user and login first
+        user = Users(
+            username="refreshsuspended",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="refreshsuspended@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Login to get tokens
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "refreshsuspended", "password": "TestPassword123!"},
+        )
+        assert login_response.status_code == 200
+
+        # Now suspend the user (use naive datetime)
+        user.active = 0
+        suspend_until = (datetime.now(UTC) + timedelta(days=7)).replace(tzinfo=None)
+        suspension = UserSuspensions(
+            user_id=user.user_id,
+            action="suspended",
+            actioned_by=1,
+            reason="Suspended after login",
+            suspended_until=suspend_until,
+        )
+        db_session.add(suspension)
+        await db_session.commit()
+
+        # Try to refresh token (should be blocked)
+        response = await client.post("/api/v1/auth/refresh")
+
+        assert response.status_code == 403
+        assert "suspended" in response.json()["detail"].lower()
+
+    async def test_refresh_auto_reactivates_expired_suspension(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that token refresh auto-reactivates user when suspension has expired."""
+        # Create user and login
+        user = Users(
+            username="refreshexpired",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="refreshexpired@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Login to get tokens
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "refreshexpired", "password": "TestPassword123!"},
+        )
+        assert login_response.status_code == 200
+
+        # Suspend user with expired suspension (use naive datetime)
+        user.active = 0
+        suspend_until = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
+        suspension = UserSuspensions(
+            user_id=user.user_id,
+            action="suspended",
+            actioned_by=1,
+            reason="Old suspension",
+            suspended_until=suspend_until,  # Expired
+        )
+        db_session.add(suspension)
+        await db_session.commit()
+
+        # Refresh should succeed and auto-reactivate
+        response = await client.post("/api/v1/auth/refresh")
+
+        assert response.status_code == 200
+        assert "access_token" in response.json()
+
+        # Verify user was reactivated
+        await db_session.refresh(user)
+        assert user.active == 1
+
+        # Verify reactivation record was created
+        result = await db_session.execute(
+            select(UserSuspensions)
+            .where(UserSuspensions.user_id == user.user_id)
+            .where(UserSuspensions.action == "reactivated")
+        )
+        reactivation = result.scalar_one()
+        assert reactivation.actioned_by is None  # Auto-reactivated
+
+    async def test_refresh_inactive_user_without_suspension(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that inactive users without suspension records get appropriate error on refresh."""
+        # Create user and login
+        user = Users(
+            username="refreshinactive",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="refreshinactive@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Login to get tokens
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "refreshinactive", "password": "TestPassword123!"},
+        )
+        assert login_response.status_code == 200
+
+        # Deactivate user without creating suspension record
+        user.active = 0
+        await db_session.commit()
+
+        # Try to refresh (should fail with inactive error)
+        response = await client.post("/api/v1/auth/refresh")
+
+        assert response.status_code == 401
+        assert "inactive" in response.json()["detail"].lower()
