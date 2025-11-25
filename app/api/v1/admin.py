@@ -1,6 +1,6 @@
 """
 Admin API endpoints for managing groups, permissions, user assignments,
-and the image reporting/review system.
+the image reporting/review system, and user suspensions.
 
 These endpoints require admin-level permissions and provide:
 - Group CRUD operations
@@ -10,13 +10,14 @@ These endpoints require admin-level permissions and provide:
 - Permission listing
 - Report triage (list, dismiss, action, escalate)
 - Review management (list, create, vote, close, extend)
+- User suspension management (suspend, reactivate, view history)
 """
 
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
@@ -37,8 +38,10 @@ from app.models.image import Images
 from app.models.image_report import ImageReports
 from app.models.image_review import ImageReviews
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
+from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
 from app.models.user import Users
+from app.models.user_suspension import UserSuspensions
 from app.schemas.admin import (
     GroupCreate,
     GroupListResponse,
@@ -48,15 +51,18 @@ from app.schemas.admin import (
     GroupPermsResponse,
     GroupResponse,
     GroupUpdate,
+    MessageResponse,
     PermListResponse,
     PermResponse,
+    SuspendUserRequest,
+    SuspensionListResponse,
+    SuspensionResponse,
     UserGroupItem,
     UserGroupsResponse,
     UserPermItem,
     UserPermsResponse,
 )
 from app.schemas.report import (
-    MessageResponse,
     ReportActionRequest,
     ReportEscalateRequest,
     ReportListResponse,
@@ -1268,3 +1274,150 @@ async def extend_review(
     await db.refresh(review)
 
     return ReviewResponse.model_validate(review)
+
+
+# ===== User Suspensions =====
+
+
+@router.post("/users/{user_id}/suspend", response_model=MessageResponse)
+async def suspend_user(
+    user_id: Annotated[int, Path(description="User ID to suspend")],
+    suspend_data: SuspendUserRequest,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Suspend a user account.
+
+    This will:
+    - Set user.active = 0
+    - Set suspension details (reason, expiry)
+    - Revoke all refresh tokens (logout from all devices)
+    - Log suspension to user_suspensions audit table
+
+    Requires USER_BAN permission.
+    """
+    # Verify user exists
+    result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check if user is already suspended (check user_suspensions table)
+    existing_suspension = await db.execute(
+        select(UserSuspensions)
+        .where(UserSuspensions.user_id == user_id)  # type: ignore[arg-type]
+        .where(UserSuspensions.action == "suspended")  # type: ignore[arg-type]
+        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
+        .limit(1)
+    )
+    latest_suspension = existing_suspension.scalar_one_or_none()
+    if latest_suspension and (
+        latest_suspension.suspended_until is None
+        or latest_suspension.suspended_until > datetime.now(UTC).replace(tzinfo=None)
+    ):
+        raise HTTPException(status_code=400, detail="User is already suspended")
+
+    # Suspend the user
+    user.active = 0
+
+    # Revoke all refresh tokens (logout from all devices)
+    await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == user_id))  # type: ignore[arg-type]
+
+    # Log to audit trail
+    suspension_record = UserSuspensions(
+        user_id=user_id,
+        action="suspended",
+        actioned_by=current_user.user_id,
+        suspended_until=suspend_data.suspended_until,
+        reason=suspend_data.reason,
+    )
+    db.add(suspension_record)
+
+    await db.commit()
+
+    suspension_type = (
+        "indefinitely"
+        if suspend_data.suspended_until is None
+        else f"until {suspend_data.suspended_until}"
+    )
+    return MessageResponse(message=f"User suspended {suspension_type}")
+
+
+@router.post("/users/{user_id}/reactivate", response_model=MessageResponse)
+async def reactivate_user(
+    user_id: Annotated[int, Path(description="User ID to reactivate")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Reactivate a suspended user account.
+
+    This clears suspension status and allows the user to login again.
+
+    Requires USER_BAN permission.
+    """
+    # Verify user exists
+    result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check if user is actually suspended
+    if user.active == 1:
+        raise HTTPException(status_code=400, detail="User is not suspended")
+
+    # Reactivate the user
+    user.active = 1
+
+    # Log to audit trail
+    reactivation_record = UserSuspensions(
+        user_id=user_id,
+        action="reactivated",
+        actioned_by=current_user.user_id,
+    )
+    db.add(reactivation_record)
+
+    await db.commit()
+
+    return MessageResponse(message="User reactivated successfully")
+
+
+@router.get("/users/{user_id}/suspensions", response_model=SuspensionListResponse)
+async def get_user_suspensions(
+    user_id: Annotated[int, Path(description="User ID")],
+    _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
+    db: AsyncSession = Depends(get_db),
+) -> SuspensionListResponse:
+    """
+    Get suspension history for a user.
+
+    Returns all suspension and reactivation records.
+
+    Requires USER_BAN permission.
+    """
+    # Verify user exists
+    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user = user_result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get suspension history
+    result = await db.execute(
+        select(UserSuspensions)
+        .where(UserSuspensions.user_id == user_id)  # type: ignore[arg-type]
+        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
+    )
+    suspensions = result.scalars().all()
+
+    return SuspensionListResponse(
+        user_id=user_id,
+        username=user.username,
+        total=len(suspensions),
+        suspensions=[SuspensionResponse.model_validate(s) for s in suspensions],
+    )

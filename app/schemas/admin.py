@@ -7,7 +7,10 @@ These schemas handle:
 - Group permissions
 - Direct user permissions
 - Permission listing
+- User suspensions
 """
+
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -153,3 +156,39 @@ class MessageResponse(BaseModel):
     """Simple message response for success operations."""
 
     message: str
+
+
+# ===== User Suspension Schemas =====
+
+
+class SuspendUserRequest(BaseModel):
+    """Request schema for suspending a user."""
+
+    suspended_until: datetime | None = Field(
+        None,
+        description="When the suspension expires (None = indefinite suspension)",
+    )
+    reason: str = Field(..., max_length=500, description="Reason shown to the user")
+
+
+class SuspensionResponse(BaseModel):
+    """Response schema for a suspension record."""
+
+    suspension_id: int
+    user_id: int
+    action: str
+    actioned_by: int | None
+    actioned_at: datetime
+    suspended_until: datetime | None
+    reason: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class SuspensionListResponse(BaseModel):
+    """Response schema for listing user suspension history."""
+
+    user_id: int
+    username: str
+    total: int
+    suspensions: list[SuspensionResponse]
