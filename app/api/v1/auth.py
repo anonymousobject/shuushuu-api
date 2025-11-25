@@ -65,12 +65,18 @@ async def _check_and_handle_suspension(
         suspension_result = await db.execute(
             select(UserSuspensions)
             .where(UserSuspensions.user_id == user.user_id)  # type: ignore[arg-type]
-            .where(UserSuspensions.action == "suspended")  # type: ignore[arg-type]
             .order_by(desc(UserSuspensions.actioned_at))
-            .limit(1)
+            .limit(2)  # Get latest 2 to check if there's a reactivation after suspension
         )
-        suspension = suspension_result.scalar_one_or_none()
+        suspensions = suspension_result.scalars().all()
 
+        # Check if latest action is a reactivation
+        if suspensions and suspensions[0].action == "reactivated":
+            # User was reactivated, trust the database state
+            return
+
+        # Find latest suspension
+        suspension = next((s for s in suspensions if s.action == "suspended"), None)
         if suspension:
             # Check if suspension has expired
             if suspension.suspended_until and suspension.suspended_until < datetime.now(
