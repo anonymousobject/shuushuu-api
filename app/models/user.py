@@ -63,6 +63,7 @@ class Users(UserBase, table=True):
     - email: Privacy-sensitive
     - actkey: Activation key (security-sensitive)
     - admin, active: Moderation/access control
+    - failed_login_attempts, lockout_until: Security tracking
     - All preference fields: User-private settings
     - infected_by, date_infected: Internal tracking
     - bookmark: User-private reference

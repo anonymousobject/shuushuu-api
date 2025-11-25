@@ -13,10 +13,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import SuspensionAction, settings
 from app.core.auth import (
     CurrentUser,
     get_client_ip,
@@ -40,6 +40,72 @@ from app.schemas.auth import (
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+async def _check_and_handle_suspension(
+    user: Users,
+    db: AsyncSession,
+) -> None:
+    """
+    Check if a user is suspended and handle auto-reactivation if expired.
+
+    Raises HTTPException if user is currently suspended.
+
+    Args:
+        user: User object to check
+        db: Database session
+
+    Raises:
+        HTTPException: 403 if user is suspended, 401 if inactive for other reasons
+    """
+    if not user.active:
+        # Query user_suspensions to check if this is a suspension
+        from app.models.user_suspension import UserSuspensions
+
+        suspension_result = await db.execute(
+            select(UserSuspensions)
+            .where(UserSuspensions.user_id == user.user_id)  # type: ignore[arg-type]
+            .order_by(desc(UserSuspensions.actioned_at))
+            .limit(2)  # Get latest 2 to check if there's a reactivation after suspension
+        )
+        suspensions = suspension_result.scalars().all()
+
+        # Check if latest action is a reactivation
+        if suspensions and suspensions[0].action == SuspensionAction.REACTIVATED:
+            # User was reactivated, trust the database state
+            return
+
+        # Find latest suspension
+        suspension = next((s for s in suspensions if s.action == SuspensionAction.SUSPENDED), None)
+        if suspension:
+            # Check if suspension has expired
+            if suspension.suspended_until and suspension.suspended_until < datetime.now(
+                UTC
+            ).replace(tzinfo=None):
+                # Auto-reactivate expired suspension
+                user.active = 1
+
+                # Log reactivation
+                reactivation = UserSuspensions(
+                    user_id=user.user_id,
+                    action=SuspensionAction.REACTIVATED,
+                    actioned_by=None,  # Auto-reactivated
+                )
+                db.add(reactivation)
+                # Note: Caller must commit
+            else:
+                # Still suspended - show reason
+                reason = suspension.reason or "Your account has been suspended."
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=reason,
+                )
+        else:
+            # Inactive but not suspended
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account is inactive",
+            )
 
 
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
@@ -213,12 +279,8 @@ async def login(
             detail="Incorrect username or password",
         )
 
-    # Check if user is active
-    if not user.active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account is inactive",
-        )
+    # Check if user is active and handle suspension
+    await _check_and_handle_suspension(user, db)
 
     # Reset failed login attempts and lockout on successful login
     user.failed_login_attempts = 0
@@ -306,11 +368,17 @@ async def refresh_token(
     result_user = await db.execute(select(Users).where(Users.user_id == db_token.user_id))  # type: ignore[arg-type]
     user = result_user.scalar_one_or_none()
 
-    if not user or not user.active:
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
+            detail="User not found",
         )
+
+    # Check if user is active and handle suspension
+    await _check_and_handle_suspension(user, db)
+    # If auto-reactivated, commit immediately (refresh needs this)
+    if user.active:
+        await db.commit()
 
     # Create new access token
     if user.user_id is None:
