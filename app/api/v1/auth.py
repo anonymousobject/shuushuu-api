@@ -236,7 +236,6 @@ async def login(
                 user.active = 1
 
                 # Log reactivation
-                from app.models.user_suspension import UserSuspensions
 
                 reactivation = UserSuspensions(
                     user_id=user.user_id,
