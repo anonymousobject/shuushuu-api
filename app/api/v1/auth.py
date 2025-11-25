@@ -42,6 +42,66 @@ from app.schemas.auth import (
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+async def _check_and_handle_suspension(
+    user: Users,
+    db: AsyncSession,
+) -> None:
+    """
+    Check if a user is suspended and handle auto-reactivation if expired.
+
+    Raises HTTPException if user is currently suspended.
+
+    Args:
+        user: User object to check
+        db: Database session
+
+    Raises:
+        HTTPException: 403 if user is suspended, 401 if inactive for other reasons
+    """
+    if not user.active:
+        # Query user_suspensions to check if this is a suspension
+        from app.models.user_suspension import UserSuspensions
+
+        suspension_result = await db.execute(
+            select(UserSuspensions)
+            .where(UserSuspensions.user_id == user.user_id)  # type: ignore[arg-type]
+            .where(UserSuspensions.action == "suspended")  # type: ignore[arg-type]
+            .order_by(desc(UserSuspensions.actioned_at))
+            .limit(1)
+        )
+        suspension = suspension_result.scalar_one_or_none()
+
+        if suspension:
+            # Check if suspension has expired
+            if suspension.suspended_until and suspension.suspended_until < datetime.now(
+                UTC
+            ).replace(tzinfo=None):
+                # Auto-reactivate expired suspension
+                user.active = 1
+
+                # Log reactivation
+                reactivation = UserSuspensions(
+                    user_id=user.user_id,
+                    action="reactivated",
+                    actioned_by=None,  # Auto-reactivated
+                )
+                db.add(reactivation)
+                # Note: Caller must commit
+            else:
+                # Still suspended - show reason
+                reason = suspension.reason or "Your account has been suspended."
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=reason,
+                )
+        else:
+            # Inactive but not suspended
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account is inactive",
+            )
+
+
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
     """
     Set authentication cookies in response.
@@ -213,50 +273,8 @@ async def login(
             detail="Incorrect username or password",
         )
 
-    # Check if user is active
-    if not user.active:
-        # Query user_suspensions to check if this is a suspension
-        from app.models.user_suspension import UserSuspensions
-
-        suspension_result = await db.execute(
-            select(UserSuspensions)
-            .where(UserSuspensions.user_id == user.user_id)  # type: ignore[arg-type]
-            .where(UserSuspensions.action == "suspended")  # type: ignore[arg-type]
-            .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
-            .limit(1)
-        )
-        suspension = suspension_result.scalar_one_or_none()
-
-        if suspension:
-            # Check if suspension has expired
-            if suspension.suspended_until and suspension.suspended_until < datetime.now(
-                UTC
-            ).replace(tzinfo=None):
-                # Auto-reactivate expired suspension
-                user.active = 1
-
-                # Log reactivation
-
-                reactivation = UserSuspensions(
-                    user_id=user.user_id,
-                    action="reactivated",
-                    actioned_by=None,  # Auto-reactivated
-                )
-                db.add(reactivation)
-                # Note: Will be committed with last_login update below
-            else:
-                # Still suspended - show reason
-                reason = suspension.reason or "Your account has been suspended."
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=reason,
-                )
-        else:
-            # Inactive but not suspended
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User account is inactive",
-            )
+    # Check if user is active and handle suspension
+    await _check_and_handle_suspension(user, db)
 
     # Reset failed login attempts and lockout on successful login
     user.failed_login_attempts = 0
@@ -350,49 +368,11 @@ async def refresh_token(
             detail="User not found",
         )
 
-    # Check if user is active (including suspension check)
-    if not user.active:
-        # Query user_suspensions to check if this is a suspension
-        from app.models.user_suspension import UserSuspensions
-
-        suspension_result = await db.execute(
-            select(UserSuspensions)
-            .where(UserSuspensions.user_id == user.user_id)  # type: ignore[arg-type]
-            .where(UserSuspensions.action == "suspended")  # type: ignore[arg-type]
-            .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
-            .limit(1)
-        )
-        suspension = suspension_result.scalar_one_or_none()
-
-        if suspension:
-            # Check if suspension has expired
-            if suspension.suspended_until and suspension.suspended_until < datetime.now(
-                UTC
-            ).replace(tzinfo=None):
-                # Auto-reactivate expired suspension
-                user.active = 1
-
-                # Log reactivation
-                reactivation = UserSuspensions(
-                    user_id=user.user_id,
-                    action="reactivated",
-                    actioned_by=None,  # Auto-reactivated
-                )
-                db.add(reactivation)
-                await db.commit()
-            else:
-                # Still suspended - reject refresh
-                reason = suspension.reason or "Your account has been suspended."
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=reason,
-                )
-        else:
-            # Inactive but not suspended
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User account is inactive",
-            )
+    # Check if user is active and handle suspension
+    await _check_and_handle_suspension(user, db)
+    # If auto-reactivated, commit immediately (refresh needs this)
+    if user.active:
+        await db.commit()
 
     # Create new access token
     if user.user_id is None:

@@ -54,6 +54,10 @@ class UserSuspensions(SQLModel, table=True):
         Index("idx_user_suspensions_user_id", "user_id"),
         Index("idx_user_suspensions_actioned_by", "actioned_by"),
         Index("idx_user_suspensions_actioned_at", "actioned_at"),
+        # Composite index for efficient suspension checks (login/refresh queries)
+        Index(
+            "idx_user_suspensions_user_id_action_actioned_at", "user_id", "action", "actioned_at"
+        ),
     )
 
     # Primary key

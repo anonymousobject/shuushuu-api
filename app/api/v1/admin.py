@@ -1305,6 +1305,13 @@ async def suspend_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Prevent self-suspension
+    if user_id == current_user.user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot suspend yourself.",
+        )
+
     # Check if user is already suspended (check user_suspensions table)
     existing_suspension = await db.execute(
         select(UserSuspensions)
@@ -1367,9 +1374,27 @@ async def reactivate_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Check if user is actually suspended
-    if user.active == 1:
-        raise HTTPException(status_code=400, detail="User is not suspended")
+    # Check if user is actually suspended (has an active suspension record)
+    # Find all suspension records for this user
+    suspension_result = await db.execute(
+        select(UserSuspensions)
+        .where(UserSuspensions.user_id == user_id)  # type: ignore[arg-type]
+        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
+    )
+    suspension_records = suspension_result.scalars().all()
+
+    # Find the latest "suspended" record
+    latest_suspended = next((r for r in suspension_records if r.action == "suspended"), None)
+    if not latest_suspended:
+        raise HTTPException(status_code=400, detail="User has no suspension record")
+
+    # Check if there is a "reactivated" record after the latest "suspended"
+    reactivated_after = any(
+        r.action == "reactivated" and r.actioned_at > latest_suspended.actioned_at
+        for r in suspension_records
+    )
+    if reactivated_after:
+        raise HTTPException(status_code=400, detail="User is not currently suspended")
 
     # Reactivate the user
     user.active = 1

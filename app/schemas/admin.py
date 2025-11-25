@@ -166,9 +166,14 @@ class SuspendUserRequest(BaseModel):
 
     suspended_until: datetime | None = Field(
         None,
-        description="When the suspension expires (None = indefinite suspension)",
+        description="When the suspension expires (None = indefinite/permanent suspension). Provide datetime in UTC.",
     )
-    reason: str = Field(..., max_length=500, description="Reason shown to the user")
+    reason: str = Field(
+        ...,
+        min_length=3,
+        max_length=500,
+        description="Reason shown to the user (minimum 3 characters)",
+    )
 
 
 class SuspensionResponse(BaseModel):
