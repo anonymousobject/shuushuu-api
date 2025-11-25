@@ -159,6 +159,6 @@ def downgrade() -> None:
     op.drop_index("idx_user_suspensions_actioned_at", table_name="user_suspensions")
     op.drop_index("idx_user_suspensions_actioned_by", table_name="user_suspensions")
     op.drop_index("idx_user_suspensions_user_id", table_name="user_suspensions")
-
+    op.drop_index("idx_user_suspensions_user_id_action_actioned_at", table_name="user_suspensions")
     # Drop user_suspensions table
     op.drop_table("user_suspensions")
