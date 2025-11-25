@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import SuspensionAction, settings
 from app.core.auth import (
     CurrentUser,
     get_client_ip,
@@ -71,12 +71,12 @@ async def _check_and_handle_suspension(
         suspensions = suspension_result.scalars().all()
 
         # Check if latest action is a reactivation
-        if suspensions and suspensions[0].action == "reactivated":
+        if suspensions and suspensions[0].action == SuspensionAction.REACTIVATED:
             # User was reactivated, trust the database state
             return
 
         # Find latest suspension
-        suspension = next((s for s in suspensions if s.action == "suspended"), None)
+        suspension = next((s for s in suspensions if s.action == SuspensionAction.SUSPENDED), None)
         if suspension:
             # Check if suspension has expired
             if suspension.suspended_until and suspension.suspended_until < datetime.now(
@@ -88,7 +88,7 @@ async def _check_and_handle_suspension(
                 # Log reactivation
                 reactivation = UserSuspensions(
                     user_id=user.user_id,
-                    action="reactivated",
+                    action=SuspensionAction.REACTIVATED,
                     actioned_by=None,  # Auto-reactivated
                 )
                 db.add(reactivation)
