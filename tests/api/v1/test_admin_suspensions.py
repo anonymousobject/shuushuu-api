@@ -14,6 +14,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import SuspensionAction
 from app.core.security import get_password_hash
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.refresh_token import RefreshTokens
@@ -157,7 +158,7 @@ class TestSuspendUser:
         result = await db_session.execute(
             select(UserSuspensions)
             .where(UserSuspensions.user_id == target_user.user_id)
-            .where(UserSuspensions.action == "suspended")
+            .where(UserSuspensions.action == SuspensionAction.SUSPENDED)
         )
         suspension = result.scalar_one()
         assert suspension.actioned_by == admin.user_id
@@ -196,7 +197,7 @@ class TestSuspendUser:
         result = await db_session.execute(
             select(UserSuspensions)
             .where(UserSuspensions.user_id == target_user.user_id)
-            .where(UserSuspensions.action == "suspended")
+            .where(UserSuspensions.action == SuspensionAction.SUSPENDED)
         )
         suspension = result.scalar_one()
         assert suspension.suspended_until is None
@@ -216,7 +217,7 @@ class TestSuspendUser:
         suspend_until = (datetime.now(UTC) + timedelta(days=1)).replace(tzinfo=None)
         suspension = UserSuspensions(
             user_id=target_user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=admin.user_id,
             reason="First suspension",
             suspended_until=suspend_until,
@@ -341,7 +342,7 @@ class TestReactivateUser:
         suspend_until = (datetime.now(UTC) + timedelta(days=1)).replace(tzinfo=None)
         suspension = UserSuspensions(
             user_id=target_user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=admin.user_id,
             reason="Was suspended",
             suspended_until=suspend_until,
@@ -368,7 +369,7 @@ class TestReactivateUser:
         result = await db_session.execute(
             select(UserSuspensions)
             .where(UserSuspensions.user_id == target_user.user_id)
-            .where(UserSuspensions.action == "reactivated")
+            .where(UserSuspensions.action == SuspensionAction.REACTIVATED)
         )
         reactivation = result.scalar_one()
         assert reactivation.actioned_by == admin.user_id
@@ -430,7 +431,7 @@ class TestReactivateUser:
         now = datetime.now(UTC).replace(tzinfo=None)
         suspension = UserSuspensions(
             user_id=target_user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=admin.user_id,
             actioned_at=now - timedelta(days=2),
             reason="Was suspended",
@@ -439,7 +440,7 @@ class TestReactivateUser:
 
         reactivation = UserSuspensions(
             user_id=target_user.user_id,
-            action="reactivated",
+            action=SuspensionAction.REACTIVATED,
             actioned_by=admin.user_id,
             actioned_at=now - timedelta(days=1),
         )
@@ -491,7 +492,7 @@ class TestUserSuspensionHistory:
         now = datetime.now(UTC).replace(tzinfo=None)
         suspension1 = UserSuspensions(
             user_id=target_user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=admin.user_id,
             actioned_at=now - timedelta(days=10),
             reason="First suspension",
@@ -501,7 +502,7 @@ class TestUserSuspensionHistory:
 
         reactivation1 = UserSuspensions(
             user_id=target_user.user_id,
-            action="reactivated",
+            action=SuspensionAction.REACTIVATED,
             actioned_by=admin.user_id,
             actioned_at=now - timedelta(days=5),
         )
@@ -509,7 +510,7 @@ class TestUserSuspensionHistory:
 
         suspension2 = UserSuspensions(
             user_id=target_user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=admin.user_id,
             actioned_at=now - timedelta(days=2),
             reason="Second suspension",

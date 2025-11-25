@@ -22,7 +22,7 @@ class UserSuspensions(SQLModel, table=True):
     Fields:
     - suspension_id: Primary key
     - user_id: User being suspended/reactivated
-    - action: Type of action ("suspended" or "reactivated")
+    - action: Type of action (SuspensionAction.SUSPENDED or SuspensionAction.REACTIVATED)
     - actioned_by: Admin/moderator who performed the action
     - actioned_at: When the action occurred
     - suspended_until: Expiration time (for suspensions only)
@@ -67,7 +67,7 @@ class UserSuspensions(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.user_id")
 
     # Action type
-    action: str = Field(max_length=20)  # "suspended" or "reactivated"
+    action: str = Field(max_length=20)  # SuspensionAction.SUSPENDED or SuspensionAction.REACTIVATED
 
     # Who performed the action
     actioned_by: int | None = Field(default=None, foreign_key="users.user_id")
@@ -75,7 +75,7 @@ class UserSuspensions(SQLModel, table=True):
     # When the action occurred
     actioned_at: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
 
-    # Suspension details (only for "suspended" action)
+    # Suspension details (only for SuspensionAction.SUSPENDED action)
     suspended_until: datetime | None = Field(default=None)
     reason: str | None = Field(default=None, max_length=500)
 

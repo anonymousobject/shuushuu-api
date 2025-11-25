@@ -27,6 +27,7 @@ from app.config import (
     ReviewOutcome,
     ReviewStatus,
     ReviewType,
+    SuspensionAction,
     settings,
 )
 from app.core.auth import get_current_user
@@ -1321,11 +1322,11 @@ async def suspend_user(
     suspension_records = suspension_result.scalars().all()
 
     # Find the latest "suspended" record
-    latest_suspended = next((r for r in suspension_records if r.action == "suspended"), None)
+    latest_suspended = next((r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None)
     if latest_suspended:
         # Check if there is a "reactivated" record after it
         reactivated_after = any(
-            r.action == "reactivated" and r.actioned_at > latest_suspended.actioned_at
+            r.action == SuspensionAction.REACTIVATED and r.actioned_at > latest_suspended.actioned_at
             for r in suspension_records
         )
         # Only block if still suspended (no reactivation after, or suspension still active)
@@ -1343,7 +1344,7 @@ async def suspend_user(
     # Log to audit trail
     suspension_record = UserSuspensions(
         user_id=user_id,
-        action="suspended",
+        action=SuspensionAction.SUSPENDED,
         actioned_by=current_user.user_id,
         suspended_until=suspend_data.suspended_until,
         reason=suspend_data.reason,
@@ -1391,13 +1392,13 @@ async def reactivate_user(
     suspension_records = suspension_result.scalars().all()
 
     # Find the latest "suspended" record
-    latest_suspended = next((r for r in suspension_records if r.action == "suspended"), None)
+    latest_suspended = next((r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None)
     if not latest_suspended:
         raise HTTPException(status_code=400, detail="User has no suspension record")
 
     # Check if there is a "reactivated" record after the latest "suspended"
     reactivated_after = any(
-        r.action == "reactivated" and r.actioned_at > latest_suspended.actioned_at
+        r.action == SuspensionAction.REACTIVATED and r.actioned_at > latest_suspended.actioned_at
         for r in suspension_records
     )
     if reactivated_after:
@@ -1409,7 +1410,7 @@ async def reactivate_user(
     # Log to audit trail
     reactivation_record = UserSuspensions(
         user_id=user_id,
-        action="reactivated",
+        action=SuspensionAction.REACTIVATED,
         actioned_by=current_user.user_id,
     )
     db.add(reactivation_record)

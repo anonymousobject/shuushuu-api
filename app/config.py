@@ -232,3 +232,10 @@ class PermissionLevel:
     TAGGER = 2
     MODERATOR = 3
     ADMIN = 4
+
+
+class SuspensionAction:
+    """Suspension action type constants"""
+
+    SUSPENDED = "suspended"
+    REACTIVATED = "reactivated"

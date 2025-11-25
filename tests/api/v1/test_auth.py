@@ -16,6 +16,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import SuspensionAction
 from app.core.security import get_password_hash
 from app.models.refresh_token import RefreshTokens
 from app.models.user import Users
@@ -378,7 +379,7 @@ class TestLoginSuspensionCheck:
         suspend_until = (datetime.now(UTC) + timedelta(days=7)).replace(tzinfo=None)
         suspension = UserSuspensions(
             user_id=user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=1,
             reason="You violated our terms of service",
             suspended_until=suspend_until,
@@ -414,7 +415,7 @@ class TestLoginSuspensionCheck:
         # Permanent suspension (no expiration)
         suspension = UserSuspensions(
             user_id=user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=1,
             reason="Permanent ban for severe violations",
             suspended_until=None,
@@ -450,7 +451,7 @@ class TestLoginSuspensionCheck:
         suspend_until = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
         suspension = UserSuspensions(
             user_id=user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=1,
             reason="Old suspension",
             suspended_until=suspend_until,  # Expired yesterday
@@ -475,7 +476,7 @@ class TestLoginSuspensionCheck:
         result = await db_session.execute(
             select(UserSuspensions)
             .where(UserSuspensions.user_id == user.user_id)
-            .where(UserSuspensions.action == "reactivated")
+            .where(UserSuspensions.action == SuspensionAction.REACTIVATED)
         )
         reactivation = result.scalar_one()
         assert reactivation.actioned_by is None  # Auto-reactivated
@@ -537,7 +538,7 @@ class TestRefreshSuspensionCheck:
         suspend_until = (datetime.now(UTC) + timedelta(days=7)).replace(tzinfo=None)
         suspension = UserSuspensions(
             user_id=user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=1,
             reason="Suspended after login",
             suspended_until=suspend_until,
@@ -579,7 +580,7 @@ class TestRefreshSuspensionCheck:
         suspend_until = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
         suspension = UserSuspensions(
             user_id=user.user_id,
-            action="suspended",
+            action=SuspensionAction.SUSPENDED,
             actioned_by=1,
             reason="Old suspension",
             suspended_until=suspend_until,  # Expired
@@ -601,7 +602,7 @@ class TestRefreshSuspensionCheck:
         result = await db_session.execute(
             select(UserSuspensions)
             .where(UserSuspensions.user_id == user.user_id)
-            .where(UserSuspensions.action == "reactivated")
+            .where(UserSuspensions.action == SuspensionAction.REACTIVATED)
         )
         reactivation = result.scalar_one()
         assert reactivation.actioned_by is None  # Auto-reactivated
