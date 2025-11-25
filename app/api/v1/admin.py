@@ -1313,20 +1313,27 @@ async def suspend_user(
         )
 
     # Check if user is already suspended (check user_suspensions table)
-    existing_suspension = await db.execute(
+    suspension_result = await db.execute(
         select(UserSuspensions)
-        .where(UserSuspensions.user_id == user_id)  # type: ignore[arg-type]
-        .where(UserSuspensions.action == "suspended")  # type: ignore[arg-type]
-        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
-        .limit(1)
+        .where(UserSuspensions.user_id == user_id)
+        .order_by(desc(UserSuspensions.actioned_at))
     )
-    latest_suspension = existing_suspension.scalar_one_or_none()
-    if latest_suspension and (
-        latest_suspension.suspended_until is None
-        or latest_suspension.suspended_until > datetime.now(UTC).replace(tzinfo=None)
-    ):
-        raise HTTPException(status_code=400, detail="User is already suspended")
+    suspension_records = suspension_result.scalars().all()
 
+    # Find the latest "suspended" record
+    latest_suspended = next((r for r in suspension_records if r.action == "suspended"), None)
+    if latest_suspended:
+        # Check if there is a "reactivated" record after it
+        reactivated_after = any(
+            r.action == "reactivated" and r.actioned_at > latest_suspended.actioned_at
+            for r in suspension_records
+        )
+        # Only block if still suspended (no reactivation after, or suspension still active)
+        if not reactivated_after and (
+            latest_suspended.suspended_until is None
+            or latest_suspended.suspended_until > datetime.now(UTC).replace(tzinfo=None)
+        ):
+            raise HTTPException(status_code=400, detail="User is already suspended")
     # Suspend the user
     user.active = 0
 
