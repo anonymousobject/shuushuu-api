@@ -1322,11 +1322,14 @@ async def suspend_user(
     suspension_records = suspension_result.scalars().all()
 
     # Find the latest "suspended" record
-    latest_suspended = next((r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None)
+    latest_suspended = next(
+        (r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None
+    )
     if latest_suspended:
         # Check if there is a "reactivated" record after it
         reactivated_after = any(
-            r.action == SuspensionAction.REACTIVATED and r.actioned_at > latest_suspended.actioned_at
+            r.action == SuspensionAction.REACTIVATED
+            and r.actioned_at > latest_suspended.actioned_at
             for r in suspension_records
         )
         # Only block if still suspended (no reactivation after, or suspension still active)
@@ -1392,7 +1395,9 @@ async def reactivate_user(
     suspension_records = suspension_result.scalars().all()
 
     # Find the latest "suspended" record
-    latest_suspended = next((r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None)
+    latest_suspended = next(
+        (r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None
+    )
     if not latest_suspended:
         raise HTTPException(status_code=400, detail="User has no suspension record")
 
