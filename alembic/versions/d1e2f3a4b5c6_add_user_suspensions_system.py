@@ -66,6 +66,11 @@ def upgrade() -> None:
     op.create_index("idx_user_suspensions_user_id", "user_suspensions", ["user_id"])
     op.create_index("idx_user_suspensions_actioned_by", "user_suspensions", ["actioned_by"])
     op.create_index("idx_user_suspensions_actioned_at", "user_suspensions", ["actioned_at"])
+    op.create_index(
+        "idx_user_suspensions_user_id_action_actioned_at",
+        "user_suspensions",
+        ["user_id", "action", "actioned_at"]
+    )
 
     # Migrate data from bans to user_suspensions
     connection = op.get_bind()
