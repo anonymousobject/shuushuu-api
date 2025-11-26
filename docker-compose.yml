@@ -10,7 +10,7 @@ services:
       MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root_password}
       MARIADB_DATABASE: ${MARIADB_DATABASE:-shuushuu}
       MARIADB_USER: ${MARIADB_USER:-shuushuu}
-      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-shuushuu_password}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-dev_password}
       # MARIADB_AUTO_UPGRADE: "1"
     command: >
       --character-set-server=utf8mb4
@@ -20,8 +20,8 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - mariadb_data:/var/lib/mariadb
-      - ./docker/mariadb-init:/docker-entrypoint-initdb.d  # Optional init scripts
+      - mariadb_data:/var/lib/mysql
+      # - ./docker/mariadb-init:/docker-entrypoint-initdb.d:ro  # Optional init scripts (read-only)
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
