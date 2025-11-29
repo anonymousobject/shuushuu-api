@@ -25,7 +25,7 @@ from app.main import app as main_app
 # Override via environment variables if your local setup differs
 
 DEFAULT_TEST_DB_USER = "shuushuu"
-DEFAULT_TEST_DB_PASSWORD = "shuushuu_dev_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
+DEFAULT_TEST_DB_PASSWORD = "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
 DEFAULT_TEST_DB_HOST = "localhost"
 DEFAULT_TEST_DB_PORT = "3306"
 DEFAULT_TEST_DB_NAME = "shuushuu_test"

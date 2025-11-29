@@ -4,9 +4,43 @@ Pydantic schemas for Image endpoints
 
 from datetime import datetime
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 
+from app.config import TagType, settings
 from app.models.image import ImageBase
+
+
+class UserSummary(BaseModel):
+    """Minimal user info for embedding"""
+
+    user_id: int
+    username: str
+    avatar_url: str | None = Field(default=None, alias="avatar")
+
+    # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+class TagSummary(BaseModel):
+    """Minimal tag info for embedding"""
+
+    tag_id: int
+    tag: str = Field(alias="title")  # Maps from Tags.title
+    type_id: int = Field(alias="type")  # Maps from Tags.type
+
+    # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def type_name(self) -> str:
+        """Map type_id to friendly tag type name using TagType constant names"""
+        # Find the attribute name in TagType class that matches this type_id
+        for attr_name in dir(TagType):
+            if not attr_name.startswith("_"):
+                if getattr(TagType, attr_name) == self.type_id:
+                    return attr_name.replace("_", " ").title()
+        return "Unknown"
 
 
 class ImageCreate(ImageBase):
@@ -52,13 +86,43 @@ class ImageResponse(ImageBase):
     @property
     def url(self) -> str:
         """Generate image URL"""
-        return f"/storage/fullsize/{self.filename}"
+        return f"{settings.IMAGE_BASE_URL}/storage/fullsize/{self.filename}.{self.ext}"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def thumbnail_url(self) -> str:
         """Generate thumbnail URL"""
-        return f"/storage/thumbs/{self.filename}"
+        return f"{settings.IMAGE_BASE_URL}/storage/thumbs/{self.filename}.jpeg"  # Currently all thumbs are jpeg
+
+
+class ImageDetailedResponse(ImageResponse):
+    """
+    Schema for detailed image response with extra metadata.
+
+    Extends ImageResponse with:
+    - Embedded user summary
+    - Embedded tags
+    """
+
+    user: UserSummary | None = None  # Embedded user data (optional, loaded with selectinload)
+    tags: list[TagSummary] | None = None  # Embedded tags (optional, loaded with selectinload)
+
+    model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_db_model(cls, image):
+        """Create response from database model with relationships"""
+        data = ImageResponse.model_validate(image).model_dump()
+
+        # Add user if loaded
+        if hasattr(image, "user") and image.user:
+            data["user"] = UserSummary.model_validate(image.user)
+
+        # Add tags if loaded through tag_links
+        if hasattr(image, "tag_links") and image.tag_links:
+            data["tags"] = [TagSummary.model_validate(tag_link.tag) for tag_link in image.tag_links]
+
+        return cls(**data)
 
 
 class ImageListResponse(BaseModel):
