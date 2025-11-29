@@ -67,7 +67,7 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - .:/app
-      - ${STORAGE_PATH:-/sakura/shuushuu/images}:${STORAGE_PATH:-/sakura/shuushuu/images}
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
       # Anonymous volumes to isolate container artifacts from host
       - /app/.venv
       - /app/.pytest_cache
@@ -91,6 +91,27 @@ services:
         - action: sync
           path: ./alembic
           target: /app/alembic
+    restart: unless-stopped
+  
+  frontend:
+    build:
+      context: ../shuushuu-frontend
+      dockerfile: Dockerfile.nginx
+    container_name: shuushuu-frontend
+    environment:
+      - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
+    volumes:
+      # Mount storage path for nginx to serve images
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}:ro
+      # Mount nginx configs
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/frontend.conf.template:/etc/nginx/conf.d/frontend.conf.template:ro
+    ports:
+      - "3000:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Enable accessing host from Docker
+    depends_on:
+      - api
     restart: unless-stopped
 
   # Arq Worker (optional - uncomment to enable)

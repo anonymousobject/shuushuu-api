@@ -1,5 +1,11 @@
 # TODO Items
 
+## Redis Caching
+**Priority:** Medium
+**Status:** Not Started
+
+Implement Redis caching for frequently accessed data to improve performance.
+
 ## Image Processing
 
 ### Implement Image Variant Generation

@@ -24,7 +24,7 @@ If you're restoring from a legacy PHP database dump:
 mysql -u user -p database_name < legacy_dump.sql
 
 # 2. Mark all migrations as applied (without running them)
-uv run alembic stamp head
+uv run alembic stamp 8d66158eb568
 ```
 
 This tells Alembic that the database is already at the latest schema version.

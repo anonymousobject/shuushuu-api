@@ -23,6 +23,7 @@ from sqlmodel import Field, Relationship, SQLModel
 from app.config import ImageStatus
 
 if TYPE_CHECKING:
+    from app.models.tag_link import TagLinks
     from app.models.user import Users
 
 
@@ -236,7 +237,14 @@ class Images(ImageBase, table=True):
     # - The relationship will NOT auto-serialize in Pydantic schemas (SQLModel behavior)
     user: "Users" = Relationship(
         sa_relationship_kwargs={
-            "lazy": "joined",  # Eagerly load user data with image
+            # "lazy": "joined",  # Eagerly load user data with image
             "foreign_keys": "[Images.user_id]",
+        }
+    )
+
+    # Tag links relationship (many-to-many through TagLinks)
+    tag_links: list["TagLinks"] = Relationship(
+        sa_relationship_kwargs={
+            "foreign_keys": "[TagLinks.image_id]",
         }
     )

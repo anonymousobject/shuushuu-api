@@ -1,0 +1,58 @@
+server {
+    listen 80;
+    server_name _;
+
+    # API proxy to FastAPI backend
+    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Serve images directly from storage
+    # Note: This path will be substituted with $STORAGE_PATH at container startup
+    # Use ^~ to give these locations priority over regex locations
+    location ^~ /storage/fullsize/ {
+        alias ${STORAGE_PATH}/fullsize/;
+        autoindex off;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location ^~ /storage/thumbs/ {
+        alias ${STORAGE_PATH}/thumbs/;
+        autoindex off;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Proxy Vite HMR and dev server assets
+    location ~ ^/(node_modules|@vite|@fs|@id|src)/ {
+        proxy_pass http://host.docker.internal:5173;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    # Proxy all other requests to SvelteKit server running on host
+    # Use host.docker.internal to access host machine from Docker
+    location / {
+        proxy_pass http://host.docker.internal:5173;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_cache_bypass $http_upgrade;
+    }
+}

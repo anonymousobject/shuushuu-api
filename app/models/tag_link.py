@@ -14,9 +14,13 @@ Note: TagLinks is a junction table connecting tags to images with metadata.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
+
+if TYPE_CHECKING:
+    from app.models.tag import Tags
 
 
 class TagLinkBase(SQLModel):
@@ -88,9 +92,9 @@ class TagLinks(TagLinkBase, table=True):
     # Internal field
     user_id: int | None = Field(default=None, foreign_key="users.user_id")
 
-    # Note: Relationships are intentionally omitted.
-    # Foreign keys are sufficient for queries, and omitting relationships avoids:
-    # - Circular import issues
-    # - Accidental eager loading
-    # - Unwanted auto-serialization in API responses
-    # If needed, relationships can be added selectively with proper lazy loading.
+    # Relationship to tag
+    tag: "Tags" = Relationship(
+        sa_relationship_kwargs={
+            "foreign_keys": "[TagLinks.tag_id]",
+        }
+    )

@@ -76,13 +76,24 @@ app = FastAPI(
 app.add_middleware(RequestLoggingMiddleware)
 
 # Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# SvelteKit's universal fetch requires CORS headers even on server-side requests
+# In development, use wildcard to allow SSR. In production, use specific origins.
+if settings.ENVIRONMENT == "development":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,  # Can't use credentials with wildcard
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.get("/")
@@ -106,3 +117,6 @@ async def health() -> dict[str, str]:
 from app.api.v1 import router as api_v1_router  # noqa: E402
 
 app.include_router(api_v1_router, prefix="/api/v1")
+
+# Note: Static images are served directly by nginx for better performance
+# See docker/nginx/frontend.conf.template for configuration

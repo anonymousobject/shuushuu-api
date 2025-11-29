@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # CORS
     # Allow str because it can be a comma-separated string in .env
     CORS_ORIGINS: str | list[str] = Field(
-        default=["http://localhost:3000", "http://localhost:8000"]
+        default=["http://localhost:5173", "http://localhost:8000"]
     )
     ALLOWED_HOSTS: str | list[str] = Field(default=["*"])
 
@@ -121,6 +121,11 @@ class Settings(BaseSettings):
 
     # Frontend URL (for email links, etc.)
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # Image Base URL (where images are served from - typically nginx in production)
+    # In development with FastAPI serving: http://localhost:8000
+    # In production with nginx: http://localhost:3000 (or your domain)
+    IMAGE_BASE_URL: str = "http://localhost:3000"
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

@@ -22,6 +22,7 @@ from fastapi import (
 )
 from sqlalchemy import asc, delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
@@ -32,6 +33,7 @@ from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
 from app.models import Favorites, ImageRatings, ImageReports, Images, TagLinks, Tags, Users
 from app.schemas.image import (
+    ImageDetailedResponse,
     ImageHashSearchResponse,
     ImageListResponse,
     ImageResponse,
@@ -236,23 +238,32 @@ async def list_images(
     )
 
 
-@router.get("/{image_id}", response_model=ImageResponse)
-async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageResponse:
+@router.get("/{image_id}", response_model=ImageDetailedResponse)
+async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageDetailedResponse:
     """
     Get a single image by ID.
 
     Returns detailed information about an image including metadata,
-    ratings, and statistics.
+    ratings, statistics, embedded user info, and tags.
     """
     result = await db.execute(
-        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+        select(Images)
+        # Load related user and tags with optimal strategies
+        # - selectinload for user: Simple 1:1, additional query is fine
+        # - joinedload for tags: Fetches everything in one query (faster for single image)
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),
+            joinedload(Images.tag_links).joinedload(TagLinks.tag),
+        )
+        .where(Images.image_id == image_id)
     )
-    image = result.scalar_one_or_none()
+    # unique() is required when using joinedload with collections to deduplicate rows
+    image = result.unique().scalar_one_or_none()
 
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    return ImageResponse.model_validate(image)
+    return ImageDetailedResponse.from_db_model(image)
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)
