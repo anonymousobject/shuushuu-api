@@ -31,16 +31,18 @@ class TagSummary(BaseModel):
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True, "populate_by_name": True}
 
+    # Cache reverse mapping from type_id to friendly name
+    _TYPE_NAME_MAP = {
+        getattr(TagType, attr_name): attr_name.replace("_", " ").title()
+        for attr_name in dir(TagType)
+        if not attr_name.startswith("_")
+    }
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def type_name(self) -> str:
         """Map type_id to friendly tag type name using TagType constant names"""
-        # Find the attribute name in TagType class that matches this type_id
-        for attr_name in dir(TagType):
-            if not attr_name.startswith("_"):
-                if getattr(TagType, attr_name) == self.type_id:
-                    return attr_name.replace("_", " ").title()
-        return "Unknown"
+        return self._TYPE_NAME_MAP.get(self.type_id, "Unknown")
 
 
 class ImageCreate(ImageBase):
