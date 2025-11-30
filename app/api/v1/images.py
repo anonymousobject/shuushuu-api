@@ -93,7 +93,9 @@ async def list_images(
     min_height: Annotated[int | None, Query(ge=1, description="Minimum height in pixels")] = None,
     max_height: Annotated[int | None, Query(ge=1, description="Maximum height in pixels")] = None,
     # Rating filtering
-    min_rating: Annotated[float | None, Query(ge=1, le=10, description="Minimum rating (1-10)")] = None,
+    min_rating: Annotated[
+        float | None, Query(ge=1, le=10, description="Minimum rating (1-10)")
+    ] = None,
     min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
     # Content filtering
     artist: Annotated[
