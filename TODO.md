@@ -8,28 +8,63 @@ Implement Redis caching for frequently accessed data to improve performance.
 
 ## Image Processing
 
-### Implement Image Variant Generation
+### ✅ Implement Image Variant Generation
 **Priority:** Medium
-**Status:** Not Started
+**Status:** ✅ COMPLETED (2025-11-30)
 
-The system currently has placeholder functions for generating medium and large image variants but they're not implemented.
+Medium and large image variants are now automatically generated during upload.
 
-**Tasks:**
-1. Implement medium variant generation (`app/services/image_processing.py:155`):
-   - Check if width or height > settings.MEDIUM_EDGE (1280px)
-   - Resize maintaining aspect ratio
-   - Save as YYYY-MM-DD-{image_id}-medium.{ext}
-   - Use settings.LARGE_QUALITY for compression
-2. Implement large variant generation (`app/services/image_processing.py:178`):
-   - Check if width or height > settings.LARGE_EDGE (2048px)
-   - Resize maintaining aspect ratio
-   - Save as YYYY-MM-DD-{image_id}-large.{ext}
-   - Use settings.LARGE_QUALITY for compression
+**Implementation:**
+- `create_medium_variant()` - Creates 1280px variants with file size validation
+- `create_large_variant()` - Creates 2048px variants with file size validation
+- File size check: Deletes variants if not smaller than original
+- Database updates: Sets `has_medium`/`has_large` to 0 when variants deleted
 
-**Files Affected:**
-- `app/services/image_processing.py` - `create_medium_variant()` and `create_large_variant()` functions
+**Files Modified:**
+- `app/services/image_processing.py` - Variant generation functions
+- `app/schemas/image.py` - Added `medium_url` and `large_url` fields
 
 ## API Features
+
+### Migrate Rating System from 1-10 to 1-5 Scale
+**Priority:** Low
+**Status:** Not Started
+
+The current system uses a 1-10 rating scale (910,409 existing ratings, avg 8.53). Consider migrating to a simpler 1-5 star system for better user experience.
+
+**Current State:**
+- Database: `tinyint(2)` storing 1-10 values
+- API validation: 1-10 (fixed 2025-11-30)
+- Average rating: 8.53/10
+- Total ratings: 910,409
+
+**Migration Tasks:**
+1. **Data Migration:**
+   - Create Alembic migration to convert ratings: `new_rating = ROUND(old_rating / 2)`
+   - Update `image_ratings` table: Convert all ratings proportionally
+   - Update `images` table: Recalculate `rating` and `bayesian_rating` fields
+
+2. **Code Changes:**
+   - Update API validation: `ge=1, le=5` in `app/api/v1/images.py`
+   - Update rating service: Adjust Bayesian formula for 1-5 scale
+   - Update documentation and API specs
+
+3. **Testing:**
+   - Test data conversion accuracy
+   - Verify Bayesian calculations work correctly
+   - Test API endpoints accept 1-5 range
+   - Load test with 900K+ rating updates
+
+**Considerations:**
+- **Data loss:** Some granularity lost (9→5, 10→5)
+- **Downtime:** May require brief maintenance window
+- **Rollback plan:** Keep backup of original ratings
+- **Frontend impact:** Update UI to show 5 stars instead of 10
+
+**Alternative:** Keep 1-10 scale (current decision)
+- No migration needed
+- More granular user feedback
+- Frontend can display as half-stars (1-10 = 0.5-5.0 stars)
 
 ### Tag Proposal/Review System
 **Priority:** Low

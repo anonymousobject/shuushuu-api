@@ -2,17 +2,156 @@
 Image processing utilities for validation, dimension extraction, and thumbnail generation.
 """
 
+import asyncio
 import hashlib
 from datetime import datetime
 from pathlib import Path as FilePath
 
 from fastapi import HTTPException, UploadFile, status
 from PIL import Image
+from sqlalchemy import update
 
 from app.config import settings
+from app.core.database import get_async_session
 from app.core.logging import bind_context, get_logger
 
 logger = get_logger(__name__)
+
+
+async def _update_image_variant_field(image_id: int, field: str, value: int) -> None:
+    """Update has_medium or has_large field in database.
+
+    Args:
+        image_id: Image ID to update
+        field: Field name ('medium' or 'large')
+        value: Value to set (0 or 1)
+    """
+    try:
+        from app.models.image import Images
+
+        async with get_async_session() as db:
+            stmt = update(Images).where(Images.image_id == image_id).values(**{field: value})
+            await db.execute(stmt)
+            await db.commit()
+    except Exception as e:
+        logger.error(
+            "failed_to_update_variant_field",
+            image_id=image_id,
+            field=field,
+            value=value,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+
+
+def _create_variant(
+    source_path: FilePath,
+    image_id: int,
+    ext: str,
+    storage_path: str,
+    width: int,
+    height: int,
+    size_threshold: int,
+    variant_type: str,
+) -> bool:
+    """Create an image variant (medium or large) with size validation.
+
+    Args:
+        source_path: Path to the original image file
+        image_id: Database ID of the image
+        ext: File extension (jpg, png, etc.)
+        storage_path: Base storage directory path
+        width: Original image width
+        height: Original image height
+        size_threshold: Maximum edge size (MEDIUM_EDGE or LARGE_EDGE)
+        variant_type: Type of variant ('medium' or 'large')
+
+    Returns:
+        True if variant was created and kept, False otherwise
+    """
+    # Check if image exceeds threshold
+    if width <= size_threshold and height <= size_threshold:
+        return False
+
+    # Bind context for this background task
+    bind_context(task=f"{variant_type}_variant_generation", image_id=image_id)
+
+    try:
+        logger.info(f"{variant_type}_variant_generation_started", source_path=str(source_path))
+
+        # Create variant directory if it doesn't exist
+        variant_dir = FilePath(storage_path) / variant_type
+        variant_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate variant filename
+        date_prefix = datetime.now().strftime("%Y-%m-%d")
+        variant_filename = f"{date_prefix}-{image_id}.{ext}"
+        variant_path = variant_dir / variant_filename
+
+        # Open image and create variant
+        with Image.open(source_path) as img:
+            original_size = img.size
+
+            # Convert RGBA to RGB for JPEG compatibility
+            if img.mode in ("RGBA", "LA") and ext.lower() in ("jpg", "jpeg"):
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+                img = background
+
+            # Calculate variant size maintaining aspect ratio
+            img.thumbnail(
+                (size_threshold, size_threshold),
+                Image.Resampling.LANCZOS,  # High-quality downsampling
+            )
+
+            # Save variant with quality setting
+            save_kwargs = {}
+            if ext.lower() in ("jpg", "jpeg"):
+                save_kwargs["quality"] = settings.LARGE_QUALITY
+                save_kwargs["optimize"] = True
+            elif ext.lower() == "webp":
+                save_kwargs["quality"] = settings.LARGE_QUALITY
+
+            img.save(variant_path, **save_kwargs)
+
+            # Check file sizes - delete variant if it's not smaller than original
+            original_file_size = source_path.stat().st_size
+            variant_file_size = variant_path.stat().st_size
+
+            if variant_file_size >= original_file_size:
+                # Variant is not smaller, delete it
+                variant_path.unlink()
+                logger.info(
+                    f"{variant_type}_variant_deleted_larger_than_original",
+                    variant_path=str(variant_path),
+                    original_size=original_size,
+                    variant_size=img.size,
+                    original_file_size=original_file_size,
+                    variant_file_size=variant_file_size,
+                )
+                # Update database to reflect that variant doesn't exist
+                asyncio.run(_update_image_variant_field(image_id, variant_type, 0))
+                return False
+
+            logger.info(
+                f"{variant_type}_variant_generated",
+                variant_path=str(variant_path),
+                original_size=original_size,
+                variant_size=img.size,
+                original_file_size=original_file_size,
+                variant_file_size=variant_file_size,
+            )
+
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"{variant_type}_variant_generation_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            source_path=str(source_path),
+        )
+        return False
 
 
 def calculate_md5(file_path: FilePath) -> str:
@@ -152,22 +291,27 @@ def create_medium_variant(
 ) -> bool:
     """Create medium-size variant if image is larger than MEDIUM_EDGE.
 
-    TODO: Implement medium variant generation
-    - Check if width or height > settings.MEDIUM_EDGE (1280px)
-    - Resize maintaining aspect ratio
-    - Save as YYYY-MM-DD-{image_id}-medium.{ext}
-    - Use settings.LARGE_QUALITY for compression
+    Args:
+        source_path: Path to the original image file
+        image_id: Database ID of the image
+        ext: File extension (jpg, png, etc.)
+        storage_path: Base storage directory path
+        width: Original image width
+        height: Original image height
 
     Returns:
         True if medium variant was created, False otherwise
     """
-    # Placeholder - always return False (not created)
-    # When implemented:
-    # if width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE:
-    #     # Create resized version
-    #     # Save to fullsize/YYYY-MM-DD-{image_id}-medium.{ext}
-    #     return True
-    return False
+    return _create_variant(
+        source_path=source_path,
+        image_id=image_id,
+        ext=ext,
+        storage_path=storage_path,
+        width=width,
+        height=height,
+        size_threshold=settings.MEDIUM_EDGE,
+        variant_type="medium",
+    )
 
 
 def create_large_variant(
@@ -175,19 +319,24 @@ def create_large_variant(
 ) -> bool:
     """Create large-size variant if image is larger than LARGE_EDGE.
 
-    TODO: Implement large variant generation
-    - Check if width or height > settings.LARGE_EDGE (2048px)
-    - Resize maintaining aspect ratio
-    - Save as YYYY-MM-DD-{image_id}-large.{ext}
-    - Use settings.LARGE_QUALITY for compression
+    Args:
+        source_path: Path to the original image file
+        image_id: Database ID of the image
+        ext: File extension (jpg, png, etc.)
+        storage_path: Base storage directory path
+        width: Original image width
+        height: Original image height
 
     Returns:
         True if large variant was created, False otherwise
     """
-    # Placeholder - always return False (not created)
-    # When implemented:
-    # if width > settings.LARGE_EDGE or height > settings.LARGE_EDGE:
-    #     # Create resized version
-    #     # Save to fullsize/YYYY-MM-DD-{image_id}-large.{ext}
-    #     return True
-    return False
+    return _create_variant(
+        source_path=source_path,
+        image_id=image_id,
+        ext=ext,
+        storage_path=storage_path,
+        width=width,
+        height=height,
+        size_threshold=settings.LARGE_EDGE,
+        variant_type="large",
+    )

@@ -96,6 +96,18 @@ class ImageResponse(ImageBase):
         """Generate thumbnail URL"""
         return f"{settings.IMAGE_BASE_URL}/storage/thumbs/{self.filename}.jpeg"  # Currently all thumbs are jpeg
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def medium_url(self) -> str:
+        """Generate medium variant URL (1280px edge)"""
+        return f"{settings.IMAGE_BASE_URL}/storage/medium/{self.filename}.{self.ext}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def large_url(self) -> str:
+        """Generate large variant URL (2048px edge)"""
+        return f"{settings.IMAGE_BASE_URL}/storage/large/{self.filename}.{self.ext}"
+
 
 class ImageDetailedResponse(ImageResponse):
     """
