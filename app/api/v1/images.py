@@ -93,7 +93,9 @@ async def list_images(
     min_height: Annotated[int | None, Query(ge=1, description="Minimum height in pixels")] = None,
     max_height: Annotated[int | None, Query(ge=1, description="Maximum height in pixels")] = None,
     # Rating filtering
-    min_rating: Annotated[float | None, Query(ge=0, le=5, description="Minimum rating")] = None,
+    min_rating: Annotated[
+        float | None, Query(ge=1, le=10, description="Minimum rating (1-10)")
+    ] = None,
     min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
     # Content filtering
     artist: Annotated[
@@ -523,18 +525,18 @@ async def remove_tag_from_image(
 @router.post("/{image_id}/rating", status_code=status.HTTP_201_CREATED)
 async def rate_image(
     image_id: Annotated[int, Path(description="Image ID")],
-    rating: Annotated[int, Query(ge=0, le=10, description="Rating value (0-10)")],
+    rating: Annotated[int, Query(ge=1, le=10, description="Rating value (1-10)")],
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """
-    Rate an image (0-10 scale).
+    Rate an image (1-10 scale).
 
     Users can rate any image once. If they rate again, their previous rating is updated.
 
     Args:
         image_id: The image to rate
-        rating: Rating value from 0 to 10
+        rating: Rating value from 1 to 10
 
     Returns:
         Success message indicating if rating was created or updated

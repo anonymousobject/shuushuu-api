@@ -92,7 +92,7 @@ services:
           path: ./alembic
           target: /app/alembic
     restart: unless-stopped
-  
+
   frontend:
     build:
       context: ../shuushuu-frontend
