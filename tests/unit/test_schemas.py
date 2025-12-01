@@ -63,6 +63,8 @@ class TestImageSchemas:
             "favorites": 0,
             "bayesian_rating": 0.0,
             "num_ratings": 0,
+            "medium": 0,
+            "large": 0,
         }
         image = ImageResponse(**data)
         assert image.image_id == 123
