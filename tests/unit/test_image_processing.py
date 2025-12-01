@@ -4,6 +4,7 @@ Tests for image processing utilities.
 
 import tempfile
 from pathlib import Path
+from datetime import datetime
 
 import pytest
 from PIL import Image
@@ -94,7 +95,7 @@ class TestCreateMediumVariant:
         assert medium_dir.exists()
 
         # Check that variant file exists with correct naming
-        from datetime import datetime
+
 
         date_prefix = datetime.now().strftime("%Y-%m-%d")
         expected_filename = f"{date_prefix}-{image_id}.{ext}"
@@ -163,8 +164,6 @@ class TestCreateLargeVariant:
         assert large_dir.exists()
 
         # Check that variant file exists with correct naming
-        from datetime import datetime
-
         date_prefix = datetime.now().strftime("%Y-%m-%d")
         expected_filename = f"{date_prefix}-{image_id}.{ext}"
         variant_path = large_dir / expected_filename
@@ -232,8 +231,6 @@ class TestFileSizeValidation:
         )
 
         # Get variant path
-        from datetime import datetime
-
         medium_dir = Path(temp_storage) / "medium"
         date_prefix = datetime.now().strftime("%Y-%m-%d")
         expected_filename = f"{date_prefix}-{image_id}.{ext}"
@@ -278,8 +275,6 @@ class TestFileSizeValidation:
         )
 
         # Get variant path
-        from datetime import datetime
-
         large_dir = Path(temp_storage) / "large"
         date_prefix = datetime.now().strftime("%Y-%m-%d")
         expected_filename = f"{date_prefix}-{image_id}.{ext}"

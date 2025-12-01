@@ -265,7 +265,8 @@ async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageD
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    return ImageDetailedResponse.from_db_model(image)
+    # return ImageDetailedResponse.from_db_model(image)
+    return ImageDetailedResponse.model_validate(image)
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)

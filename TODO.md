@@ -166,3 +166,18 @@ These need to be converted to Markdown format for consistency with the new API.
 - Consider keeping BBCode parser temporarily for backwards compatibility
 - May need dual-mode rendering during transition period
 - Check if any users have BBCode in their private messages (shouldn't exist but verify)
+
+
+## JPEG extension Standardization
+**Priority:** Low
+**Status:** Not Started
+
+Standardize all JPEG file extensions to `.jpg` in database and codebase.
+
+**Tasks:**
+1. Create migration to update `filename` fields in `images` table:
+   - Change `.jpeg` extensions to `.jpg`
+2. Update code references to use `.jpg` consistently
+   - `app/schemas/image.py` - `thumbnail_url` property
+3. Rename all .jpeg files in storage to .jpg
+4. Test image retrieval to ensure no broken links

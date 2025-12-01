@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 
 async def _update_image_variant_field(image_id: int, field: str, value: int) -> None:
-    """Update has_medium or has_large field in database.
+    """Update medium or large field in database.
 
     Args:
         image_id: Image ID to update
@@ -130,6 +130,9 @@ def _create_variant(
                     variant_file_size=variant_file_size,
                 )
                 # Update database to reflect that variant doesn't exist
+                # Note: asyncio.run() is safe here because this function runs in FastAPI's
+                # background task thread pool where no event loop exists. asyncio.run()
+                # creates a new event loop in the thread for this async DB operation.
                 asyncio.run(_update_image_variant_field(image_id, variant_type, 0))
                 return False
 

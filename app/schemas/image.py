@@ -82,6 +82,8 @@ class ImageResponse(ImageBase):
     favorites: int
     bayesian_rating: float
     num_ratings: int
+    medium: int
+    large: int
 
     # Computed fields
     @computed_field  # type: ignore[prop-decorator]
@@ -98,15 +100,19 @@ class ImageResponse(ImageBase):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def medium_url(self) -> str:
-        """Generate medium variant URL (1280px edge)"""
-        return f"{settings.IMAGE_BASE_URL}/storage/medium/{self.filename}.{self.ext}"
+    def medium_url(self) -> str | None:
+        """Generate medium variant URL (1280px edge) if available"""
+        if self.medium:
+            return f"{settings.IMAGE_BASE_URL}/storage/medium/{self.filename}.{self.ext}"
+        return None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def large_url(self) -> str:
-        """Generate large variant URL (2048px edge)"""
-        return f"{settings.IMAGE_BASE_URL}/storage/large/{self.filename}.{self.ext}"
+    def large_url(self) -> str | None:
+        """Generate large variant URL (2048px edge) if available"""
+        if self.large:
+            return f"{settings.IMAGE_BASE_URL}/storage/large/{self.filename}.{self.ext}"
+        return None
 
 
 class ImageDetailedResponse(ImageResponse):
