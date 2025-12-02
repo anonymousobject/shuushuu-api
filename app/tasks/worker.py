@@ -14,6 +14,7 @@ from app.tasks.image_jobs import (
     create_thumbnail_job,
     create_variant_job,
 )
+from app.tasks.rating_jobs import recalculate_rating_job
 
 
 async def startup(ctx: dict) -> None:
@@ -51,4 +52,5 @@ class WorkerSettings:
         Function(create_thumbnail_job, name="create_thumbnail", max_tries=3),
         Function(create_variant_job, name="create_variant", max_tries=3),
         Function(add_to_iqdb_job, name="add_to_iqdb", max_tries=3),
+        Function(recalculate_rating_job, name="recalculate_rating", max_tries=3),
     ]
