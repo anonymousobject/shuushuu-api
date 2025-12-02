@@ -167,7 +167,7 @@ services:
 
         EXPOSE 5588
         ENTRYPOINT ["/iqdb-server"]
-        CMD ["--database", "iqdb.sqlite"]
+        CMD ["--database", "/data/iqdb.sqlite"]
     container_name: shuushuu-iqdb
     command: ["--database", "/data/iqdb.sqlite"]
     ports:
