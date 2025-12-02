@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.core.database import get_db
@@ -42,7 +43,12 @@ async def get_favorite_images(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Get user's favorite images
-    query = select(Images).join(Favorites).where(Favorites.user_id == user_id)  # type: ignore[arg-type]
+    query = (
+        select(Images)
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .join(Favorites)
+        .where(Favorites.user_id == user_id)  # type: ignore[arg-type]
+    )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())

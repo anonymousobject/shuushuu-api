@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Path, UploadFile, status
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.core.auth import get_current_user, get_current_user_id
@@ -369,7 +370,11 @@ async def get_user_images(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Get user's images
-    query = select(Images).where(Images.user_id == user_id)  # type: ignore[arg-type]
+    query = (
+        select(Images)
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .where(Images.user_id == user_id)  # type: ignore[arg-type]
+    )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -433,7 +438,12 @@ async def get_user_favorites(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Get user's favorite images
-    query = select(Images).join(Favorites).where(Favorites.user_id == user_id)  # type: ignore[arg-type]
+    query = (
+        select(Images)
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .join(Favorites)
+        .where(Favorites.user_id == user_id)  # type: ignore[arg-type]
+    )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
