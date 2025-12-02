@@ -224,6 +224,7 @@ async def list_images(
     # Note: Must re-apply ORDER BY since JOIN doesn't preserve subquery order
     final_query = (
         select(Images)
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
         .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
         .order_by(subquery_order)  # Re-apply same sort order
     )
