@@ -580,7 +580,7 @@ async def rate_image(
     await db.commit()
 
     # Schedule background recalculation (non-blocking)
-    schedule_rating_recalculation(image_id)
+    await schedule_rating_recalculation(image_id)
 
     return {"message": message}
 

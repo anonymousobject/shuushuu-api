@@ -4,7 +4,6 @@ Rating calculation service.
 Provides utilities for calculating and updating image rating statistics.
 """
 
-import asyncio
 import logging
 
 from sqlalchemy import func, select, update
@@ -87,36 +86,15 @@ async def recalculate_image_ratings(db: AsyncSession, image_id: int) -> None:
     )
 
 
-def schedule_rating_recalculation(image_id: int) -> None:
+async def schedule_rating_recalculation(image_id: int) -> None:
     """
-    Schedule a background task to recalculate image ratings.
+    Schedule a background job to recalculate image ratings using arq.
 
-    This runs asynchronously without blocking the API response.
-    Uses asyncio.create_task() which requires the event loop to be running.
-
-    Note: This is a simple fire-and-forget approach. For production,
-    maybe something like arq or celery would be better.
+    This enqueues the job to the arq worker for async processing with retries.
 
     Args:
         image_id: ID of the image to recalculate ratings for
     """
-    from app.core.database import get_async_session
+    from app.tasks.queue import enqueue_job
 
-    async def _background_task() -> None:
-        """Background task to recalculate ratings with its own DB session."""
-        logger.info(f"🔄 Starting background rating calculation for image {image_id}")
-        async with get_async_session() as db:
-            try:
-                await recalculate_image_ratings(db, image_id)
-                await db.commit()
-                logger.info(f"✅ Completed rating calculation for image {image_id}")
-            except Exception as e:
-                # Log error but don't crash
-                logger.error(
-                    f"❌ Error recalculating ratings for image {image_id}: {e}",
-                    exc_info=True,
-                )
-                await db.rollback()
-
-    # Schedule the task in the background
-    asyncio.create_task(_background_task())
+    await enqueue_job("recalculate_rating", image_id=image_id)
