@@ -9,7 +9,6 @@ from typing import Annotated
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -53,6 +52,7 @@ from app.services.image_processing import (
 from app.services.iqdb import add_to_iqdb, check_iqdb_similarity
 from app.services.rating import schedule_rating_recalculation
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
+from app.tasks.queue import enqueue_job
 
 logger = get_logger(__name__)
 
@@ -588,7 +588,6 @@ async def rate_image(
 @router.post("/upload", response_model=ImageUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_image(
     request: Request,
-    background_tasks: BackgroundTasks,
     current_user: Annotated[Users, Depends(get_current_user)],
     file: Annotated[UploadFile, File(description="Image file to upload")],
     caption: Annotated[str, Form(max_length=35)] = "",
@@ -748,46 +747,50 @@ async def upload_image(
             has_tags=bool(tag_ids.strip()),
         )
 
-        # Schedule thumbnail generation in background
-        background_tasks.add_task(
-            create_thumbnail,
-            source_path=file_path,
+        # Schedule thumbnail generation
+        await enqueue_job(
+            "create_thumbnail",
             image_id=image_id,
+            source_path=str(file_path),
             ext=ext,
             storage_path=settings.STORAGE_PATH,
         )
-        logger.debug("thumbnail_task_scheduled", image_id=image_id)
+        logger.debug("thumbnail_job_enqueued", image_id=image_id)
 
-        # Schedule medium variant generation if needed (placeholder)
+        # Schedule medium variant generation if needed
         if has_medium:
-            background_tasks.add_task(
-                create_medium_variant,
-                source_path=file_path,
+            await enqueue_job(
+                "create_variant",
                 image_id=image_id,
+                source_path=str(file_path),
                 ext=ext,
                 storage_path=settings.STORAGE_PATH,
                 width=width,
                 height=height,
+                variant_type="medium",
             )
 
-        # Schedule large variant generation if needed (placeholder)
+        # Schedule large variant generation if needed
         if has_large:
-            background_tasks.add_task(
-                create_large_variant,
-                source_path=file_path,
+            await enqueue_job(
+                "create_variant",
                 image_id=image_id,
+                source_path=str(file_path),
                 ext=ext,
                 storage_path=settings.STORAGE_PATH,
                 width=width,
                 height=height,
+                variant_type="large",
             )
 
-        # Add to IQDB index for future similarity searches (placeholder)
+        # Add to IQDB index AFTER thumbnail is created
+        # Use defer to ensure thumbnail completes first (simple approach)
         thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{date_prefix}-{image_id}.{ext}"
-        background_tasks.add_task(
-            add_to_iqdb,
+        await enqueue_job(
+            "add_to_iqdb",
             image_id=image_id,
-            thumb_path=thumb_path,
+            thumb_path=str(thumb_path),
+            _defer_by=5.0,  # Wait 5 seconds for thumbnail to complete
         )
 
         # Build response
