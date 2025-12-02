@@ -34,8 +34,8 @@ dependencies = [
     "structlog>=24.1.0",
     "python-json-logger>=2.0.7",
 
-    # Future dependencies (commented out for now):
-    # "arq>=0.26.0",  # Task queue - may be used for background jobs
+    # Task queue
+    "arq>=0.26.0",  # Task queue for background jobs
     # "python-magic>=0.4.27",  # File type detection - for validating image uploads
     # "slowapi>=0.1.9",  # Rate limiting - for API throttling
     # "python-multipart>=0.0.9",  # Multipart form data - needed for image uploads
