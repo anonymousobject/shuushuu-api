@@ -94,17 +94,10 @@ def add_to_iqdb(image_id: int, thumb_path: FilePath) -> None:
     Note: Errors are silently ignored as this is non-critical.
     """
     try:
-        # Wait for thumbnail to be created (it's also a background task)
-        # Check if file exists with short retry loop
-        import time
-
-        max_retries = 20
-        for _ in range(max_retries):
-            if thumb_path.exists():
-                break
-            time.sleep(0.5)  # Wait 500ms between checks
-        else:
-            # Thumbnail not ready after 10 seconds, skip IQDB insertion
+        # Thumbnail should exist (job ordering handled by arq defer)
+        if not thumb_path.exists():
+            # Log warning but don't crash
+            logger.warning("iqdb_thumbnail_missing", image_id=image_id, path=str(thumb_path))
             return
 
         iqdb_url = f"http://{settings.IQDB_HOST}:{settings.IQDB_PORT}/images/{image_id}"
