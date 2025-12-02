@@ -6,7 +6,7 @@ Run worker with: uv run arq app.tasks.worker.WorkerSettings
 
 from arq import create_pool
 from arq.connections import RedisSettings
-from arq.worker import Function
+from arq.worker import func
 
 from app.config import settings
 from app.tasks.image_jobs import (
@@ -48,9 +48,9 @@ class WorkerSettings:
     on_shutdown = shutdown
 
     # Job functions
-    functions: list[Function] = [
-        Function(create_thumbnail_job, name="create_thumbnail", max_tries=3),
-        Function(create_variant_job, name="create_variant", max_tries=3),
-        Function(add_to_iqdb_job, name="add_to_iqdb", max_tries=3),
-        Function(recalculate_rating_job, name="recalculate_rating", max_tries=3),
+    functions = [
+        func(create_thumbnail_job, max_tries=3),
+        func(create_variant_job, max_tries=3),
+        func(add_to_iqdb_job, max_tries=3),
+        func(recalculate_rating_job, max_tries=3),
     ]
