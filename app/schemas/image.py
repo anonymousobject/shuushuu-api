@@ -75,6 +75,7 @@ class ImageResponse(ImageBase):
 
     image_id: int
     user_id: int
+    user: UserSummary | None = None  # Embedded user data (optional, loaded with selectinload)
     date_added: datetime | None = None
     status: int
     locked: int

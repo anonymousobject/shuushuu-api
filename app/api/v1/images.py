@@ -224,6 +224,7 @@ async def list_images(
     # Note: Must re-apply ORDER BY since JOIN doesn't preserve subquery order
     final_query = (
         select(Images)
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
         .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
         .order_by(subquery_order)  # Re-apply same sort order
     )
@@ -306,7 +307,9 @@ async def search_by_hash(
     Useful for duplicate detection and reverse image search.
     """
     result = await db.execute(
-        select(Images).where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
+        select(Images)
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
     )
     images = result.scalars().all()
 
@@ -398,7 +401,9 @@ async def get_bookmark_image(
         raise HTTPException(status_code=404, detail="No bookmarked image set for user")
 
     result = await db.execute(
-        select(Images).where(Images.image_id == current_user.bookmark)  # type: ignore[arg-type]
+        select(Images)
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .where(Images.image_id == current_user.bookmark)  # type: ignore[arg-type]
     )
     image = result.scalar_one_or_none()
 

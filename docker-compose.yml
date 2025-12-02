@@ -148,17 +148,32 @@ services:
 
   # IQDB (Image similarity search)
   iqdb:
-    build: https://github.com/TheBobBobs/iqdb-rs.git#main
+    build:
+      context: https://github.com/TheBobBobs/iqdb-rs.git#main
+      dockerfile_inline: |
+        FROM rust:latest as builder
+        ARG TARGET_CPU="x86-64-v3"
+        ARG TARGET_FEATURES=""
+        ARG CARGO_ARGS="--features multi-thread"
+        WORKDIR /usr/src/iqdb-rs
+        COPY lib/ lib/
+        COPY server/ server/
+        COPY Cargo.toml rust-toolchain.toml ./
+        RUN RUSTFLAGS="-C target-feature=+crt-static,$${TARGET_FEATURES} -C target-cpu=$${TARGET_CPU}" cargo build --profile release-lto --target x86_64-unknown-linux-gnu $${CARGO_ARGS}
+
+        FROM scratch
+        WORKDIR /iqdb
+        COPY --from=builder /usr/src/iqdb-rs/target/x86_64-unknown-linux-gnu/release-lto/iqdb-server /iqdb-server
+
+        EXPOSE 5588
+        ENTRYPOINT ["/iqdb-server"]
+        CMD ["--database", "/data/iqdb.sqlite"]
     container_name: shuushuu-iqdb
     command: ["--database", "/data/iqdb.sqlite"]
     ports:
       - "5588:5588"
     volumes:
       - iqdb_data:/data
-    develop:
-      watch:
-        - action: rebuild
-          path: https://github.com/TheBobBobs/iqdb-rs.git#main
     restart: unless-stopped
 
   # Adminer (Database management UI)
