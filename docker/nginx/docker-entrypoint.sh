@@ -4,7 +4,7 @@
 set -e
 
 # Default STORAGE_PATH if not set
-export STORAGE_PATH=${STORAGE_PATH:-/sakura/shuushuu/images}
+export STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
 
 echo "Substituting environment variables in nginx config..."
 echo "STORAGE_PATH: $STORAGE_PATH"

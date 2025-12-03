@@ -93,11 +93,11 @@ services:
           target: /app/alembic
     restart: unless-stopped
 
-  frontend:
+  nginx:
     build:
-      context: ../shuushuu-frontend
+      context: .
       dockerfile: Dockerfile.nginx
-    container_name: shuushuu-frontend
+    container_name: shuushuu-nginx
     environment:
       - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
     volumes:
