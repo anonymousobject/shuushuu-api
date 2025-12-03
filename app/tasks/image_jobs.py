@@ -104,7 +104,9 @@ async def create_variant_job(
             storage_path=storage_path,
             width=width,
             height=height,
-            size_threshold=settings.MEDIUM_EDGE if variant_type == "medium" else settings.LARGE_EDGE,
+            size_threshold=settings.MEDIUM_EDGE
+            if variant_type == "medium"
+            else settings.LARGE_EDGE,
             variant_type=variant_type,
         )
 

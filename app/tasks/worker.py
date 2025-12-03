@@ -31,6 +31,7 @@ async def shutdown(ctx: dict) -> None:
     logger = get_logger(__name__)
     logger.info("arq_worker_shutdown")
 
+
 class WorkerSettings:
     """ARQ worker configuration."""
 
