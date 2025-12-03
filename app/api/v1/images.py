@@ -43,13 +43,8 @@ from app.schemas.image import (
 )
 from app.schemas.report import ReportCreate, ReportResponse
 from app.schemas.user import UserListResponse, UserResponse
-from app.services.image_processing import (
-    create_large_variant,
-    create_medium_variant,
-    create_thumbnail,
-    get_image_dimensions,
-)
-from app.services.iqdb import add_to_iqdb, check_iqdb_similarity
+from app.services.image_processing import get_image_dimensions
+from app.services.iqdb import check_iqdb_similarity
 from app.services.rating import schedule_rating_recalculation
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job

@@ -4,7 +4,6 @@ ARQ worker configuration and job definitions.
 Run worker with: uv run arq app.tasks.worker.WorkerSettings
 """
 
-from arq import create_pool
 from arq.connections import RedisSettings
 from arq.worker import func
 
