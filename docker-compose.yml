@@ -114,37 +114,48 @@ services:
       - api
     restart: unless-stopped
 
-  # Arq Worker (optional - uncomment to enable)
-  # arq-worker:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: shuushuu-arq-worker
-  #   command: uv run arq app.tasks.worker.WorkerSettings
-  #   environment:
-  #     - ENVIRONMENT=${ENVIRONMENT:-development}
-  #     - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
-  #     - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-  #     - ARQ_REDIS_URL=${ARQ_REDIS_URL:-redis://redis:6379/1}
-  #     - SECRET_KEY=${SECRET_KEY}
-  #   volumes:
-  #     - .:/app
-  #     - ./storage:/shuushuu/images
-  #   depends_on:
-  #     - redis
-  #     - mariadb
-  #   develop:
-  #     watch:
-  #       - action: rebuild
-  #         path: ./Dockerfile
-  #       - action: rebuild
-  #         path: ./pyproject.toml
-  #       - action: rebuild
-  #         path: ./uv.lock
-  #       - action: sync
-  #         path: ./app
-  #         target: /app/app
-  #   restart: unless-stopped
+  # Arq Worker - Background job processing
+  arq-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shuushuu-arq-worker
+    command: uv run arq app.tasks.worker.WorkerSettings
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - ARQ_REDIS_URL=${ARQ_REDIS_URL:-redis://redis:6379/1}
+      - SECRET_KEY=${SECRET_KEY}
+      - IQDB_HOST=iqdb
+      - IQDB_PORT=${IQDB_PORT:-5588}
+      - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
+      # Prevent Python from writing pyc files
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - .:/app
+      - ${STORAGE_PATH:-./storage}:${STORAGE_PATH:-/shuushuu/images}
+      # Anonymous volumes to isolate container artifacts
+      - /app/.venv
+      - /app/.pytest_cache
+      - /app/.ruff_cache
+    depends_on:
+      redis:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: rebuild
+          path: ./Dockerfile
+        - action: rebuild
+          path: ./pyproject.toml
+        - action: rebuild
+          path: ./uv.lock
+        - action: sync
+          path: ./app
+          target: /app/app
+    restart: unless-stopped
 
   # IQDB (Image similarity search)
   iqdb:

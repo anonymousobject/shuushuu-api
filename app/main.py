@@ -18,6 +18,7 @@ from app.core.logging import (
     get_logger,
     set_request_context,
 )
+from app.tasks.queue import close_queue
 
 # Configure logging on module import
 configure_logging()
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("application_shutting_down")
+    await close_queue()  # Close arq pool
 
 
 # Create FastAPI application
