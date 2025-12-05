@@ -45,6 +45,9 @@ from app.models.review_vote import ReviewVotes
 from app.models.tag import Tags
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
+from app.models.tag_mapping import TagMapping
+from app.models.tag_suggestion import TagSuggestion
+from app.models.ml_model_version import MLModelVersion
 from app.models.user import Users
 from app.models.user_session import UserSessions
 
@@ -82,4 +85,8 @@ __all__ = [
     "EvaTheme",
     "Tips",
     "Quicklinks",
+    # Tag suggestion system
+    "TagSuggestion",
+    "TagMapping",
+    "MLModelVersion",
 ]
