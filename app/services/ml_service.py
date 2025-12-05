@@ -7,7 +7,6 @@ PHASE 2: Replace with real model inference.
 
 import asyncio
 import random
-from typing import List, Dict
 
 
 class MockModel:
@@ -32,7 +31,7 @@ class MockModel:
                 169: 0.78,    # blonde hair
             }
 
-    async def predict(self, image_path: str) -> List[Dict]:
+    async def predict(self, _image_path: str) -> list[dict]:
         """Mock prediction - returns hardcoded suggestions"""
         # Simulate inference delay
         await asyncio.sleep(0.1)
@@ -78,7 +77,7 @@ class MLTagSuggestionService:
         self,
         image_path: str,
         min_confidence: float = 0.6
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Generate tag suggestions for an image.
 
@@ -106,9 +105,9 @@ class MLTagSuggestionService:
 
     def _merge_predictions(
         self,
-        custom_preds: List[Dict],
-        danbooru_preds: List[Dict]
-    ) -> List[Dict]:
+        custom_preds: list[dict],
+        danbooru_preds: list[dict]
+    ) -> list[dict]:
         """
         Merge predictions from both models.
 
