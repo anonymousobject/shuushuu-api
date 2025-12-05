@@ -8,12 +8,14 @@ from arq.connections import RedisSettings
 from arq.worker import func
 
 from app.config import settings
+from app.services.ml_service import MLTagSuggestionService
 from app.tasks.image_jobs import (
     add_to_iqdb_job,
     create_thumbnail_job,
     create_variant_job,
 )
 from app.tasks.rating_jobs import recalculate_rating_job
+from app.tasks.tag_suggestion_job import generate_tag_suggestions
 
 
 async def startup(ctx: dict) -> None:
@@ -23,6 +25,12 @@ async def startup(ctx: dict) -> None:
     logger = get_logger(__name__)
     logger.info("arq_worker_starting", redis_url=settings.ARQ_REDIS_URL)
 
+    # Initialize ML service for tag suggestions
+    ml_service = MLTagSuggestionService()
+    await ml_service.load_models()
+    ctx["ml_service"] = ml_service
+    logger.info("ml_service_initialized")
+
 
 async def shutdown(ctx: dict) -> None:
     """Worker shutdown - cleanup resources."""
@@ -30,6 +38,11 @@ async def shutdown(ctx: dict) -> None:
 
     logger = get_logger(__name__)
     logger.info("arq_worker_shutdown")
+
+    # Cleanup ML service if present
+    if "ml_service" in ctx:
+        await ctx["ml_service"].cleanup()
+        logger.info("ml_service_cleaned_up")
 
 
 class WorkerSettings:
@@ -53,4 +66,5 @@ class WorkerSettings:
         func(create_variant_job, max_tries=3),
         func(add_to_iqdb_job, max_tries=3),
         func(recalculate_rating_job, max_tries=3),
+        func(generate_tag_suggestions, max_tries=3),
     ]
