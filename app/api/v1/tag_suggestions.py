@@ -75,23 +75,24 @@ async def get_tag_suggestions(
     result = await db.execute(query.order_by(TagSuggestion.confidence.desc()))
     suggestions = result.scalars().all()
 
-    # Get tag details for each suggestion
-    suggestion_responses = []
-    for sugg in suggestions:
-        tag_result = await db.execute(select(Tags).where(Tags.tag_id == sugg.tag_id))
-        tag = tag_result.scalar_one()
+    # Batch fetch all tags in one query to avoid N+1 problem
+    tag_ids = [sugg.tag_id for sugg in suggestions]
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id.in_(tag_ids)))
+    tags_by_id = {tag.tag_id: tag for tag in tag_result.scalars().all()}
 
-        suggestion_responses.append(
-            TagSuggestionResponse(
-                suggestion_id=sugg.suggestion_id,
-                tag=TagResponse.model_validate(tag),
-                confidence=sugg.confidence,
-                model_source=sugg.model_source,
-                status=sugg.status,
-                created_at=sugg.created_at,
-                reviewed_at=sugg.reviewed_at,
-            )
+    # Build suggestion responses
+    suggestion_responses = [
+        TagSuggestionResponse(
+            suggestion_id=sugg.suggestion_id,
+            tag=TagResponse.model_validate(tags_by_id[sugg.tag_id]),
+            confidence=sugg.confidence,
+            model_source=sugg.model_source,
+            status=sugg.status,
+            created_at=sugg.created_at,
+            reviewed_at=sugg.reviewed_at,
         )
+        for sugg in suggestions
+    ]
 
     # Count by status (for all suggestions, not just filtered ones)
     status_counts_result = await db.execute(
