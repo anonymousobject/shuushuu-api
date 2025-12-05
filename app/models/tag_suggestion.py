@@ -6,11 +6,11 @@ Tag Suggestion Model
 Stores ML-generated tag suggestions for images that require human review.
 """
 
-from datetime import datetime, UTC
-from typing import Optional
+from datetime import UTC, datetime
 
-from sqlmodel import SQLModel, Field, Column
-from sqlalchemy import Enum as SQLEnum, UniqueConstraint
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import UniqueConstraint
+from sqlmodel import Column, Field, SQLModel
 
 
 class TagSuggestion(SQLModel, table=True):
@@ -24,29 +24,26 @@ class TagSuggestion(SQLModel, table=True):
     """
 
     __tablename__ = "tag_suggestions"
-    __table_args__ = (
-        UniqueConstraint('image_id', 'tag_id', name='uq_image_tag'),
-    )
+    __table_args__ = (UniqueConstraint("image_id", "tag_id", name="uq_image_tag"),)
 
-    suggestion_id: Optional[int] = Field(default=None, primary_key=True)
+    suggestion_id: int | None = Field(default=None, primary_key=True)
     image_id: int = Field(foreign_key="images.image_id", index=True)
     tag_id: int = Field(foreign_key="tags.tag_id", index=True)
     confidence: float = Field(ge=0.0, le=1.0)
     model_source: str = Field(
         sa_column=Column(
-            SQLEnum('custom_theme', 'danbooru', name='model_source_enum'),
-            nullable=False
+            SQLEnum("custom_theme", "danbooru", name="model_source_enum"), nullable=False
         )
     )
     model_version: str = Field(max_length=50)
     status: str = Field(
-        default='pending',
+        default="pending",
         sa_column=Column(
-            SQLEnum('pending', 'approved', 'rejected', name='suggestion_status_enum'),
+            SQLEnum("pending", "approved", "rejected", name="suggestion_status_enum"),
             nullable=False,
-            index=True
-        )
+            index=True,
+        ),
     )
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    reviewed_at: Optional[datetime] = None
-    reviewed_by_user_id: Optional[int] = Field(default=None, foreign_key="users.user_id")
+    reviewed_at: datetime | None = None
+    reviewed_by_user_id: int | None = Field(default=None, foreign_key="users.user_id")

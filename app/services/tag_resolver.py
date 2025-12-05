@@ -4,9 +4,8 @@ Tag Relationship Resolver
 Resolves tag aliases and hierarchies for ML suggestions.
 """
 
-from typing import List, Dict
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tag import Tags
 
@@ -15,10 +14,7 @@ HIERARCHY_CONFIDENCE_THRESHOLD = 0.7
 PARENT_CONFIDENCE_MULTIPLIER = 0.9
 
 
-async def resolve_tag_relationships(
-    db: AsyncSession,
-    suggestions: List[Dict]
-) -> List[Dict]:
+async def resolve_tag_relationships(db: AsyncSession, suggestions: list[dict]) -> list[dict]:
     """
     Resolve tag aliases and hierarchies.
 
@@ -105,7 +101,10 @@ async def resolve_tag_relationships(
 
             # Add or update parent, keeping highest confidence
             parent_id = parent_sugg["tag_id"]
-            if parent_id not in resolved_dict or parent_sugg["confidence"] > resolved_dict[parent_id]["confidence"]:
+            if (
+                parent_id not in resolved_dict
+                or parent_sugg["confidence"] > resolved_dict[parent_id]["confidence"]
+            ):
                 resolved_dict[parent_id] = parent_sugg
 
     return list(resolved_dict.values())
