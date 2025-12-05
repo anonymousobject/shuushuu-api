@@ -1,6 +1,7 @@
 import pytest
-from app.models.tag_mapping import TagMapping
+
 from app.models.tag import Tags
+from app.models.tag_mapping import TagMapping
 from app.models.user import Users
 
 
