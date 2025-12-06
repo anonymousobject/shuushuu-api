@@ -788,6 +788,24 @@ async def upload_image(
             _defer_by=5.0,  # Wait 5 seconds for thumbnail to complete
         )
 
+        # Generate tag suggestions (enqueue after upload completes)
+        # Defer to allow image processing (thumbnail, variants) to finish first
+        try:
+            await enqueue_job(
+                "generate_tag_suggestions",
+                image_id=image_id,
+                _defer_by=30.0,  # Wait 30 seconds for image processing to complete
+            )
+            logger.debug("tag_suggestion_job_enqueued", image_id=image_id)
+        except Exception as e:
+            # Log error but don't fail the upload
+            logger.error(
+                "tag_suggestion_job_enqueue_failed",
+                image_id=image_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+
         # Build response
         image_response = ImageResponse(
             image_id=temp_image.image_id,
@@ -808,6 +826,8 @@ async def upload_image(
             favorites=temp_image.favorites,
             bayesian_rating=temp_image.bayesian_rating,
             num_ratings=temp_image.num_ratings,
+            medium=temp_image.medium,
+            large=temp_image.large,
         )
 
         return ImageUploadResponse(

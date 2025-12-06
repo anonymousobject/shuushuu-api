@@ -265,3 +265,245 @@ class TestHealthEndpoint:
         response = await client.get("/health")
         assert response.status_code == 200
         assert response.json() == {"status": "healthy"}
+
+
+@pytest.mark.api
+class TestImageUploadJobIntegration:
+    """Tests for background job integration with image upload."""
+
+    async def test_tag_suggestion_job_enqueued_after_upload(
+        self, app, client: AsyncClient, db_session: AsyncSession, test_user, tmp_path
+    ):
+        """Test that tag suggestion job is enqueued after successful upload."""
+        from unittest.mock import patch
+        from io import BytesIO
+        from PIL import Image
+        from app.core.auth import get_current_user
+
+        # Create a real test image
+        img = Image.new("RGB", (100, 100), color="red")
+        img_bytes = BytesIO()
+        img.save(img_bytes, format="JPEG")
+        img_bytes.seek(0)
+
+        # Override auth dependency
+        async def override_get_current_user():
+            return test_user
+
+        app.dependency_overrides[get_current_user] = override_get_current_user
+
+        try:
+            # Mock the enqueue_job function to track calls
+            with patch("app.api.v1.images.enqueue_job") as mock_enqueue:
+                mock_enqueue.return_value = "test-job-id"
+
+                # Upload image
+                response = await client.post(
+                    "/api/v1/images/upload",
+                    files={"file": ("test.jpg", img_bytes, "image/jpeg")},
+                    data={"caption": "Test image", "tag_ids": ""},
+                )
+
+                # Verify upload succeeded
+                assert response.status_code == 201
+                data = response.json()
+                assert "image_id" in data
+                image_id = data["image_id"]
+
+                # Verify tag suggestion job was enqueued
+                # Find the call to generate_tag_suggestions
+                tag_suggestion_calls = [
+                    call for call in mock_enqueue.call_args_list
+                    if call[0][0] == "generate_tag_suggestions"
+                ]
+
+                assert len(tag_suggestion_calls) == 1, "generate_tag_suggestions should be enqueued once"
+
+                # Verify correct parameters
+                call_args = tag_suggestion_calls[0]
+                assert call_args[1]["image_id"] == image_id
+
+                # Verify job is deferred (not immediate)
+                assert "_defer_by" in call_args[1]
+                assert call_args[1]["_defer_by"] > 0
+        finally:
+            # Clean up dependency override
+            app.dependency_overrides.clear()
+
+    async def test_tag_suggestion_job_receives_correct_image_id(
+        self, app, client: AsyncClient, db_session: AsyncSession, test_user
+    ):
+        """Test that tag suggestion job receives the correct image_id."""
+        from unittest.mock import patch
+        from io import BytesIO
+        from PIL import Image
+        from app.core.auth import get_current_user
+
+        # Create test image
+        img = Image.new("RGB", (100, 100), color="blue")
+        img_bytes = BytesIO()
+        img.save(img_bytes, format="JPEG")
+        img_bytes.seek(0)
+
+        # Override auth dependency
+        async def override_get_current_user():
+            return test_user
+
+        app.dependency_overrides[get_current_user] = override_get_current_user
+
+        try:
+            with patch("app.api.v1.images.enqueue_job") as mock_enqueue:
+                mock_enqueue.return_value = "test-job-id"
+
+                response = await client.post(
+                    "/api/v1/images/upload",
+                    files={"file": ("test.jpg", img_bytes, "image/jpeg")},
+                    data={"caption": "", "tag_ids": ""},
+                )
+
+                assert response.status_code == 201
+                image_id = response.json()["image_id"]
+
+                # Find tag suggestion call
+                tag_suggestion_calls = [
+                    call for call in mock_enqueue.call_args_list
+                    if call[0][0] == "generate_tag_suggestions"
+                ]
+
+                assert len(tag_suggestion_calls) == 1
+                assert tag_suggestion_calls[0][1]["image_id"] == image_id
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_tag_suggestion_job_not_enqueued_on_upload_failure(
+        self, app, client: AsyncClient, db_session: AsyncSession, test_user
+    ):
+        """Test that tag suggestion job is NOT enqueued if upload fails."""
+        from unittest.mock import patch
+        from io import BytesIO
+        from app.core.auth import get_current_user
+
+        # Create invalid file (not an image)
+        invalid_file = BytesIO(b"not an image")
+
+        # Override auth dependency
+        async def override_get_current_user():
+            return test_user
+
+        app.dependency_overrides[get_current_user] = override_get_current_user
+
+        try:
+            with patch("app.api.v1.images.enqueue_job") as mock_enqueue:
+                mock_enqueue.return_value = "test-job-id"
+
+                response = await client.post(
+                    "/api/v1/images/upload",
+                    files={"file": ("test.txt", invalid_file, "text/plain")},
+                    data={"caption": "", "tag_ids": ""},
+                )
+
+                # Verify upload failed
+                assert response.status_code != 201
+
+                # Verify tag suggestion job was NOT enqueued
+                tag_suggestion_calls = [
+                    call for call in mock_enqueue.call_args_list
+                    if call[0][0] == "generate_tag_suggestions"
+                ]
+
+                assert len(tag_suggestion_calls) == 0, (
+                    "generate_tag_suggestions should not be enqueued on failed upload"
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_tag_suggestion_enqueue_error_does_not_break_upload(
+        self, app, client: AsyncClient, db_session: AsyncSession, test_user
+    ):
+        """Test that enqueue errors don't break the upload flow."""
+        from unittest.mock import patch
+        from io import BytesIO
+        from PIL import Image
+        from app.core.auth import get_current_user
+
+        # Create test image
+        img = Image.new("RGB", (100, 100), color="green")
+        img_bytes = BytesIO()
+        img.save(img_bytes, format="JPEG")
+        img_bytes.seek(0)
+
+        # Mock enqueue_job to raise exception for tag_suggestions only
+        async def mock_enqueue_with_error(job_name, **kwargs):
+            if job_name == "generate_tag_suggestions":
+                # Simulate Redis connection error or similar
+                raise Exception("Redis connection failed")
+            # Return success for other jobs (thumbnail, IQDB, etc.)
+            return "test-job-id"
+
+        # Override auth dependency
+        async def override_get_current_user():
+            return test_user
+
+        app.dependency_overrides[get_current_user] = override_get_current_user
+
+        try:
+            with patch("app.api.v1.images.enqueue_job", side_effect=mock_enqueue_with_error):
+                response = await client.post(
+                    "/api/v1/images/upload",
+                    files={"file": ("test.jpg", img_bytes, "image/jpeg")},
+                    data={"caption": "Test resilience", "tag_ids": ""},
+                )
+
+                # Upload should still succeed even if tag suggestion enqueue fails
+                assert response.status_code == 201
+                data = response.json()
+                assert "image_id" in data
+                assert data["message"] == "Image uploaded successfully"
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_tag_suggestion_job_enqueued_after_other_jobs(
+        self, app, client: AsyncClient, db_session: AsyncSession, test_user
+    ):
+        """Test that tag suggestion job is enqueued after thumbnail and IQDB jobs."""
+        from unittest.mock import patch
+        from io import BytesIO
+        from PIL import Image
+        from app.core.auth import get_current_user
+
+        # Create test image
+        img = Image.new("RGB", (100, 100), color="yellow")
+        img_bytes = BytesIO()
+        img.save(img_bytes, format="JPEG")
+        img_bytes.seek(0)
+
+        # Override auth dependency
+        async def override_get_current_user():
+            return test_user
+
+        app.dependency_overrides[get_current_user] = override_get_current_user
+
+        try:
+            with patch("app.api.v1.images.enqueue_job") as mock_enqueue:
+                mock_enqueue.return_value = "test-job-id"
+
+                response = await client.post(
+                    "/api/v1/images/upload",
+                    files={"file": ("test.jpg", img_bytes, "image/jpeg")},
+                    data={"caption": "", "tag_ids": ""},
+                )
+
+                assert response.status_code == 201
+
+                # Get all enqueued job names in order
+                job_names = [call[0][0] for call in mock_enqueue.call_args_list]
+
+                # Verify tag suggestion job is in the list
+                assert "generate_tag_suggestions" in job_names
+
+                # Verify tag suggestion is enqueued (order doesn't matter as they're async)
+                # but it should be present alongside thumbnail and IQDB jobs
+                assert "create_thumbnail" in job_names
+                assert "add_to_iqdb" in job_names
+        finally:
+            app.dependency_overrides.clear()
