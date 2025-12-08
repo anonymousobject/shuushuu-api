@@ -55,6 +55,136 @@ class TestListUsers:
         assert data["per_page"] == 5
         assert len(data["users"]) <= 5
 
+    async def test_list_users_search_matches(self, client: AsyncClient, db_session: AsyncSession):
+        """Test searching users by username with partial matches."""
+        # Create test users
+        test_users = [
+            ("Alice", "alice@example.com"),
+            ("Bob", "bob@example.com"),
+            ("AliceWonderland", "alicewonderland@example.com"),
+            ("charlie", "charlie@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        # Search for "alice" (should match Alice and AliceWonderland)
+        response = await client.get("/api/v1/users/?search=alice")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        usernames = [u["username"] for u in data["users"]]
+        assert "Alice" in usernames
+        assert "AliceWonderland" in usernames
+        assert "Bob" not in usernames
+        assert "charlie" not in usernames
+
+    async def test_list_users_search_case_insensitive(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that username search is case-insensitive."""
+        # Create test user
+        user = Users(
+            username="JohnDoe",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="johndoe@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Test different case variations
+        for search_term in ["john", "JOHN", "JoHn", "johndoe"]:
+            response = await client.get(f"/api/v1/users/?search={search_term}")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["total"] >= 1
+            usernames = [u["username"] for u in data["users"]]
+            assert "JohnDoe" in usernames
+
+    async def test_list_users_search_no_matches(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test searching with no matching results."""
+        response = await client.get("/api/v1/users/?search=nonexistentuserxyz")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["users"] == []
+
+    async def test_list_users_search_with_pagination(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search results are properly paginated."""
+        # Create 25 users with "searchuser" in their name
+        for i in range(25):
+            user = Users(
+                username=f"searchuser{i}",
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=f"searchuser{i}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        # Search with pagination
+        response = await client.get("/api/v1/users/?search=searchuser&per_page=20")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 25
+        assert len(data["users"]) == 20
+        assert data["per_page"] == 20
+
+        # Get second page
+        response = await client.get("/api/v1/users/?search=searchuser&page=2&per_page=20")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 25
+        assert len(data["users"]) == 5
+
+    async def test_list_users_search_special_characters(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test searching for usernames with special characters."""
+        # Create users with special characters
+        test_users = [
+            ("user_name", "user_name@example.com"),
+            ("user.name", "user.name@example.com"),
+            ("user-name", "user-name@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        # Search for "user" should match all three
+        response = await client.get("/api/v1/users/?search=user")
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert "user_name" in usernames
+        assert "user.name" in usernames
+        assert "user-name" in usernames
+
 
 @pytest.mark.api
 class TestGetUser:
