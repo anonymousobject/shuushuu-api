@@ -21,6 +21,20 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    location ^~ /storage/large/ {
+        alias ${STORAGE_PATH}/large/;
+        autoindex off;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location ^~ /storage/medium/ {
+        alias ${STORAGE_PATH}/medium/;
+        autoindex off;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
     location ^~ /storage/thumbs/ {
         alias ${STORAGE_PATH}/thumbs/;
         autoindex off;
