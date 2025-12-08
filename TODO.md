@@ -138,6 +138,20 @@ User creation endpoint has inline validation that should be extracted into reusa
 - Username format: `^[a-zA-Z0-9_.-]{3,20}$`
 - Username/email uniqueness check
 
+### Remove Hardcoded Storage Paths in Image URLs
+**Priority:** Low
+**Status:** Not Started
+
+Strings like `/storage/large/` in image URL generation should come from config variables, not hardcoded values.
+
+**Location:** `app/schemas/image.py` - URL property methods
+
+**Tasks:**
+1. Create config variables for storage path prefixes (fullsize, large, medium, thumbs)
+2. Update URL generation methods to use config variables instead of hardcoded strings
+3. Update tests to verify config is being used correctly
+4. Document the config variables in .env.example
+
 ## Content Migration
 
 ### Convert Legacy BBCode to Markdown

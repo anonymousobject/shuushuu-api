@@ -92,13 +92,6 @@ async def list_images(
         float | None, Query(ge=1, le=10, description="Minimum rating (1-10)")
     ] = None,
     min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
-    # Content filtering
-    artist: Annotated[
-        str | None, Query(description="Filter by artist name (partial match)")
-    ] = None,
-    characters: Annotated[
-        str | None, Query(description="Filter by characters (partial match)")
-    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
@@ -111,7 +104,6 @@ async def list_images(
     - Date range filtering
     - Size/dimension filtering
     - Rating and popularity filtering
-    - Content filtering (artist, characters)
 
     **Examples:**
     - `/images?tags=1,2,3&tags_mode=all` - Images with ALL tags 1, 2, and 3
@@ -219,7 +211,10 @@ async def list_images(
     # Note: Must re-apply ORDER BY since JOIN doesn't preserve subquery order
     final_query = (
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),
+        )
         .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
         .order_by(subquery_order)  # Re-apply same sort order
     )
@@ -232,7 +227,7 @@ async def list_images(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        images=[ImageResponse.model_validate(img) for img in images],
+        images=[ImageDetailedResponse.from_db_model(img) for img in images],
     )
 
 

@@ -11,7 +11,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Images
+from app.config import TagType
+from app.models import Images, TagLinks, Tags
 
 
 @pytest.mark.api
@@ -100,6 +101,55 @@ class TestImagesList:
         # Too large per_page
         response = await client.get("/api/v1/images/?per_page=200")
         assert response.status_code == 422
+
+    async def test_list_images_includes_tags(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that list_images includes tag details for images."""
+        # Create tags
+        tag1 = Tags(title="Anime", desc="Anime tag", type=TagType.THEME)
+        tag2 = Tags(title="Landscape", desc="Landscape tag", type=TagType.SOURCE)
+        db_session.add(tag1)
+        db_session.add(tag2)
+        await db_session.flush()
+
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        # Link tags to image
+        tag_link1 = TagLinks(image_id=image.image_id, tag_id=tag1.tag_id, user_id=1)
+        tag_link2 = TagLinks(image_id=image.image_id, tag_id=tag2.tag_id, user_id=1)
+        db_session.add(tag_link1)
+        db_session.add(tag_link2)
+        await db_session.commit()
+
+        # Call list_images
+        response = await client.get("/api/v1/images/")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["images"]) == 1
+
+        # Verify tags are included
+        img = data["images"][0]
+        assert "tags" in img
+        assert img["tags"] is not None
+        assert len(img["tags"]) == 2
+
+        # Verify tag details
+        tag_titles = {tag["title"] for tag in img["tags"]}
+        assert "Anime" in tag_titles
+        assert "Landscape" in tag_titles
+
+        # Verify tag structure includes all expected fields
+        for tag in img["tags"]:
+            assert "tag_id" in tag
+            assert "title" in tag
+            assert "type" in tag
+            assert "type_name" in tag
 
 
 @pytest.mark.api

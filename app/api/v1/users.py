@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path as FilePath
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Path, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, UploadFile, status
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -39,12 +39,19 @@ router = APIRouter(prefix="/users", tags=["users"])
 async def list_users(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[UserSortParams, Depends()],
+    search: Annotated[
+        str | None, Query(description="Search users by username (partial, case-insensitive match)")
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
-    List users with pagination.
+    List users with pagination and optional username search.
     """
     query = select(Users)
+
+    # Apply search filter
+    if search:
+        query = query.where(Users.username.like(f"%{search}%"))  # type: ignore[union-attr]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
