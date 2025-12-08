@@ -207,26 +207,18 @@ class TestListUsers:
             db_session.add(user)
         await db_session.commit()
 
-        # Get total users without search (baseline)
+        # Get total users without search parameter (baseline)
         response_no_search = await client.get("/api/v1/users/")
         assert response_no_search.status_code == 200
         data_no_search = response_no_search.json()
         total_users = data_no_search["total"]
         assert total_users >= 3  # At least our 3 test users
 
-        # Test with empty string search parameter
+        # Test with empty string search parameter - should return same total as no search
         response_empty_search = await client.get("/api/v1/users/?search=")
         assert response_empty_search.status_code == 200
         data_empty_search = response_empty_search.json()
-        # Empty search should return all users
         assert data_empty_search["total"] == total_users
-
-        # Test without search parameter (already done, but verify again)
-        response_no_param = await client.get("/api/v1/users/")
-        assert response_no_param.status_code == 200
-        data_no_param = response_no_param.json()
-        # No search parameter should return all users
-        assert data_no_param["total"] == total_users
 
 
 @pytest.mark.api
