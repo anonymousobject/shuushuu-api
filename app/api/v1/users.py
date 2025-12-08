@@ -39,7 +39,9 @@ router = APIRouter(prefix="/users", tags=["users"])
 async def list_users(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[UserSortParams, Depends()],
-    search: Annotated[str | None, Query(description="Search users by username (partial, case-insensitive match)")] = None,
+    search: Annotated[
+        str | None, Query(description="Search users by username (partial, case-insensitive match)")
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
