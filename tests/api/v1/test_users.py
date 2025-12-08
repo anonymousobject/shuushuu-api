@@ -185,6 +185,41 @@ class TestListUsers:
         assert "user.name" in usernames
         assert "user-name" in usernames
 
+    async def test_list_users_search_empty_returns_all(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that empty search string or no search parameter returns all users."""
+        # Create test users to ensure we have users in the database
+        test_users = [
+            ("EmptySearchUser1", "emptysearch1@example.com"),
+            ("EmptySearchUser2", "emptysearch2@example.com"),
+            ("EmptySearchUser3", "emptysearch3@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        # Get total users without search parameter (baseline)
+        response_no_search = await client.get("/api/v1/users/")
+        assert response_no_search.status_code == 200
+        data_no_search = response_no_search.json()
+        total_users = data_no_search["total"]
+        assert total_users >= 3  # At least our 3 test users
+
+        # Test with empty string search parameter - should return same total as no search
+        response_empty_search = await client.get("/api/v1/users/?search=")
+        assert response_empty_search.status_code == 200
+        data_empty_search = response_empty_search.json()
+        assert data_empty_search["total"] == total_users
+
 
 @pytest.mark.api
 class TestGetUser:
