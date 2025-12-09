@@ -131,7 +131,10 @@ async def list_tags(
         query = query.order_by(
             case(
                 (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
-                (func.lower(Tags.title).like(f"{search.lower()}%"), 1),  # Starts with (case-insensitive)
+                (
+                    func.lower(Tags.title).like(f"{search.lower()}%"),
+                    1,
+                ),  # Starts with (case-insensitive)
                 else_=2,  # Contains (middle/end)
             ),
             func.lower(Tags.title),  # Alphabetical within each priority group (case-insensitive)
