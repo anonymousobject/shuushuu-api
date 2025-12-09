@@ -11,7 +11,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import TagType
+from app.config import TagType, settings
 from app.models import Images, TagLinks, Tags
 
 
@@ -243,8 +243,6 @@ class TestTagSearchValidation:
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """Test that searching with more than MAX_SEARCH_TAGS tags returns 400 error."""
-        from app.config import settings
-
         # Create an image with tags
         image = Images(**sample_image_data)
         db_session.add(image)
@@ -274,8 +272,6 @@ class TestTagSearchValidation:
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """Test that searching with exactly MAX_SEARCH_TAGS tags succeeds."""
-        from app.config import settings
-
         # Create an image
         image = Images(**sample_image_data)
         db_session.add(image)
@@ -309,15 +305,13 @@ class TestTagSearchValidation:
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """Test that searching with fewer than MAX_SEARCH_TAGS tags succeeds."""
-        from app.config import settings
-
         # Create an image
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.flush()
 
         # Create fewer tags than the limit (e.g., 2 tags)
-        num_tags = min(2, settings.MAX_SEARCH_TAGS)
+        num_tags = 2
         tag_ids = []
         for i in range(num_tags):
             tag = Tags(title=f"FewTag{i}", desc=f"Test tag {i}", type=1)
