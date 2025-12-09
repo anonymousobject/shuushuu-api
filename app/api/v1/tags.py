@@ -106,7 +106,7 @@ async def list_tags(
     # Apply filters
     if ids:
         # Filter by specific IDs (takes precedence over other filters)
-        tag_ids = [int(id.strip()) for id in ids.split(',') if id.strip().isdigit()]
+        tag_ids = [int(id.strip()) for id in ids.split(",") if id.strip().isdigit()]
         query = query.where(Tags.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
     elif search:
         query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
@@ -120,7 +120,8 @@ async def list_tags(
 
     # Sort: For search queries, prioritize starts-with matches (better autocomplete UX)
     # For general listing, sort by date added
-    from sqlalchemy import case, desc as sql_desc
+    from sqlalchemy import case
+    from sqlalchemy import desc as sql_desc
 
     if search:
         # Autocomplete-friendly sorting:
