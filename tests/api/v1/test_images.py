@@ -251,7 +251,7 @@ class TestTagSearchValidation:
         # Create more tags than the limit
         tag_ids = []
         for i in range(settings.MAX_SEARCH_TAGS + 1):
-            tag = Tags(title=f"Tag{i}", desc=f"Test tag {i}", type=1)
+            tag = Tags(title=f"Tag{i}", desc=f"Test tag {i}", type=TagType.THEME)
             db_session.add(tag)
             await db_session.flush()
             tag_ids.append(tag.tag_id)
@@ -299,7 +299,7 @@ class TestTagSearchValidation:
         data = response.json()
         assert "images" in data
         # Should find the image since it has all the tags
-        assert data["total"] >= 0  # May be 1 if all tags are linked
+        assert data["total"] == 1  # Should be 1 since all tags are linked
 
     async def test_search_with_fewer_than_max_tags(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
@@ -314,7 +314,7 @@ class TestTagSearchValidation:
         num_tags = 2
         tag_ids = []
         for i in range(num_tags):
-            tag = Tags(title=f"FewTag{i}", desc=f"Test tag {i}", type=1)
+            tag = Tags(title=f"FewTag{i}", desc=f"Test tag {i}", type=TagType.THEME)
             db_session.add(tag)
             await db_session.flush()
             tag_ids.append(tag.tag_id)
