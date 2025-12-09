@@ -83,6 +83,7 @@ async def list_tags(
     pagination: Annotated[PaginationParams, Depends()],
     search: Annotated[str | None, Query(description="Search tags by name")] = None,
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
+    ids: Annotated[str | None, Query(description="Comma-separated tag IDs to fetch")] = None,
     db: AsyncSession = Depends(get_db),
 ) -> TagListResponse:
     """
@@ -91,17 +92,37 @@ async def list_tags(
     Supports:
     - Searching by tag name (partial match)
     - Filtering by tag type
+    - Filtering by specific IDs (comma-separated)
     - Pagination
+
+    When filtering by IDs, invalid (non-numeric) IDs are reported in the response
+    via the `invalid_ids` field, while valid tags are still returned.
 
     **Examples:**
     - Get all tags: `/tags`
     - Search tags with "cat": `/tags?search=cat`
     - Filter by type (e.g., type_id=1 for general tags): `/tags?type_id=1`
+    - Get specific tags by ID: `/tags?ids=1,2,3`
+    - Get tags with mixed valid/invalid IDs: `/tags?ids=1,abc,2` (returns tags 1,2; reports "abc" as invalid)
     """
     query = select(Tags)
 
     # Apply filters
-    if search:
+    invalid_ids: list[str] = []
+    if ids:
+        # Filter by specific IDs (takes precedence over other filters)
+        # Track invalid IDs for better user feedback
+        tag_ids = []
+        for id_str in ids.split(","):
+            id_str = id_str.strip()
+            if not id_str:
+                continue  # Skip empty strings
+            if id_str.isdigit():
+                tag_ids.append(int(id_str))
+            else:
+                invalid_ids.append(id_str)
+        query = query.where(Tags.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
+    elif search:
         query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
@@ -111,10 +132,30 @@ async def list_tags(
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Sort by tag date added
+    # Sort: For search queries, prioritize starts-with matches (better autocomplete UX)
+    # For general listing, sort by date added
+    from sqlalchemy import case
     from sqlalchemy import desc as sql_desc
 
-    query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
+    if search:
+        # Autocomplete-friendly sorting:
+        # 1. Exact matches first
+        # 2. Starts-with matches second
+        # 3. Contains matches last (alphabetical within each group)
+        query = query.order_by(
+            case(
+                (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
+                (
+                    func.lower(Tags.title).like(f"{search.lower()}%"),
+                    1,
+                ),  # Starts with (case-insensitive)
+                else_=2,  # Contains (middle/end)
+            ),
+            func.lower(Tags.title),  # Alphabetical within each priority group (case-insensitive)
+        )
+    else:
+        # No search - sort by newest tags
+        query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
 
     # Paginate
     query = query.offset(pagination.offset).limit(pagination.per_page)
@@ -128,6 +169,7 @@ async def list_tags(
         page=pagination.page,
         per_page=pagination.per_page,
         tags=[TagResponse.model_validate(tag) for tag in tags],
+        invalid_ids=invalid_ids if invalid_ids else None,
     )
 
 

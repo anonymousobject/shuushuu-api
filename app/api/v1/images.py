@@ -123,6 +123,11 @@ async def list_images(
     # Tag filtering
     if tags:
         tag_ids = [int(tid.strip()) for tid in tags.split(",") if tid.strip().isdigit()]
+        if len(tag_ids) > settings.MAX_SEARCH_TAGS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"You can only search for up to {settings.MAX_SEARCH_TAGS} tags at a time.",
+            )
         if tag_ids:
             if tags_mode == "all":
                 # Images must have ALL specified tags

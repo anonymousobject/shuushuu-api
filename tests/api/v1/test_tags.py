@@ -80,6 +80,101 @@ class TestListTags:
         for tag in data["tags"]:
             assert tag["type"] == TagType.THEME
 
+    async def test_filter_tags_by_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags by specific IDs."""
+        # Create test tags
+        tag1 = Tags(title="tag1", type=TagType.THEME)
+        tag2 = Tags(title="tag2", type=TagType.CHARACTER)
+        tag3 = Tags(title="tag3", type=TagType.ARTIST)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+        await db_session.refresh(tag3)
+
+        # Filter by specific IDs
+        response = await client.get(f"/api/v1/tags/?ids={tag1.tag_id},{tag3.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert returned_ids == {tag1.tag_id, tag3.tag_id}
+        # No invalid IDs
+        assert data.get("invalid_ids") is None
+
+    async def test_filter_tags_with_invalid_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags with mix of valid and invalid IDs."""
+        # Create test tags
+        tag1 = Tags(title="tag1", type=TagType.THEME)
+        tag2 = Tags(title="tag2", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+
+        # Mix valid IDs with invalid ones (non-numeric)
+        response = await client.get(f"/api/v1/tags/?ids={tag1.tag_id},abc,{tag2.tag_id},xyz")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return valid tags
+        assert data["total"] == 2
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert returned_ids == {tag1.tag_id, tag2.tag_id}
+
+        # Should report invalid IDs
+        assert data["invalid_ids"] is not None
+        assert set(data["invalid_ids"]) == {"abc", "xyz"}
+
+    async def test_filter_tags_with_only_invalid_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags with only invalid IDs."""
+        # Create some tags
+        tag = Tags(title="tag1", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+
+        # Only invalid IDs
+        response = await client.get("/api/v1/tags/?ids=abc,xyz,foo")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return no tags
+        assert data["total"] == 0
+        assert len(data["tags"]) == 0
+
+        # Should report all invalid IDs
+        assert data["invalid_ids"] is not None
+        assert set(data["invalid_ids"]) == {"abc", "xyz", "foo"}
+
+    async def test_filter_tags_with_empty_id_strings(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags handles empty strings in ID list gracefully."""
+        # Create test tags
+        tag1 = Tags(title="tag1", type=TagType.THEME)
+        db_session.add(tag1)
+        await db_session.commit()
+        await db_session.refresh(tag1)
+
+        # IDs with empty strings (trailing commas, double commas)
+        response = await client.get(f"/api/v1/tags/?ids={tag1.tag_id},,")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return valid tag
+        assert data["total"] == 1
+        assert data["tags"][0]["tag_id"] == tag1.tag_id
+
+        # Empty strings should not be reported as invalid
+        assert data.get("invalid_ids") is None
+
+
 
 @pytest.mark.api
 class TestGetTag:

@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
     UPLOAD_DELAY_SECONDS: int = 30
     SEARCH_DELAY_SECONDS: int = 2
+    MAX_SEARCH_TAGS: int = 5
 
     # Pagination
     DEFAULT_PAGE_SIZE: int = 15
