@@ -120,12 +120,12 @@ class TestListTags:
         response = await client.get(f"/api/v1/tags/?ids={tag1.tag_id},abc,{tag2.tag_id},xyz")
         assert response.status_code == 200
         data = response.json()
-        
+
         # Should return valid tags
         assert data["total"] == 2
         returned_ids = {tag["tag_id"] for tag in data["tags"]}
         assert returned_ids == {tag1.tag_id, tag2.tag_id}
-        
+
         # Should report invalid IDs
         assert data["invalid_ids"] is not None
         assert set(data["invalid_ids"]) == {"abc", "xyz"}
@@ -143,11 +143,11 @@ class TestListTags:
         response = await client.get("/api/v1/tags/?ids=abc,xyz,foo")
         assert response.status_code == 200
         data = response.json()
-        
+
         # Should return no tags
         assert data["total"] == 0
         assert len(data["tags"]) == 0
-        
+
         # Should report all invalid IDs
         assert data["invalid_ids"] is not None
         assert set(data["invalid_ids"]) == {"abc", "xyz", "foo"}
@@ -166,11 +166,11 @@ class TestListTags:
         response = await client.get(f"/api/v1/tags/?ids={tag1.tag_id},,")
         assert response.status_code == 200
         data = response.json()
-        
+
         # Should return valid tag
         assert data["total"] == 1
         assert data["tags"][0]["tag_id"] == tag1.tag_id
-        
+
         # Empty strings should not be reported as invalid
         assert data.get("invalid_ids") is None
 
