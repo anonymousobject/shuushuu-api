@@ -95,11 +95,15 @@ async def list_tags(
     - Filtering by specific IDs (comma-separated)
     - Pagination
 
+    When filtering by IDs, invalid (non-numeric) IDs are reported in the response
+    via the `invalid_ids` field, while valid tags are still returned.
+
     **Examples:**
     - Get all tags: `/tags`
     - Search tags with "cat": `/tags?search=cat`
     - Filter by type (e.g., type_id=1 for general tags): `/tags?type_id=1`
     - Get specific tags by ID: `/tags?ids=1,2,3`
+    - Get tags with mixed valid/invalid IDs: `/tags?ids=1,abc,2` (returns tags 1,2; reports "abc" as invalid)
     """
     query = select(Tags)
 
