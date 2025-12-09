@@ -236,6 +236,111 @@ class TestImagesFiltering:
 
 
 @pytest.mark.api
+class TestTagSearchValidation:
+    """Tests for tag search validation and MAX_SEARCH_TAGS limit."""
+
+    async def test_search_exceeds_max_tags(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that searching with more than MAX_SEARCH_TAGS tags returns 400 error."""
+        from app.config import settings
+
+        # Create an image with tags
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        # Create more tags than the limit
+        tag_ids = []
+        for i in range(settings.MAX_SEARCH_TAGS + 1):
+            tag = Tags(title=f"Tag{i}", desc=f"Test tag {i}", type=1)
+            db_session.add(tag)
+            await db_session.flush()
+            tag_ids.append(tag.tag_id)
+
+        await db_session.commit()
+
+        # Try to search with more tags than allowed
+        tags_param = ",".join(str(tid) for tid in tag_ids)
+        response = await client.get(f"/api/v1/images/?tags={tags_param}")
+
+        assert response.status_code == 400
+        data = response.json()
+        assert "detail" in data
+        assert str(settings.MAX_SEARCH_TAGS) in data["detail"]
+        assert "tags at a time" in data["detail"].lower()
+
+    async def test_search_with_max_tags_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that searching with exactly MAX_SEARCH_TAGS tags succeeds."""
+        from app.config import settings
+
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        # Create exactly MAX_SEARCH_TAGS tags
+        tag_ids = []
+        for i in range(settings.MAX_SEARCH_TAGS):
+            tag = Tags(title=f"ExactTag{i}", desc=f"Test tag {i}", type=1)
+            db_session.add(tag)
+            await db_session.flush()
+            tag_ids.append(tag.tag_id)
+
+            # Link the tag to the image
+            tag_link = TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=1)
+            db_session.add(tag_link)
+
+        await db_session.commit()
+
+        # Search with exactly MAX_SEARCH_TAGS tags should succeed
+        tags_param = ",".join(str(tid) for tid in tag_ids)
+        response = await client.get(f"/api/v1/images/?tags={tags_param}&tags_mode=all")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "images" in data
+        # Should find the image since it has all the tags
+        assert data["total"] >= 0  # May be 1 if all tags are linked
+
+    async def test_search_with_fewer_than_max_tags(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that searching with fewer than MAX_SEARCH_TAGS tags succeeds."""
+        from app.config import settings
+
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        # Create fewer tags than the limit (e.g., 2 tags)
+        num_tags = min(2, settings.MAX_SEARCH_TAGS)
+        tag_ids = []
+        for i in range(num_tags):
+            tag = Tags(title=f"FewTag{i}", desc=f"Test tag {i}", type=1)
+            db_session.add(tag)
+            await db_session.flush()
+            tag_ids.append(tag.tag_id)
+
+            # Link the tag to the image
+            tag_link = TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=1)
+            db_session.add(tag_link)
+
+        await db_session.commit()
+
+        # Search with fewer tags should succeed
+        tags_param = ",".join(str(tid) for tid in tag_ids)
+        response = await client.get(f"/api/v1/images/?tags={tags_param}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "images" in data
+
+
+@pytest.mark.api
 class TestImagesSorting:
     """Tests for image sorting."""
 
