@@ -243,7 +243,7 @@ class TestTagSearchValidation:
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """Test that searching with more than MAX_SEARCH_TAGS tags returns 400 error."""
-        # Create an image with tags
+        # Create an image (tags will be created but not linked)
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.flush()
@@ -280,7 +280,7 @@ class TestTagSearchValidation:
         # Create exactly MAX_SEARCH_TAGS tags
         tag_ids = []
         for i in range(settings.MAX_SEARCH_TAGS):
-            tag = Tags(title=f"ExactTag{i}", desc=f"Test tag {i}", type=1)
+            tag = Tags(title=f"ExactTag{i}", desc=f"Test tag {i}", type=TagType.THEME)
             db_session.add(tag)
             await db_session.flush()
             tag_ids.append(tag.tag_id)
@@ -332,6 +332,7 @@ class TestTagSearchValidation:
         assert response.status_code == 200
         data = response.json()
         assert "images" in data
+        assert data["total"] == 1  # Should find the image with the linked tags
 
 
 @pytest.mark.api
