@@ -104,9 +104,19 @@ async def list_tags(
     query = select(Tags)
 
     # Apply filters
+    invalid_ids: list[str] = []
     if ids:
         # Filter by specific IDs (takes precedence over other filters)
-        tag_ids = [int(id.strip()) for id in ids.split(",") if id.strip().isdigit()]
+        # Track invalid IDs for better user feedback
+        tag_ids = []
+        for id_str in ids.split(","):
+            id_str = id_str.strip()
+            if not id_str:
+                continue  # Skip empty strings
+            if id_str.isdigit():
+                tag_ids.append(int(id_str))
+            else:
+                invalid_ids.append(id_str)
         query = query.where(Tags.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
     elif search:
         query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
@@ -155,6 +165,7 @@ async def list_tags(
         page=pagination.page,
         per_page=pagination.per_page,
         tags=[TagResponse.model_validate(tag) for tag in tags],
+        invalid_ids=invalid_ids if invalid_ids else None,
     )
 
 

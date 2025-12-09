@@ -45,3 +45,4 @@ class TagListResponse(BaseModel):
     page: int
     per_page: int
     tags: list[TagResponse]
+    invalid_ids: list[str] | None = None  # IDs that were invalid and filtered out
