@@ -83,6 +83,7 @@ async def list_tags(
     pagination: Annotated[PaginationParams, Depends()],
     search: Annotated[str | None, Query(description="Search tags by name")] = None,
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
+    ids: Annotated[str | None, Query(description="Comma-separated tag IDs to fetch")] = None,
     db: AsyncSession = Depends(get_db),
 ) -> TagListResponse:
     """
@@ -91,17 +92,23 @@ async def list_tags(
     Supports:
     - Searching by tag name (partial match)
     - Filtering by tag type
+    - Filtering by specific IDs (comma-separated)
     - Pagination
 
     **Examples:**
     - Get all tags: `/tags`
     - Search tags with "cat": `/tags?search=cat`
     - Filter by type (e.g., type_id=1 for general tags): `/tags?type_id=1`
+    - Get specific tags by ID: `/tags?ids=1,2,3`
     """
     query = select(Tags)
 
     # Apply filters
-    if search:
+    if ids:
+        # Filter by specific IDs (takes precedence over other filters)
+        tag_ids = [int(id.strip()) for id in ids.split(',') if id.strip().isdigit()]
+        query = query.where(Tags.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
+    elif search:
         query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
@@ -111,10 +118,26 @@ async def list_tags(
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Sort by tag date added
-    from sqlalchemy import desc as sql_desc
+    # Sort: For search queries, prioritize starts-with matches (better autocomplete UX)
+    # For general listing, sort by date added
+    from sqlalchemy import case, desc as sql_desc
 
-    query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
+    if search:
+        # Autocomplete-friendly sorting:
+        # 1. Exact matches first
+        # 2. Starts-with matches second
+        # 3. Contains matches last (alphabetical within each group)
+        query = query.order_by(
+            case(
+                (Tags.title == search, 0),  # Exact match
+                (Tags.title.like(f"{search}%"), 1),  # Starts with
+                else_=2,  # Contains (middle/end)
+            ),
+            Tags.title,  # Alphabetical within each priority group
+        )
+    else:
+        # No search - sort by newest tags
+        query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
 
     # Paginate
     query = query.offset(pagination.offset).limit(pagination.per_page)
