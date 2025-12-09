@@ -130,11 +130,11 @@ async def list_tags(
         # 3. Contains matches last (alphabetical within each group)
         query = query.order_by(
             case(
-                (Tags.title == search, 0),  # Exact match
-                (Tags.title.like(f"{search}%"), 1),  # Starts with
+                (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
+                (func.lower(Tags.title).like(f"{search.lower()}%"), 1),  # Starts with (case-insensitive)
                 else_=2,  # Contains (middle/end)
             ),
-            Tags.title,  # Alphabetical within each priority group
+            func.lower(Tags.title),  # Alphabetical within each priority group (case-insensitive)
         )
     else:
         # No search - sort by newest tags
