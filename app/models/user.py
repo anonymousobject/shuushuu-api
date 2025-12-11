@@ -13,6 +13,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import datetime
 from decimal import Decimal
+from time import timezone
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
@@ -93,7 +94,7 @@ class Users(UserBase, table=True):
 
     # Public timestamps
     date_joined: datetime = Field(
-        default_factory=datetime.now,
+        default_factory=datetime.now(timezone.utc),
         sa_column_kwargs={"server_default": text("current_timestamp()")},
     )
     last_login: datetime | None = Field(
