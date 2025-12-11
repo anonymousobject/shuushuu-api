@@ -12,6 +12,7 @@ This approach eliminates field duplication while maintaining security boundaries
 """
 
 from datetime import datetime
+from time import timezone
 
 from pydantic import field_validator
 from sqlalchemy import ForeignKeyConstraint, Index, text
