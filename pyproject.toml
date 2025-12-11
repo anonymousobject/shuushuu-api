@@ -158,7 +158,8 @@ markers = [
 # warn_unused_ignores = true
 # warn_no_return = true
 # follow_imports = "normal"
-plugins = ["pydantic.mypy"]
+# Disable pydantic plugin due to typing_extensions conflict in VS Code extension
+# plugins = ["pydantic.mypy"]
 # namespace_packages = true
 # Strict mode settings
 strict = true
