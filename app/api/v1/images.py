@@ -290,14 +290,14 @@ async def get_image(
                 Favorites,
                 and_(
                     Favorites.image_id == Images.image_id,  # type: ignore[arg-type]
-                    Favorites.user_id == current_user.user_id,  # type: ignore[arg-type]
+                    Favorites.user_id == current_user.id,  # type: ignore[arg-type]
                 ),
             )
             .outerjoin(
                 ImageRatings,
                 and_(
                     ImageRatings.image_id == Images.image_id,  # type: ignore[arg-type]
-                    ImageRatings.user_id == current_user.user_id,  # type: ignore[arg-type]
+                    ImageRatings.user_id == current_user.id,  # type: ignore[arg-type]
                 ),
             )
             .where(Images.image_id == image_id)  # type: ignore[arg-type]
@@ -489,7 +489,7 @@ async def add_tag_to_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check ownership or permission
-    is_owner = image.user_id == current_user.user_id
+    is_owner = image.user_id == current_user.id
     has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_ADD)
 
     if not is_owner and not has_edit_permission:
@@ -547,7 +547,7 @@ async def remove_tag_from_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check ownership or permission
-    is_owner = image.user_id == current_user.user_id
+    is_owner = image.user_id == current_user.id
     has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_REMOVE)
 
     if not is_owner and not has_edit_permission:
@@ -661,7 +661,7 @@ async def favorite_image(
     # Check if user already favorited this image
     existing_favorite = await db.execute(
         select(Favorites).where(
-            Favorites.user_id == current_user.user_id,  # type: ignore[arg-type]
+            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
             Favorites.image_id == image_id,  # type: ignore[arg-type]
         )
     )
@@ -739,7 +739,7 @@ async def unfavorite_image(
     # Delete the favorite
     await db.execute(
         delete(Favorites).where(
-            Favorites.user_id == current_user.user_id,  # type: ignore[arg-type]
+            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
             Favorites.image_id == image_id,  # type: ignore[arg-type]
         )
     )

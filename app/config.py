@@ -3,7 +3,6 @@ Application Configuration - MariaDB Version
 Uses Pydantic Settings for environment-based configuration
 """
 
-from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -26,7 +25,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     # Security
-    SECRET_KEY: str
+    SECRET_KEY: str = "YOU MUST CHANGE THIS TO A SECURE RANDOM VALUE"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -39,9 +38,9 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: str | list[str] = Field(default=["*"])
 
     # MariaDB Database - UPDATED!
-    DATABASE_URL: str
+    DATABASE_URL: str = "YOU MUST SET A VALID MARIADB DATABASE URL"
     # Sync URL for Alembic migrations
-    DATABASE_URL_SYNC: str
+    DATABASE_URL_SYNC: str = "YOU MUST SET A VALID MARIADB SYNC DATABASE URL"
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_ECHO: bool = False
@@ -148,8 +147,7 @@ class Settings(BaseSettings):
 
 # Create global settings instance
 
-load_dotenv()
-settings = Settings()  # type: ignore[call-arg]
+settings = Settings()
 
 
 # Constants (from original PHP config)
