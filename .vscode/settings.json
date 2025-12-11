@@ -1,0 +1,30 @@
+{
+  "python.defaultInterpreterPath": ".venv/bin/python",
+
+  // Disable Pylance type checking - we use mypy instead
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.extraPaths": ["./app"],
+
+  // mypy type checking (via ms-python.mypy-type-checker extension)
+  "mypy-type-checker.args": [
+    "--config-file=${workspaceFolder}/pyproject.toml"
+  ],
+  "mypy-type-checker.importStrategy": "fromEnvironment",
+  "mypy-type-checker.showNotifications": "always",
+
+  "python.testing.pytestArgs": ["tests"],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true,
+
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  "ruff.lint.enable": true,
+  "ruff.format.enable": true
+}
