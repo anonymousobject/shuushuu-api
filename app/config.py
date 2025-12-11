@@ -3,6 +3,7 @@ Application Configuration - MariaDB Version
 Uses Pydantic Settings for environment-based configuration
 """
 
+from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -146,7 +147,7 @@ class Settings(BaseSettings):
 
 
 # Create global settings instance
-from dotenv import load_dotenv
+
 load_dotenv()
 settings = Settings()  # type: ignore[call-arg]
 
