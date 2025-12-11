@@ -12,7 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
-from app.models import Images, TagLinks, Tags
+from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 
 
 @pytest.mark.api
@@ -415,3 +415,384 @@ class TestHealthEndpoint:
         response = await client.get("/health")
         assert response.status_code == 200
         assert response.json() == {"status": "healthy"}
+
+
+@pytest.mark.api
+class TestImageDetailWithFavoriteStatus:
+    """Tests for get_image endpoint with favorite status and rating."""
+
+    async def test_get_image_unauthenticated_shows_no_favorite_status(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that unauthenticated users get is_favorited=False and user_rating=None."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Get image without authentication
+        response = await client.get(f"/api/v1/images/{image.image_id}")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["is_favorited"] is False
+        assert data["user_rating"] is None
+
+    async def test_get_image_authenticated_not_favorited(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test that authenticated users who haven't favorited get is_favorited=False."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Get image with authentication but no favorite
+        response = await authenticated_client.get(f"/api/v1/images/{image.image_id}")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["is_favorited"] is False
+        assert data["user_rating"] is None
+
+    async def test_get_image_authenticated_favorited(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test that authenticated users who have favorited get is_favorited=True."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Create a favorite for this user
+        favorite = Favorites(user_id=sample_user.user_id, image_id=image.image_id)
+        db_session.add(favorite)
+        await db_session.commit()
+
+        # Get image with authentication
+        response = await authenticated_client.get(f"/api/v1/images/{image.image_id}")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["is_favorited"] is True
+        assert data["user_rating"] is None  # No rating yet
+
+    async def test_get_image_authenticated_with_rating(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test that authenticated users get their rating back."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Create a rating for this user
+        rating = ImageRatings(user_id=sample_user.user_id, image_id=image.image_id, rating=8)
+        db_session.add(rating)
+        await db_session.commit()
+
+        # Get image with authentication
+        response = await authenticated_client.get(f"/api/v1/images/{image.image_id}")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["is_favorited"] is False  # Not favorited
+        assert data["user_rating"] == 8
+
+    async def test_get_image_authenticated_favorited_and_rated(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test that users get both favorite status and rating."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Create both favorite and rating
+        favorite = Favorites(user_id=sample_user.user_id, image_id=image.image_id)
+        rating = ImageRatings(user_id=sample_user.user_id, image_id=image.image_id, rating=9)
+        db_session.add(favorite)
+        db_session.add(rating)
+        await db_session.commit()
+
+        # Get image with authentication
+        response = await authenticated_client.get(f"/api/v1/images/{image.image_id}")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["is_favorited"] is True
+        assert data["user_rating"] == 9
+
+
+@pytest.mark.api
+class TestImageFavorites:
+    """Tests for favorite/unfavorite functionality."""
+
+    async def test_favorite_image_creates_new_favorite(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test favoriting an image creates a new favorite record."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Verify initial state
+        initial_image_favorites = image.favorites
+        initial_user_favorites = sample_user.favorites
+
+        # Favorite the image
+        response = await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
+        assert response.status_code == 201
+        data = response.json()
+        assert "message" in data
+        assert "added" in data["message"].lower()
+
+        # Verify favorite record was created
+        from sqlalchemy import select
+
+        result = await db_session.execute(
+            select(Favorites).where(
+                Favorites.user_id == sample_user.user_id,
+                Favorites.image_id == image.image_id,
+            )
+        )
+        favorite = result.scalar_one_or_none()
+        assert favorite is not None
+        assert favorite.user_id == sample_user.user_id
+        assert favorite.image_id == image.image_id
+
+        # Refresh to get updated counters
+        await db_session.refresh(image)
+        await db_session.refresh(sample_user)
+
+        # Verify counters were incremented
+        assert image.favorites == initial_image_favorites + 1
+        assert sample_user.favorites == initial_user_favorites + 1
+
+    async def test_favorite_image_idempotent(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test favoriting an image twice is idempotent."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # First favorite
+        response1 = await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
+        assert response1.status_code == 201
+
+        # Get counters after first favorite
+        await db_session.refresh(image)
+        await db_session.refresh(sample_user)
+        favorites_after_first = image.favorites
+        user_favorites_after_first = sample_user.favorites
+
+        # Second favorite (should be idempotent)
+        response2 = await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
+        assert response2.status_code == 200  # 200 OK for existing favorite, not 201
+        data = response2.json()
+        assert "already" in data["message"].lower() or "favorite" in data["message"].lower()
+
+        # Verify counters didn't change
+        await db_session.refresh(image)
+        await db_session.refresh(sample_user)
+        assert image.favorites == favorites_after_first
+        assert sample_user.favorites == user_favorites_after_first
+
+        # Verify only one favorite record exists
+        from sqlalchemy import func, select
+
+        result = await db_session.execute(
+            select(func.count()).select_from(
+                select(Favorites)
+                .where(
+                    Favorites.user_id == sample_user.user_id,
+                    Favorites.image_id == image.image_id,
+                )
+                .subquery()
+            )
+        )
+        count = result.scalar()
+        assert count == 1
+
+    async def test_unfavorite_image_removes_favorite(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test unfavoriting an image removes the favorite record."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Create a favorite
+        favorite = Favorites(user_id=sample_user.user_id, image_id=image.image_id)
+        db_session.add(favorite)
+        image.favorites += 1
+        sample_user.favorites += 1
+        await db_session.commit()
+        await db_session.refresh(image)
+        await db_session.refresh(sample_user)
+
+        # Record counters before unfavorite
+        favorites_before = image.favorites
+        user_favorites_before = sample_user.favorites
+
+        # Unfavorite the image
+        response = await authenticated_client.delete(f"/api/v1/images/{image.image_id}/favorite")
+        assert response.status_code == 200  # Changed from 204 - now returns content
+        data = response.json()
+        assert data["favorited"] is False
+
+        # Verify favorite record was deleted
+        from sqlalchemy import select
+
+        result = await db_session.execute(
+            select(Favorites).where(
+                Favorites.user_id == sample_user.user_id,
+                Favorites.image_id == image.image_id,
+            )
+        )
+        favorite = result.scalar_one_or_none()
+        assert favorite is None
+
+        # Verify counters were decremented
+        await db_session.refresh(image)
+        await db_session.refresh(sample_user)
+        assert image.favorites == favorites_before - 1
+        assert sample_user.favorites == user_favorites_before - 1
+
+    async def test_unfavorite_nonexistent_favorite_returns_404(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        """Test unfavoriting an image that wasn't favorited returns 404."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Try to unfavorite without favoriting first
+        response = await authenticated_client.delete(f"/api/v1/images/{image.image_id}/favorite")
+        assert response.status_code == 404
+        data = response.json()
+        assert "not found" in data["detail"].lower()
+
+    async def test_favorite_nonexistent_image_returns_404(
+        self, authenticated_client: AsyncClient
+    ):
+        """Test favoriting a nonexistent image returns 404."""
+        response = await authenticated_client.post("/api/v1/images/999999/favorite")
+        assert response.status_code == 404
+        data = response.json()
+        assert "not found" in data["detail"].lower()
+
+    async def test_unfavorite_nonexistent_image_returns_404(
+        self, authenticated_client: AsyncClient
+    ):
+        """Test unfavoriting a nonexistent image returns 404."""
+        response = await authenticated_client.delete("/api/v1/images/999999/favorite")
+        assert response.status_code == 404
+        data = response.json()
+        assert "not found" in data["detail"].lower()
+
+    async def test_favorite_requires_authentication(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that favoriting requires authentication."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Try to favorite without auth
+        response = await client.post(f"/api/v1/images/{image.image_id}/favorite")
+        assert response.status_code == 401
+
+    async def test_unfavorite_requires_authentication(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that unfavoriting requires authentication."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Try to unfavorite without auth
+        response = await client.delete(f"/api/v1/images/{image.image_id}/favorite")
+        assert response.status_code == 401
+
+    async def test_counters_stay_non_negative(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test that favorite counters never go negative even with data inconsistencies."""
+        # Create an image
+        image = Images(**sample_image_data)
+        image.favorites = 0  # Start at 0
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Create a favorite manually (simulating data inconsistency)
+        favorite = Favorites(user_id=sample_user.user_id, image_id=image.image_id)
+        db_session.add(favorite)
+        await db_session.commit()
+        # Note: Not incrementing counters to simulate inconsistency
+
+        # Now unfavorite - counters should not go negative
+        response = await authenticated_client.delete(f"/api/v1/images/{image.image_id}/favorite")
+        assert response.status_code == 200  # Changed from 204 - now returns content
+        data = response.json()
+        assert data["favorited"] is False
+
+        # Verify counters stayed at 0 (not negative)
+        await db_session.refresh(image)
+        await db_session.refresh(sample_user)
+        assert image.favorites >= 0
+        assert sample_user.favorites >= 0

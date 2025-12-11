@@ -485,3 +485,50 @@ def sample_user_data() -> dict:
         "email": "newuser@example.com",
         "password": "SecurePassword123!",
     }
+
+
+@pytest.fixture
+async def sample_user(db_session: AsyncSession):
+    """
+    Create a sample user in the database for testing.
+
+    This is an alias for test_user but with a different name for semantic clarity
+    in tests that need a user to perform actions (like favoriting images).
+    """
+    from app.models.user import Users
+
+    user = Users(
+        username="sampleuser",
+        password="hashed_password_here",
+        password_type="bcrypt",
+        salt="saltsalt12345678",
+        email="sample@example.com",
+        active=1,  # User must be active to authenticate
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+async def authenticated_client(client: AsyncClient, sample_user) -> AsyncClient:
+    """
+    Create an HTTP client with authentication headers for the sample user.
+
+    Uses the existing client fixture and just adds authentication headers.
+
+    Usage:
+        async def test_protected_endpoint(authenticated_client, sample_user):
+            response = await authenticated_client.get("/api/v1/protected")
+            assert response.status_code == 200
+    """
+    from app.core.security import create_access_token
+
+    # Create access token for the sample user
+    access_token = create_access_token(sample_user.user_id)
+
+    # Add auth header to existing client
+    client.headers.update({"Authorization": f"Bearer {access_token}"})
+
+    return client
