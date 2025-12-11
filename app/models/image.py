@@ -148,7 +148,7 @@ class Images(ImageBase, table=True):
     - replacement_id: Internal reference
     """
 
-    __tablename__ = "images"
+    __tablename__ = "images"  # type: ignore[assignment]
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's

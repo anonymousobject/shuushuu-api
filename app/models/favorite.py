@@ -32,7 +32,10 @@ class FavoriteBase(SQLModel):
     image_id: int = Field(foreign_key="images.image_id", primary_key=True)
 
     # Public timestamp
-    fav_date: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    fav_date: datetime = Field(
+        default_factory=datetime.now,
+        sa_column_kwargs={"server_default": text("current_timestamp()")},
+    )
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
@@ -50,7 +53,7 @@ class Favorites(FavoriteBase, table=True):
     - Primary key and foreign keys
     """
 
-    __tablename__ = "favorites"
+    __tablename__ = "favorites"  # type: ignore[assignment]
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's

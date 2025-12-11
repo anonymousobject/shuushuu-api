@@ -48,7 +48,7 @@ class ImageRatings(ImageRatingBase, table=True):
     All fields are public as this is user-generated content.
     """
 
-    __tablename__ = "image_ratings"
+    __tablename__ = "image_ratings"  # type: ignore[assignment]
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's

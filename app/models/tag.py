@@ -110,7 +110,10 @@ class Tags(TagBase, table=True):
     tag_id: int | None = Field(default=None, primary_key=True)
 
     # Public timestamp
-    date_added: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    date_added: datetime = Field(
+        default_factory=datetime.now,
+        sa_column_kwargs={"server_default": text("current_timestamp()")},
+    )
 
     # Public relationship fields
     alias: int | None = Field(default=None, foreign_key="tags.tag_id")

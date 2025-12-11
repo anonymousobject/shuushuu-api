@@ -69,7 +69,7 @@ class Users(UserBase, table=True):
     - bookmark: User-private reference
     """
 
-    __tablename__ = "users"
+    __tablename__ = "users"  # type: ignore[assignment]
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
@@ -89,10 +89,13 @@ class Users(UserBase, table=True):
     )
 
     # Primary key
-    user_id: int = Field(primary_key=True)
+    user_id: int | None = Field(default=None, primary_key=True)
 
     # Public timestamps
-    date_joined: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    date_joined: datetime = Field(
+        default_factory=datetime.now,
+        sa_column_kwargs={"server_default": text("current_timestamp()")},
+    )
     last_login: datetime | None = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
     )
