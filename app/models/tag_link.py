@@ -51,7 +51,7 @@ class TagLinks(TagLinkBase, table=True):
     - user_id: Creator user (privacy-sensitive)
     """
 
-    __tablename__ = "tag_links"  # type: ignore[assignment]
+    __tablename__ = "tag_links"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's

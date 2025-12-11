@@ -365,8 +365,8 @@ async def create_tag(
         title=tag_data.title,
         type=tag_data.type,
         desc=tag_data.desc,
-        inheritedfrom_id=tag_data.inheritedfrom_id,  # type: ignore[call-arg]
-        alias=tag_data.alias,  # type: ignore[call-arg]
+        inheritedfrom_id=tag_data.inheritedfrom_id,
+        alias=tag_data.alias,
     )
     db.add(new_tag)
     await db.commit()

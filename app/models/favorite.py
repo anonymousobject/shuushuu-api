@@ -53,7 +53,7 @@ class Favorites(FavoriteBase, table=True):
     - Primary key and foreign keys
     """
 
-    __tablename__ = "favorites"  # type: ignore[assignment]
+    __tablename__ = "favorites"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's

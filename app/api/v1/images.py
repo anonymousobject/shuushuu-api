@@ -20,7 +20,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse
-from sqlalchemy import asc, delete, desc, func, select
+from sqlalchemy import and_, asc, delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -280,21 +280,26 @@ async def get_image(
     if current_user:
         # Optimized: Get both favorite status and rating in a single query
         # Uses LEFT JOINs to check if records exist for this user
+        # Type ignores needed: mypy doesn't understand SQLAlchemy's operator overloading for column comparisons
         user_data_result = await db.execute(
-            select(  # type: ignore[call-overload,var-annotated]
+            select(
                 Favorites.user_id.label("fav_user_id"),  # type: ignore[attr-defined]  # Will be non-null if favorited
                 ImageRatings.rating.label("user_rating"),  # type: ignore[attr-defined]
             )
             .select_from(Images)
-            .outerjoin(  # type: ignore[call-overload,arg-type]
+            .outerjoin(
                 Favorites,
-                (Favorites.image_id == Images.image_id)  # type: ignore[operator]
-                & (Favorites.user_id == current_user.user_id),
+                and_(
+                    Favorites.image_id == Images.image_id,  # type: ignore[arg-type]
+                    Favorites.user_id == current_user.user_id,  # type: ignore[arg-type]
+                ),
             )
-            .outerjoin(  # type: ignore[call-overload,arg-type]
+            .outerjoin(
                 ImageRatings,
-                (ImageRatings.image_id == Images.image_id)  # type: ignore[operator]
-                & (ImageRatings.user_id == current_user.user_id),
+                and_(
+                    ImageRatings.image_id == Images.image_id,  # type: ignore[arg-type]
+                    ImageRatings.user_id == current_user.user_id,  # type: ignore[arg-type]
+                ),
             )
             .where(Images.image_id == image_id)  # type: ignore[arg-type]
         )

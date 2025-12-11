@@ -69,7 +69,7 @@ class Users(UserBase, table=True):
     - bookmark: User-private reference
     """
 
-    __tablename__ = "users"  # type: ignore[assignment]
+    __tablename__ = "users"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's

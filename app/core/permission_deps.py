@@ -68,8 +68,8 @@ def require_permission(
         # Convert enum to string for error message
         perm_name = permission.value if isinstance(permission, Permission) else permission
 
-        # Check permission
-        if not await has_permission(db, user.user_id, permission):
+        # Check permission (user_id is guaranteed non-None from get_current_user)
+        if not await has_permission(db, user.user_id or 0, permission):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Insufficient permissions. Requires permission: {perm_name}",
@@ -114,7 +114,7 @@ def require_any_permission(
         db: Annotated[AsyncSession, Depends(get_db)],
     ) -> None:
         # Check permissions
-        if not await has_any_permission(db, user.user_id, permissions):
+        if not await has_any_permission(db, user.user_id or 0, permissions):
             # Convert enums to strings for error message
             perm_names = [p.value if isinstance(p, Permission) else p for p in permissions]
             raise HTTPException(
@@ -162,6 +162,7 @@ def require_all_permissions(
         # Get user's permissions
         from app.core.permissions import get_user_permissions
 
+        assert user.user_id is not None
         user_perms = await get_user_permissions(db, user.user_id)
         required_set = {p.value if isinstance(p, Permission) else p for p in permissions}
 

@@ -130,7 +130,7 @@ class ImageDetailedResponse(ImageResponse):
     is_favorited: bool = False  # Whether the current user has favorited this image
     user_rating: int | None = None  # The rating given by the current user (if any)
 
-    model_config = {"from_attributes": True}  # type: ignore[assignment]
+    model_config = {"from_attributes": True}
 
     @classmethod
     def from_db_model(
