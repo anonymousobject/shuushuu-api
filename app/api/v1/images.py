@@ -727,7 +727,7 @@ async def unfavorite_image(
     # Check if user has favorited this image
     existing_favorite = await db.execute(
         select(Favorites).where(
-            Favorites.user_id == current_user.user_id,  # type: ignore[arg-type]
+            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
             Favorites.image_id == image_id,  # type: ignore[arg-type]
         )
     )
