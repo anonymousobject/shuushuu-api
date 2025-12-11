@@ -12,6 +12,7 @@ This approach eliminates field duplication while maintaining security boundaries
 """
 
 from datetime import datetime
+from time import timezone
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
@@ -33,7 +34,7 @@ class FavoriteBase(SQLModel):
 
     # Public timestamp
     fav_date: datetime = Field(
-        default_factory=datetime.now,
+        default_factory=datetime.now(timezone.utc),
         sa_column_kwargs={"server_default": text("current_timestamp()")},
     )
 

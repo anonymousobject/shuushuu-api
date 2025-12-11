@@ -111,7 +111,7 @@ class Tags(TagBase, table=True):
 
     # Public timestamp
     date_added: datetime = Field(
-        default_factory=datetime.now,
+        default_factory=datetime.now(timezone.utc),
         sa_column_kwargs={"server_default": text("current_timestamp()")},
     )
 
