@@ -65,7 +65,7 @@ async def _check_and_handle_suspension(
         suspension_result = await db.execute(
             select(UserSuspensions)
             .where(UserSuspensions.user_id == user.user_id)  # type: ignore[arg-type]
-            .order_by(desc(UserSuspensions.actioned_at))
+            .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
             .limit(2)  # Get latest 2 to check if there's a reactivation after suspension
         )
         suspensions = suspension_result.scalars().all()

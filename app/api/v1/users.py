@@ -16,8 +16,8 @@ from app.api.dependencies import ImageSortParams, PaginationParams, UserSortPara
 from app.core.auth import get_current_user, get_current_user_id
 from app.core.database import get_db
 from app.core.security import get_password_hash, validate_password_strength
-from app.models import Favorites, Images, Users
-from app.schemas.image import ImageListResponse, ImageResponse
+from app.models import Favorites, Images, TagLinks, Users
+from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
 from app.schemas.user import (
     UserCreate,
     UserCreateResponse,
@@ -51,7 +51,7 @@ async def list_users(
 
     # Apply search filter
     if search:
-        query = query.where(Users.username.like(f"%{search}%"))  # type: ignore[union-attr]
+        query = query.where(Users.username.like(f"%{search}%"))  # type: ignore[attr-defined]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -297,7 +297,7 @@ async def update_user_profile(
             detail="Not authorized to update this user",
         )
 
-    return await _update_user_profile(user_id, user_data, current_user.user_id, db)
+    return await _update_user_profile(user_id, user_data, current_user.user_id or 0, db)
 
 
 async def _update_user_profile(
@@ -356,13 +356,13 @@ async def _update_user_profile(
     return UserResponse.model_validate(user)
 
 
-@router.get("/{user_id}/images", response_model=ImageListResponse)
+@router.get("/{user_id}/images", response_model=ImageDetailedListResponse)
 async def get_user_images(
     user_id: Annotated[int, Path(description="User ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
-) -> ImageListResponse:
+) -> ImageDetailedListResponse:
     """
     Get all images uploaded by a specific user.
 
@@ -379,7 +379,10 @@ async def get_user_images(
     # Get user's images
     query = (
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
+        )
         .where(Images.user_id == user_id)  # type: ignore[arg-type]
     )
 
@@ -402,11 +405,11 @@ async def get_user_images(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return ImageListResponse(
+    return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        images=[ImageResponse.model_validate(img) for img in images],
+        images=[ImageDetailedResponse.model_validate(img) for img in images],
     )
 
 
@@ -427,13 +430,13 @@ async def get_user(
     return UserResponse.model_validate(user)
 
 
-@router.get("/{user_id}/favorites", response_model=ImageListResponse)
+@router.get("/{user_id}/favorites", response_model=ImageDetailedListResponse)
 async def get_user_favorites(
     user_id: Annotated[int, Path(description="User ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
-) -> ImageListResponse:
+) -> ImageDetailedListResponse:
     """
     Get all images favorited by a specific user.
     """
@@ -447,7 +450,10 @@ async def get_user_favorites(
     # Get user's favorite images
     query = (
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
+        )
         .join(Favorites)
         .where(Favorites.user_id == user_id)  # type: ignore[arg-type]
     )
@@ -471,11 +477,11 @@ async def get_user_favorites(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return ImageListResponse(
+    return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        images=[ImageResponse.model_validate(img) for img in images],
+        images=[ImageDetailedResponse.model_validate(img) for img in images],
     )
 
 

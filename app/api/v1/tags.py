@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
 from app.models import Images, TagLinks, Tags
-from app.schemas.image import ImageListResponse
+from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import TagCreate, TagListResponse, TagResponse, TagWithStats
 
 router = APIRouter(prefix="/tags", tags=["tags"])
@@ -121,7 +121,11 @@ async def list_tags(
                 tag_ids.append(int(id_str))
             else:
                 invalid_ids.append(id_str)
-        query = query.where(Tags.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
+        if tag_ids:  # Only apply filter if we have valid IDs
+            query = query.where(Tags.tag_id.in_(tag_ids))  # type: ignore[union-attr]
+        else:
+            # All IDs were invalid - return empty result
+            query = query.where(False)  # type: ignore[arg-type]
     elif search:
         query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
     if type_id is not None:
@@ -263,7 +267,10 @@ async def get_images_by_tag(
     images = result.scalars().all()
 
     return ImageListResponse(
-        total=total or 0, page=pagination.page, per_page=pagination.per_page, images=images
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        images=[ImageResponse.model_validate(img) for img in images],
     )
 
 
@@ -309,7 +316,7 @@ async def get_tag(
     parent_tag_id = tag.inheritedfrom_id
 
     return TagWithStats(
-        tag_id=tag.tag_id,
+        tag_id=tag.tag_id or 0,
         title=tag.title,
         desc=tag.desc,
         type=tag.type,
@@ -358,8 +365,8 @@ async def create_tag(
         title=tag_data.title,
         type=tag_data.type,
         desc=tag_data.desc,
-        inheritedfrom_id=tag_data.inheritedfrom_id,
-        alias=tag_data.alias,
+        inheritedfrom_id=tag_data.inheritedfrom_id,  # type: ignore[call-arg]
+        alias=tag_data.alias,  # type: ignore[call-arg]
     )
     db.add(new_tag)
     await db.commit()
