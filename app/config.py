@@ -146,7 +146,9 @@ class Settings(BaseSettings):
 
 
 # Create global settings instance
-settings = Settings()
+from dotenv import load_dotenv
+load_dotenv()
+settings = Settings()  # type: ignore[call-arg]
 
 
 # Constants (from original PHP config)
