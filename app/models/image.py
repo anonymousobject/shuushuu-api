@@ -149,6 +149,7 @@ class Images(ImageBase, table=True):
     """
 
     model_config = ConfigDict(validate_assignment=True)  # type: ignore
+    __tablename__ = "images"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
     # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
