@@ -36,7 +36,6 @@ jobs:
 
       - name: mypy - Type check
         run: uv run mypy app/
-        continue-on-error: true
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
