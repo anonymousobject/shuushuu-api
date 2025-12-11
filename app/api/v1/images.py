@@ -516,7 +516,7 @@ async def add_tag_to_image(
     tag_link = TagLinks(
         image_id=image_id,
         tag_id=tag_id,
-        user_id=current_user.user_id,
+        user_id=current_user.id,
     )
     db.add(tag_link)
     await db.commit()
@@ -604,7 +604,7 @@ async def rate_image(
     # Check if user already rated this image
     existing_rating = await db.execute(
         select(ImageRatings).where(
-            ImageRatings.user_id == current_user.user_id,  # type: ignore[arg-type]
+            ImageRatings.user_id == current_user.id,  # type: ignore[arg-type]
             ImageRatings.image_id == image_id,  # type: ignore[arg-type]
         )
     )
@@ -727,7 +727,7 @@ async def unfavorite_image(
     # Check if user has favorited this image
     existing_favorite = await db.execute(
         select(Favorites).where(
-            Favorites.user_id == current_user.user_id,  # type: ignore[arg-type]
+            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
             Favorites.image_id == image_id,  # type: ignore[arg-type]
         )
     )
@@ -794,7 +794,7 @@ async def upload_image(
     """
     logger.info(
         "image_upload_started",
-        user_id=current_user.user_id,
+        user_id=current_user.id,
         filename=file.filename,
         content_type=file.content_type,
     )
@@ -1063,7 +1063,7 @@ async def report_image(
     existing_report = await db.execute(
         select(ImageReports).where(
             ImageReports.image_id == image_id,  # type: ignore[arg-type]
-            ImageReports.user_id == current_user.user_id,  # type: ignore[arg-type]
+            ImageReports.user_id == current_user.id,  # type: ignore[arg-type]
             ImageReports.status == ReportStatus.PENDING,  # type: ignore[arg-type]
         )
     )
@@ -1089,7 +1089,7 @@ async def report_image(
         "image_reported",
         report_id=new_report.report_id,
         image_id=image_id,
-        user_id=current_user.user_id,
+        user_id=current_user.id,
         category=report_data.category,
     )
 
