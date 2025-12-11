@@ -91,6 +91,18 @@ class Users(UserBase, table=True):
     # Primary key
     user_id: int | None = Field(default=None, primary_key=True)
 
+    @property
+    def id(self) -> int:
+        """
+        Get user_id as non-optional int.
+
+        Guaranteed to be non-None after database fetch.
+        Raises ValueError if accessed before the user is saved to the database.
+        """
+        if self.user_id is None:
+            raise ValueError("User ID not yet assigned (not saved to database)")
+        return self.user_id
+
     # Public timestamps
     date_joined: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

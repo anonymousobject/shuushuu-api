@@ -44,7 +44,6 @@ from app.schemas.image import (
     ImageDetailedListResponse,
     ImageDetailedResponse,
     ImageHashSearchResponse,
-    ImageListResponse,
     ImageResponse,
     ImageStatsResponse,
     ImageTagItem,
@@ -103,7 +102,7 @@ async def list_images(
     ] = None,
     min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
     db: AsyncSession = Depends(get_db),
-) -> ImageListResponse:
+) -> ImageDetailedListResponse:
     """
     Search and list images with comprehensive filtering.
 
@@ -238,7 +237,7 @@ async def list_images(
     result = await db.execute(final_query)
     images = result.scalars().all()
 
-    return ImageListResponse(
+    return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
@@ -491,9 +490,7 @@ async def add_tag_to_image(
 
     # Check ownership or permission
     is_owner = image.user_id == current_user.user_id
-    has_edit_permission = await has_permission(
-        db, current_user.user_id or 0, Permission.IMAGE_TAG_ADD
-    )
+    has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_ADD)
 
     if not is_owner and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
@@ -551,9 +548,7 @@ async def remove_tag_from_image(
 
     # Check ownership or permission
     is_owner = image.user_id == current_user.user_id
-    has_edit_permission = await has_permission(
-        db, current_user.user_id or 0, Permission.IMAGE_TAG_REMOVE
-    )
+    has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_REMOVE)
 
     if not is_owner and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
@@ -622,7 +617,7 @@ async def rate_image(
     else:
         # Create new rating
         new_rating = ImageRatings(
-            user_id=current_user.user_id or 0,
+            user_id=current_user.id,
             image_id=image_id,
             rating=rating,
         )
@@ -685,7 +680,7 @@ async def favorite_image(
 
     # Create new favorite
     new_favorite = Favorites(
-        user_id=current_user.user_id or 0,
+        user_id=current_user.id,
         image_id=image_id,
     )
     db.add(new_favorite)
@@ -806,7 +801,7 @@ async def upload_image(
 
     # Check upload rate limit (skip for admins/moderators)
     if not current_user.admin:
-        await check_upload_rate_limit(current_user.user_id or 0, db)
+        await check_upload_rate_limit(current_user.id, db)
 
     # Get client IP address for logging
     client_ip = _get_client_ip(request)
@@ -820,7 +815,7 @@ async def upload_image(
         filesize=0,
         width=0,
         height=0,
-        user_id=current_user.user_id or 0,
+        user_id=current_user.id,
         ip=client_ip,  # Log IP address
         status=1,
         locked=0,
@@ -904,7 +899,7 @@ async def upload_image(
         if tag_ids.strip():
             try:
                 tag_id_list = [int(tid.strip()) for tid in tag_ids.split(",") if tid.strip()]
-                await link_tags_to_image(image_id, tag_id_list, current_user.user_id or 0, db)
+                await link_tags_to_image(image_id, tag_id_list, current_user.id, db)
             except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -983,7 +978,7 @@ async def upload_image(
             height=temp_image.height,
             caption=temp_image.caption,
             rating=temp_image.rating,
-            user_id=temp_image.user_id or 0,  # user_id is guaranteed to exist
+            user_id=temp_image.user_id,  # user_id is guaranteed from database
             date_added=temp_image.date_added,
             status=temp_image.status,
             locked=temp_image.locked,
@@ -1081,7 +1076,7 @@ async def report_image(
     # Create the report
     new_report = ImageReports(
         image_id=image_id,
-        user_id=current_user.user_id or 0,  # user_id guaranteed in authenticated context
+        user_id=current_user.id,
         category=report_data.category,
         reason_text=report_data.reason_text,
         status=ReportStatus.PENDING,
