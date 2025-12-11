@@ -526,7 +526,7 @@ async def authenticated_client(client: AsyncClient, sample_user) -> AsyncClient:
     from app.core.security import create_access_token
 
     # Create access token for the sample user
-    access_token = create_access_token(sample_user.user_id)
+    access_token = create_access_token(sample_user.id)
 
     # Add auth header to existing client
     client.headers.update({"Authorization": f"Bearer {access_token}"})
