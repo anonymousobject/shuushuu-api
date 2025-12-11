@@ -59,6 +59,7 @@ async def get_received_privmsgs(
     - `/privmsgs/received` - Get your own received messages
     - `/privmsgs/received?user_id=5` - (With PRIVMSG_VIEW permission) Get received messages for user 5
     """
+    assert current_user.user_id is not None
     # Determine which user's messages to retrieve
     target_user_id = current_user.user_id
 
@@ -113,6 +114,7 @@ async def get_sent_privmsgs(
     - `/privmsgs/sent` - Get your own sent messages
     - `/privmsgs/sent?user_id=5` - (With PRIVMSG_VIEW permission) Get sent messages for user 5
     """
+    assert current_user.user_id is not None
     # Determine which user's messages to retrieve
     target_user_id = current_user.user_id
 

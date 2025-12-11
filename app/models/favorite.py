@@ -11,7 +11,7 @@ FavoriteBase (shared public fields)
 This approach eliminates field duplication while maintaining security boundaries.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
@@ -32,7 +32,10 @@ class FavoriteBase(SQLModel):
     image_id: int = Field(foreign_key="images.image_id", primary_key=True)
 
     # Public timestamp
-    fav_date: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    fav_date: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column_kwargs={"server_default": text("current_timestamp()")},
+    )
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

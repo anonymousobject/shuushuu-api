@@ -19,22 +19,31 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import asc, delete, desc, func, select
+from fastapi.responses import JSONResponse
+from sqlalchemy import and_, asc, delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
 from app.config import ReportStatus, settings
-from app.core.auth import CurrentUser, get_current_user
+from app.core.auth import CurrentUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
-from app.models import Favorites, ImageRatings, ImageReports, Images, TagLinks, Tags, Users
+from app.models import (
+    Favorites,
+    ImageRatings,
+    ImageReports,
+    Images,
+    TagLinks,
+    Tags,
+    Users,
+)
 from app.schemas.image import (
+    ImageDetailedListResponse,
     ImageDetailedResponse,
     ImageHashSearchResponse,
-    ImageListResponse,
     ImageResponse,
     ImageStatsResponse,
     ImageTagItem,
@@ -63,7 +72,7 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
 
-@router.get("/", response_model=ImageListResponse)
+@router.get("/", response_model=ImageDetailedListResponse)
 async def list_images(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
@@ -93,7 +102,7 @@ async def list_images(
     ] = None,
     min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
     db: AsyncSession = Depends(get_db),
-) -> ImageListResponse:
+) -> ImageDetailedListResponse:
     """
     Search and list images with comprehensive filtering.
 
@@ -217,8 +226,8 @@ async def list_images(
     final_query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),
-            selectinload(Images.tag_links).selectinload(TagLinks.tag),
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
         .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
         .order_by(subquery_order)  # Re-apply same sort order
@@ -228,7 +237,7 @@ async def list_images(
     result = await db.execute(final_query)
     images = result.scalars().all()
 
-    return ImageListResponse(
+    return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
@@ -237,7 +246,11 @@ async def list_images(
 
 
 @router.get("/{image_id}", response_model=ImageDetailedResponse)
-async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageDetailedResponse:
+async def get_image(
+    image_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Users | None = Depends(get_optional_current_user),
+) -> ImageDetailedResponse:
     """
     Get a single image by ID.
 
@@ -250,10 +263,10 @@ async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageD
         # - selectinload for user: Simple 1:1, additional query is fine
         # - joinedload for tags: Fetches everything in one query (faster for single image)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),
-            joinedload(Images.tag_links).joinedload(TagLinks.tag),
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
+            joinedload(Images.tag_links).joinedload(TagLinks.tag),  # type: ignore[arg-type]
         )
-        .where(Images.image_id == image_id)
+        .where(Images.image_id == image_id)  # type: ignore[arg-type]
     )
     # unique() is required when using joinedload with collections to deduplicate rows
     image = result.unique().scalar_one_or_none()
@@ -261,7 +274,42 @@ async def get_image(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageD
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    return ImageDetailedResponse.from_db_model(image)
+    is_favorited = False
+    user_rating = None
+    if current_user:
+        # Optimized: Get both favorite status and rating in a single query
+        # Uses LEFT JOINs to check if records exist for this user
+        # Type ignores needed: mypy doesn't understand SQLAlchemy's operator overloading for column comparisons
+        user_data_result = await db.execute(
+            select(
+                Favorites.user_id.label("fav_user_id"),  # type: ignore[attr-defined]  # Will be non-null if favorited
+                ImageRatings.rating.label("user_rating"),  # type: ignore[attr-defined]
+            )
+            .select_from(Images)
+            .outerjoin(
+                Favorites,
+                and_(
+                    Favorites.image_id == Images.image_id,  # type: ignore[arg-type]
+                    Favorites.user_id == current_user.id,  # type: ignore[arg-type]
+                ),
+            )
+            .outerjoin(
+                ImageRatings,
+                and_(
+                    ImageRatings.image_id == Images.image_id,  # type: ignore[arg-type]
+                    ImageRatings.user_id == current_user.id,  # type: ignore[arg-type]
+                ),
+            )
+            .where(Images.image_id == image_id)  # type: ignore[arg-type]
+        )
+        row = user_data_result.first()
+        if row:
+            is_favorited = row.fav_user_id is not None
+            user_rating = row.user_rating
+
+    return ImageDetailedResponse.from_db_model(
+        image, is_favorited=is_favorited, user_rating=user_rating
+    )
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)
@@ -288,7 +336,14 @@ async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> I
 
     return ImageTagsResponse(
         image_id=image_id,
-        tags=[ImageTagItem(tag_id=tag.tag_id, tag=tag.title, type_id=tag.type) for tag in tags],
+        tags=[
+            ImageTagItem(
+                tag_id=tag.tag_id or 0,  # tag_id guaranteed from database
+                tag=tag.title or "",  # title guaranteed from database
+                type_id=tag.type or 0,  # type guaranteed from database
+            )
+            for tag in tags
+        ],
     )
 
 
@@ -303,7 +358,7 @@ async def search_by_hash(
     """
     result = await db.execute(
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))  # type: ignore[arg-type]
         .where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
     )
     images = result.scalars().all()
@@ -397,7 +452,7 @@ async def get_bookmark_image(
 
     result = await db.execute(
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))  # type: ignore[arg-type]
         .where(Images.image_id == current_user.bookmark)  # type: ignore[arg-type]
     )
     image = result.scalar_one_or_none()
@@ -434,8 +489,8 @@ async def add_tag_to_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check ownership or permission
-    is_owner = image.user_id == current_user.user_id
-    has_edit_permission = await has_permission(db, current_user.user_id, Permission.IMAGE_TAG_ADD)
+    is_owner = image.user_id == current_user.id
+    has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_ADD)
 
     if not is_owner and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
@@ -461,7 +516,7 @@ async def add_tag_to_image(
     tag_link = TagLinks(
         image_id=image_id,
         tag_id=tag_id,
-        user_id=current_user.user_id,
+        user_id=current_user.id,
     )
     db.add(tag_link)
     await db.commit()
@@ -492,10 +547,8 @@ async def remove_tag_from_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check ownership or permission
-    is_owner = image.user_id == current_user.user_id
-    has_edit_permission = await has_permission(
-        db, current_user.user_id, Permission.IMAGE_TAG_REMOVE
-    )
+    is_owner = image.user_id == current_user.id
+    has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_REMOVE)
 
     if not is_owner and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
@@ -551,7 +604,7 @@ async def rate_image(
     # Check if user already rated this image
     existing_rating = await db.execute(
         select(ImageRatings).where(
-            ImageRatings.user_id == current_user.user_id,  # type: ignore[arg-type]
+            ImageRatings.user_id == current_user.id,  # type: ignore[arg-type]
             ImageRatings.image_id == image_id,  # type: ignore[arg-type]
         )
     )
@@ -564,7 +617,7 @@ async def rate_image(
     else:
         # Create new rating
         new_rating = ImageRatings(
-            user_id=current_user.user_id,
+            user_id=current_user.id,
             image_id=image_id,
             rating=rating,
         )
@@ -578,6 +631,130 @@ async def rate_image(
     await schedule_rating_recalculation(image_id)
 
     return {"message": message}
+
+
+@router.post("/{image_id}/favorite", response_model=None)
+async def favorite_image(
+    image_id: Annotated[int, Path(description="Image ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """
+    Favorite an image.
+
+    Users can favorite any image. If they've already favorited it, this is idempotent
+    and returns 200 OK. Returns 201 Created for new favorites.
+
+    Args:
+        image_id: The image to favorite
+
+    Returns:
+        Success message indicating if favorite was created or already existed
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    image = image_result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Check if user already favorited this image
+    existing_favorite = await db.execute(
+        select(Favorites).where(
+            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
+            Favorites.image_id == image_id,  # type: ignore[arg-type]
+        )
+    )
+    existing = existing_favorite.scalar_one_or_none()
+
+    if existing:
+        # Favorite already exists, return 200 OK (idempotent)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "message": "Image already favorited",
+                "favorited": True,
+                "favorites_count": image.favorites,
+            },
+        )
+
+    # Create new favorite
+    new_favorite = Favorites(
+        user_id=current_user.id,
+        image_id=image_id,
+    )
+    db.add(new_favorite)
+
+    # Update counters
+    image.favorites += 1
+    current_user.favorites += 1
+
+    # Commit all changes
+    await db.commit()
+
+    # Return 201 Created for new favorites
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={
+            "message": "Favorite added successfully",
+            "favorited": True,
+            "favorites_count": image.favorites,
+        },
+    )
+
+
+@router.delete("/{image_id}/favorite")
+async def unfavorite_image(
+    image_id: Annotated[int, Path(description="Image ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool | int | str]:
+    """
+    Unfavorite an image.
+
+    Users can unfavorite an image they have previously favorited.
+
+    Args:
+        image_id: The image to unfavorite
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    image = image_result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Check if user has favorited this image
+    existing_favorite = await db.execute(
+        select(Favorites).where(
+            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
+            Favorites.image_id == image_id,  # type: ignore[arg-type]
+        )
+    )
+    existing = existing_favorite.scalar_one_or_none()
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Favorite not found")
+
+    # Delete the favorite
+    await db.execute(
+        delete(Favorites).where(
+            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
+            Favorites.image_id == image_id,  # type: ignore[arg-type]
+        )
+    )
+
+    # Update counters (ensure they don't go negative)
+    image.favorites = max(0, image.favorites - 1)
+    current_user.favorites = max(0, current_user.favorites - 1)
+
+    await db.commit()
+
+    return {
+        "message": "Favorite removed successfully",
+        "favorited": False,
+        "favorites_count": image.favorites,
+    }
 
 
 @router.post("/upload", response_model=ImageUploadResponse, status_code=status.HTTP_201_CREATED)
@@ -617,14 +794,14 @@ async def upload_image(
     """
     logger.info(
         "image_upload_started",
-        user_id=current_user.user_id,
+        user_id=current_user.id,
         filename=file.filename,
         content_type=file.content_type,
     )
 
     # Check upload rate limit (skip for admins/moderators)
     if not current_user.admin:
-        await check_upload_rate_limit(current_user.user_id, db)
+        await check_upload_rate_limit(current_user.id, db)
 
     # Get client IP address for logging
     client_ip = _get_client_ip(request)
@@ -638,7 +815,7 @@ async def upload_image(
         filesize=0,
         width=0,
         height=0,
-        user_id=current_user.user_id,
+        user_id=current_user.id,
         ip=client_ip,  # Log IP address
         status=1,
         locked=0,
@@ -649,6 +826,7 @@ async def upload_image(
 
     logger.info("image_record_created", image_id=image_id)
 
+    file_path: FilePath | None = None  # Initialize to track if file was saved
     try:
         # Save image to storage (validates and calculates hash)
         # If validation fails, this will raise HTTPException
@@ -721,7 +899,7 @@ async def upload_image(
         if tag_ids.strip():
             try:
                 tag_id_list = [int(tid.strip()) for tid in tag_ids.split(",") if tid.strip()]
-                await link_tags_to_image(image_id, tag_id_list, current_user.user_id, db)
+                await link_tags_to_image(image_id, tag_id_list, current_user.id, db)
             except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -790,7 +968,7 @@ async def upload_image(
 
         # Build response
         image_response = ImageResponse(
-            image_id=temp_image.image_id,
+            image_id=temp_image.image_id or 0,  # image_id is guaranteed to exist after flush
             filename=temp_image.filename,
             ext=temp_image.ext,
             original_filename=temp_image.original_filename,
@@ -800,7 +978,7 @@ async def upload_image(
             height=temp_image.height,
             caption=temp_image.caption,
             rating=temp_image.rating,
-            user_id=temp_image.user_id,
+            user_id=temp_image.user_id,  # user_id is guaranteed from database
             date_added=temp_image.date_added,
             status=temp_image.status,
             locked=temp_image.locked,
@@ -808,11 +986,13 @@ async def upload_image(
             favorites=temp_image.favorites,
             bayesian_rating=temp_image.bayesian_rating,
             num_ratings=temp_image.num_ratings,
+            medium=temp_image.medium,
+            large=temp_image.large,
         )
 
         return ImageUploadResponse(
             message="Image uploaded successfully",
-            image_id=temp_image.image_id,
+            image_id=temp_image.image_id or 0,  # image_id is guaranteed after flush
             image=image_response,
         )
 
@@ -826,7 +1006,7 @@ async def upload_image(
         )
         # Rollback database first, then delete file
         await db.rollback()
-        if "file_path" in locals() and file_path.exists():
+        if file_path and file_path.exists():
             file_path.unlink()
         raise
     except Exception as e:
@@ -840,7 +1020,7 @@ async def upload_image(
         )
         # Rollback database first, then delete file
         await db.rollback()
-        if "file_path" in locals() and file_path.exists():
+        if file_path and file_path.exists():
             file_path.unlink()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -883,7 +1063,7 @@ async def report_image(
     existing_report = await db.execute(
         select(ImageReports).where(
             ImageReports.image_id == image_id,  # type: ignore[arg-type]
-            ImageReports.user_id == current_user.user_id,  # type: ignore[arg-type]
+            ImageReports.user_id == current_user.id,  # type: ignore[arg-type]
             ImageReports.status == ReportStatus.PENDING,  # type: ignore[arg-type]
         )
     )
@@ -896,7 +1076,7 @@ async def report_image(
     # Create the report
     new_report = ImageReports(
         image_id=image_id,
-        user_id=current_user.user_id,
+        user_id=current_user.id,
         category=report_data.category,
         reason_text=report_data.reason_text,
         status=ReportStatus.PENDING,
@@ -909,7 +1089,7 @@ async def report_image(
         "image_reported",
         report_id=new_report.report_id,
         image_id=image_id,
-        user_id=current_user.user_id,
+        user_id=current_user.id,
         category=report_data.category,
     )
 

@@ -16,7 +16,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from pydantic import field_validator
+from pydantic import ConfigDict, field_validator
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -148,6 +148,7 @@ class Images(ImageBase, table=True):
     - replacement_id: Internal reference
     """
 
+    model_config = ConfigDict(validate_assignment=True)  # type: ignore
     __tablename__ = "images"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.

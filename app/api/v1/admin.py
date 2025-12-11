@@ -1316,8 +1316,8 @@ async def suspend_user(
     # Check if user is already suspended (check user_suspensions table)
     suspension_result = await db.execute(
         select(UserSuspensions)
-        .where(UserSuspensions.user_id == user_id)
-        .order_by(desc(UserSuspensions.actioned_at))
+        .where(UserSuspensions.user_id == user_id)  # type: ignore[arg-type]
+        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
     )
     suspension_records = suspension_result.scalars().all()
 

@@ -11,7 +11,7 @@ UserBase (shared public fields)
 This approach eliminates field duplication while maintaining security boundaries.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -89,10 +89,25 @@ class Users(UserBase, table=True):
     )
 
     # Primary key
-    user_id: int = Field(primary_key=True)
+    user_id: int | None = Field(default=None, primary_key=True)
+
+    @property
+    def id(self) -> int:
+        """
+        Get user_id as non-optional int.
+
+        Guaranteed to be non-None after database fetch.
+        Raises ValueError if accessed before the user is saved to the database.
+        """
+        if self.user_id is None:
+            raise ValueError("User ID not yet assigned (not saved to database)")
+        return self.user_id
 
     # Public timestamps
-    date_joined: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    date_joined: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column_kwargs={"server_default": text("current_timestamp()")},
+    )
     last_login: datetime | None = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
     )

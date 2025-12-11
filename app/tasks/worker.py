@@ -4,6 +4,8 @@ ARQ worker configuration and job definitions.
 Run worker with: uv run arq app.tasks.worker.WorkerSettings
 """
 
+from typing import Any
+
 from arq.connections import RedisSettings
 from arq.worker import func
 
@@ -16,7 +18,7 @@ from app.tasks.image_jobs import (
 from app.tasks.rating_jobs import recalculate_rating_job
 
 
-async def startup(ctx: dict) -> None:
+async def startup(ctx: dict[str, Any]) -> None:
     """Worker startup - initialize any shared resources."""
     from app.core.logging import get_logger
 
@@ -24,7 +26,7 @@ async def startup(ctx: dict) -> None:
     logger.info("arq_worker_starting", redis_url=settings.ARQ_REDIS_URL)
 
 
-async def shutdown(ctx: dict) -> None:
+async def shutdown(ctx: dict[str, Any]) -> None:
     """Worker shutdown - cleanup resources."""
     from app.core.logging import get_logger
 

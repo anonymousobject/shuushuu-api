@@ -11,7 +11,7 @@ TagBase (shared public fields)
 This approach eliminates field duplication while maintaining security boundaries.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from pydantic import field_validator
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -110,7 +110,10 @@ class Tags(TagBase, table=True):
     tag_id: int | None = Field(default=None, primary_key=True)
 
     # Public timestamp
-    date_added: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    date_added: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column_kwargs={"server_default": text("current_timestamp()")},
+    )
 
     # Public relationship fields
     alias: int | None = Field(default=None, foreign_key="tags.tag_id")

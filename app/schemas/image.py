@@ -3,6 +3,7 @@ Pydantic schemas for Image endpoints
 """
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, computed_field
 
@@ -77,7 +78,6 @@ class ImageResponse(ImageBase):
     user_id: int
     user: UserSummary | None = None  # Embedded user data (optional, loaded with selectinload)
     date_added: datetime | None = None
-    status: int
     locked: int
     posts: int
     favorites: int
@@ -127,11 +127,15 @@ class ImageDetailedResponse(ImageResponse):
 
     user: UserSummary | None = None  # Embedded user data (optional, loaded with selectinload)
     tags: list[TagSummary] | None = None  # Embedded tags (optional, loaded with selectinload)
+    is_favorited: bool = False  # Whether the current user has favorited this image
+    user_rating: int | None = None  # The rating given by the current user (if any)
 
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_db_model(cls, image):
+    def from_db_model(
+        cls, image: Any, is_favorited: bool = False, user_rating: int | None = None
+    ) -> "ImageDetailedResponse":
         """Create response from database model with relationships"""
         data = ImageResponse.model_validate(image).model_dump()
 
@@ -143,11 +147,23 @@ class ImageDetailedResponse(ImageResponse):
         if hasattr(image, "tag_links") and image.tag_links:
             data["tags"] = [TagSummary.model_validate(tag_link.tag) for tag_link in image.tag_links]
 
+        data["is_favorited"] = is_favorited
+        data["user_rating"] = user_rating
+
         return cls(**data)
 
 
 class ImageListResponse(BaseModel):
-    """Schema for paginated image list"""
+    """Schema for paginated image list with basic image data"""
+
+    total: int
+    page: int
+    per_page: int
+    images: list[ImageResponse]
+
+
+class ImageDetailedListResponse(BaseModel):
+    """Schema for paginated image list with detailed image data (includes relationships)"""
 
     total: int
     page: int
