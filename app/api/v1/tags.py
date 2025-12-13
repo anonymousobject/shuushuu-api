@@ -12,9 +12,9 @@ from app.api.dependencies import ImageSortParams, PaginationParams
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
-from app.models import Images, TagLinks, Tags
+from app.models import Images, TagLinks, Tags, Users
 from app.schemas.image import ImageListResponse, ImageResponse
-from app.schemas.tag import TagCreate, TagListResponse, TagResponse, TagWithStats
+from app.schemas.tag import TagCreate, TagCreator, TagListResponse, TagResponse, TagWithStats
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -84,6 +84,7 @@ async def list_tags(
     search: Annotated[str | None, Query(description="Search tags by name")] = None,
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     ids: Annotated[str | None, Query(description="Comma-separated tag IDs to fetch")] = None,
+    parent_tag_id: Annotated[int | None, Query(description="Filter by parent tag ID")] = None,
     db: AsyncSession = Depends(get_db),
 ) -> TagListResponse:
     """
@@ -93,6 +94,7 @@ async def list_tags(
     - Searching by tag name (partial match)
     - Filtering by tag type
     - Filtering by specific IDs (comma-separated)
+    - Filtering by parent tag ID (get child tags)
     - Pagination
 
     When filtering by IDs, invalid (non-numeric) IDs are reported in the response
@@ -103,6 +105,7 @@ async def list_tags(
     - Search tags with "cat": `/tags?search=cat`
     - Filter by type (e.g., type_id=1 for general tags): `/tags?type_id=1`
     - Get specific tags by ID: `/tags?ids=1,2,3`
+    - Get child tags of a parent: `/tags?parent_tag_id=10`
     - Get tags with mixed valid/invalid IDs: `/tags?ids=1,abc,2` (returns tags 1,2; reports "abc" as invalid)
     """
     query = select(Tags)
@@ -130,6 +133,8 @@ async def list_tags(
         query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
+    if parent_tag_id is not None:
+        query = query.where(Tags.inheritedfrom_id == parent_tag_id)  # type: ignore[arg-type]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -286,12 +291,24 @@ async def get_tag(
     - Alias information (if this tag is a synonym of another)
     - Inheritance information (parent tag and child count)
     - Image count (includes images tagged with child tags in the hierarchy)
+    - Creator user information (who created the tag)
+    - Creation date (when the tag was created)
     """
-    # First resolve any alias (synonym)
-    tag, resolved_tag_id = await resolve_tag_alias(db, tag_id)
+    # First resolve any alias (synonym) - join with Users to get creator info
+    tag_result = await db.execute(
+        select(Tags, Users)
+        .outerjoin(Users, Tags.user_id == Users.user_id)
+        .where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+    row = tag_result.first()
 
-    if not tag:
+    if not row:
         raise HTTPException(status_code=404, detail="Tag not found")
+
+    tag, user = row
+
+    # Resolve alias if needed
+    resolved_tag_id = tag.alias if tag.alias else tag_id
 
     # Get the full tag hierarchy (includes all descendant tags)
     tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id)
@@ -315,6 +332,11 @@ async def get_tag(
     # Get parent tag in hierarchy (inheritance, not alias)
     parent_tag_id = tag.inheritedfrom_id
 
+    # Build creator info if user exists
+    created_by = None
+    if user:
+        created_by = TagCreator(user_id=user.user_id or 0, username=user.username)
+
     return TagWithStats(
         tag_id=tag.tag_id or 0,
         title=tag.title,
@@ -325,6 +347,8 @@ async def get_tag(
         aliased_tag_id=aliased_tag_id,
         parent_tag_id=parent_tag_id,
         child_count=child_count or 0,
+        created_by=created_by,
+        date_added=tag.date_added,
     )
 
 
