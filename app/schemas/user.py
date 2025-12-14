@@ -3,9 +3,11 @@ Pydantic schemas for User endpoints
 """
 
 from datetime import datetime
+from html import unescape
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, computed_field, field_validator
 
+from app.config import settings
 from app.models.user import UserBase
 
 
@@ -46,8 +48,20 @@ class UserResponse(UserBase):
 
     user_id: int
     date_joined: datetime | None = None
+    last_login: datetime | None = None
     active: bool
     admin: bool
+
+    # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
+    model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def avatar_url(self) -> str | None:
+        """Generate avatar URL from avatar field"""
+        if self.avatar:
+            return f"{settings.IMAGE_BASE_URL}/storage/avatars/{self.avatar}"
+        return None
 
     @field_validator("active", "admin", mode="before")
     @classmethod
@@ -56,6 +70,14 @@ class UserResponse(UserBase):
         if isinstance(v, bool):
             return v
         return bool(v)
+
+    @field_validator("interests", "location", "website", "user_title", mode="before")
+    @classmethod
+    def decode_html_entities(cls, v: str | None) -> str | None:
+        """Decode HTML entities from legacy PHP data"""
+        if v:
+            return unescape(v)
+        return v
 
 
 class UserCreateResponse(UserBase):

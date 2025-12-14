@@ -58,8 +58,21 @@ async def list_users(
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Sort by user ID
-    query = query.order_by(asc(Users.user_id))  # type: ignore[arg-type]
+    # Map sort_by to database column
+    sort_column_map = {
+        "user_id": Users.user_id,
+        "username": Users.username,
+        "date_joined": Users.date_joined,
+        "last_login": Users.last_login,
+        "image_posts": Users.image_posts,
+        "posts": Users.posts,
+        "favorites": Users.favorites,
+    }
+    sort_column = sort_column_map.get(sorting.sort_by, Users.user_id)
+    sort_func = desc if sorting.sort_order == "DESC" else asc
+
+    # Apply sorting
+    query = query.order_by(sort_func(sort_column))  # type: ignore[arg-type]
 
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
