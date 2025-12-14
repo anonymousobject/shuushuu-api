@@ -109,6 +109,62 @@ def _get_test_database_url() -> tuple[str, str]:
 TEST_DATABASE_URL, TEST_DATABASE_URL_SYNC = _get_test_database_url()
 
 
+def _create_tag_search_and_popularity_features(sync_engine):
+    """
+    Create FULLTEXT index and triggers for tag search and popularity tracking.
+
+    This mirrors the schema created by alembic/versions/tag_search_and_popularity.py
+    so that test database matches production exactly. These features must be created
+    after SQLModel.metadata.create_all() since they depend on tables existing.
+
+    Args:
+        sync_engine: SQLAlchemy sync engine connected to test database
+    """
+    from sqlalchemy import text
+
+    with sync_engine.connect() as conn:
+        # Create FULLTEXT index for tag search
+        try:
+            conn.execute(text("ALTER TABLE tags ADD FULLTEXT INDEX ft_tags_title (title)"))
+        except Exception:
+            # Index may already exist; silently continue
+            pass
+
+        # Create trigger for INSERT on tag_links (increment usage_count)
+        try:
+            conn.execute(
+                text("""
+                    CREATE TRIGGER trig_tag_links_insert AFTER INSERT ON tag_links
+                    FOR EACH ROW
+                    BEGIN
+                        UPDATE tags SET usage_count = usage_count + 1
+                        WHERE tag_id = NEW.tag_id;
+                    END
+                """)
+            )
+        except Exception:
+            # Trigger may already exist; silently continue
+            pass
+
+        # Create trigger for DELETE on tag_links (decrement usage_count)
+        try:
+            conn.execute(
+                text("""
+                    CREATE TRIGGER trig_tag_links_delete AFTER DELETE ON tag_links
+                    FOR EACH ROW
+                    BEGIN
+                        UPDATE tags SET usage_count = GREATEST(0, usage_count - 1)
+                        WHERE tag_id = OLD.tag_id;
+                    END
+                """)
+            )
+        except Exception:
+            # Trigger may already exist; silently continue
+            pass
+
+        conn.commit()
+
+
 @pytest.fixture(scope="session")
 def anyio_backend():
     """Use asyncio backend for async tests."""
@@ -153,14 +209,12 @@ def setup_test_database():
     admin_engine.dispose()
 
     # Create tables using SQLAlchemy metadata (sync engine)
-    # Note: Alembic migrations are incomplete (initial migration is empty),
-    # so we use the ORM models as source of truth for the schema
+    # Note: SQLModel doesn't support database triggers natively, so we create tables first,
+    # then manually create triggers to match the production Alembic migration.
+    # This ensures test schema matches production exactly.
     from sqlmodel import SQLModel
 
     from app.models.admin_action import AdminActions  # noqa: F401
-
-    # Import ALL SQLModel-based models to register them with SQLModel.metadata
-    # This ensures all tables are created in the test database
     from app.models.ban import Bans  # noqa: F401
     from app.models.comment import Comments  # noqa: F401
     from app.models.favorite import Favorites  # noqa: F401
@@ -195,9 +249,13 @@ def setup_test_database():
 
     sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 
-    # Create tables from SQLModel metadata ONLY
-    # (We skip Base.metadata to avoid conflicts with deprecated generated.py models)
+    # Create base tables from SQLModel metadata
     SQLModel.metadata.create_all(sync_engine)
+
+    # Create database enhancements (FULLTEXT index and triggers) that match production
+    # These are defined in alembic/versions/tag_search_and_popularity.py
+    # We create them here so tests use identical schema to production
+    _create_tag_search_and_popularity_features(sync_engine)
 
     sync_engine.dispose()
 

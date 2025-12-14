@@ -80,11 +80,11 @@ class Tags(TagBase, table=True):
     # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
-            ["alias"],
+            ["alias_of"],
             ["tags.tag_id"],
             ondelete="SET NULL",
             onupdate="CASCADE",
-            name="fk_tags_alias",
+            name="fk_tags_alias_of",
         ),
         ForeignKeyConstraint(
             ["inheritedfrom_id"],
@@ -100,10 +100,10 @@ class Tags(TagBase, table=True):
             onupdate="CASCADE",
             name="fk_tags_user_id",
         ),
-        Index("fk_tags_alias", "alias"),
+        Index("fk_tags_alias", "alias_of"),
         Index("fk_tags_inheritedfrom_id", "inheritedfrom_id"),
         Index("fk_tags_user_id", "user_id"),
-        Index("type_alias", "type", "alias"),
+        Index("type_alias", "type", "alias_of"),
     )
 
     # Primary key
@@ -115,8 +115,12 @@ class Tags(TagBase, table=True):
         sa_column_kwargs={"server_default": text("current_timestamp()")},
     )
 
+    # Usage count (number of images with this tag)
+    # Updated by trigger when tag_links are created/deleted
+    usage_count: int = Field(default=0, ge=0)
+
     # Public relationship fields
-    alias: int | None = Field(default=None, foreign_key="tags.tag_id")
+    alias_of: int | None = Field(default=None, foreign_key="tags.tag_id")
     inheritedfrom_id: int | None = Field(default=None, foreign_key="tags.tag_id")
 
     # Internal fields

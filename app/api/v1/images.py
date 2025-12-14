@@ -512,7 +512,7 @@ async def add_tag_to_image(
     if existing_link.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Tag already linked to this image")
 
-    # Create tag link
+    # Create tag link (usage_count is maintained by database trigger)
     tag_link = TagLinks(
         image_id=image_id,
         tag_id=tag_id,
@@ -565,7 +565,7 @@ async def remove_tag_from_image(
     if not tag_link:
         raise HTTPException(status_code=404, detail="Tag not linked to this image")
 
-    # Delete tag link
+    # Delete tag link (usage_count is maintained by database trigger)
     await db.execute(
         delete(TagLinks).where(
             TagLinks.image_id == image_id,  # type: ignore[arg-type]
@@ -922,7 +922,7 @@ async def upload_image(
 
         # Schedule thumbnail generation
         await enqueue_job(
-            "create_thumbnail",
+            "create_thumbnail_job",
             image_id=image_id,
             source_path=str(file_path),
             ext=ext,
@@ -933,7 +933,7 @@ async def upload_image(
         # Schedule medium variant generation if needed
         if has_medium:
             await enqueue_job(
-                "create_variant",
+                "create_variant_job",
                 image_id=image_id,
                 source_path=str(file_path),
                 ext=ext,
@@ -946,7 +946,7 @@ async def upload_image(
         # Schedule large variant generation if needed
         if has_large:
             await enqueue_job(
-                "create_variant",
+                "create_variant_job",
                 image_id=image_id,
                 source_path=str(file_path),
                 ext=ext,
@@ -958,9 +958,9 @@ async def upload_image(
 
         # Add to IQDB index AFTER thumbnail is created
         # Use defer to ensure thumbnail completes first (simple approach)
-        thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{date_prefix}-{image_id}.{ext}"
+        thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{date_prefix}-{image_id}.jpeg"
         await enqueue_job(
-            "add_to_iqdb",
+            "add_to_iqdb_job",
             image_id=image_id,
             thumb_path=str(thumb_path),
             _defer_by=5.0,  # Wait 5 seconds for thumbnail to complete

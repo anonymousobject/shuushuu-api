@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     S3_REGION: str = "us-east-1"
 
     # Image Processing
-    MAX_IMAGE_SIZE: int = 16 * 1024 * 1024  # 16MB
+    MAX_IMAGE_SIZE: int = 32 * 1024 * 1024  # 32MB
     MAX_THUMB_WIDTH: int = 250
     MAX_THUMB_HEIGHT: int = 200
     MEDIUM_EDGE: int = 1280

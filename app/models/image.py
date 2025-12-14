@@ -89,7 +89,7 @@ class ImageBase(SQLModel):
     # File information
     filename: str | None = Field(default=None, max_length=120)
     ext: str = Field(max_length=10)
-    original_filename: str | None = Field(default=None, max_length=120)
+    original_filename: str | None = Field(default=None, max_length=255)
     md5_hash: str = Field(default="", max_length=32)
 
     # Dimensions and file info
