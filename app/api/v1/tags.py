@@ -5,7 +5,7 @@ Tags API endpoints
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams, PaginationParams
@@ -154,8 +154,6 @@ async def list_tags(
         # This handles both:
         # 1. Japanese name problem: "sakura kinomoto" finds "kinomoto sakura" (word-order independence)
         # 2. Partial word matching: "thig" finds "thighs" (wildcard expansion)
-        from sqlalchemy import text as sql_text
-
         if len(search) < 3:
             # Short query: prefix match with LIKE (e.g., "sa" -> "sakura")
             query = query.where(Tags.title.like(f"{search}%"))  # type: ignore[union-attr]
@@ -166,7 +164,7 @@ async def list_tags(
             search_terms = search.split()
             fulltext_query_str = " ".join(f"+{term}*" for term in search_terms)
             query = query.where(
-                sql_text("MATCH (title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
+                text("MATCH (title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
                     search=fulltext_query_str
                 )
             )
@@ -184,10 +182,6 @@ async def list_tags(
 
     # Sort: For search queries, use smart ranking
     # For general listing, sort by date added
-    from sqlalchemy import case
-    from sqlalchemy import desc as sql_desc
-    from sqlalchemy import text as sql_text
-
     if search:
         if len(search) < 3:
             # Short query (prefix match): prioritize exact and starts-with
@@ -212,17 +206,15 @@ async def list_tags(
             # Finally alphabetical for consistent ordering
             # Must use the same fulltext_query_str as the WHERE clause
             query = query.order_by(
-                sql_text("MATCH (title) AGAINST (:search IN BOOLEAN MODE) DESC"),
-                sql_desc(
-                    Tags.usage_count  # type: ignore[arg-type]
-                ),  # Most popular tags first (breaks relevance ties)
+                text("MATCH (title) AGAINST (:search IN BOOLEAN MODE) DESC"),
+                desc(Tags.usage_count),  # type: ignore[arg-type]  # Most popular tags first
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
             ).params(search=fulltext_query_str)
     else:
         # No search - sort by usage count (most popular first), then by date added
         query = query.order_by(
-            sql_desc(Tags.usage_count),  # Most used tags first  # type: ignore[arg-type]
-            sql_desc(Tags.date_added),  # Newest within same usage count  # type: ignore[arg-type]
+            desc(Tags.usage_count),  # type: ignore[arg-type]
+            desc(Tags.date_added),  # type: ignore[arg-type]
         )
 
     # Paginate
