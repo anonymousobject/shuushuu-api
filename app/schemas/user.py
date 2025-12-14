@@ -5,8 +5,9 @@ Pydantic schemas for User endpoints
 from datetime import datetime
 from html import unescape
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, computed_field, field_validator
 
+from app.config import settings
 from app.models.user import UserBase
 
 
@@ -52,6 +53,17 @@ class UserResponse(UserBase):
     posts: int  # Comments posted by user
     favorites: int  # Images favorited by user
     image_posts: int  # Images uploaded by user
+
+    # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
+    model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def avatar_url(self) -> str | None:
+        """Generate avatar URL from avatar field"""
+        if self.avatar:
+            return f"{settings.IMAGE_BASE_URL}/storage/avatars/{self.avatar}"
+        return None
 
     @field_validator("active", "admin", mode="before")
     @classmethod
