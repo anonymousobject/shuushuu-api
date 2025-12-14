@@ -38,6 +38,7 @@ def upgrade() -> None:
         try:
             op.drop_constraint(fk_name, "tags", type_="foreignkey")
         except Exception:
+            # Some MySQL versions or pre-existing schema may not have a constraint with this name.
             pass
     try:
         op.drop_index("fk_tags_alias", table_name="tags")
