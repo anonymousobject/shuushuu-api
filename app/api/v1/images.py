@@ -78,6 +78,9 @@ async def list_images(
     sorting: Annotated[ImageSortParams, Depends()],
     # Basic filters
     user_id: Annotated[int | None, Query(description="Filter by uploader user ID")] = None,
+    favorited_by_user_id: Annotated[
+        int | None, Query(description="Filter by user who favorited the image")
+    ] = None,
     image_status: Annotated[
         int | None, Query(description="Filter by status (1=active, 2=pending, etc)", alias="status")
     ] = None,
@@ -126,6 +129,9 @@ async def list_images(
     # Apply basic filters
     if user_id is not None:
         query = query.where(Images.user_id == user_id)  # type: ignore[arg-type]
+    if favorited_by_user_id is not None:
+        # Join with Favorites table to filter by user who favorited
+        query = query.join(Favorites).where(Favorites.user_id == favorited_by_user_id)  # type: ignore[arg-type]
     if image_status is not None:
         query = query.where(Images.status == image_status)  # type: ignore[arg-type]
 
