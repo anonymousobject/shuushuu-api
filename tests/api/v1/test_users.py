@@ -719,7 +719,10 @@ class TestUserSorting:
             user = Users(
                 username=f"sortuser{i}",
                 email=f"sortuser{i}@example.com",
-                hashed_password=get_password_hash("password"),
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                active=1,
                 date_joined=datetime.now(UTC),
             )
             db_session.add(user)
@@ -729,7 +732,7 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=ASC&username=sortuser")
+        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=ASC&search=sortuser")
         assert response.status_code == 200
         data = response.json()
         # Only our test users should be returned
@@ -747,7 +750,10 @@ class TestUserSorting:
             user = Users(
                 username=f"sortuser{i}",
                 email=f"sortuser{i}@example.com",
-                hashed_password=get_password_hash("password"),
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                active=1,
                 date_joined=datetime.now(UTC),
             )
             db_session.add(user)
@@ -756,7 +762,7 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=DESC&username=sortuser")
+        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=DESC&search=sortuser")
         assert response.status_code == 200
         data = response.json()
         returned_usernames = [u["username"] for u in data["users"]]
@@ -773,7 +779,10 @@ class TestUserSorting:
             user = Users(
                 username=f"sortuser{i}",
                 email=f"sortuser{i}@example.com",
-                hashed_password=get_password_hash("password"),
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                active=1,
                 date_joined=datetime.now(UTC),
             )
             db_session.add(user)
@@ -782,7 +791,7 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users/?sort_by=username&sort_order=ASC&username=sortuser")
+        response = await client.get("/api/v1/users/?sort_by=username&sort_order=ASC&search=sortuser")
         assert response.status_code == 200
         data = response.json()
         returned_usernames = [u["username"] for u in data["users"]]
@@ -799,7 +808,10 @@ class TestUserSorting:
             user = Users(
                 username=f"sortuser{i}",
                 email=f"sortuser{i}@example.com",
-                hashed_password=get_password_hash("password"),
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                active=1,
                 date_joined=datetime.now(UTC),
             )
             db_session.add(user)
@@ -808,7 +820,7 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users/?sort_by=username&sort_order=DESC&username=sortuser")
+        response = await client.get("/api/v1/users/?sort_by=username&sort_order=DESC&search=sortuser")
         assert response.status_code == 200
         data = response.json()
         returned_usernames = [u["username"] for u in data["users"]]
@@ -897,12 +909,12 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=last_login&sort_order=ASC")
+        response = await client.get("/api/v1/users/?sort_by=last_login&sort_order=ASC&search=loginuser")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
+        assert len(data["users"]) == 5
         
-        # Verify ascending order (nulls should come first in MySQL)
+        # Check that non-null values are sorted in ascending order
         last_logins = [u["last_login"] for u in data["users"]]
         # Check that non-null values are sorted
         non_null_logins = [ll for ll in last_logins if ll is not None]
@@ -928,14 +940,13 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=last_login&sort_order=DESC")
+        response = await client.get("/api/v1/users/?sort_by=last_login&sort_order=DESC&search=loginuser_desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
+        assert len(data["users"]) == 5
         
-        # Verify descending order (nulls should come last in MySQL)
-        last_logins = [u["last_login"] for u in data["users"]]
         # Check that non-null values are sorted in descending order and all nulls come last
+        last_logins = [u["last_login"] for u in data["users"]]
         non_null_logins = [ll for ll in last_logins if ll is not None]
         null_logins = [ll for ll in last_logins if ll is None]
         # All non-nulls should come before any nulls
@@ -966,10 +977,10 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=image_posts&sort_order=ASC")
+        response = await client.get("/api/v1/users/?sort_by=image_posts&sort_order=ASC&search=imgpostuser")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
+        assert len(data["users"]) == 5
         
         # Verify ascending order
         image_posts = [u["image_posts"] for u in data["users"]]
@@ -994,10 +1005,10 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=image_posts&sort_order=DESC")
+        response = await client.get("/api/v1/users/?sort_by=image_posts&sort_order=DESC&search=imgpostuser_desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
+        assert len(data["users"]) == 5
         
         # Verify descending order
         image_posts = [u["image_posts"] for u in data["users"]]
@@ -1022,10 +1033,10 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=posts&sort_order=ASC")
+        response = await client.get("/api/v1/users/?sort_by=posts&sort_order=ASC&search=postsuser")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
+        assert len(data["users"]) == 5
         
         # Verify ascending order
         posts = [u["posts"] for u in data["users"]]
@@ -1050,10 +1061,10 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=posts&sort_order=DESC")
+        response = await client.get("/api/v1/users/?sort_by=posts&sort_order=DESC&search=postsuser_desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
+        assert len(data["users"]) == 5
         
         # Verify descending order
         posts = [u["posts"] for u in data["users"]]
@@ -1078,10 +1089,10 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=favorites&sort_order=ASC")
+        response = await client.get("/api/v1/users/?sort_by=favorites&sort_order=ASC&search=favuser")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
+        assert len(data["users"]) == 5
         
         # Verify ascending order
         favorites = [u["favorites"] for u in data["users"]]
@@ -1106,10 +1117,10 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=favorites&sort_order=DESC")
+        response = await client.get("/api/v1/users/?sort_by=favorites&sort_order=DESC&search=favuser_desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
+        assert len(data["users"]) == 5
         
         # Verify descending order
         favorites = [u["favorites"] for u in data["users"]]
