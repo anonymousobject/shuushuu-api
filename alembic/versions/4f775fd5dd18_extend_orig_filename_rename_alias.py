@@ -101,6 +101,7 @@ def downgrade() -> None:
     try:
         op.drop_index("fk_tags_alias", table_name="tags")
     except Exception:
+        # If the index does not exist (e.g., in a partially applied migration), ignore
         pass
 
     op.alter_column(
