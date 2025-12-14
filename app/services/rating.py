@@ -97,4 +97,4 @@ async def schedule_rating_recalculation(image_id: int) -> None:
     """
     from app.tasks.queue import enqueue_job
 
-    await enqueue_job("recalculate_rating", image_id=image_id)
+    await enqueue_job("recalculate_rating_job", image_id=image_id)

@@ -241,20 +241,18 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
         thumbs_dir = FilePath(storage_path) / "thumbs"
         thumbs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate thumbnail filename matching main image format
+        # Generate thumbnail filename (we always store thumbnails as JPEG)
         date_prefix = datetime.now().strftime("%Y-%m-%d")
-        thumb_filename = f"{date_prefix}-{image_id}.{ext}"
+        thumb_filename = f"{date_prefix}-{image_id}.jpeg"
         thumb_path = thumbs_dir / thumb_filename
 
         # Open image and create thumbnail
         with Image.open(source_path) as img:
             original_size = img.size
 
-            # Convert RGBA to RGB for JPEG compatibility
-            if img.mode in ("RGBA", "LA") and ext.lower() in ("jpg", "jpeg"):
-                background = Image.new("RGB", img.size, (255, 255, 255))
-                background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
-                img = background
+            # Ensure image is RGB for JPEG output
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
 
             # Calculate thumbnail size maintaining aspect ratio
             img.thumbnail(
@@ -264,13 +262,11 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
 
             # Save thumbnail with quality setting
             save_kwargs = {}
-            if ext.lower() in ("jpg", "jpeg"):
-                save_kwargs["quality"] = settings.THUMBNAIL_QUALITY
-                save_kwargs["optimize"] = True
-            elif ext.lower() == "webp":
-                save_kwargs["quality"] = settings.THUMBNAIL_QUALITY
+            # Save thumbnail as JPEG regardless of original extension
+            save_kwargs["quality"] = settings.THUMBNAIL_QUALITY
+            save_kwargs["optimize"] = True
 
-            img.save(thumb_path, **save_kwargs)
+            img.save(thumb_path, format="JPEG", **save_kwargs)
 
             logger.info(
                 "thumbnail_generated",
