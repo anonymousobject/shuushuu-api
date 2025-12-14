@@ -935,8 +935,16 @@ class TestUserSorting:
         
         # Verify descending order (nulls should come last in MySQL)
         last_logins = [u["last_login"] for u in data["users"]]
-        # Check that non-null values are sorted in descending order
+        # Check that non-null values are sorted in descending order and all nulls come last
         non_null_logins = [ll for ll in last_logins if ll is not None]
+        null_logins = [ll for ll in last_logins if ll is None]
+        # All non-nulls should come before any nulls
+        if null_logins:
+            # The first null should come after all non-nulls
+            first_null_index = last_logins.index(None)
+            assert all(ll is not None for ll in last_logins[:first_null_index])
+            assert all(ll is None for ll in last_logins[first_null_index:])
+        # Non-nulls should be sorted in descending order
         assert non_null_logins == sorted(non_null_logins, reverse=True)
 
     async def test_sort_by_image_posts_asc(self, client: AsyncClient, db_session: AsyncSession):
