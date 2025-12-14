@@ -213,14 +213,16 @@ async def list_tags(
             # Must use the same fulltext_query_str as the WHERE clause
             query = query.order_by(
                 sql_text("MATCH (title) AGAINST (:search IN BOOLEAN MODE) DESC"),
-                sql_desc(Tags.usage_count),  # Most popular tags first (breaks relevance ties)
+                sql_desc(
+                    Tags.usage_count
+                ),  # Most popular tags first (breaks relevance ties)  # type: ignore[arg-type]
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
             ).params(search=fulltext_query_str)
     else:
         # No search - sort by usage count (most popular first), then by date added
         query = query.order_by(
-            sql_desc(Tags.usage_count),  # Most used tags first
-            sql_desc(Tags.date_added),  # Newest within same usage count
+            sql_desc(Tags.usage_count),  # Most used tags first  # type: ignore[arg-type]
+            sql_desc(Tags.date_added),  # Newest within same usage count  # type: ignore[arg-type]
         )
 
     # Paginate
