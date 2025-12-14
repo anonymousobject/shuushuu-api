@@ -10,7 +10,7 @@ The triggers will maintain these counts going forward automatically.
 """
 
 import asyncio
-from sqlalchemy import select, func, update, text
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
