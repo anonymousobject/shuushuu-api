@@ -198,7 +198,7 @@ class TestListTags:
             inheritedfrom_id=parent_tag.tag_id,
         )
         # Create a tag that is NOT a child
-        other_tag = Tags(title="dress", desc="Not related to swimsuit", type=TagType.THEME)
+        other_tag = Tags(title="evening dress", desc="Not related to swimsuit", type=TagType.THEME)
         db_session.add_all([child1, child2, other_tag])
         await db_session.commit()
         await db_session.refresh(child1)
