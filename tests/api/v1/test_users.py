@@ -713,44 +713,106 @@ class TestUserSorting:
 
     async def test_sort_by_user_id_asc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by user_id in ascending order."""
-        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=ASC")
+        # Create test users
+        users = []
+        for i in range(1, 4):
+            user = Users(
+                username=f"sortuser{i}",
+                email=f"sortuser{i}@example.com",
+                hashed_password=get_password_hash("password"),
+                date_joined=datetime.now(UTC),
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        # Refresh to get user_ids
+        for user in users:
+            await db_session.refresh(user)
+
+        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=ASC&username=sortuser")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
-        
+        # Only our test users should be returned
+        returned_usernames = [u["username"] for u in data["users"]]
+        assert set(returned_usernames) == {f"sortuser{i}" for i in range(1, 4)}
         # Verify ascending order
         user_ids = [u["user_id"] for u in data["users"]]
         assert user_ids == sorted(user_ids)
 
     async def test_sort_by_user_id_desc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by user_id in descending order."""
-        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=DESC")
+        # Create test users
+        users = []
+        for i in range(1, 4):
+            user = Users(
+                username=f"sortuser{i}",
+                email=f"sortuser{i}@example.com",
+                hashed_password=get_password_hash("password"),
+                date_joined=datetime.now(UTC),
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for user in users:
+            await db_session.refresh(user)
+
+        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=DESC&username=sortuser")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
-        
+        returned_usernames = [u["username"] for u in data["users"]]
+        assert set(returned_usernames) == {f"sortuser{i}" for i in range(1, 4)}
         # Verify descending order
         user_ids = [u["user_id"] for u in data["users"]]
         assert user_ids == sorted(user_ids, reverse=True)
 
     async def test_sort_by_username_asc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by username in ascending order."""
-        response = await client.get("/api/v1/users/?sort_by=username&sort_order=ASC")
+        # Create test users
+        users = []
+        for i in range(1, 4):
+            user = Users(
+                username=f"sortuser{i}",
+                email=f"sortuser{i}@example.com",
+                hashed_password=get_password_hash("password"),
+                date_joined=datetime.now(UTC),
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for user in users:
+            await db_session.refresh(user)
+
+        response = await client.get("/api/v1/users/?sort_by=username&sort_order=ASC&username=sortuser")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
-        
+        returned_usernames = [u["username"] for u in data["users"]]
+        assert set(returned_usernames) == {f"sortuser{i}" for i in range(1, 4)}
         # Verify ascending order
         usernames = [u["username"] for u in data["users"]]
         assert usernames == sorted(usernames)
 
     async def test_sort_by_username_desc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by username in descending order."""
-        response = await client.get("/api/v1/users/?sort_by=username&sort_order=DESC")
+        # Create test users
+        users = []
+        for i in range(1, 4):
+            user = Users(
+                username=f"sortuser{i}",
+                email=f"sortuser{i}@example.com",
+                hashed_password=get_password_hash("password"),
+                date_joined=datetime.now(UTC),
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for user in users:
+            await db_session.refresh(user)
+
+        response = await client.get("/api/v1/users/?sort_by=username&sort_order=DESC&username=sortuser")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["users"]) > 0
-        
+        returned_usernames = [u["username"] for u in data["users"]]
+        assert set(returned_usernames) == {f"sortuser{i}" for i in range(1, 4)}
         # Verify descending order
         usernames = [u["username"] for u in data["users"]]
         assert usernames == sorted(usernames, reverse=True)
