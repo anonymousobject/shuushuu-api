@@ -48,6 +48,7 @@ class UserResponse(UserBase):
 
     user_id: int
     date_joined: datetime | None = None
+    last_login: datetime | None = None
     active: bool
     admin: bool
     posts: int  # Comments posted by user
