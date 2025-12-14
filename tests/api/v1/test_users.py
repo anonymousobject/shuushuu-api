@@ -10,7 +10,7 @@ These tests cover the /api/v1/users endpoints including:
 - Get user's favorites
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -758,8 +758,6 @@ class TestUserSorting:
     async def test_sort_by_date_joined_asc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by date_joined in ascending order."""
         # Create users with known date_joined values
-        from datetime import timedelta
-        
         base_time = datetime.now(UTC)
         users = [
             Users(
@@ -790,8 +788,6 @@ class TestUserSorting:
     async def test_sort_by_date_joined_desc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by date_joined in descending order."""
         # Create users with known date_joined values
-        from datetime import timedelta
-        
         base_time = datetime.now(UTC)
         users = [
             Users(
@@ -822,8 +818,6 @@ class TestUserSorting:
     async def test_sort_by_last_login_asc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by last_login in ascending order."""
         # Create users with different last_login values
-        from datetime import timedelta
-        
         now = datetime.now(UTC)
         users = [
             Users(
@@ -855,8 +849,6 @@ class TestUserSorting:
     async def test_sort_by_last_login_desc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by last_login in descending order."""
         # Create users with different last_login values
-        from datetime import timedelta
-        
         now = datetime.now(UTC)
         users = [
             Users(
@@ -1068,8 +1060,6 @@ class TestUserSorting:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Test sorting by last_login field when some users have null values."""
-        from datetime import timedelta
-        
         now = datetime.now(UTC)
         
         # Create users: some with last_login, some without
