@@ -1208,14 +1208,14 @@ class TestUserSorting:
 
         # Get first page sorted by image_posts DESC
         response_page1 = await client.get(
-            "/api/v1/users/?sort_by=image_posts&sort_order=DESC&page=1&per_page=5"
+            "/api/v1/users/?sort_by=image_posts&sort_order=DESC&page=1&per_page=5&search=sortpaginuser"
         )
         assert response_page1.status_code == 200
         data_page1 = response_page1.json()
         
         # Get second page
         response_page2 = await client.get(
-            "/api/v1/users/?sort_by=image_posts&sort_order=DESC&page=2&per_page=5"
+            "/api/v1/users/?sort_by=image_posts&sort_order=DESC&page=2&per_page=5&search=sortpaginuser"
         )
         assert response_page2.status_code == 200
         data_page2 = response_page2.json()
