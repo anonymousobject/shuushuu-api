@@ -654,6 +654,13 @@ class TestFavoritedByUserIdFilter:
             salt="salt12345uploader",
             email="uploader@example.com",
         )
+        uploader2 = Users(
+            username="uploader2",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345upload2",
+            email="uploader2@example.com",
+        )
         favoriter = Users(
             username="favoriter",
             password="testpass",
@@ -662,6 +669,7 @@ class TestFavoritedByUserIdFilter:
             email="favoriter@example.com",
         )
         db_session.add(uploader)
+        db_session.add(uploader2)
         db_session.add(favoriter)
         await db_session.flush()
 
@@ -686,15 +694,15 @@ class TestFavoritedByUserIdFilter:
         fav_0 = Favorites(user_id=favoriter.user_id, image_id=image_0.image_id)
         db_session.add(fav_0)
 
-        # Image 1: uploaded by user_id=1, has tag1, favorited by favoriter
+        # Image 1: uploaded by uploader2, has tag1, favorited by favoriter
         image_data_1 = sample_image_data.copy()
         image_data_1["filename"] = "combo-1"
         image_data_1["md5_hash"] = "combohash1111111111"
-        image_data_1["user_id"] = 1  # Different uploader
+        image_data_1["user_id"] = uploader2.user_id
         image_1 = Images(**image_data_1)
         db_session.add(image_1)
         await db_session.flush()
-        tag_link_1 = TagLinks(image_id=image_1.image_id, tag_id=tag1.tag_id, user_id=1)
+        tag_link_1 = TagLinks(image_id=image_1.image_id, tag_id=tag1.tag_id, user_id=uploader2.user_id)
         db_session.add(tag_link_1)
         fav_1 = Favorites(user_id=favoriter.user_id, image_id=image_1.image_id)
         db_session.add(fav_1)
