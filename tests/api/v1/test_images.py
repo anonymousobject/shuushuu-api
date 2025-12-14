@@ -558,14 +558,14 @@ class TestFavoritedByUserIdFilter:
             username="favuser1",
             password="testpass",
             password_type="bcrypt",
-            salt="salt12345salt1234",
+            salt="salt12345salt12",
             email="fav1@example.com",
         )
         user2 = Users(
             username="favuser2",
             password="testpass",
             password_type="bcrypt",
-            salt="salt12345salt5678",
+            salt="salt12345salt56",
             email="fav2@example.com",
         )
         db_session.add(user1)
@@ -620,7 +620,7 @@ class TestFavoritedByUserIdFilter:
             username="nofavuser",
             password="testpass",
             password_type="bcrypt",
-            salt="salt12345saltnone",
+            salt="salt12345saltno",
             email="nofav@example.com",
         )
         db_session.add(user)
@@ -651,7 +651,7 @@ class TestFavoritedByUserIdFilter:
             username="uploader",
             password="testpass",
             password_type="bcrypt",
-            salt="salt12345uploader",
+            salt="salt12345upload",
             email="uploader@example.com",
         )
         uploader2 = Users(
@@ -751,7 +751,7 @@ class TestFavoritedByUserIdFilter:
             username="pagfavuser",
             password="testpass",
             password_type="bcrypt",
-            salt="salt12345pagfav12",
+            salt="salt12345pagfav",
             email="pagfav@example.com",
         )
         db_session.add(user)
