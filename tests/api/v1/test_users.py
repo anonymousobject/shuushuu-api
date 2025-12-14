@@ -853,7 +853,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Verify ascending order by comparing adjacent dates
         dates = [u["date_joined"] for u in data["users"]]
         for i in range(len(dates) - 1):
@@ -883,7 +883,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Verify descending order by comparing adjacent dates
         dates = [u["date_joined"] for u in data["users"]]
         for i in range(len(dates) - 1):
@@ -913,7 +913,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Check that non-null values are sorted in ascending order
         last_logins = [u["last_login"] for u in data["users"]]
         # Check that non-null values are sorted
@@ -944,7 +944,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Check that non-null values are sorted in descending order and all nulls come last
         last_logins = [u["last_login"] for u in data["users"]]
         non_null_logins = [ll for ll in last_logins if ll is not None]
@@ -981,7 +981,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Verify ascending order
         image_posts = [u["image_posts"] for u in data["users"]]
         assert image_posts == sorted(image_posts)
@@ -1009,7 +1009,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Verify descending order
         image_posts = [u["image_posts"] for u in data["users"]]
         assert image_posts == sorted(image_posts, reverse=True)
@@ -1037,7 +1037,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Verify ascending order
         posts = [u["posts"] for u in data["users"]]
         assert posts == sorted(posts)
@@ -1065,7 +1065,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Verify descending order
         posts = [u["posts"] for u in data["users"]]
         assert posts == sorted(posts, reverse=True)
@@ -1093,7 +1093,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Verify ascending order
         favorites = [u["favorites"] for u in data["users"]]
         assert favorites == sorted(favorites)
@@ -1121,7 +1121,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
-        
+
         # Verify descending order
         favorites = [u["favorites"] for u in data["users"]]
         assert favorites == sorted(favorites, reverse=True)
@@ -1132,7 +1132,7 @@ class TestUserSorting:
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) > 0
-        
+
         # Default should be user_id DESC (as per UserSortParams)
         user_ids = [u["user_id"] for u in data["users"]]
         assert user_ids == sorted(user_ids, reverse=True)
@@ -1142,7 +1142,7 @@ class TestUserSorting:
     ):
         """Test sorting by last_login field when some users have null values."""
         now = datetime.now(UTC)
-        
+
         # Create users: some with last_login, some without
         users = [
             Users(
@@ -1164,24 +1164,24 @@ class TestUserSorting:
         response_asc = await client.get("/api/v1/users/?sort_by=last_login&sort_order=ASC&search=nullloginuser")
         assert response_asc.status_code == 200
         data_asc = response_asc.json()
-        
+
         # Test DESC order - filter to only our test users
         response_desc = await client.get("/api/v1/users/?sort_by=last_login&sort_order=DESC&search=nullloginuser")
         assert response_desc.status_code == 200
         data_desc = response_desc.json()
-        
+
         # Both should succeed and return our 6 test users
         assert len(data_asc["users"]) == 6
         assert len(data_desc["users"]) == 6
-        
+
         # Verify that users with non-null last_login are properly ordered
         last_logins_asc = [u["last_login"] for u in data_asc["users"] if u["last_login"] is not None]
         last_logins_desc = [u["last_login"] for u in data_desc["users"] if u["last_login"] is not None]
-        
+
         # Check ordering by comparing adjacent elements
         for i in range(len(last_logins_asc) - 1):
             assert last_logins_asc[i] <= last_logins_asc[i + 1]
-        
+
         for i in range(len(last_logins_desc) - 1):
             assert last_logins_desc[i] >= last_logins_desc[i + 1]
 
@@ -1212,26 +1212,26 @@ class TestUserSorting:
         )
         assert response_page1.status_code == 200
         data_page1 = response_page1.json()
-        
+
         # Get second page
         response_page2 = await client.get(
             "/api/v1/users/?sort_by=image_posts&sort_order=DESC&page=2&per_page=5&search=sortpaginuser"
         )
         assert response_page2.status_code == 200
         data_page2 = response_page2.json()
-        
+
         # Verify pagination metadata
         assert data_page1["page"] == 1
         assert data_page2["page"] == 2
-        
+
         # Verify sorting is maintained across pages
         page1_posts = [u["image_posts"] for u in data_page1["users"]]
         page2_posts = [u["image_posts"] for u in data_page2["users"]]
-        
+
         # Each page should be sorted
         assert page1_posts == sorted(page1_posts, reverse=True)
         assert page2_posts == sorted(page2_posts, reverse=True)
-        
+
         # Last item of page 1 should have more/equal image_posts than first item of page 2
         if page1_posts and page2_posts:
             assert page1_posts[-1] >= page2_posts[0]
@@ -1263,11 +1263,11 @@ class TestUserSorting:
         )
         assert response.status_code == 200
         data = response.json()
-        
+
         # Should only return users matching search
         for user in data["users"]:
             assert "searchsortuser" in user["username"].lower()
-        
+
         # Results should be sorted by posts in ascending order
         posts = [u["posts"] for u in data["users"]]
         assert posts == sorted(posts)

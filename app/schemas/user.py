@@ -52,10 +52,9 @@ class UserResponse(UserBase):
     active: bool
     admin: bool
 
-
-
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True}
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def avatar_url(self) -> str | None:
