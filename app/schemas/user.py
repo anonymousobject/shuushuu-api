@@ -51,13 +51,11 @@ class UserResponse(UserBase):
     last_login: datetime | None = None
     active: bool
     admin: bool
-    posts: int  # Comments posted by user
-    favorites: int  # Images favorited by user
-    image_posts: int  # Images uploaded by user
+
+
 
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True}
-
     @computed_field  # type: ignore[prop-decorator]
     @property
     def avatar_url(self) -> str | None:
