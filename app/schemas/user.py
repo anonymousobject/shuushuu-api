@@ -3,6 +3,7 @@ Pydantic schemas for User endpoints
 """
 
 from datetime import datetime
+from html import unescape
 
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -48,6 +49,9 @@ class UserResponse(UserBase):
     date_joined: datetime | None = None
     active: bool
     admin: bool
+    posts: int  # Comments posted by user
+    favorites: int  # Images favorited by user
+    image_posts: int  # Images uploaded by user
 
     @field_validator("active", "admin", mode="before")
     @classmethod
@@ -56,6 +60,14 @@ class UserResponse(UserBase):
         if isinstance(v, bool):
             return v
         return bool(v)
+
+    @field_validator("interests", "location", "website", "user_title", mode="before")
+    @classmethod
+    def decode_html_entities(cls, v: str | None) -> str | None:
+        """Decode HTML entities from legacy PHP data"""
+        if v:
+            return unescape(v)
+        return v
 
 
 class UserCreateResponse(UserBase):
