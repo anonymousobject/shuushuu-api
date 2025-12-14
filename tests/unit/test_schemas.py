@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.image import ImageBase, ImageResponse
+from app.schemas.user import UserResponse
 
 
 @pytest.mark.unit
@@ -92,3 +93,199 @@ class TestImageSchemas:
         image = ImageBase(**data)
         assert image.width > 0
         assert image.height > 0
+
+
+@pytest.mark.unit
+class TestUserSchemas:
+    """Tests for user schemas."""
+
+    def test_html_entity_decoding_in_interests(self):
+        """Test HTML entities are decoded in interests field."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": "Anime &amp; Manga, Cats &lt;3, &quot;Art&quot;",
+        }
+        user = UserResponse(**data)
+        assert user.interests == 'Anime & Manga, Cats <3, "Art"'
+
+    def test_html_entity_decoding_in_location(self):
+        """Test HTML entities are decoded in location field."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "location": "Tokyo &amp; Osaka",
+        }
+        user = UserResponse(**data)
+        assert user.location == "Tokyo & Osaka"
+
+    def test_html_entity_decoding_in_website(self):
+        """Test HTML entities are decoded in website field."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "website": "https://example.com?a=1&amp;b=2",
+        }
+        user = UserResponse(**data)
+        assert user.website == "https://example.com?a=1&b=2"
+
+    def test_html_entity_decoding_in_user_title(self):
+        """Test HTML entities are decoded in user_title field."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "user_title": "&lt;Developer&gt; &amp; Designer",
+        }
+        user = UserResponse(**data)
+        assert user.user_title == "<Developer> & Designer"
+
+    def test_html_entity_decoding_multiple_fields(self):
+        """Test HTML entities are decoded in all specified fields simultaneously."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": "Art &amp; Design",
+            "location": "New York &amp; LA",
+            "website": "https://test.com?q=1&amp;r=2",
+            "user_title": "&quot;Master&quot; &lt;Coder&gt;",
+        }
+        user = UserResponse(**data)
+        assert user.interests == "Art & Design"
+        assert user.location == "New York & LA"
+        assert user.website == "https://test.com?q=1&r=2"
+        assert user.user_title == '"Master" <Coder>'
+
+    def test_html_entity_decoding_with_none_values(self):
+        """Test None values are handled correctly in HTML entity decoding."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": None,
+            "location": None,
+            "website": None,
+            "user_title": None,
+        }
+        user = UserResponse(**data)
+        assert user.interests is None
+        assert user.location is None
+        assert user.website is None
+        assert user.user_title is None
+
+    def test_html_entity_decoding_with_empty_strings(self):
+        """Test empty strings are handled correctly."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": "",
+            "location": "",
+            "website": "",
+            "user_title": "",
+        }
+        user = UserResponse(**data)
+        # Empty strings should be returned as empty strings (not decoded as None)
+        assert user.interests == ""
+        assert user.location == ""
+        assert user.website == ""
+        assert user.user_title == ""
+
+    def test_fields_without_html_entities_unchanged(self):
+        """Test fields without HTML entities are passed through unchanged."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": "Plain text with no entities",
+            "location": "Simple Location",
+            "website": "https://example.com/path",
+            "user_title": "Regular Title",
+        }
+        user = UserResponse(**data)
+        assert user.interests == "Plain text with no entities"
+        assert user.location == "Simple Location"
+        assert user.website == "https://example.com/path"
+        assert user.user_title == "Regular Title"
+
+    def test_complex_html_entities(self):
+        """Test various HTML entity types are decoded correctly."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": "&lt;&gt;&amp;&quot;&#39;&copy;",
+        }
+        user = UserResponse(**data)
+        # Should decode to: <>&"'©
+        assert user.interests == "<>&\"'©"
+
+    def test_int_to_bool_conversion_for_active(self):
+        """Test database int (0/1) is converted to boolean for active field."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": 1,
+            "admin": 0,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+        }
+        user = UserResponse(**data)
+        assert user.active is True
+        assert user.admin is False
+
+    def test_int_to_bool_conversion_for_admin(self):
+        """Test database int (0/1) is converted to boolean for admin field."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": 0,
+            "admin": 1,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+        }
+        user = UserResponse(**data)
+        assert user.active is False
+        assert user.admin is True
