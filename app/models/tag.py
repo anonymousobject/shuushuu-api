@@ -84,7 +84,7 @@ class Tags(TagBase, table=True):
             ["tags.tag_id"],
             ondelete="SET NULL",
             onupdate="CASCADE",
-            name="fk_tags_alias",
+            name="fk_tags_alias_of",
         ),
         ForeignKeyConstraint(
             ["inheritedfrom_id"],
