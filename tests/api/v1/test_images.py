@@ -546,6 +546,255 @@ class TestImageDetailWithFavoriteStatus:
 
 
 @pytest.mark.api
+class TestFavoritedByUserIdFilter:
+    """Tests for favorited_by_user_id filter in image list endpoint."""
+
+    async def test_filter_by_favorited_user(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test filtering images by the user who favorited them."""
+        # Create multiple users
+        user1 = Users(
+            username="favuser1",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345salt1234",
+            email="fav1@example.com",
+        )
+        user2 = Users(
+            username="favuser2",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345salt5678",
+            email="fav2@example.com",
+        )
+        db_session.add(user1)
+        db_session.add(user2)
+        await db_session.flush()
+
+        # Create multiple images
+        images = []
+        for i in range(5):
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"fav-test-{i}"
+            image_data["md5_hash"] = f"favhash{i:020d}"
+            image = Images(**image_data)
+            db_session.add(image)
+            images.append(image)
+        await db_session.flush()
+
+        # User1 favorites images 0, 1, 2
+        for i in [0, 1, 2]:
+            favorite = Favorites(user_id=user1.user_id, image_id=images[i].image_id)
+            db_session.add(favorite)
+
+        # User2 favorites images 2, 3, 4
+        for i in [2, 3, 4]:
+            favorite = Favorites(user_id=user2.user_id, image_id=images[i].image_id)
+            db_session.add(favorite)
+
+        await db_session.commit()
+
+        # Filter by user1's favorites
+        response = await client.get(f"/api/v1/images/?favorited_by_user_id={user1.user_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3
+        favorited_filenames = {img["filename"] for img in data["images"]}
+        assert favorited_filenames == {"fav-test-0", "fav-test-1", "fav-test-2"}
+
+        # Filter by user2's favorites
+        response = await client.get(f"/api/v1/images/?favorited_by_user_id={user2.user_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3
+        favorited_filenames = {img["filename"] for img in data["images"]}
+        assert favorited_filenames == {"fav-test-2", "fav-test-3", "fav-test-4"}
+
+    async def test_filter_by_favorited_user_empty_results(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that empty results are returned when user hasn't favorited any images."""
+        # Create a user who hasn't favorited anything
+        user = Users(
+            username="nofavuser",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345saltnone",
+            email="nofav@example.com",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create some images but don't favorite them
+        for i in range(3):
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"unfav-test-{i}"
+            image_data["md5_hash"] = f"unfavhash{i:018d}"
+            db_session.add(Images(**image_data))
+
+        await db_session.commit()
+
+        # Filter by user's favorites (should be empty)
+        response = await client.get(f"/api/v1/images/?favorited_by_user_id={user.user_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["images"] == []
+
+    async def test_filter_favorited_with_other_filters(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test favorited_by_user_id filter combined with other filters."""
+        # Create users
+        uploader = Users(
+            username="uploader",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345uploader",
+            email="uploader@example.com",
+        )
+        favoriter = Users(
+            username="favoriter",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345favorit",
+            email="favoriter@example.com",
+        )
+        db_session.add(uploader)
+        db_session.add(favoriter)
+        await db_session.flush()
+
+        # Create tags
+        tag1 = Tags(title="FavTag1", desc="Fav tag 1", type=TagType.THEME)
+        tag2 = Tags(title="FavTag2", desc="Fav tag 2", type=TagType.SOURCE)
+        db_session.add(tag1)
+        db_session.add(tag2)
+        await db_session.flush()
+
+        # Create images with different combinations
+        # Image 0: uploaded by uploader, has tag1, favorited by favoriter
+        image_data_0 = sample_image_data.copy()
+        image_data_0["filename"] = "combo-0"
+        image_data_0["md5_hash"] = "combohash0000000000"
+        image_data_0["user_id"] = uploader.user_id
+        image_0 = Images(**image_data_0)
+        db_session.add(image_0)
+        await db_session.flush()
+        tag_link_0 = TagLinks(image_id=image_0.image_id, tag_id=tag1.tag_id, user_id=uploader.user_id)
+        db_session.add(tag_link_0)
+        fav_0 = Favorites(user_id=favoriter.user_id, image_id=image_0.image_id)
+        db_session.add(fav_0)
+
+        # Image 1: uploaded by user_id=1, has tag1, favorited by favoriter
+        image_data_1 = sample_image_data.copy()
+        image_data_1["filename"] = "combo-1"
+        image_data_1["md5_hash"] = "combohash1111111111"
+        image_data_1["user_id"] = 1  # Different uploader
+        image_1 = Images(**image_data_1)
+        db_session.add(image_1)
+        await db_session.flush()
+        tag_link_1 = TagLinks(image_id=image_1.image_id, tag_id=tag1.tag_id, user_id=1)
+        db_session.add(tag_link_1)
+        fav_1 = Favorites(user_id=favoriter.user_id, image_id=image_1.image_id)
+        db_session.add(fav_1)
+
+        # Image 2: uploaded by uploader, has tag2, favorited by favoriter
+        image_data_2 = sample_image_data.copy()
+        image_data_2["filename"] = "combo-2"
+        image_data_2["md5_hash"] = "combohash2222222222"
+        image_data_2["user_id"] = uploader.user_id
+        image_2 = Images(**image_data_2)
+        db_session.add(image_2)
+        await db_session.flush()
+        tag_link_2 = TagLinks(image_id=image_2.image_id, tag_id=tag2.tag_id, user_id=uploader.user_id)
+        db_session.add(tag_link_2)
+        fav_2 = Favorites(user_id=favoriter.user_id, image_id=image_2.image_id)
+        db_session.add(fav_2)
+
+        await db_session.commit()
+
+        # Test: favorited_by_user_id + user_id filter
+        response = await client.get(
+            f"/api/v1/images/?favorited_by_user_id={favoriter.user_id}&user_id={uploader.user_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2  # Only images 0 and 2
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"combo-0", "combo-2"}
+
+        # Test: favorited_by_user_id + tags filter
+        response = await client.get(
+            f"/api/v1/images/?favorited_by_user_id={favoriter.user_id}&tags={tag1.tag_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2  # Images 0 and 1 have tag1
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"combo-0", "combo-1"}
+
+    async def test_filter_favorited_with_pagination(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that pagination works correctly with favorited_by_user_id filter."""
+        # Create a user
+        user = Users(
+            username="pagfavuser",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345pagfav12",
+            email="pagfav@example.com",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create 25 images and have user favorite all of them
+        for i in range(25):
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"pagfav-{i:03d}"
+            image_data["md5_hash"] = f"pagfavhash{i:016d}"
+            image = Images(**image_data)
+            db_session.add(image)
+            await db_session.flush()
+            favorite = Favorites(user_id=user.user_id, image_id=image.image_id)
+            db_session.add(favorite)
+
+        await db_session.commit()
+
+        # Test first page
+        response = await client.get(
+            f"/api/v1/images/?favorited_by_user_id={user.user_id}&page=1&per_page=10"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 25
+        assert data["page"] == 1
+        assert data["per_page"] == 10
+        assert len(data["images"]) == 10
+
+        # Test second page
+        response = await client.get(
+            f"/api/v1/images/?favorited_by_user_id={user.user_id}&page=2&per_page=10"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 25
+        assert data["page"] == 2
+        assert len(data["images"]) == 10
+
+        # Test third page (remaining 5 images)
+        response = await client.get(
+            f"/api/v1/images/?favorited_by_user_id={user.user_id}&page=3&per_page=10"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 25
+        assert data["page"] == 3
+        assert len(data["images"]) == 5
+
+
+@pytest.mark.api
 class TestImageFavorites:
     """Tests for favorite/unfavorite functionality."""
 
