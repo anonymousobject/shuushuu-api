@@ -214,8 +214,8 @@ async def list_tags(
             query = query.order_by(
                 sql_text("MATCH (title) AGAINST (:search IN BOOLEAN MODE) DESC"),
                 sql_desc(
-                    Tags.usage_count
-                ),  # Most popular tags first (breaks relevance ties)  # type: ignore[arg-type]
+                    Tags.usage_count  # type: ignore[arg-type]
+                ),  # Most popular tags first (breaks relevance ties)
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
             ).params(search=fulltext_query_str)
     else:
