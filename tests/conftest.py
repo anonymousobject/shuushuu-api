@@ -153,7 +153,7 @@ def _create_tag_search_and_popularity_features(sync_engine):
                     CREATE TRIGGER trig_tag_links_delete AFTER DELETE ON tag_links
                     FOR EACH ROW
                     BEGIN
-                        UPDATE tags SET usage_count = usage_count - 1
+                        UPDATE tags SET usage_count = GREATEST(0, usage_count - 1)
                         WHERE tag_id = OLD.tag_id;
                     END
                 """)
