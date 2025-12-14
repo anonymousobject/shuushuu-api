@@ -174,6 +174,153 @@ class TestListTags:
         # Empty strings should not be reported as invalid
         assert data.get("invalid_ids") is None
 
+    async def test_filter_tags_by_parent_tag_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags by parent tag ID (get child tags)."""
+        # Create parent tag
+        parent_tag = Tags(title="swimsuit", desc="Parent tag for swimsuit types", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tags that inherit from parent
+        child1 = Tags(
+            title="bikini",
+            desc="Two-piece swimsuit",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        child2 = Tags(
+            title="school swimsuit",
+            desc="School-style swimsuit",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        # Create a tag that is NOT a child
+        other_tag = Tags(title="evening dress", desc="Not related to swimsuit", type=TagType.THEME)
+        db_session.add_all([child1, child2, other_tag])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        # Filter by parent tag ID
+        response = await client.get(f"/api/v1/tags/?parent_tag_id={parent_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return only the child tags
+        assert data["total"] == 2
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert returned_ids == {child1.tag_id, child2.tag_id}
+        # Verify parent is not included
+        assert parent_tag.tag_id not in returned_ids
+        # Verify other unrelated tag is not included
+        assert other_tag.tag_id not in returned_ids
+
+    async def test_filter_tags_by_parent_with_no_children(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering by parent tag ID when parent has no children."""
+        # Create parent tag with no children
+        parent_tag = Tags(title="lonely parent", desc="Has no children", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Filter by this parent tag ID
+        response = await client.get(f"/api/v1/tags/?parent_tag_id={parent_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return empty result
+        assert data["total"] == 0
+        assert len(data["tags"]) == 0
+
+    async def test_filter_tags_by_parent_with_nested_hierarchy(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering by parent tag ID only returns direct children, not grandchildren."""
+        # Create parent tag
+        parent_tag = Tags(title="clothing", desc="Top level category", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tag
+        child_tag = Tags(
+            title="dress",
+            desc="Child of clothing",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add(child_tag)
+        await db_session.commit()
+        await db_session.refresh(child_tag)
+
+        # Create grandchild tag (child of child)
+        grandchild_tag = Tags(
+            title="sundress",
+            desc="Grandchild of clothing",
+            type=TagType.THEME,
+            inheritedfrom_id=child_tag.tag_id,
+        )
+        db_session.add(grandchild_tag)
+        await db_session.commit()
+        await db_session.refresh(grandchild_tag)
+
+        # Filter by parent tag ID
+        response = await client.get(f"/api/v1/tags/?parent_tag_id={parent_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return only direct children, not grandchildren
+        assert data["total"] == 1
+        assert data["tags"][0]["tag_id"] == child_tag.tag_id
+        # Grandchild should not be included
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert grandchild_tag.tag_id not in returned_ids
+
+    async def test_filter_tags_by_parent_combined_with_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags by parent tag ID combined with type filter."""
+        # Create parent tag
+        parent_tag = Tags(title="character trait", desc="Parent tag", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tags with different types
+        child1 = Tags(
+            title="blue eyes",
+            desc="Eye color",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        child2 = Tags(
+            title="red hair",
+            desc="Hair color",
+            type=TagType.CHARACTER,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add_all([child1, child2])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        # Filter by parent tag ID and type
+        response = await client.get(
+            f"/api/v1/tags/?parent_tag_id={parent_tag.tag_id}&type={TagType.THEME}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return only child tags with matching type
+        assert data["total"] == 1
+        assert data["tags"][0]["tag_id"] == child1.tag_id
+        assert data["tags"][0]["type"] == TagType.THEME
+
 
 
 @pytest.mark.api
