@@ -242,7 +242,8 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
         thumbs_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate thumbnail filename (we always store thumbnails as JPEG)
-        date_prefix = datetime.now().strftime("%Y-%m-%d")
+        # Extract date prefix from source filename (assumes format: {date_prefix}-{image_id}.{ext})
+        date_prefix = source_path.stem.split("-", 1)[0]
         thumb_filename = f"{date_prefix}-{image_id}.jpeg"
         thumb_path = thumbs_dir / thumb_filename
 
