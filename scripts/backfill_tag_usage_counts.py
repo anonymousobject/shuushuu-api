@@ -40,16 +40,20 @@ async def backfill_usage_counts() -> None:
 
         print(f"Found {len(tag_counts)} tags with usage data")
 
-        # Update each tag with its count
-        for tag_id, count in tag_counts:
-            await db.execute(
-                update(Tags)
-                .where(Tags.tag_id == tag_id)
-                .values(usage_count=count)
-            )
+        # Bulk update all tags' usage_count in one statement
+        await db.execute(
+            text("""
+                UPDATE tags
+                SET usage_count = COALESCE((
+                    SELECT COUNT(DISTINCT tag_links.image_id)
+                    FROM tag_links
+                    WHERE tag_links.tag_id = tags.tag_id
+                ), 0)
+            """)
+        )
 
         await db.commit()
-        print(f"Updated {len(tag_counts)} tags with usage counts")
+        print("Updated all tags with usage counts")
 
         # Show statistics
         stats_result = await db.execute(
