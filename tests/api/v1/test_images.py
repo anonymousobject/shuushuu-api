@@ -796,3 +796,115 @@ class TestImageFavorites:
         await db_session.refresh(sample_user)
         assert image.favorites >= 0
         assert sample_user.favorites >= 0
+
+
+@pytest.mark.api
+class TestTagUsageCount:
+    """Tests for automatic tag usage_count updates via database triggers."""
+
+    async def test_tag_usage_count_increments_on_add(
+        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user: Users, sample_image_data: dict
+    ):
+        """Test that tag usage_count increments when a tag is added to an image."""
+        # Create an image owned by the authenticated user
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Create a tag
+        tag = Tags(title="test_tag", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Verify initial count is 0
+        assert tag.usage_count == 0
+
+        # Add tag to image via API
+        response = await authenticated_client.post(
+            f"/api/v1/images/{image.image_id}/tags/{tag.tag_id}"
+        )
+        assert response.status_code == 201
+
+        # Verify usage_count incremented
+        await db_session.refresh(tag)
+        assert tag.usage_count == 1
+
+    async def test_tag_usage_count_decrements_on_remove(
+        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user: Users, sample_image_data: dict
+    ):
+        """Test that tag usage_count decrements when a tag is removed from an image."""
+        # Create image and tag
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="test_tag_2", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Add tag to image
+        tag_link = TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=sample_user.user_id)
+        db_session.add(tag_link)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        assert tag.usage_count == 1
+
+        # Remove tag from image via API
+        response = await authenticated_client.delete(
+            f"/api/v1/images/{image.image_id}/tags/{tag.tag_id}"
+        )
+        assert response.status_code == 204
+
+        # Verify usage_count decremented
+        await db_session.refresh(tag)
+        assert tag.usage_count == 0
+
+    async def test_tag_usage_count_multiple_images(
+        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user: Users, sample_image_data: dict
+    ):
+        """Test that usage_count tracks multiple images with the same tag."""
+        # Create multiple images
+        images = []
+        for i in range(3):
+            image_data = sample_image_data.copy()
+            image_data["user_id"] = sample_user.user_id
+            image = Images(**image_data)
+            db_session.add(image)
+            images.append(image)
+        await db_session.commit()
+
+        for image in images:
+            await db_session.refresh(image)
+
+        # Create a tag
+        tag = Tags(title="popular_tag", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Link tag to all images
+        for image in images:
+            response = await authenticated_client.post(
+                f"/api/v1/images/{image.image_id}/tags/{tag.tag_id}"
+            )
+            assert response.status_code == 201
+            await db_session.refresh(tag)
+
+        # Verify count is 3
+        assert tag.usage_count == 3
+
+        # Remove from one image
+        response = await authenticated_client.delete(
+            f"/api/v1/images/{images[0].image_id}/tags/{tag.tag_id}"
+        )
+        assert response.status_code == 204
+        await db_session.refresh(tag)
+        assert tag.usage_count == 2

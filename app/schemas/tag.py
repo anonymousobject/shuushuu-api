@@ -2,7 +2,9 @@
 Pydantic schemas for Tag endpoints
 """
 
-from pydantic import BaseModel
+from datetime import datetime
+
+from pydantic import BaseModel, model_validator
 
 from app.models.tag import TagBase
 
@@ -11,7 +13,7 @@ class TagCreate(TagBase):
     """Schema for creating a new tag"""
 
     inheritedfrom_id: int | None = None
-    alias: int | None = None
+    alias_of: int | None = None
     desc: str | None = None
 
 
@@ -22,10 +24,25 @@ class TagUpdate(BaseModel):
     type: int | None = None
 
 
+class TagCreator(BaseModel):
+    """Schema for tag creator user info"""
+
+    user_id: int
+    username: str
+
+
 class TagResponse(TagBase):
     """Schema for tag response - what API returns"""
 
     tag_id: int
+    alias_of: int | None = None
+    is_alias: bool = False
+
+    @model_validator(mode="after")
+    def set_is_alias(self) -> "TagResponse":
+        if self.alias_of is not None:
+            self.is_alias = True
+        return self
 
 
 class TagWithStats(TagResponse):
@@ -36,6 +53,8 @@ class TagWithStats(TagResponse):
     aliased_tag_id: int | None = None  # The actual tag this aliases (if is_alias=True)
     parent_tag_id: int | None = None  # The parent tag in hierarchy (inheritedfrom_id)
     child_count: int = 0  # Number of child tags that inherit from this tag
+    created_by: TagCreator | None = None  # User who created the tag
+    date_added: datetime  # When the tag was created
 
 
 class TagListResponse(BaseModel):

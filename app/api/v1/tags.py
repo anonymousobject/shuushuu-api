@@ -40,8 +40,8 @@ async def resolve_tag_alias(db: AsyncSession, tag_id: int) -> tuple[Tags | None,
         return None, tag_id
 
     # If this tag is an alias, use the actual tag for queries
-    if tag.alias:
-        return tag, tag.alias
+    if tag.alias_of:
+        return tag, tag.alias_of
 
     return tag, tag_id
 
@@ -85,28 +85,42 @@ async def list_tags(
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     ids: Annotated[str | None, Query(description="Comma-separated tag IDs to fetch")] = None,
     parent_tag_id: Annotated[int | None, Query(description="Filter by parent tag ID")] = None,
+    exclude_aliases: Annotated[
+        bool, Query(description="Exclude alias tags (tags that redirect to others)")
+    ] = False,
     db: AsyncSession = Depends(get_db),
 ) -> TagListResponse:
     """
-    List and search tags.
+    List and search tags with intelligent hybrid search.
 
     Supports:
-    - Searching by tag name (partial match)
+    - Intelligent tag search (word-order independent for multi-word queries)
     - Filtering by tag type
     - Filtering by specific IDs (comma-separated)
     - Filtering by parent tag ID (get child tags)
+    - Excluding alias tags
     - Pagination
+
+    ## Search Strategy
+
+    Uses a hybrid approach for optimal UX:
+    - **Short queries (< 3 chars)**: Prefix matching (e.g., "sa" finds "sakura kinomoto")
+    - **Long queries (≥ 3 chars)**: Full-text search (word-order independent)
+
+    The full-text search solves the Japanese character name problem:
+    Searching "sakura kinomoto" will find tags with "kinomoto sakura" in any word order.
 
     When filtering by IDs, invalid (non-numeric) IDs are reported in the response
     via the `invalid_ids` field, while valid tags are still returned.
 
     **Examples:**
     - Get all tags: `/tags`
-    - Search tags with "cat": `/tags?search=cat`
-    - Filter by type (e.g., type_id=1 for general tags): `/tags?type_id=1`
+    - Search tags with "cat" (uses prefix if < 3 chars): `/tags?search=cat`
+    - Search Japanese name (word-order independent): `/tags?search=sakura%20kinomoto`
+    - Filter by type: `/tags?type_id=1`
     - Get specific tags by ID: `/tags?ids=1,2,3`
     - Get child tags of a parent: `/tags?parent_tag_id=10`
-    - Get tags with mixed valid/invalid IDs: `/tags?ids=1,abc,2` (returns tags 1,2; reports "abc" as invalid)
+    - Exclude alias tags: `/tags?search=sakura&exclude_aliases=true`
     """
     query = select(Tags)
 
@@ -129,42 +143,85 @@ async def list_tags(
         else:
             # All IDs were invalid - return empty result
             query = query.where(False)  # type: ignore[arg-type]
-    elif search:
-        query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
+    # Track whether we're using fulltext search and what query string
+    fulltext_query_str: str | None = None
+
+    if search:
+        # Hybrid search strategy:
+        # - Queries < 3 chars: Use LIKE (autocomplete, prefix matching)
+        # - Queries >= 3 chars: Use FULLTEXT MATCH with wildcard expansion (word-order independent + partial words)
+        #
+        # This handles both:
+        # 1. Japanese name problem: "sakura kinomoto" finds "kinomoto sakura" (word-order independence)
+        # 2. Partial word matching: "thig" finds "thighs" (wildcard expansion)
+        from sqlalchemy import text as sql_text
+
+        if len(search) < 3:
+            # Short query: prefix match with LIKE (e.g., "sa" -> "sakura")
+            query = query.where(Tags.title.like(f"{search}%"))  # type: ignore[union-attr]
+        else:
+            # Long query: word-order independent full-text search with wildcard expansion
+            # Split search into words and add wildcard to each word to match partial terms
+            # e.g., "sakura kinomoto" -> "+sakura* +kinomoto*"
+            search_terms = search.split()
+            fulltext_query_str = " ".join(f"+{term}*" for term in search_terms)
+            query = query.where(
+                sql_text("MATCH (title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
+                    search=fulltext_query_str
+                )
+            )
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
     if parent_tag_id is not None:
         query = query.where(Tags.inheritedfrom_id == parent_tag_id)  # type: ignore[arg-type]
+    if exclude_aliases:
+        query = query.where(Tags.alias_of.is_(None))  # type: ignore[union-attr]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Sort: For search queries, prioritize starts-with matches (better autocomplete UX)
+    # Sort: For search queries, use smart ranking
     # For general listing, sort by date added
     from sqlalchemy import case
     from sqlalchemy import desc as sql_desc
+    from sqlalchemy import text as sql_text
 
     if search:
-        # Autocomplete-friendly sorting:
-        # 1. Exact matches first
-        # 2. Starts-with matches second
-        # 3. Contains matches last (alphabetical within each group)
-        query = query.order_by(
-            case(
-                (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
-                (
-                    func.lower(Tags.title).like(f"{search.lower()}%"),
-                    1,
-                ),  # Starts with (case-insensitive)
-                else_=2,  # Contains (middle/end)
-            ),
-            func.lower(Tags.title),  # Alphabetical within each priority group (case-insensitive)
-        )
+        if len(search) < 3:
+            # Short query (prefix match): prioritize exact and starts-with
+            # 1. Exact matches first
+            # 2. Starts-with matches second
+            # 3. Contains matches last (alphabetical within each group)
+            query = query.order_by(
+                case(
+                    (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
+                    (
+                        func.lower(Tags.title).like(f"{search.lower()}%"),
+                        1,
+                    ),  # Starts with (case-insensitive)
+                    else_=2,  # Contains (middle/end)
+                ),
+                func.lower(Tags.title),  # Alphabetical within each priority group
+            )
+        else:
+            # Long query (full-text): sort by relevance, then popularity, then alphabetically
+            # MATCH ... AGAINST returns relevance score; order by it descending first
+            # Then sort by usage_count (most popular first) to break relevance ties
+            # Finally alphabetical for consistent ordering
+            # Must use the same fulltext_query_str as the WHERE clause
+            query = query.order_by(
+                sql_text("MATCH (title) AGAINST (:search IN BOOLEAN MODE) DESC"),
+                sql_desc(Tags.usage_count),  # Most popular tags first (breaks relevance ties)
+                func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
+            ).params(search=fulltext_query_str)
     else:
-        # No search - sort by newest tags
-        query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
+        # No search - sort by usage count (most popular first), then by date added
+        query = query.order_by(
+            sql_desc(Tags.usage_count),  # Most used tags first
+            sql_desc(Tags.date_added),  # Newest within same usage count
+        )
 
     # Paginate
     query = query.offset(pagination.offset).limit(pagination.per_page)
@@ -297,7 +354,7 @@ async def get_tag(
     # First resolve any alias (synonym) - join with Users to get creator info
     tag_result = await db.execute(
         select(Tags, Users)
-        .outerjoin(Users, Tags.user_id == Users.user_id)
+        .outerjoin(Users, Tags.user_id == Users.user_id)  # type: ignore[arg-type]
         .where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
     )
     row = tag_result.first()
@@ -308,7 +365,7 @@ async def get_tag(
     tag, user = row
 
     # Resolve alias if needed
-    resolved_tag_id = tag.alias if tag.alias else tag_id
+    resolved_tag_id = tag.alias_of if tag.alias_of else tag_id
 
     # Get the full tag hierarchy (includes all descendant tags)
     tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id)
@@ -326,8 +383,8 @@ async def get_tag(
     child_count = children_result.scalar()
 
     # Determine if this is an alias tag (synonym)
-    is_alias = tag.alias is not None
-    aliased_tag_id = tag.alias if is_alias else None
+    is_alias = tag.alias_of is not None
+    aliased_tag_id = tag.alias_of if is_alias else None
 
     # Get parent tag in hierarchy (inheritance, not alias)
     parent_tag_id = tag.inheritedfrom_id
@@ -378,9 +435,9 @@ async def create_tag(
             raise HTTPException(status_code=400, detail="Parent tag does not exist")
 
     # if alias is set, ensure that tag exists
-    if tag_data.alias:
+    if tag_data.alias_of:
         alias_tag_result = await db.execute(
-            select(Tags).where(Tags.tag_id == tag_data.alias)  # type: ignore[arg-type]
+            select(Tags).where(Tags.tag_id == tag_data.alias_of)  # type: ignore[arg-type]
         )
         if not alias_tag_result.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Alias tag does not exist")
@@ -390,7 +447,7 @@ async def create_tag(
         type=tag_data.type,
         desc=tag_data.desc,
         inheritedfrom_id=tag_data.inheritedfrom_id,
-        alias=tag_data.alias,
+        alias_of=tag_data.alias_of,
     )
     db.add(new_tag)
     await db.commit()
@@ -428,13 +485,13 @@ async def update_tag(
                 status_code=400, detail=f"Parent tag with id {inheritedfrom_id} does not exist"
             )
 
-    alias_id = update_data.get("alias")
+    alias_id = update_data.get("alias_of")
     if alias_id is not None:
         alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_id))
         alias_tag = alias_result.scalar_one_or_none()
         if not alias_tag:
             raise HTTPException(
-                status_code=400, detail=f"Alias tag with id {alias_id} does not exist"
+                status_code=400, detail=f"Alias of tag with id {alias_id} does not exist"
             )
     # Update fields
     for key, value in update_data.items():
