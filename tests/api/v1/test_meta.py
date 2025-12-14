@@ -8,7 +8,7 @@ These tests cover the /api/v1/meta endpoints including:
 import pytest
 from httpx import AsyncClient
 
-from app.config import settings
+from app.config import TagType, settings
 
 
 @pytest.mark.api
@@ -77,21 +77,15 @@ class TestGetPublicConfig:
         # Verify tag_types is a dictionary
         assert isinstance(tag_types, dict)
 
-        # Verify expected tag type entries are present
-        # Based on TagType constants: THEME=1, SOURCE=2, ARTIST=3, CHARACTER=4
-        assert "1" in tag_types or 1 in tag_types
-        assert "2" in tag_types or 2 in tag_types
-        assert "3" in tag_types or 3 in tag_types
-        assert "4" in tag_types or 4 in tag_types
-
-        # Get the actual values (handling both string and int keys)
-        theme = tag_types.get("1") or tag_types.get(1)
-        source = tag_types.get("2") or tag_types.get(2)
-        artist = tag_types.get("3") or tag_types.get(3)
-        character = tag_types.get("4") or tag_types.get(4)
+        # JSON serialization converts integer keys to strings, so check for string keys
+        # Verify expected tag type entries are present based on TagType constants
+        assert str(TagType.THEME) in tag_types
+        assert str(TagType.SOURCE) in tag_types
+        assert str(TagType.ARTIST) in tag_types
+        assert str(TagType.CHARACTER) in tag_types
 
         # Verify the values match expected tag type names
-        assert theme == "Theme"
-        assert source == "Source"
-        assert artist == "Artist"
-        assert character == "Character"
+        assert tag_types[str(TagType.THEME)] == "Theme"
+        assert tag_types[str(TagType.SOURCE)] == "Source"
+        assert tag_types[str(TagType.ARTIST)] == "Artist"
+        assert tag_types[str(TagType.CHARACTER)] == "Character"
