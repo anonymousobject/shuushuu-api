@@ -9,10 +9,11 @@ This module provides endpoints for:
 """
 
 import hashlib
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,7 @@ from app.core.auth import (
     get_user_agent,
 )
 from app.core.database import get_db
+from app.core.logging import get_logger
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -38,6 +40,9 @@ from app.schemas.auth import (
     PasswordChangeRequest,
     TokenResponse,
 )
+from app.tasks.queue import enqueue_job
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -112,7 +117,8 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
     """
     Set authentication cookies in response.
 
-    Sets refresh token cookie (always) and access token cookie (development only).
+    Sets both access token and refresh token as HTTPOnly cookies for SSR compatibility.
+    This supports SvelteKit's server-side rendering which needs access to tokens on the server.
 
     Args:
         response: FastAPI response object
@@ -129,16 +135,15 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,  # seconds
     )
 
-    # Set access token as cookie for browser/Swagger UI convenience (development only)
-    if settings.ENVIRONMENT != "production":
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,  # Prevent JavaScript access (XSS protection)
-            secure=False,  # Allow HTTP in development
-            samesite="strict",  # CSRF protection
-            max_age=30 * 24 * 60 * 60,  # 30 days in seconds
-        )
+    # Set access token as HTTPOnly cookie (for SSR and Swagger UI)
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,  # Prevent JavaScript access (XSS protection)
+        secure=settings.ENVIRONMENT == "production",  # HTTPS only in production
+        samesite="strict",  # CSRF protection
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Match JWT expiration
+    )
 
 
 def _clear_auth_cookies(response: Response) -> None:
@@ -148,8 +153,23 @@ def _clear_auth_cookies(response: Response) -> None:
     Args:
         response: FastAPI response object
     """
-    response.delete_cookie(key="refresh_token")
-    response.delete_cookie(key="access_token")
+    # Clear refresh token (match set_cookie params)
+    response.delete_cookie(
+        key="refresh_token",
+        path="/",
+        httponly=True,
+        secure=settings.ENVIRONMENT == "production",
+        samesite="strict",
+    )
+
+    # Clear access token (match set_cookie params)
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        httponly=True,
+        secure=settings.ENVIRONMENT == "production",
+        samesite="strict",
+    )
 
 
 def _verify_legacy_password(plain_password: str, hashed_password: str, salt: str) -> bool:
@@ -306,6 +326,7 @@ async def login(
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        refresh_token=refresh_token,
     )
 
 
@@ -414,6 +435,7 @@ async def refresh_token(
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        refresh_token=new_refresh_token,
     )
 
 
@@ -541,3 +563,85 @@ async def change_password(
     return MessageResponse(
         message="Password changed successfully. Please login again with your new password."
     )
+
+
+@router.post("/verify-email", response_model=MessageResponse)
+async def verify_email(
+    token: Annotated[str, Query()],
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """Verify user email with token from verification link."""
+    # Hash token to compare with DB
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    # Find user by token
+    result = await db.execute(
+        select(Users).where(Users.email_verification_token == token_hash)  # type: ignore[arg-type]
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification token"
+        )
+
+    # Check expiration (IMPORTANT: null check first!)
+    if not user.email_verification_expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification token"
+        )
+
+    if user.email_verification_expires_at < datetime.now(UTC).replace(tzinfo=None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification token expired. Please request a new one.",
+        )
+
+    # Verify email
+    user.email_verified = True
+    user.email_verification_token = None  # Clear token
+    user.email_verification_expires_at = None  # Clear expiration
+    await db.commit()
+
+    logger.info("email_verified", user_id=user.user_id, username=user.username)
+
+    return MessageResponse(message="Email verified successfully!")
+
+
+@router.post("/resend-verification", response_model=MessageResponse)
+async def resend_verification(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """Resend verification email to current user."""
+    if current_user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already verified"
+        )
+
+    # Rate limit: only 1 resend per 5 minutes
+    if current_user.email_verification_sent_at:
+        time_since_last = (
+            datetime.now(UTC).replace(tzinfo=None) - current_user.email_verification_sent_at
+        )
+        if time_since_last < timedelta(minutes=5):
+            remaining_seconds = int((timedelta(minutes=5) - time_since_last).total_seconds())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {remaining_seconds} seconds before requesting another verification email",
+            )
+
+    # Generate new token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    # Update user
+    current_user.email_verification_token = token_hash
+    current_user.email_verification_sent_at = datetime.now(UTC)
+    current_user.email_verification_expires_at = datetime.now(UTC) + timedelta(hours=24)
+    await db.commit()
+
+    # Queue verification email via ARQ (non-blocking, reliable)
+    await enqueue_job("send_verification_email_job", user_id=current_user.user_id, token=raw_token)
+
+    return MessageResponse(message="Verification email sent! Check your inbox.")

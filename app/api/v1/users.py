@@ -2,19 +2,34 @@
 Users API endpoints
 """
 
+import hashlib
 import re
+import secrets
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, UploadFile, status
-from sqlalchemy import asc, desc, func, or_, select
+import redis.asyncio as redis
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from sqlalchemy import asc, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
-from app.core.auth import get_current_user, get_current_user_id
+from app.core.auth import get_client_ip, get_current_user, get_current_user_id
 from app.core.database import get_db
+from app.core.redis import get_redis
 from app.core.security import get_password_hash, validate_password_strength
 from app.models import Favorites, Images, TagLinks, Users
 from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
@@ -22,6 +37,7 @@ from app.schemas.user import (
     UserCreate,
     UserCreateResponse,
     UserListResponse,
+    UserPrivateResponse,
     UserResponse,
     UserUpdate,
 )
@@ -31,6 +47,9 @@ from app.services.avatar import (
     save_avatar,
     validate_avatar_upload,
 )
+from app.services.rate_limit import check_registration_rate_limit
+from app.services.turnstile import verify_turnstile_token
+from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -51,7 +70,8 @@ async def list_users(
 
     # Apply search filter
     if search:
-        query = query.where(Users.username.like(f"%{search}%"))  # type: ignore[attr-defined]
+        # Case-insensitive match - include substring matches
+        query = query.where(func.lower(Users.username).like(f"%{search.lower()}%"))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -71,8 +91,23 @@ async def list_users(
     sort_column = sort_column_map.get(sorting.sort_by, Users.user_id)
     sort_func = desc if sorting.sort_order == "DESC" else asc
 
-    # Apply sorting
-    query = query.order_by(sort_func(sort_column))  # type: ignore[arg-type]
+    # Apply sorting. If a search is present, order by relevance first
+    if search:
+        s_lower = search.lower()
+        relevance = case(
+            (
+                func.lower(Users.username) == s_lower,
+                0,
+            ),
+            (
+                func.lower(Users.username).like(f"{s_lower}%"),
+                1,
+            ),
+            else_=2,
+        )
+        query = query.order_by(asc(relevance), sort_func(sort_column))  # type: ignore[arg-type]
+    else:
+        query = query.order_by(sort_func(sort_column))  # type: ignore[arg-type]
 
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
@@ -89,13 +124,15 @@ async def list_users(
     )
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserPrivateResponse)
 async def get_current_user_profile(
     current_user_id: Annotated[int, Depends(get_current_user_id)],
     db: AsyncSession = Depends(get_db),
-) -> UserResponse:
+) -> UserPrivateResponse:
     """
     Get the profile of the currently authenticated user.
+
+    This includes private settings like email, email_verified, and email_pm_pref.
     """
     user_result = await db.execute(select(Users).where(Users.user_id == current_user_id))  # type: ignore[arg-type]
     user = user_result.scalar_one_or_none()
@@ -103,21 +140,23 @@ async def get_current_user_profile(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return UserResponse.model_validate(user)
+    return UserPrivateResponse.model_validate(user)
 
 
-@router.patch("/me", response_model=UserResponse)
+@router.patch("/me", response_model=UserPrivateResponse)
 async def update_current_user_profile(
     user_data: UserUpdate,
     current_user_id: Annotated[int, Depends(get_current_user_id)],
     db: AsyncSession = Depends(get_db),
-) -> UserResponse:
+) -> UserPrivateResponse:
     """
     Update the profile of the currently authenticated user.
 
     All fields are optional. Only provided fields will be updated.
+    Returns the updated profile including private settings.
     """
-    return await _update_user_profile(current_user_id, user_data, current_user_id, db)
+    user = await _update_user_profile(current_user_id, user_data, current_user_id, db)
+    return UserPrivateResponse.model_validate(user)
 
 
 @router.post("/me/avatar", response_model=UserResponse)
@@ -310,7 +349,8 @@ async def update_user_profile(
             detail="Not authorized to update this user",
         )
 
-    return await _update_user_profile(user_id, user_data, current_user.id, db)
+    user = await _update_user_profile(user_id, user_data, current_user.id, db)
+    return UserResponse.model_validate(user)
 
 
 async def _update_user_profile(
@@ -318,7 +358,7 @@ async def _update_user_profile(
     user_data: UserUpdate,
     current_user_id: int,
     db: AsyncSession,
-) -> UserResponse:
+) -> Users:
     """
     Internal function to handle user profile updates.
 
@@ -329,7 +369,7 @@ async def _update_user_profile(
         db: Database session
 
     Returns:
-        Updated user response
+        Updated user response (as UserResponse; caller may wrap as UserPrivateResponse)
     """
     user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
     user = user_result.scalar_one_or_none()
@@ -359,14 +399,18 @@ async def _update_user_profile(
         if existing_email.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Email already in use")
 
-    # Update remaining fields
+    # Update user fields
+    # NOTE: Input sanitization is now handled by schema validators (UserUpdate)
+    # which escape HTML to prevent XSS attacks. We no longer normalize here.
     for field, value in update_data.items():
         setattr(user, field, value)
 
     await db.commit()
     await db.refresh(user)
 
-    return UserResponse.model_validate(user)
+    # Return the DB model instance so callers can serialize to either
+    # public or private response schemas depending on the endpoint.
+    return user
 
 
 @router.get("/{user_id}/images", response_model=ImageDetailedListResponse)
@@ -501,11 +545,27 @@ async def get_user_favorites(
 @router.post("/", response_model=UserCreateResponse)
 async def create_user(
     user_data: UserCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserCreateResponse:
     """
-    Create a new user.
+    Create a new user with bot protection.
     """
+    # 1. Honeypot check (fail fast)
+    if user_data.website_url:
+        # Bot detected! Silently reject without revealing honeypot
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid registration request.",
+        )
+
+    # 2. Rate limiting
+    ip_address = get_client_ip(request)
+    await check_registration_rate_limit(ip_address, redis_client)
+
+    # 3. Turnstile verification
+    await verify_turnstile_token(user_data.turnstile_token, ip_address)
 
     # TODO: extract these checks into reusable functions
 
@@ -530,18 +590,29 @@ async def create_user(
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_message)
 
+    # Generate email verification token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
     new_user = Users(
         username=user_data.username,
         password=get_password_hash(user_data.password),
         password_type="bcrypt",  # Mark as bcrypt password
         salt="",  # Legacy field - empty for bcrypt users
         email=user_data.email,
-        active=1,  # New users are active by default
+        active=1,  # New users are active by default (can login)
         admin=0,  # New users are not admin
+        email_verified=False,  # Not verified yet
+        email_verification_token=token_hash,
+        email_verification_sent_at=datetime.now(UTC),
+        email_verification_expires_at=datetime.now(UTC) + timedelta(hours=24),
         # Other fields use model defaults
     )
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
+
+    # Queue verification email via ARQ (reliable, retries on failure)
+    await enqueue_job("send_verification_email_job", user_id=new_user.user_id, token=raw_token)
 
     return UserCreateResponse.model_validate(new_user)

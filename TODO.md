@@ -152,6 +152,14 @@ Strings like `/storage/large/` in image URL generation should come from config v
 3. Update tests to verify config is being used correctly
 4. Document the config variables in .env.example
 
+### Investigate using autogen for Alembic Migrations
+**Priority:** Low
+**Status:** Not Started
+Research if we can leverage Alembic's autogenerate feature to simplify migration creation. Right now, we write migrations manually.
+The database models and the migrations can get out of sync.
+
+
+
 ## Content Migration
 
 ### Convert Legacy BBCode to Markdown

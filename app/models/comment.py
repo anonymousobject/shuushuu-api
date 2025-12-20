@@ -15,9 +15,13 @@ but the model is named Comments and all references use 'comment' terminology.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
+
+if TYPE_CHECKING:
+    from app.models.user import Users
 
 
 class CommentBase(SQLModel):
@@ -35,6 +39,12 @@ class CommentBase(SQLModel):
 
     # Image reference
     image_id: int | None = Field(default=None)
+
+    # Threading: null for top-level, post_id of parent for replies
+    parent_comment_id: int | None = Field(default=None)
+
+    # Soft-delete flag
+    deleted: bool = Field(default=False, index=True)
 
 
 class Comments(CommentBase, table=True):
@@ -71,6 +81,13 @@ class Comments(CommentBase, table=True):
             name="fk_posts_image_id",
         ),
         ForeignKeyConstraint(
+            ["parent_comment_id"],
+            ["posts.post_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_posts_parent_comment_id",
+        ),
+        ForeignKeyConstraint(
             ["last_updated_user_id"],
             ["users.user_id"],
             ondelete="SET NULL",
@@ -85,6 +102,7 @@ class Comments(CommentBase, table=True):
             name="fk_posts_user_id",
         ),
         Index("fk_posts_image_id", "image_id"),
+        Index("fk_posts_parent_comment_id", "parent_comment_id"),
         Index("fk_posts_last_updated_user_id", "last_updated_user_id"),
         Index("fk_posts_user_id", "user_id"),
         Index("idx_date", "date"),
@@ -110,8 +128,17 @@ class Comments(CommentBase, table=True):
     last_updated: datetime | None = Field(default=None)
     last_updated_user_id: int | None = Field(default=None, foreign_key="users.user_id")
 
-    # Note: Relationships are intentionally omitted.
-    # Foreign keys are sufficient for queries, and omitting relationships avoids:
+    # Relationships
+    # Load user info for displaying comment author
+    # Specify foreign_keys since there are multiple FKs to Users table
+    user: "Users" = Relationship(
+        sa_relationship_kwargs={
+            "foreign_keys": "[Comments.user_id]",
+        }
+    )
+
+    # Note: Other relationships are intentionally omitted.
+    # Foreign keys are sufficient for most queries, and omitting relationships avoids:
     # - Circular import issues
     # - Accidental eager loading
     # - Unwanted auto-serialization in API responses

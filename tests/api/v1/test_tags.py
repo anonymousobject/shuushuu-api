@@ -561,6 +561,41 @@ class TestGetTag:
         assert "date_added" in data
         assert data["date_added"] is not None
 
+    async def test_get_tag_includes_creator_avatar_url(self, client: AsyncClient, db_session: AsyncSession):
+        """Ensure created_by includes avatar_url when user has an avatar"""
+        from app.config import settings
+
+        user = Users(
+            username="avataruser",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="avataruser@example.com",
+            active=1,
+            admin=0,
+            avatar="avatar.png",
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        tag = Tags(
+            title="Avatar Tag",
+            desc="Tag with avatar creator",
+            type=TagType.THEME,
+            user_id=user.user_id,
+        )
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["created_by"]["avatar"] == "avatar.png"
+        assert data["created_by"]["avatar_url"] == f"{settings.IMAGE_BASE_URL}/storage/avatars/avatar.png"
+
 
 @pytest.mark.api
 class TestGetImagesByTag:

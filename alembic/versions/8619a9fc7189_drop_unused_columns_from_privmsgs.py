@@ -21,6 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    op.drop_column('users', 'last_login_new')
     op.drop_column('privmsgs', 'type')
     op.drop_column('privmsgs', 'card')
     op.drop_column('privmsgs', 'cardpath')
@@ -32,6 +33,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    op.add_column('users', sa.Column('last_login_new', sa.DATETIME(), nullable=True))
     op.add_column('privmsgs', sa.Column('type', sa.Integer(), nullable=True))
     op.add_column('privmsgs', sa.Column('card', sa.Integer(), nullable=True))
     op.add_column('privmsgs', sa.Column('cardpath', sa.String(255), nullable=True))

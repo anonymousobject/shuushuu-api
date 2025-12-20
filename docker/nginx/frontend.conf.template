@@ -44,6 +44,13 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    location ^~ /storage/avatars/ {
+        alias ${STORAGE_PATH}/avatars/;
+        autoindex off;
+        expires 1m;
+        add_header Cache-Control "public, immutable";
+    }
+
     # Proxy Vite HMR and dev server assets
     location ~ ^/(node_modules|@vite|@fs|@id|src)/ {
         proxy_pass http://host.docker.internal:5173;

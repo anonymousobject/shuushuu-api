@@ -10,7 +10,7 @@ These schemas handle:
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import ReportCategory
 
@@ -25,6 +25,19 @@ class ReportCreate(BaseModel):
         description="Report category (1=repost, 2=inappropriate, 3=spam, 4=missing_tags, 127=other)",
     )
     reason_text: str | None = Field(None, max_length=1000, description="Optional explanation")
+
+    @field_validator("reason_text")
+    @classmethod
+    def sanitize_reason_text(cls, v: str | None) -> str | None:
+        """
+        Sanitize report reason.
+
+        Just trims whitespace - HTML escaping is handled by Svelte's
+        safe template interpolation on the frontend.
+        """
+        if v is None:
+            return v
+        return v.strip()
 
 
 class ReportResponse(BaseModel):
@@ -96,6 +109,19 @@ class ReviewVoteRequest(BaseModel):
 
     vote: int = Field(..., ge=0, le=1, description="Vote: 0=remove, 1=keep")
     comment: str | None = Field(None, max_length=1000, description="Optional reasoning")
+
+    @field_validator("comment")
+    @classmethod
+    def sanitize_comment(cls, v: str | None) -> str | None:
+        """
+        Sanitize vote comment.
+
+        Just trims whitespace - HTML escaping is handled by Svelte's
+        safe template interpolation on the frontend.
+        """
+        if v is None:
+            return v
+        return v.strip()
 
 
 class ReviewCloseRequest(BaseModel):

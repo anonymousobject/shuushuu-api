@@ -5,7 +5,7 @@ Pydantic schemas for Image endpoints
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.config import TagType, settings
 from app.models.image import ImageBase
@@ -73,6 +73,19 @@ class ImageUpdate(BaseModel):
     caption: str | None = None
     rating: float | None = None
 
+    @field_validator("caption")
+    @classmethod
+    def sanitize_caption(cls, v: str | None) -> str | None:
+        """
+        Sanitize image caption.
+
+        Just trims whitespace - HTML escaping is handled by Svelte's
+        safe template interpolation on the frontend.
+        """
+        if v is None:
+            return v
+        return v.strip()
+
 
 class ImageResponse(ImageBase):
     """
@@ -137,12 +150,19 @@ class ImageDetailedResponse(ImageResponse):
     tags: list[TagSummary] | None = None  # Embedded tags (optional, loaded with selectinload)
     is_favorited: bool = False  # Whether the current user has favorited this image
     user_rating: int | None = None  # The rating given by the current user (if any)
+    prev_image_id: int | None = None  # ID of the previous image (chronological)
+    next_image_id: int | None = None  # ID of the next image (chronological)
 
     model_config = {"from_attributes": True}
 
     @classmethod
     def from_db_model(
-        cls, image: Any, is_favorited: bool = False, user_rating: int | None = None
+        cls,
+        image: Any,
+        is_favorited: bool = False,
+        user_rating: int | None = None,
+        prev_image_id: int | None = None,
+        next_image_id: int | None = None,
     ) -> "ImageDetailedResponse":
         """Create response from database model with relationships"""
         data = ImageResponse.model_validate(image).model_dump()
@@ -157,6 +177,8 @@ class ImageDetailedResponse(ImageResponse):
 
         data["is_favorited"] = is_favorited
         data["user_rating"] = user_rating
+        data["prev_image_id"] = prev_image_id
+        data["next_image_id"] = next_image_id
 
         return cls(**data)
 

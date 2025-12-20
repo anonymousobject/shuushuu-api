@@ -1165,3 +1165,415 @@ class TestTagUsageCount:
         assert response.status_code == 204
         await db_session.refresh(tag)
         assert tag.usage_count == 2
+
+@pytest.mark.api
+class TestCommentFilters:
+    """Tests for comment-based filtering in GET /api/v1/images/ endpoint."""
+
+    async def test_filter_by_commenter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test filtering images by commenter user ID."""
+        from app.models import Comments
+
+        # Create two users
+        user1 = Users(
+            username="commenter1",
+            email="c1@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000001",
+        )
+        user2 = Users(
+            username="commenter2",
+            email="c2@test.com",
+            password="testpass2",
+            password_type="bcrypt",
+            salt="testsalt0000002",
+        )
+        db_session.add(user1)
+        db_session.add(user2)
+        await db_session.flush()
+
+        # Create two images
+        img_data1 = sample_image_data.copy()
+        img_data1.update({"filename": "img1", "md5_hash": "hash1"})
+        image1 = Images(**img_data1)
+
+        img_data2 = sample_image_data.copy()
+        img_data2.update({"filename": "img2", "md5_hash": "hash2"})
+        image2 = Images(**img_data2)
+
+        db_session.add(image1)
+        db_session.add(image2)
+        await db_session.flush()
+
+        # user1 comments on image1
+        comment1 = Comments(
+            image_id=image1.image_id,
+            user_id=user1.id,
+            post_text="Great image!",
+        )
+        # user2 comments on image2
+        comment2 = Comments(
+            image_id=image2.image_id,
+            user_id=user2.id,
+            post_text="Nice work!",
+        )
+        db_session.add(comment1)
+        db_session.add(comment2)
+        await db_session.commit()
+
+        # Filter by user1's comments - should get only image1
+        response = await client.get(f"/api/v1/images/?commenter={user1.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "img1"
+
+        # Filter by user2's comments - should get only image2
+        response = await client.get(f"/api/v1/images/?commenter={user2.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "img2"
+
+        # No results for non-existent commenter
+        response = await client.get("/api/v1/images/?commenter=9999")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+
+    async def test_filter_by_comment_text_like_search(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test filtering images by comment text using LIKE search."""
+        from app.models import Comments
+
+        # Create user
+        user = Users(
+            username="commenter",
+            email="commenter@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000003",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create three images
+        img_data1 = sample_image_data.copy()
+        img_data1.update({"filename": "img1", "md5_hash": "hash1"})
+        image1 = Images(**img_data1)
+
+        img_data2 = sample_image_data.copy()
+        img_data2.update({"filename": "img2", "md5_hash": "hash2"})
+        image2 = Images(**img_data2)
+
+        img_data3 = sample_image_data.copy()
+        img_data3.update({"filename": "img3", "md5_hash": "hash3"})
+        image3 = Images(**img_data3)
+
+        db_session.add_all([image1, image2, image3])
+        await db_session.flush()
+
+        # Add comments
+        comment1 = Comments(
+            image_id=image1.image_id,
+            user_id=user.id,
+            post_text="This is an awesome image!",
+        )
+        comment2 = Comments(
+            image_id=image2.image_id,
+            user_id=user.id,
+            post_text="awesome work here",
+        )
+        comment3 = Comments(
+            image_id=image3.image_id,
+            user_id=user.id,
+            post_text="terrible quality",
+        )
+        db_session.add_all([comment1, comment2, comment3])
+        await db_session.commit()
+
+        # Search for "awesome" using LIKE mode (always works, doesn't need fulltext index)
+        response = await client.get("/api/v1/images/?commentsearch=awesome&commentsearch_mode=like")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"img1", "img2"}
+
+        # Search for "terrible" - should get only image3
+        response = await client.get("/api/v1/images/?commentsearch=terrible&commentsearch_mode=like")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "img3"
+
+        # Search for non-existent text
+        response = await client.get("/api/v1/images/?commentsearch=nonexistent&commentsearch_mode=like")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+
+    async def test_comment_filter_with_multiple_comments_per_image(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that images with multiple comments are not duplicated when filtering."""
+        from app.models import Comments
+
+        # Create two users
+        user1 = Users(
+            username="user1",
+            email="u1@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000004",
+        )
+        user2 = Users(
+            username="user2",
+            email="u2@test.com",
+            password="testpass2",
+            password_type="bcrypt",
+            salt="testsalt0000005",
+        )
+        db_session.add(user1)
+        db_session.add(user2)
+        await db_session.flush()
+
+        # Create one image
+        img_data = sample_image_data.copy()
+        img_data.update({"filename": "img1", "md5_hash": "hash1"})
+        image = Images(**img_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        # Both users comment on the same image
+        comment1 = Comments(image_id=image.image_id, user_id=user1.id, post_text="Comment 1")
+        comment2 = Comments(image_id=image.image_id, user_id=user2.id, post_text="Comment 2")
+        db_session.add(comment1)
+        db_session.add(comment2)
+        await db_session.commit()
+
+        # Filter by user1's comments - should get image exactly once
+        response = await client.get(f"/api/v1/images/?commenter={user1.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["images"]) == 1
+        assert data["images"][0]["filename"] == "img1"
+
+    async def test_commenter_and_commentsearch_combined(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test combining commenter and commentsearch filters."""
+        from app.models import Comments
+
+        # Create two users
+        user1 = Users(
+            username="user1",
+            email="u1@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000006",
+        )
+        user2 = Users(
+            username="user2",
+            email="u2@test.com",
+            password="testpass2",
+            password_type="bcrypt",
+            salt="testsalt0000007",
+        )
+        db_session.add(user1)
+        db_session.add(user2)
+        await db_session.flush()
+
+        # Create three images
+        img_data1 = sample_image_data.copy()
+        img_data1.update({"filename": "img1", "md5_hash": "hash1"})
+        image1 = Images(**img_data1)
+
+        img_data2 = sample_image_data.copy()
+        img_data2.update({"filename": "img2", "md5_hash": "hash2"})
+        image2 = Images(**img_data2)
+
+        img_data3 = sample_image_data.copy()
+        img_data3.update({"filename": "img3", "md5_hash": "hash3"})
+        image3 = Images(**img_data3)
+
+        db_session.add_all([image1, image2, image3])
+        await db_session.flush()
+
+        # user1 comments on image1 and image2
+        comment1 = Comments(image_id=image1.image_id, user_id=user1.id, post_text="awesome!")
+        comment2 = Comments(image_id=image2.image_id, user_id=user1.id, post_text="terrible!")
+        # user2 comments on image3
+        comment3 = Comments(image_id=image3.image_id, user_id=user2.id, post_text="awesome!")
+        db_session.add_all([comment1, comment2, comment3])
+        await db_session.commit()
+
+        # Filter: user1's comments containing "awesome"
+        # Should get only image1 (user1 commented, and comment text contains "awesome")
+        # Use LIKE mode to work in test environment
+        response = await client.get(f"/api/v1/images/?commenter={user1.id}&commentsearch=awesome&commentsearch_mode=like")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "img1"
+
+    async def test_commentsearch_boolean_mode(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test comment search with boolean fulltext mode (requires FULLTEXT index)."""
+        import pytest
+
+        # Skip this test if running in environment without FULLTEXT index
+        # In production, the fulltext index is created by Alembic migration
+        # This test is primarily for documenting the feature
+        pytest.skip("Requires FULLTEXT index on posts.post_text - test in production environment")
+
+    async def test_commentsearch_like_mode(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test comment search with LIKE mode (simple pattern matching)."""
+        from app.models import Comments
+
+        # Create user
+        user = Users(
+            username="user",
+            email="u@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000009",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create two images
+        img_data1 = sample_image_data.copy()
+        img_data1.update({"filename": "img1", "md5_hash": "hash1"})
+        image1 = Images(**img_data1)
+
+        img_data2 = sample_image_data.copy()
+        img_data2.update({"filename": "img2", "md5_hash": "hash2"})
+        image2 = Images(**img_data2)
+
+        db_session.add_all([image1, image2])
+        await db_session.flush()
+
+        # Add comments - using substring that fulltext might not find but LIKE will
+        comment1 = Comments(image_id=image1.image_id, user_id=user.id, post_text="concatenation test")
+        comment2 = Comments(image_id=image2.image_id, user_id=user.id, post_text="nothing here")
+        db_session.add_all([comment1, comment2])
+        await db_session.commit()
+
+        # LIKE search: "cat" as substring should match "concatenation"
+        # Works in all environments (doesn't require FULLTEXT index)
+        response = await client.get("/api/v1/images/?commentsearch=cat&commentsearch_mode=like")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "img1"
+
+    async def test_hascomments_true_filter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test filtering images that have comments."""
+        from app.models import Comments
+
+        # Create user
+        user = Users(
+            username="user",
+            email="u@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000010",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create three images
+        img_data1 = sample_image_data.copy()
+        img_data1.update({"filename": "with_comment", "md5_hash": "hashwc"})
+        image1 = Images(**img_data1)
+
+        img_data2 = sample_image_data.copy()
+        img_data2.update({"filename": "no_comment", "md5_hash": "hashnc"})
+        image2 = Images(**img_data2)
+
+        img_data3 = sample_image_data.copy()
+        img_data3.update({"filename": "also_with_comment", "md5_hash": "hashawc"})
+        image3 = Images(**img_data3)
+
+        db_session.add_all([image1, image2, image3])
+        await db_session.flush()
+
+        # Add comments to image1 and image3 only
+        comment1 = Comments(image_id=image1.image_id, user_id=user.id, post_text="nice image")
+        comment2 = Comments(image_id=image3.image_id, user_id=user.id, post_text="awesome!")
+        db_session.add_all([comment1, comment2])
+        await db_session.commit()
+
+        # Manually update posts counters (database triggers may not fire in test environment)
+        image1.posts = 1
+        image3.posts = 1
+        await db_session.commit()
+
+        # Filter: hascomments=true should return only image1 and image3
+        response = await client.get("/api/v1/images/?hascomments=true")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"with_comment", "also_with_comment"}
+
+    async def test_hascomments_false_filter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test filtering images that do NOT have comments."""
+        from app.models import Comments
+
+        # Create user
+        user = Users(
+            username="user",
+            email="u@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000011",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create three images
+        img_data1 = sample_image_data.copy()
+        img_data1.update({"filename": "with_comment", "md5_hash": "hashwc2"})
+        image1 = Images(**img_data1)
+
+        img_data2 = sample_image_data.copy()
+        img_data2.update({"filename": "no_comment", "md5_hash": "hashnc2"})
+        image2 = Images(**img_data2)
+
+        img_data3 = sample_image_data.copy()
+        img_data3.update({"filename": "also_no_comment", "md5_hash": "hashanc"})
+        image3 = Images(**img_data3)
+
+        db_session.add_all([image1, image2, image3])
+        await db_session.flush()
+
+        # Add comment only to image1
+        comment1 = Comments(image_id=image1.image_id, user_id=user.id, post_text="nice image")
+        db_session.add(comment1)
+        await db_session.commit()
+
+        # Manually update posts counter (database triggers may not fire in test environment)
+        image1.posts = 1
+        await db_session.commit()
+
+        # Filter: hascomments=false should return only image2 and image3
+        response = await client.get("/api/v1/images/?hascomments=false")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"no_comment", "also_no_comment"}

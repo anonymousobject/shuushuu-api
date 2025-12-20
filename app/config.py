@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "YOU MUST CHANGE THIS TO A SECURE RANDOM VALUE"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     # CORS
     # Allow str because it can be a comma-separated string in .env
@@ -99,17 +99,31 @@ class Settings(BaseSettings):
     UPLOAD_DELAY_SECONDS: int = 30
     SEARCH_DELAY_SECONDS: int = 2
     MAX_SEARCH_TAGS: int = 5
+    REGISTRATION_RATE_LIMIT: int = Field(
+        default=5, description="Max registrations per IP per window"
+    )
+    REGISTRATION_RATE_WINDOW_HOURS: int = Field(default=1, description="Rate limit window in hours")
 
     # Pagination
     DEFAULT_PAGE_SIZE: int = 15
     MAX_PAGE_SIZE: int = 100
 
     # Email (for notifications)
-    SMTP_HOST: str | None = None
-    SMTP_PORT: int = 587
-    SMTP_USER: str | None = None
-    SMTP_PASSWORD: str | None = None
-    SMTP_FROM_EMAIL: str = "noreply@e-shuushuu.net"
+    SMTP_HOST: str = Field(default="localhost", description="SMTP server hostname")
+    SMTP_PORT: int = Field(default=587, description="SMTP server port")
+    SMTP_USER: str = Field(default="user", description="SMTP username")
+    SMTP_PASSWORD: str = Field(default="password", description="SMTP password")
+    SMTP_TLS: bool = Field(default=True, description="Use TLS for SMTP")
+    SMTP_FROM_EMAIL: str = Field(default="noreply@e-shuushuu.net", description="From email address")
+    SMTP_FROM_NAME: str = Field(default="Shuushuu", description="From name")
+
+    # Cloudflare Turnstile
+    TURNSTILE_SITE_KEY: str = Field(
+        default="1x00000000000000000000AA", description="Turnstile site key (public)"
+    )
+    TURNSTILE_SECRET_KEY: str = Field(
+        default="1x0000000000000000000000000000000AA", description="Turnstile secret key (private)"
+    )
 
     # Logging
     LOG_LEVEL: str = "INFO"

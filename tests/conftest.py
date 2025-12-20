@@ -7,6 +7,7 @@ This file provides common fixtures for all tests.
 import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.database import get_db
+from app.core.redis import get_redis
 from app.main import app as main_app
 
 # =============================================================================
@@ -376,8 +378,26 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
         await session.rollback()
 
 
+@pytest.fixture
+async def mock_redis():
+    """Mock Redis client."""
+    mock = MagicMock()
+    mock.get = AsyncMock(return_value=None)
+    mock.set = AsyncMock()
+    mock.incr = AsyncMock()
+    mock.expire = AsyncMock()
+    mock.close = AsyncMock()
+
+    # Setup pipeline mock
+    pipeline_mock = MagicMock()
+    pipeline_mock.execute = AsyncMock()
+    mock.pipeline.return_value = pipeline_mock
+
+    return mock
+
+
 @pytest.fixture(scope="function")
-def app(db_session: AsyncSession) -> FastAPI:
+def app(db_session: AsyncSession, mock_redis) -> FastAPI:
     """
     Create FastAPI app with test database session.
 
@@ -387,7 +407,11 @@ def app(db_session: AsyncSession) -> FastAPI:
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
+    async def override_get_redis():
+        yield mock_redis
+
     main_app.dependency_overrides[get_db] = override_get_db
+    main_app.dependency_overrides[get_redis] = override_get_redis
 
     yield main_app
 

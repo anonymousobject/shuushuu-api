@@ -186,6 +186,7 @@ class Images(ImageBase, table=True):
         Index("idx_favorites", "favorites"),
         Index("idx_filename", "filename"),
         Index("idx_last_post", "last_post"),
+        Index("idx_posts", "posts"),
         Index("idx_status", "status"),
         Index("idx_top_images", "num_ratings"),
         Index("idx_total_pixels", "total_pixels"),
