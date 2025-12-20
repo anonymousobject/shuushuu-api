@@ -7,22 +7,8 @@ from datetime import datetime
 from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.comment import CommentBase
+from app.schemas.common import UserSummary
 from app.utils.markdown import normalize_legacy_entities, parse_markdown
-
-
-class UserSummary(BaseModel):
-    """
-    Minimal user information for embedding in comment responses.
-
-    Used to avoid N+1 queries when clients need basic user info
-    without fetching the full user profile.
-    """
-
-    user_id: int
-    username: str
-    avatar: str | None = None
-
-    model_config = {"from_attributes": True}
 
 
 class CommentCreate(BaseModel):
