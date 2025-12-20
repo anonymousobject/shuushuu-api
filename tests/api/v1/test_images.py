@@ -344,14 +344,14 @@ class TestTagSearchValidation:
         await db_session.flush()
 
         # Create the "real" tag
-        real_tag = Tags(title="neko mimi", desc="Cat ears", type=TagType.THEME)
+        real_tag = Tags(title="cat ears", desc="Cat ears", type=TagType.THEME)
         db_session.add(real_tag)
         await db_session.flush()
 
         # Create an alias tag that points to the real tag
         alias_tag = Tags(
-            title="cat ears",
-            desc="Alias for neko mimi",
+            title="neko mimi",
+            desc="Alias for cat ears",
             type=TagType.THEME,
             alias_of=real_tag.tag_id,
         )
