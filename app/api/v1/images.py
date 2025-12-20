@@ -192,9 +192,14 @@ async def list_images(
                     )
             else:
                 # Images must have ANY of the specified tags
+                # Resolve aliases for all tags to support searching by alias names
+                resolved_tag_ids = []
+                for tag_id in tag_ids:
+                    _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
+                    resolved_tag_ids.append(resolved_tag_id)
                 query = query.where(
                     Images.image_id.in_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id).where(TagLinks.tag_id.in_(tag_ids))  # type: ignore[call-overload,attr-defined]
+                        select(TagLinks.image_id).where(TagLinks.tag_id.in_(resolved_tag_ids))  # type: ignore[call-overload,attr-defined]
                     )
                 )
 
