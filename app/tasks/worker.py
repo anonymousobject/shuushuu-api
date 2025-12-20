@@ -13,6 +13,7 @@ from arq.worker import func
 from app.config import settings
 from app.core.database import get_async_session
 from app.services.user_cleanup import cleanup_unverified_accounts
+from app.tasks.email_jobs import send_verification_email_job
 from app.tasks.image_jobs import (
     add_to_iqdb_job,
     create_thumbnail_job,
@@ -79,6 +80,7 @@ class WorkerSettings:
         func(add_to_iqdb_job, max_tries=3),
         func(recalculate_rating_job, max_tries=3),
         func(send_pm_notification, max_tries=3),
+        func(send_verification_email_job, max_tries=3),
     ]
 
     cron_jobs = [

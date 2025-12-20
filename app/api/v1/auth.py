@@ -40,7 +40,7 @@ from app.schemas.auth import (
     PasswordChangeRequest,
     TokenResponse,
 )
-from app.services.email import send_verification_email
+from app.tasks.queue import enqueue_job
 
 logger = get_logger(__name__)
 
@@ -641,11 +641,7 @@ async def resend_verification(
     current_user.email_verification_expires_at = datetime.now(UTC) + timedelta(hours=24)
     await db.commit()
 
-    # Send email asynchronously
-    success = await send_verification_email(current_user, raw_token)
-
-    if not success:
-        logger.error("resend_verification_email_failed", user_id=current_user.user_id)
-        # Don't fail the request - user can try again
+    # Queue verification email via ARQ (non-blocking, reliable)
+    await enqueue_job("send_verification_email_job", user_id=current_user.user_id, token=raw_token)
 
     return MessageResponse(message="Verification email sent! Check your inbox.")

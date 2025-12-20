@@ -2,7 +2,6 @@
 Users API endpoints
 """
 
-import asyncio
 import hashlib
 import re
 import secrets
@@ -48,9 +47,9 @@ from app.services.avatar import (
     save_avatar,
     validate_avatar_upload,
 )
-from app.services.email import send_verification_email
 from app.services.rate_limit import check_registration_rate_limit
 from app.services.turnstile import verify_turnstile_token
+from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -613,7 +612,7 @@ async def create_user(
     await db.commit()
     await db.refresh(new_user)
 
-    # Send verification email asynchronously
-    asyncio.create_task(send_verification_email(new_user, raw_token))
+    # Queue verification email via ARQ (reliable, retries on failure)
+    await enqueue_job("send_verification_email_job", user_id=new_user.user_id, token=raw_token)
 
     return UserCreateResponse.model_validate(new_user)

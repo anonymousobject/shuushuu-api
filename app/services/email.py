@@ -5,7 +5,13 @@ import html as html_escape
 from email.message import EmailMessage
 
 import aiosmtplib
-from aiosmtplib.errors import SMTPException
+from aiosmtplib.errors import (
+    SMTPAuthenticationError,
+    SMTPConnectError,
+    SMTPConnectTimeoutError,
+    SMTPException,
+    SMTPReadTimeoutError,
+)
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -45,7 +51,8 @@ async def send_email(
     if html:
         message.add_alternative(html, subtype="html")
 
-    # Retry logic: 3 attempts with exponential backoff
+    # Retry logic: Conservative approach to avoid duplicate emails
+    # Only retry connection failures where we know email wasn't queued
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -66,25 +73,63 @@ async def send_email(
             )
             return True
 
-        except SMTPException as e:
+        except SMTPReadTimeoutError as e:
+            # NEVER RETRY - Email might already be queued on server
+            # Better to lose an email than send duplicates
+            logger.error(
+                "email_send_timeout_after_data",
+                to=to,
+                subject=subject,
+                error=str(e),
+                error_type=type(e).__name__,
+                note="Not retrying - ambiguous state, email might be delivered",
+            )
+            return False
+
+        except SMTPAuthenticationError as e:
+            # NEVER RETRY - Credentials are wrong, will never succeed
+            logger.error(
+                "email_auth_failed",
+                to=to,
+                subject=subject,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return False
+
+        except (SMTPConnectError, SMTPConnectTimeoutError) as e:
+            # SAFE TO RETRY - Connection never established, no data sent
             logger.warning(
-                "email_send_failed",
+                "email_connection_failed",
                 to=to,
                 subject=subject,
                 attempt=attempt + 1,
                 error=str(e),
+                error_type=type(e).__name__,
             )
             if attempt < max_retries - 1:
                 # Exponential backoff: 1s, 2s, 4s
                 await asyncio.sleep(2**attempt)
             else:
                 logger.error(
-                    "email_send_failed_all_retries",
+                    "email_connection_failed_all_retries",
                     to=to,
                     subject=subject,
                     error=str(e),
                 )
                 return False
+
+        except SMTPException as e:
+            # Other SMTP errors (e.g., recipient not found, mailbox full)
+            # Don't retry - likely permanent or ambiguous state
+            logger.error(
+                "email_smtp_error",
+                to=to,
+                subject=subject,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return False
 
         except Exception as e:
             # Unexpected error
@@ -93,6 +138,7 @@ async def send_email(
                 to=to,
                 subject=subject,
                 error=str(e),
+                error_type=type(e).__name__,
             )
             return False
 
