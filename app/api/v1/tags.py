@@ -207,12 +207,17 @@ async def list_tags(
                 func.lower(Tags.title),  # Alphabetical within each priority group
             )
         else:
-            # Long query (full-text): sort by relevance, then popularity, then alphabetically
-            # MATCH ... AGAINST returns relevance score; order by it descending first
-            # Then sort by usage_count (most popular first) to break relevance ties
-            # Finally alphabetical for consistent ordering
+            # Long query (full-text): prioritize exact matches, then sort by relevance
+            # 1. Exact matches first (e.g., searching "maid" finds "maid" tag first)
+            # 2. Then by relevance score from FULLTEXT search
+            # 3. Then by popularity (usage_count)
+            # 4. Finally alphabetical for consistent ordering
             # Must use the same fulltext_query_str as the WHERE clause
             query = query.order_by(
+                case(
+                    (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
+                    else_=1,  # Non-exact matches
+                ),
                 text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE) DESC"),
                 desc(Tags.usage_count),  # type: ignore[arg-type]  # Most popular tags first
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)

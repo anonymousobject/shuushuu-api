@@ -447,6 +447,34 @@ class TestFuzzyTagSearch:
         assert data["total"] >= 1
         assert data["tags"][0]["title"] == "cat ears"  # Exact match should be first
 
+    async def test_long_query_exact_match_prioritized(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that exact matches are prioritized in long query full-text search.
+
+        This addresses the issue where searching for "maid" should return the "maid" tag
+        first, even if there are other tags like "maid outfit" or "head maid" that also
+        match the full-text search.
+        """
+        # Create tags with various "maid" matches
+        maid_tag = Tags(title="maid", type=TagType.THEME)
+        maid_outfit = Tags(title="maid outfit", type=TagType.THEME)
+        head_maid = Tags(title="head maid", type=TagType.THEME)
+        db_session.add_all([maid_tag, maid_outfit, head_maid])
+        await db_session.commit()
+
+        # Search for "maid" (4 chars) - should use full-text with exact match prioritization
+        response = await client.get("/api/v1/tags/?search=maid")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 3
+        # The exact match "maid" should be first
+        assert data["tags"][0]["title"] == "maid"
+        # Other matches should follow
+        assert data["tags"][1]["title"] in ["maid outfit", "head maid"]
+        assert data["tags"][2]["title"] in ["maid outfit", "head maid"]
+
     async def test_short_query_case_insensitive(
         self, client: AsyncClient, db_session: AsyncSession
     ):
