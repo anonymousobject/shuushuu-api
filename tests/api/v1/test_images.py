@@ -12,7 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
-from app.models import Comments, Favorites, ImageRatings, Images, TagLinks, Tags, Users
+from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 
 
 @pytest.mark.api

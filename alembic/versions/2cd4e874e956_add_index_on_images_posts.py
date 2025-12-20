@@ -16,8 +16,6 @@ Also adds indexes on these fields for efficient filtering.
 from typing import Sequence
 
 from alembic import op
-import sqlalchemy as sa
-
 
 # revision identifiers, used by Alembic.
 revision: str = '2cd4e874e956'

@@ -385,9 +385,8 @@ class TestCreateComment:
         assert data["parent_comment_id"] == parent.post_id
         assert data["image_id"] == image.image_id
 
-    async def test_create_comment_requires_auth(self, client: AsyncClient, sample_image_data: dict):
+    async def test_create_comment_requires_auth(self, client: AsyncClient):
         """Test that creating a comment requires authentication."""
-        image = Images(**sample_image_data)
         response = await client.post(
             "/api/v1/comments/",
             json={
