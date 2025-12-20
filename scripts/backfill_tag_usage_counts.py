@@ -10,7 +10,7 @@ The triggers will maintain these counts going forward automatically.
 """
 
 import asyncio
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
@@ -70,6 +70,8 @@ async def backfill_usage_counts() -> None:
         print(f"  Total usage count: {stats[1]}")
         print(f"  Average usage per tag: {stats[2]:.2f}" if stats and stats[2] is not None else "  Average usage per tag: 0.00")
         print(f"  Most used tag has: {stats[3]} images")
+
+    await engine.dispose()
 
 
 if __name__ == "__main__":
