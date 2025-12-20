@@ -1,6 +1,6 @@
 """Add tag search and popularity features
 
-Revision ID: tag_search_and_popularity
+Revision ID: 5721ccce6a85
 Revises: 4f775fd5dd18
 Create Date: 2025-12-13 20:33:48.000000
 
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'tag_search_and_popularity'
+revision: str = '5721ccce6a85'
 down_revision: str | Sequence[str] | None = '4f775fd5dd18'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -38,25 +38,25 @@ def upgrade() -> None:
         ALTER TABLE tags ADD FULLTEXT INDEX ft_tags_title (title)
     """)
 
-    # 3. Create triggers to maintain usage_count automatically
-    # Trigger for INSERT on tag_links
+    # ========================================
+    # 3. TAGS.USAGE_COUNT TRIGGERS
+    # ========================================
+    op.execute("DROP TRIGGER IF EXISTS trig_tag_links_insert")
+    op.execute("DROP TRIGGER IF EXISTS tags_usage_count_increment")
     op.execute("""
-        CREATE TRIGGER trig_tag_links_insert AFTER INSERT ON tag_links
+        CREATE TRIGGER tags_usage_count_increment
+        AFTER INSERT ON tag_links
         FOR EACH ROW
-        BEGIN
-            UPDATE tags SET usage_count = usage_count + 1
-            WHERE tag_id = NEW.tag_id;
-        END
+        UPDATE tags SET usage_count = usage_count + 1 WHERE tag_id = NEW.tag_id
     """)
 
-    # Trigger for DELETE on tag_links
+    op.execute("DROP TRIGGER IF EXISTS trig_tag_links_delete")
+    op.execute("DROP TRIGGER IF EXISTS tags_usage_count_decrement")
     op.execute("""
-        CREATE TRIGGER trig_tag_links_delete AFTER DELETE ON tag_links
+        CREATE TRIGGER tags_usage_count_decrement
+        AFTER DELETE ON tag_links
         FOR EACH ROW
-        BEGIN
-            UPDATE tags SET usage_count = GREATEST(0, usage_count - 1)
-            WHERE tag_id = OLD.tag_id;
-        END
+        UPDATE tags SET usage_count = GREATEST(0, usage_count - 1) WHERE tag_id = OLD.tag_id
     """)
 
 
@@ -64,12 +64,12 @@ def downgrade() -> None:
     """Remove tag search and popularity features."""
     # Drop triggers first
     op.execute("DROP TRIGGER IF EXISTS trig_tag_links_insert")
+    op.execute("DROP TRIGGER IF EXISTS tags_usage_count_increment")
     op.execute("DROP TRIGGER IF EXISTS trig_tag_links_delete")
+    op.execute("DROP TRIGGER IF EXISTS tags_usage_count_decrement")
 
     # Drop FULLTEXT index
-    op.execute("""
-        ALTER TABLE tags DROP INDEX ft_tags_title
-    """)
+    op.execute("ALTER TABLE tags DROP INDEX IF EXISTS ft_tags_title")
 
     # Drop usage_count column
     op.drop_column('tags', 'usage_count')

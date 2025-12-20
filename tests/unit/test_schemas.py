@@ -99,89 +99,8 @@ class TestImageSchemas:
 class TestUserSchemas:
     """Tests for user schemas."""
 
-    def test_html_entity_decoding_in_interests(self):
-        """Test HTML entities are decoded in interests field."""
-        data = {
-            "user_id": 1,
-            "username": "testuser",
-            "active": True,
-            "admin": False,
-            "posts": 0,
-            "favorites": 0,
-            "image_posts": 0,
-            "interests": "Anime &amp; Manga, Cats &lt;3, &quot;Art&quot;",
-        }
-        user = UserResponse(**data)
-        assert user.interests == 'Anime & Manga, Cats <3, "Art"'
-
-    def test_html_entity_decoding_in_location(self):
-        """Test HTML entities are decoded in location field."""
-        data = {
-            "user_id": 1,
-            "username": "testuser",
-            "active": True,
-            "admin": False,
-            "posts": 0,
-            "favorites": 0,
-            "image_posts": 0,
-            "location": "Tokyo &amp; Osaka",
-        }
-        user = UserResponse(**data)
-        assert user.location == "Tokyo & Osaka"
-
-    def test_html_entity_decoding_in_website(self):
-        """Test HTML entities are decoded in website field."""
-        data = {
-            "user_id": 1,
-            "username": "testuser",
-            "active": True,
-            "admin": False,
-            "posts": 0,
-            "favorites": 0,
-            "image_posts": 0,
-            "website": "https://example.com?a=1&amp;b=2",
-        }
-        user = UserResponse(**data)
-        assert user.website == "https://example.com?a=1&b=2"
-
-    def test_html_entity_decoding_in_user_title(self):
-        """Test HTML entities are decoded in user_title field."""
-        data = {
-            "user_id": 1,
-            "username": "testuser",
-            "active": True,
-            "admin": False,
-            "posts": 0,
-            "favorites": 0,
-            "image_posts": 0,
-            "user_title": "&lt;Developer&gt; &amp; Designer",
-        }
-        user = UserResponse(**data)
-        assert user.user_title == "<Developer> & Designer"
-
-    def test_html_entity_decoding_multiple_fields(self):
-        """Test HTML entities are decoded in all specified fields simultaneously."""
-        data = {
-            "user_id": 1,
-            "username": "testuser",
-            "active": True,
-            "admin": False,
-            "posts": 0,
-            "favorites": 0,
-            "image_posts": 0,
-            "interests": "Art &amp; Design",
-            "location": "New York &amp; LA",
-            "website": "https://test.com?q=1&amp;r=2",
-            "user_title": "&quot;Master&quot; &lt;Coder&gt;",
-        }
-        user = UserResponse(**data)
-        assert user.interests == "Art & Design"
-        assert user.location == "New York & LA"
-        assert user.website == "https://test.com?q=1&r=2"
-        assert user.user_title == '"Master" <Coder>'
-
-    def test_html_entity_decoding_with_none_values(self):
-        """Test None values are handled correctly in HTML entity decoding."""
+    def test_plain_text_storage_with_none_values(self):
+        """Test None values are handled correctly in plain text fields."""
         data = {
             "user_id": 1,
             "username": "testuser",
@@ -201,8 +120,8 @@ class TestUserSchemas:
         assert user.website is None
         assert user.user_title is None
 
-    def test_html_entity_decoding_with_empty_strings(self):
-        """Test empty strings are handled correctly."""
+    def test_plain_text_storage_with_empty_strings(self):
+        """Test empty strings are handled correctly in plain text fields."""
         data = {
             "user_id": 1,
             "username": "testuser",
@@ -217,7 +136,7 @@ class TestUserSchemas:
             "user_title": "",
         }
         user = UserResponse(**data)
-        # Empty strings should be returned as empty strings (not decoded as None)
+        # Empty strings should be returned as empty strings
         assert user.interests == ""
         assert user.location == ""
         assert user.website == ""
@@ -243,22 +162,6 @@ class TestUserSchemas:
         assert user.location == "Simple Location"
         assert user.website == "https://example.com/path"
         assert user.user_title == "Regular Title"
-
-    def test_complex_html_entities(self):
-        """Test various HTML entity types are decoded correctly."""
-        data = {
-            "user_id": 1,
-            "username": "testuser",
-            "active": True,
-            "admin": False,
-            "posts": 0,
-            "favorites": 0,
-            "image_posts": 0,
-            "interests": "&lt;&gt;&amp;&quot;&#39;&copy;",
-        }
-        user = UserResponse(**data)
-        # Should decode to: <>&"'©
-        assert user.interests == "<>&\"'©"
 
     def test_int_to_bool_conversion_for_active(self):
         """Test database int (0/1) is converted to boolean for active field."""

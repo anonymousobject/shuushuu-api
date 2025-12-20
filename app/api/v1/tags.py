@@ -386,7 +386,9 @@ async def get_tag(
     # Build creator info if user exists
     created_by = None
     if user:
-        created_by = TagCreator(user_id=user.user_id or 0, username=user.username)
+        created_by = TagCreator(
+            user_id=user.user_id or 0, username=user.username, avatar=user.avatar or None
+        )
 
     return TagWithStats(
         tag_id=tag.tag_id or 0,

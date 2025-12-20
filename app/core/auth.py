@@ -231,7 +231,27 @@ async def get_refresh_token_from_cookie(
     return refresh_token
 
 
+async def get_verified_user(
+    current_user: Annotated[Users, Depends(get_current_user)],
+) -> Users:
+    """
+    Require authenticated user with verified email.
+
+    Use this dependency for endpoints that require email verification:
+    - Image uploads
+    - Comments
+    - Posts/submissions
+    """
+    if not current_user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email verification required. Check your inbox for verification link or request a new one at /api/v1/auth/resend-verification",
+        )
+    return current_user
+
+
 # Type aliases for dependency injection
 CurrentUser = Annotated[Users, Depends(get_current_user)]
+VerifiedUser = Annotated[Users, Depends(get_verified_user)]
 OptionalCurrentUser = Annotated[Users | None, Depends(get_optional_current_user)]
 AdminUser = Annotated[Users, Depends(require_admin)]

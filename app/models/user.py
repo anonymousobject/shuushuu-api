@@ -86,6 +86,10 @@ class Users(UserBase, table=True):
         ),
         Index("fk_bookmark", "bookmark"),
         Index("username", "username", unique=True),
+        Index("idx_email_verification_token", "email_verification_token"),
+        Index("idx_user_posts", "posts"),
+        Index("idx_user_image_posts", "image_posts"),
+        Index("idx_user_favorites", "favorites"),
     )
 
     # Primary key
@@ -111,7 +115,6 @@ class Users(UserBase, table=True):
     last_login: datetime | None = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
     )
-    last_login_new: datetime | None = Field(default=None)
 
     # Internal status fields
     active: int = Field(default=0)
@@ -123,7 +126,6 @@ class Users(UserBase, table=True):
     salt: str = Field(max_length=16)
     newpassword: str | None = Field(default=None, max_length=40)
     newsalt: str | None = Field(default=None, max_length=16)
-    actkey: str = Field(default="", max_length=32)
 
     # Account lockout (security)
     failed_login_attempts: int = Field(default=0)
@@ -131,6 +133,10 @@ class Users(UserBase, table=True):
 
     # Contact info (privacy-sensitive)
     email: str = Field(max_length=120)
+    email_verified: bool = Field(default=False)
+    email_verification_token: str | None = Field(default=None, max_length=64)
+    email_verification_sent_at: datetime | None = Field(default=None)
+    email_verification_expires_at: datetime | None = Field(default=None)
 
     # User preferences (private)
     timezone: Decimal = Field(default=Decimal("0.00"))

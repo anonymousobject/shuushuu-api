@@ -124,6 +124,51 @@ class TestListUsers:
         assert data["total"] == 0
         assert data["users"] == []
 
+    async def test_update_user_freeform_fields_normalized(self, client: AsyncClient, db_session: AsyncSession):
+        """Updating user free-form fields (title/location/interests) stores plain text (no normalization)."""
+        # Create user
+        user = Users(
+            username="normalizeuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="normalize@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "normalizeuser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Update free-form fields with normal text
+        payload = {
+            "user_title": "I am Special & Proud",
+            "location": "City & County",
+            "interests": "Fish & Chips & More",
+        }
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=payload,
+        )
+        assert response.status_code == 200
+
+        # Fetch profile and verify fields are stored as plain text
+        response = await client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {access_token}"})
+        assert response.status_code == 200
+        data = response.json()
+        # Plain text storage: what goes in comes out (no HTML escaping/normalization)
+        assert data["user_title"] == "I am Special & Proud"
+        assert data["location"] == "City & County"
+        assert data["interests"] == "Fish & Chips & More"
+
     async def test_list_users_search_with_pagination(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -186,6 +231,41 @@ class TestListUsers:
         assert "user_name" in usernames
         assert "user.name" in usernames
         assert "user-name" in usernames
+
+    async def test_list_users_search_exact_match_priority(self, client: AsyncClient, db_session: AsyncSession):
+        """Exact username match should be prioritized for search results."""
+        # Create a user with exact name 'Ran'
+        ran = Users(
+            username="Ran",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="ran@example.com",
+            active=1,
+        )
+        db_session.add(ran)
+
+        # Create other users containing 'ran' in their names to crowd the results
+        for i in range(15):
+            user = Users(
+                username=f"random{i}ran",
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=f"random{i}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+
+        await db_session.commit()
+
+        # Search for 'ran' and expect 'Ran' to appear in results and be first
+        response = await client.get("/api/v1/users/?search=ran&per_page=10")
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert "Ran" in usernames
+        assert usernames[0] == "Ran"
 
     async def test_list_users_search_empty_returns_all(
         self, client: AsyncClient, db_session: AsyncSession
@@ -253,6 +333,7 @@ class TestCreateUser:
             "username": "newuser123",
             "email": "newuser@example.com",
             "password": "SecurePassword123!",
+            "turnstile_token": "test-token",
         }
 
         response = await client.post("/api/v1/users/", json=user_data)
@@ -271,6 +352,7 @@ class TestCreateUser:
             "username": "duplicate",
             "email": "first@example.com",
             "password": "SecurePassword123!",
+            "turnstile_token": "test-token",
         }
         response = await client.post("/api/v1/users/", json=user_data)
         assert response.status_code == 200
@@ -280,6 +362,7 @@ class TestCreateUser:
             "username": "duplicate",
             "email": "second@example.com",
             "password": "SecurePassword123!",
+            "turnstile_token": "test-token",
         }
         response = await client.post("/api/v1/users/", json=user_data2)
         assert response.status_code == 409
@@ -291,6 +374,7 @@ class TestCreateUser:
             "username": "ab",  # Too short (min 3 chars)
             "email": "test@example.com",
             "password": "SecurePassword123!",
+            "turnstile_token": "test-token",
         }
         response = await client.post("/api/v1/users/", json=user_data)
         assert response.status_code == 400
@@ -301,6 +385,7 @@ class TestCreateUser:
             "username": "weakpassuser",
             "email": "weak@example.com",
             "password": "weak",
+            "turnstile_token": "test-token",
         }
         response = await client.post("/api/v1/users/", json=user_data)
         assert response.status_code == 400
@@ -381,6 +466,42 @@ class TestUpdateUserProfile:
         assert response.status_code == 200
         data = response.json()
         # assert data["email"] == "newemail@example.com"  # Email may not be returned in response
+
+    async def test_update_email_pm_pref_via_me(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that PATCH /api/v1/users/me accepts and returns email_pm_pref."""
+        # Create user
+        user = Users(
+            username="pmtest",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pmtest@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "pmtest", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Enable PM email pref
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"email_pm_pref": 1},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("email_pm_pref") == 1
+
+        # Verify persisted in DB
+        await db_session.refresh(user)
+        assert user.email_pm_pref == 1
 
     async def test_update_other_user_profile_forbidden(
         self, client: AsyncClient, db_session: AsyncSession

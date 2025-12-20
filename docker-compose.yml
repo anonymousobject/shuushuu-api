@@ -15,8 +15,12 @@ services:
     command: >
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
-      --max_connections=200
-      --innodb_buffer_pool_size=256M
+      --max_connections=400
+      --innodb_buffer_pool_size=512M
+      --innodb_write_io_threads=8
+      --innodb_read_io_threads=8
+      --query_cache_type=1
+      --query_cache_size=64M
     ports:
       - "3306:3306"
     volumes:
@@ -28,6 +32,14 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 2G
+        reservations:
+          cpus: '2'
+          memory: 1G
 
   # Redis (for caching + optional Arq)
   redis:
@@ -63,6 +75,8 @@ services:
       - IQDB_PORT=${IQDB_PORT:-5588}
       - TASK_QUEUE_TYPE=${TASK_QUEUE_TYPE:-background}
       - DEBUG=${DEBUG:-True}
+      - TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}
+      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
       # Prevent Python from writing pyc files and __pycache__ dirs
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
@@ -130,6 +144,8 @@ services:
       - IQDB_HOST=iqdb
       - IQDB_PORT=${IQDB_PORT:-5588}
       - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
+      - TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}
+      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
       # Prevent Python from writing pyc files
       - PYTHONDONTWRITEBYTECODE=1
     volumes:

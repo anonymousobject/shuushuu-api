@@ -73,7 +73,7 @@ def _create_variant(
     if width <= size_threshold and height <= size_threshold:
         return False
 
-    # Bind context for this background task
+    # Bind context for this ARQ task
     bind_context(task=f"{variant_type}_variant_generation", image_id=image_id)
 
     try:
@@ -130,9 +130,9 @@ def _create_variant(
                     variant_file_size=variant_file_size,
                 )
                 # Update database to reflect that variant doesn't exist
-                # Note: asyncio.run() is safe here because this function runs in FastAPI's
-                # background task thread pool where no event loop exists. asyncio.run()
-                # creates a new event loop in the thread for this async DB operation.
+                # Note: asyncio.run() is safe here because this function runs in ARQ worker's
+                # thread pool where no event loop exists. asyncio.run() creates a new
+                # event loop in the thread for this async DB operation.
                 asyncio.run(_update_image_variant_field(image_id, variant_type, 0))
                 return False
 
@@ -224,14 +224,15 @@ def validate_image_file(
 
 
 def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_path: str) -> None:
-    """Create thumbnail for uploaded image (background task).
+    """Create thumbnail for uploaded image (ARQ task).
 
+    Called by create_thumbnail_job in app/tasks/image_jobs.py.
     Generates thumbnail using settings from config:
     - MAX_THUMB_WIDTH and MAX_THUMB_HEIGHT define max dimensions
     - THUMBNAIL_QUALITY defines JPEG/WebP compression quality
     - Maintains aspect ratio
     """
-    # Bind context for this background task
+    # Bind context for this ARQ task
     bind_context(task="thumbnail_generation", image_id=image_id)
 
     try:
@@ -243,7 +244,8 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
 
         # Generate thumbnail filename (we always store thumbnails as JPEG)
         # Extract date prefix from source filename (assumes format: {date_prefix}-{image_id}.{ext})
-        date_prefix = source_path.stem.split("-", 1)[0]
+        # Split from right to get everything before the image_id
+        date_prefix = source_path.stem.rsplit("-", 1)[0]
         thumb_filename = f"{date_prefix}-{image_id}.jpeg"
         thumb_path = thumbs_dir / thumb_filename
 

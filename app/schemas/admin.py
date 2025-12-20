@@ -12,7 +12,7 @@ These schemas handle:
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ===== Group Schemas =====
 
@@ -23,12 +23,38 @@ class GroupCreate(BaseModel):
     title: str = Field(..., max_length=50, description="Group name")
     desc: str | None = Field(None, max_length=75, description="Group description")
 
+    @field_validator("title", "desc")
+    @classmethod
+    def sanitize_text_fields(cls, v: str | None) -> str | None:
+        """
+        Sanitize group text fields.
+
+        Just trims whitespace - HTML escaping is handled by Svelte's
+        safe template interpolation on the frontend.
+        """
+        if v is None:
+            return v
+        return v.strip()
+
 
 class GroupUpdate(BaseModel):
     """Schema for updating a group."""
 
     title: str | None = Field(None, max_length=50, description="Group name")
     desc: str | None = Field(None, max_length=75, description="Group description")
+
+    @field_validator("title", "desc")
+    @classmethod
+    def sanitize_text_fields(cls, v: str | None) -> str | None:
+        """
+        Sanitize group text fields.
+
+        Just trims whitespace - HTML escaping is handled by Svelte's
+        safe template interpolation on the frontend.
+        """
+        if v is None:
+            return v
+        return v.strip()
 
 
 class GroupResponse(BaseModel):
@@ -174,6 +200,17 @@ class SuspendUserRequest(BaseModel):
         max_length=500,
         description="Reason shown to the user (minimum 3 characters)",
     )
+
+    @field_validator("reason")
+    @classmethod
+    def sanitize_reason(cls, v: str) -> str:
+        """
+        Sanitize suspension reason.
+
+        Just trims whitespace - HTML escaping is handled by Svelte's
+        safe template interpolation on the frontend.
+        """
+        return v.strip()
 
 
 class SuspensionResponse(BaseModel):

@@ -21,17 +21,19 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, asc, delete, desc, func, select
+from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
 from app.config import ReportStatus, settings
-from app.core.auth import CurrentUser, get_current_user, get_optional_current_user
+from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
 from app.models import (
+    Comments,
     Favorites,
     ImageRatings,
     ImageReports,
@@ -104,6 +106,24 @@ async def list_images(
         float | None, Query(ge=1, le=10, description="Minimum rating (1-10)")
     ] = None,
     min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
+    # Comment filtering
+    commenter: Annotated[
+        int | None, Query(description="Filter by user who commented on the image")
+    ] = None,
+    commentsearch: Annotated[
+        str | None, Query(description="Full-text search in comment text")
+    ] = None,
+    commentsearch_mode: Annotated[
+        str | None,
+        Query(
+            pattern="^(natural|boolean|like)$",
+            description="Search mode: natural (default), boolean fulltext, or LIKE",
+        ),
+    ] = None,
+    hascomments: Annotated[
+        bool | None,
+        Query(description="Filter to images that have comments (true) or no comments (false)"),
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ImageDetailedListResponse:
     """
@@ -116,12 +136,29 @@ async def list_images(
     - Date range filtering
     - Size/dimension filtering
     - Rating and popularity filtering
+    - Comment filtering (by commenter user ID, text search, or presence)
+
+    **Comment Search Modes:**
+    - `natural` (default): MySQL fulltext natural language search (10-100x faster, relevance ranking)
+    - `boolean`: MySQL fulltext boolean search with operators
+    - `like`: Simple pattern matching, works anywhere
+
+    **Boolean Mode Examples:**
+    - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
+    - `"exact phrase"`: Search for exact phrase
+    - `word*`: Wildcard search
 
     **Examples:**
     - `/images?tags=1,2,3&tags_mode=all` - Images with ALL tags 1, 2, and 3
     - `/images?min_width=1920&min_height=1080` - HD images only
     - `/images?date_from=2024-01-01&sort_by=favorites` - Images from 2024, sorted by popularity
     - `/images?user_id=5&min_rating=4.0` - High-rated images by user 5
+    - `/images?commenter=10` - Images commented on by user 10
+    - `/images?commentsearch=awesome` - Images with "awesome" in comments (natural fulltext)
+    - `/images?commentsearch=awesome&commentsearch_mode=like` - Simple search using LIKE
+    - `/images?commentsearch=+great -bad&commentsearch_mode=boolean` - Boolean fulltext
+    - `/images?hascomments=true` - Images that have comments
+    - `/images?hascomments=false` - Images with no comments
     """
     # Build base query
     query = select(Images)
@@ -183,6 +220,37 @@ async def list_images(
     if min_favorites is not None:
         query = query.where(Images.favorites >= min_favorites)  # type: ignore[arg-type]
 
+    # Comment filtering
+    # Note: We use distinct() to avoid duplicate rows when an image has multiple comments
+    # The distinct is applied to the subquery stage for efficiency
+    if commenter is not None or commentsearch is not None:
+        # Join with Comments table for filtering when we need to filter by comment attributes
+        query = query.join(Comments, Images.image_id == Comments.image_id)  # type: ignore[arg-type]
+        if commenter is not None:
+            query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
+        if commentsearch is not None:
+            # Text search with mode selection (default to natural language fulltext)
+            effective_mode = commentsearch_mode or "natural"
+
+            if effective_mode == "boolean":
+                # Boolean fulltext: supports +word, -word, "phrase", word*
+                match_expr = sql_text("MATCH(post_text) AGAINST(:query IN BOOLEAN MODE)")
+                query = query.where(match_expr).params(query=commentsearch)
+            elif effective_mode == "natural":
+                # Natural language fulltext: ranks by relevance (default, fastest)
+                match_expr = sql_text("MATCH(post_text) AGAINST(:query IN NATURAL LANGUAGE MODE)")
+                query = query.where(match_expr).params(query=commentsearch)
+            else:  # like
+                # Simple pattern matching (slowest but works everywhere)
+                search_pattern = f"%{commentsearch}%"
+                query = query.where(Comments.post_text.like(search_pattern))  # type: ignore[attr-defined]
+    elif hascomments is True:
+        # Use posts counter field (fast indexed lookup)
+        query = query.where(Images.posts > 0)  # type: ignore[arg-type]
+    elif hascomments is False:
+        # Filter to images WITHOUT comments using posts counter
+        query = query.where(Images.posts == 0)  # type: ignore[arg-type]
+
     # Count total results
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -219,9 +287,17 @@ async def list_images(
         subquery_order = asc(sort_column)
 
     # Subquery: Apply all filters, sort, and limit to get matching image_ids
+    # When comment filters are used with JOIN, apply distinct() to avoid duplicate rows
+    # (one image can have multiple comments)
     image_id_subquery = (
         query.with_only_columns(Images.image_id.label("image_id"))  # type: ignore[union-attr]
-        .order_by(subquery_order)
+    )
+    # Only need distinct when we JOIN with Comments (commenter or commentsearch filters)
+    if commenter is not None or commentsearch is not None:
+        image_id_subquery = image_id_subquery.distinct()
+
+    imageset = (
+        image_id_subquery.order_by(subquery_order)
         .offset(pagination.offset)
         .limit(pagination.per_page)
         .subquery("imageset")
@@ -235,7 +311,7 @@ async def list_images(
             selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
-        .join(image_id_subquery, Images.image_id == image_id_subquery.c.image_id)  # type: ignore[arg-type]
+        .join(imageset, Images.image_id == imageset.c.image_id)  # type: ignore[arg-type]
         .order_by(subquery_order)  # Re-apply same sort order
     )
 
@@ -313,8 +389,32 @@ async def get_image(
             is_favorited = row.fav_user_id is not None
             user_rating = row.user_rating
 
+    # Get previous and next image IDs (chronological)
+    # We only want active images (status >= 1)
+    prev_id_result = await db.execute(
+        select(Images.image_id)  # type: ignore[call-overload]
+        .where(Images.image_id < image_id)  # type: ignore[operator]
+        .where(Images.status >= 1)
+        .order_by(desc(Images.image_id))  # type: ignore[arg-type]
+        .limit(1)
+    )
+    prev_image_id = prev_id_result.scalar_one_or_none()
+
+    next_id_result = await db.execute(
+        select(Images.image_id)  # type: ignore[call-overload]
+        .where(Images.image_id > image_id)  # type: ignore[operator]
+        .where(Images.status >= 1)
+        .order_by(asc(Images.image_id))  # type: ignore[arg-type]
+        .limit(1)
+    )
+    next_image_id = next_id_result.scalar_one_or_none()
+
     return ImageDetailedResponse.from_db_model(
-        image, is_favorited=is_favorited, user_rating=user_rating
+        image,
+        is_favorited=is_favorited,
+        user_rating=user_rating,
+        prev_image_id=prev_image_id,
+        next_image_id=next_image_id,
     )
 
 
@@ -766,7 +866,7 @@ async def unfavorite_image(
 @router.post("/upload", response_model=ImageUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_image(
     request: Request,
-    current_user: Annotated[Users, Depends(get_current_user)],
+    current_user: VerifiedUser,
     file: Annotated[UploadFile, File(description="Image file to upload")],
     caption: Annotated[str, Form(max_length=35)] = "",
     tag_ids: Annotated[str, Form(description="Comma-separated tag IDs (e.g., '1,2,3')")] = "",
