@@ -322,6 +322,227 @@ class TestListTags:
         assert data["tags"][0]["type"] == TagType.THEME
 
 
+@pytest.mark.api
+class TestAliasOfName:
+    """Tests for alias_of_name field in tag list responses.
+    
+    This feature was added to include the title of the tag being aliased
+    in the tag list response, requiring a self-join on the Tags table.
+    """
+
+    async def test_alias_of_name_when_tag_has_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias_of_name is populated when a tag has an alias_of value."""
+        # Create the original tag
+        original_tag = Tags(
+            title="maid outfit",
+            desc="Maid clothing",
+            type=TagType.THEME,
+        )
+        db_session.add(original_tag)
+        await db_session.commit()
+        await db_session.refresh(original_tag)
+
+        # Create an alias tag that points to the original
+        alias_tag = Tags(
+            title="maid dress",
+            desc="Alternative name for maid outfit",
+            type=TagType.THEME,
+            alias_of=original_tag.tag_id,
+        )
+        db_session.add(alias_tag)
+        await db_session.commit()
+        await db_session.refresh(alias_tag)
+
+        # Get the tag list
+        response = await client.get("/api/v1/tags/")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Find the alias tag in the response
+        alias_tag_response = None
+        original_tag_response = None
+        for tag in data["tags"]:
+            if tag["tag_id"] == alias_tag.tag_id:
+                alias_tag_response = tag
+            if tag["tag_id"] == original_tag.tag_id:
+                original_tag_response = tag
+
+        # Verify alias_of_name is populated for the alias tag
+        assert alias_tag_response is not None
+        assert alias_tag_response["alias_of"] == original_tag.tag_id
+        assert alias_tag_response["alias_of_name"] == "maid outfit"
+        assert alias_tag_response["is_alias"] is True
+
+        # Verify original tag has no alias_of_name
+        assert original_tag_response is not None
+        assert original_tag_response["alias_of"] is None
+        assert original_tag_response["alias_of_name"] is None
+        assert original_tag_response["is_alias"] is False
+
+    async def test_alias_of_name_when_tag_has_no_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias_of_name is None when a tag doesn't have an alias_of value."""
+        # Create a regular tag with no alias
+        regular_tag = Tags(
+            title="summer dress",
+            desc="Summer clothing",
+            type=TagType.THEME,
+        )
+        db_session.add(regular_tag)
+        await db_session.commit()
+        await db_session.refresh(regular_tag)
+
+        # Get the tag list
+        response = await client.get("/api/v1/tags/")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Find the tag in the response
+        tag_response = None
+        for tag in data["tags"]:
+            if tag["tag_id"] == regular_tag.tag_id:
+                tag_response = tag
+                break
+
+        # Verify alias_of_name is None
+        assert tag_response is not None
+        assert tag_response["alias_of"] is None
+        assert tag_response["alias_of_name"] is None
+        assert tag_response["is_alias"] is False
+
+    async def test_alias_of_name_with_filtering(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias_of_name works correctly with type filtering."""
+        # Create original tags of different types
+        character_tag = Tags(
+            title="sakura kinomoto",
+            desc="Character from Cardcaptor Sakura",
+            type=TagType.CHARACTER,
+        )
+        theme_tag = Tags(
+            title="school uniform",
+            desc="School clothing",
+            type=TagType.THEME,
+        )
+        db_session.add_all([character_tag, theme_tag])
+        await db_session.commit()
+        await db_session.refresh(character_tag)
+        await db_session.refresh(theme_tag)
+
+        # Create alias tags
+        character_alias = Tags(
+            title="kinomoto sakura",
+            desc="Alternative name order",
+            type=TagType.CHARACTER,
+            alias_of=character_tag.tag_id,
+        )
+        theme_alias = Tags(
+            title="school outfit",
+            desc="Alternative name",
+            type=TagType.THEME,
+            alias_of=theme_tag.tag_id,
+        )
+        db_session.add_all([character_alias, theme_alias])
+        await db_session.commit()
+        await db_session.refresh(character_alias)
+        await db_session.refresh(theme_alias)
+
+        # Filter by CHARACTER type
+        response = await client.get(f"/api/v1/tags/?type={TagType.CHARACTER}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should only get CHARACTER tags
+        character_ids = {character_tag.tag_id, character_alias.tag_id}
+        for tag in data["tags"]:
+            assert tag["type"] == TagType.CHARACTER
+            # If it's an alias, verify alias_of_name is populated
+            if tag["tag_id"] == character_alias.tag_id:
+                assert tag["alias_of_name"] == "sakura kinomoto"
+                assert tag["is_alias"] is True
+
+    async def test_alias_of_name_with_search(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias_of_name works correctly with full-text search."""
+        # Create original tag
+        original_tag = Tags(
+            title="cat ears",
+            desc="Feline ears",
+            type=TagType.THEME,
+        )
+        db_session.add(original_tag)
+        await db_session.commit()
+        await db_session.refresh(original_tag)
+
+        # Create alias tag
+        alias_tag = Tags(
+            title="neko ears",
+            desc="Japanese for cat ears",
+            type=TagType.THEME,
+            alias_of=original_tag.tag_id,
+        )
+        db_session.add(alias_tag)
+        await db_session.commit()
+        await db_session.refresh(alias_tag)
+
+        # Search for "neko" (should find the alias)
+        response = await client.get("/api/v1/tags/?search=neko")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find the alias tag
+        assert data["total"] >= 1
+        neko_tag = None
+        for tag in data["tags"]:
+            if tag["tag_id"] == alias_tag.tag_id:
+                neko_tag = tag
+                break
+
+        # Verify alias_of_name is populated
+        assert neko_tag is not None
+        assert neko_tag["alias_of_name"] == "cat ears"
+        assert neko_tag["is_alias"] is True
+
+    async def test_alias_of_name_with_exclude_aliases_filter(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias tags are excluded when exclude_aliases=true."""
+        # Create original tag
+        original_tag = Tags(
+            title="blue eyes",
+            desc="Blue colored eyes",
+            type=TagType.THEME,
+        )
+        db_session.add(original_tag)
+        await db_session.commit()
+        await db_session.refresh(original_tag)
+
+        # Create alias tag
+        alias_tag = Tags(
+            title="blue colored eyes",
+            desc="Alternative name",
+            type=TagType.THEME,
+            alias_of=original_tag.tag_id,
+        )
+        db_session.add(alias_tag)
+        await db_session.commit()
+        await db_session.refresh(alias_tag)
+
+        # Get tags excluding aliases
+        response = await client.get("/api/v1/tags/?exclude_aliases=true")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should not include the alias tag
+        tag_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert alias_tag.tag_id not in tag_ids
+        assert original_tag.tag_id in tag_ids
+
 
 @pytest.mark.api
 class TestFuzzyTagSearch:
