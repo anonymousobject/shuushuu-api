@@ -69,6 +69,7 @@ class TagResponse(TagBase):
 
     tag_id: int
     alias_of: int | None = None
+    alias_of_name: str | None = None
     is_alias: bool = False
 
     # NOTE: No normalization/escaping for title and desc.

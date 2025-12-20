@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import case, desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.api.dependencies import ImageSortParams, PaginationParams
 from app.core.database import get_db
@@ -122,7 +123,13 @@ async def list_tags(
     - Get child tags of a parent: `/tags?parent_tag_id=10`
     - Exclude alias tags: `/tags?search=sakura&exclude_aliases=true`
     """
-    query = select(Tags)
+    # Create table alias to retrieve the title of the tag that this tag is aliased to
+    AliasedTag = aliased(Tags)
+
+    query = select(Tags, AliasedTag.title.label("alias_of_name")).outerjoin(  # type: ignore[union-attr]
+        AliasedTag,
+        Tags.alias_of == AliasedTag.tag_id,  # type: ignore[arg-type]
+    )
 
     # Apply filters
     invalid_ids: list[str] = []
@@ -164,7 +171,7 @@ async def list_tags(
             search_terms = search.split()
             fulltext_query_str = " ".join(f"+{term}*" for term in search_terms)
             query = query.where(
-                text("MATCH (title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
+                text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
                     search=fulltext_query_str
                 )
             )
@@ -211,7 +218,7 @@ async def list_tags(
                     (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
                     else_=1,  # Non-exact matches
                 ),
-                text("MATCH (title) AGAINST (:search IN BOOLEAN MODE) DESC"),
+                text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE) DESC"),
                 desc(Tags.usage_count),  # type: ignore[arg-type]  # Most popular tags first
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
             ).params(search=fulltext_query_str)
@@ -227,13 +234,22 @@ async def list_tags(
 
     # Execute
     result = await db.execute(query)
-    tags = result.scalars().all()
+    rows = result.all()
+
+    tags_list = []
+    for row in rows:
+        tag = row[0]
+        alias_name = row[1]
+
+        tag_resp = TagResponse.model_validate(tag)
+        tag_resp.alias_of_name = alias_name
+        tags_list.append(tag_resp)
 
     return TagListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        tags=[TagResponse.model_validate(tag) for tag in tags],
+        tags=tags_list,
         invalid_ids=invalid_ids if invalid_ids else None,
     )
 
