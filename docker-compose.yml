@@ -19,8 +19,6 @@ services:
       --innodb_buffer_pool_size=512M
       --innodb_write_io_threads=8
       --innodb_read_io_threads=8
-      --query_cache_type=1
-      --query_cache_size=64M
     ports:
       - "3306:3306"
     volumes:
