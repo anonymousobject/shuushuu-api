@@ -456,8 +456,9 @@ class TestAliasOfName:
         assert response.status_code == 200
         data = response.json()
 
-        # Should only get CHARACTER tags
+        # Should only get CHARACTER tags, and only the expected ones
         character_ids = {character_tag.tag_id, character_alias.tag_id}
+        assert {tag["tag_id"] for tag in data["tags"]} == character_ids
         for tag in data["tags"]:
             assert tag["type"] == TagType.CHARACTER
             # If it's an alias, verify alias_of_name is populated
