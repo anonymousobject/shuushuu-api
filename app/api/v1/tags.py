@@ -123,7 +123,7 @@ async def list_tags(
     - Get child tags of a parent: `/tags?parent_tag_id=10`
     - Exclude alias tags: `/tags?search=sakura&exclude_aliases=true`
     """
-    # Alias for the parent tag (if it's an alias)
+    # Create table alias to retrieve the title of the tag that this tag is aliased to
     AliasedTag = aliased(Tags)
 
     query = select(Tags, AliasedTag.title.label("alias_of_name")).outerjoin(  # type: ignore[union-attr]
