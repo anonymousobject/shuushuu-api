@@ -14,6 +14,7 @@ from app.schemas.comment import (
     CommentStatsResponse,
     CommentUpdate,
 )
+from app.schemas.common import UserSummary
 from app.schemas.image import (
     ImageCreate,
     ImageHashSearchResponse,
@@ -45,6 +46,8 @@ from app.schemas.user import (
 )
 
 __all__ = [
+    # Common schemas
+    "UserSummary",
     # Image schemas
     "ImageBase",
     "ImageCreate",
