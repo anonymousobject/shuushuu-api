@@ -334,6 +334,98 @@ class TestTagSearchValidation:
         assert "images" in data
         assert data["total"] == 1  # Should find the image with the linked tags
 
+    async def test_search_by_alias_tag(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that searching by an alias tag resolves to the actual tag."""
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        # Create the "real" tag
+        real_tag = Tags(title="neko mimi", desc="Cat ears", type=TagType.THEME)
+        db_session.add(real_tag)
+        await db_session.flush()
+
+        # Create an alias tag that points to the real tag
+        alias_tag = Tags(
+            title="cat ears",
+            desc="Alias for neko mimi",
+            type=TagType.THEME,
+            alias_of=real_tag.tag_id,
+        )
+        db_session.add(alias_tag)
+        await db_session.flush()
+
+        # Link the image to the REAL tag (not the alias)
+        tag_link = TagLinks(image_id=image.image_id, tag_id=real_tag.tag_id, user_id=1)
+        db_session.add(tag_link)
+        await db_session.commit()
+
+        # Search by alias tag ID should find the image
+        response = await client.get(f"/api/v1/images/?tags={alias_tag.tag_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image.image_id
+
+    async def test_search_by_alias_tag_any_mode(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test alias resolution in ANY mode (tags_mode=any)."""
+        # Create two images
+        image1 = Images(**sample_image_data)
+        image1.filename = "img1"
+        image1.md5_hash = "a" * 32
+        db_session.add(image1)
+        await db_session.flush()
+
+        image2_data = sample_image_data.copy()
+        image2_data["filename"] = "img2"
+        image2_data["md5_hash"] = "b" * 32
+        image2 = Images(**image2_data)
+        db_session.add(image2)
+        await db_session.flush()
+
+        # Create two real tags
+        tag1 = Tags(title="tag1", desc="Real tag 1", type=TagType.THEME)
+        tag2 = Tags(title="tag2", desc="Real tag 2", type=TagType.THEME)
+        db_session.add(tag1)
+        db_session.add(tag2)
+        await db_session.flush()
+
+        # Create aliases for both tags
+        alias1 = Tags(
+            title="alias1", desc="Alias for tag1", type=TagType.THEME, alias_of=tag1.tag_id
+        )
+        alias2 = Tags(
+            title="alias2", desc="Alias for tag2", type=TagType.THEME, alias_of=tag2.tag_id
+        )
+        db_session.add(alias1)
+        db_session.add(alias2)
+        await db_session.flush()
+
+        # Link image1 to tag1, image2 to tag2
+        tag_link1 = TagLinks(image_id=image1.image_id, tag_id=tag1.tag_id, user_id=1)
+        tag_link2 = TagLinks(image_id=image2.image_id, tag_id=tag2.tag_id, user_id=1)
+        db_session.add(tag_link1)
+        db_session.add(tag_link2)
+        await db_session.commit()
+
+        # Search by alias IDs in ANY mode should find both images
+        response = await client.get(
+            f"/api/v1/images/?tags={alias1.tag_id},{alias2.tag_id}&tags_mode=any"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        found_ids = {img["image_id"] for img in data["images"]}
+        assert image1.image_id in found_ids
+        assert image2.image_id in found_ids
+
 
 @pytest.mark.api
 class TestImagesSorting:
