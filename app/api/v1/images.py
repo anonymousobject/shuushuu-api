@@ -606,18 +606,21 @@ async def add_tag_to_image(
     if not is_owner and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
 
-    # Verify tag exists
+    # Verify tag exists and resolve aliases
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
     tag = tag_result.scalar_one_or_none()
 
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Check if tag link already exists
+    # Resolve alias tags to their actual tag (pass the already-fetched tag to avoid duplicate query)
+    _, resolved_tag_id = await resolve_tag_alias(db, tag_id, tag)
+
+    # Check if tag link already exists (using resolved tag ID)
     existing_link = await db.execute(
         select(TagLinks).where(
             TagLinks.image_id == image_id,  # type: ignore[arg-type]
-            TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+            TagLinks.tag_id == resolved_tag_id,  # type: ignore[arg-type]
         )
     )
     if existing_link.scalar_one_or_none():
@@ -626,7 +629,7 @@ async def add_tag_to_image(
     # Create tag link (usage_count is maintained by database trigger)
     tag_link = TagLinks(
         image_id=image_id,
-        tag_id=tag_id,
+        tag_id=resolved_tag_id,
         user_id=current_user.id,
     )
     db.add(tag_link)
