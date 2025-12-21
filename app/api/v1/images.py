@@ -613,8 +613,8 @@ async def add_tag_to_image(
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Resolve alias tags to their actual tag
-    _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
+    # Resolve alias tags to their actual tag (pass the already-fetched tag to avoid duplicate query)
+    _, resolved_tag_id = await resolve_tag_alias(db, tag_id, tag)
 
     # Check if tag link already exists (using resolved tag ID)
     existing_link = await db.execute(
