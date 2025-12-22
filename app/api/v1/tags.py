@@ -22,20 +22,29 @@ router = APIRouter(prefix="/tags", tags=["tags"])
 # TODO: Create tag proposal/review system. Let users petition for new tags, and allow admins to review and approve them.
 
 
-async def resolve_tag_alias(db: AsyncSession, tag_id: int) -> tuple[Tags | None, int]:
+async def resolve_tag_alias(
+    db: AsyncSession, tag_id: int, tag: Tags | None = None
+) -> tuple[Tags | None, int]:
     """
     Resolve a tag alias to its actual tag.
 
     Aliases are synonyms - if a tag has an 'alias' field pointing to another tag,
     it means they're the same concept (e.g., "collar" -> "choker").
 
+    Args:
+        db: Database session
+        tag_id: ID of the tag to resolve
+        tag: Optional pre-fetched tag object to avoid duplicate queries
+
     Returns:
         tuple: (tag_object, resolved_tag_id)
             - tag_object: The original tag object (or None if not found)
             - resolved_tag_id: The actual tag ID if this is an alias, otherwise the original tag_id
     """
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    tag = tag_result.scalar_one_or_none()
+    # Use provided tag object if available, otherwise fetch it
+    if tag is None:
+        tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+        tag = tag_result.scalar_one_or_none()
 
     if not tag:
         return None, tag_id
