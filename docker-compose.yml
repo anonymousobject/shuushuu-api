@@ -122,6 +122,8 @@ services:
       # Basic auth credentials
       # Generate this file (it is typically .gitignored) with e.g.:
       #   htpasswd -c docker/nginx/.htpasswd <username>
+      # Generate this file (it is typically .gitignored) with e.g.:
+      #   htpasswd -c docker/nginx/.htpasswd <username>
       - ./docker/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
       # Let's Encrypt certificates
       - ./docker/certbot/conf:/etc/letsencrypt:ro
@@ -142,6 +144,8 @@ services:
     volumes:
       - ./docker/certbot/conf:/etc/letsencrypt
       - ./docker/certbot/www:/var/www/certbot
+    command: >
+      sh -c "while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h; done"
     command: >
       sh -c "while :; do certbot renew --webroot -w /var/www/certbot --quiet || true; sleep 12h; done"
     depends_on:
