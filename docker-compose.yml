@@ -143,7 +143,7 @@ services:
       - ./docker/certbot/conf:/etc/letsencrypt
       - ./docker/certbot/www:/var/www/certbot
     command: >
-      sh -c "while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h; done"
+      sh -c "while :; do certbot renew --webroot -w /var/www/certbot --quiet || true; sleep 12h; done"
     depends_on:
       - nginx
 
