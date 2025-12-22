@@ -76,9 +76,8 @@ app = FastAPI(
 )
 
 # Add proxy headers middleware (must be first to properly handle X-Forwarded-* headers)
-# Trust only the Docker network (nginx container) to prevent header spoofing
-# Docker network: 172.18.0.0/16 (adjust if your network differs)
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["172.18.0.0/16"])
+# Trust only the nginx container hostname to prevent header spoofing
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["shuushuu-nginx"])
 
 # Add request logging middleware (before CORS)
 app.add_middleware(RequestLoggingMiddleware)
