@@ -2,8 +2,6 @@
 services:
   mariadb:
     container_name: shuushuu-mariadb-dev
-    volumes:
-      - mariadb_data_dev:/var/lib/mysql
 
   redis:
     container_name: shuushuu-redis-dev
@@ -41,9 +39,13 @@ services:
     container_name: shuushuu-redis-commander-dev
 
 volumes:
-  mariadb_data_dev:
+  # Override generic volume names with dev-specific names for data isolation
+  mariadb_data:
+    name: mariadb_data_dev
     driver: local
-  redis_data_dev:
+  redis_data:
+    name: redis_data_dev
     driver: local
-  iqdb_data_dev:
+  iqdb_data:
+    name: iqdb_data_dev
     driver: local

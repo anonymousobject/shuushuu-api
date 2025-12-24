@@ -2,13 +2,9 @@
 services:
   mariadb:
     container_name: shuushuu-mariadb-test
-    volumes:
-      - mariadb_data_test:/var/lib/mysql
 
   redis:
     container_name: shuushuu-redis-test
-    volumes:
-      - redis_data_test:/data
 
   frontend:
     build:
@@ -54,8 +50,6 @@ services:
 
   iqdb:
     container_name: shuushuu-iqdb-test
-    volumes:
-      - iqdb_data_test:/data
 
   adminer:
     container_name: shuushuu-adminer-test
@@ -90,9 +84,13 @@ services:
       - nginx
 
 volumes:
-  mariadb_data_test:
+  # Override generic volume names with test-specific names for data isolation
+  mariadb_data:
+    name: mariadb_data_test
     driver: local
-  redis_data_test:
+  redis_data:
+    name: redis_data_test
     driver: local
-  iqdb_data_test:
+  iqdb_data:
+    name: iqdb_data_test
     driver: local
