@@ -844,7 +844,7 @@ class TestGetTag:
         data = response.json()
 
         assert data["created_by"]["avatar"] == "avatar.png"
-        assert data["created_by"]["avatar_url"] == f"{settings.IMAGE_BASE_URL}/storage/avatars/avatar.png"
+        assert data["created_by"]["avatar_url"] == f"{settings.IMAGE_BASE_URL}/images/avatars/avatar.png"
 
 
 @pytest.mark.api

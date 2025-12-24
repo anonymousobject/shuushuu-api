@@ -97,7 +97,7 @@ class TestGetReceivedPrivmsgs:
         for msg in data["messages"]:
             assert msg["to_user_id"] == user.user_id
             # Avatar URL should be present and correctly generated
-            assert msg.get("from_avatar_url") == f"{settings.IMAGE_BASE_URL}/storage/avatars/sender.png"
+            assert msg.get("from_avatar_url") == f"{settings.IMAGE_BASE_URL}/images/avatars/sender.png"
 
     async def test_get_received_messages_unauthenticated(self, client: AsyncClient):
         """Test getting received messages without authentication."""
@@ -361,7 +361,7 @@ class TestGetSentPrivmsgs:
         for msg in data["messages"]:
             assert msg["from_user_id"] == user.user_id
             # Avatar URL for recipient should be present
-            assert msg.get("to_avatar_url") == f"{settings.IMAGE_BASE_URL}/storage/avatars/recv.png"
+            assert msg.get("to_avatar_url") == f"{settings.IMAGE_BASE_URL}/images/avatars/recv.png"
 
     async def test_get_sent_messages_unauthenticated(self, client: AsyncClient):
         """Test getting sent messages without authentication."""
