@@ -22,7 +22,7 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - mariadb_data:/var/lib/mysql
+      - mariadb_data_dev:/var/lib/mysql
       # - ./docker/mariadb-init:/docker-entrypoint-initdb.d:ro  # Optional init scripts (read-only)
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
@@ -47,7 +47,7 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - redis_data_dev:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -61,6 +61,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: shuushuu-api
+    user: "${UID:-1000}:${GID:-1000}"
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
@@ -78,13 +79,11 @@ services:
       - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
       # Prevent Python from writing pyc files and __pycache__ dirs
       - PYTHONDONTWRITEBYTECODE=1
+      # Disable UV cache  
+      - UV_NO_CACHE=${UV_NO_CACHE:-0}
     volumes:
       - .:/app
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
-      # Anonymous volumes to isolate container artifacts from host
-      - /app/.venv
-      - /app/.pytest_cache
-      - /app/.ruff_cache
     depends_on:
       mariadb:
         condition: service_healthy
@@ -135,7 +134,7 @@ services:
       - api
     restart: unless-stopped
 
-  # Certbot for Let's Encrypt SSL certificates
+  # Certbot for Let's Encrypt SSL certificates (test mode only)
   certbot:
     image: certbot/certbot:latest
     container_name: shuushuu-certbot
@@ -143,7 +142,21 @@ services:
       - ./docker/certbot/conf:/etc/letsencrypt
       - ./docker/certbot/www:/var/www/certbot
     command: >
-      sh -c "while :; do certbot renew --webroot -w /var/www/certbot --quiet || true; sleep 12h; done"
+      sh -c "
+      if [ -d /etc/letsencrypt/live ]; then
+        echo 'Certificates found. Starting renewal loop...'
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet || echo 'Renewal check completed'
+          sleep 12h
+        done
+      else
+        echo 'No certificates found in /etc/letsencrypt/live'
+        echo 'To generate certificates, run:'
+        echo '  certbot certonly -d your-domain.com'
+        echo 'Then restart the container.'
+        sleep infinity
+      fi
+      "
     depends_on:
       - nginx
 
@@ -153,12 +166,15 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: shuushuu-arq-worker
+    user: "${UID:-1000}:${GID:-1000}"
     command: uv run arq app.tasks.worker.WorkerSettings
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - ARQ_REDIS_URL=${ARQ_REDIS_URL:-redis://redis:6379/1}
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/1
       - SECRET_KEY=${SECRET_KEY}
       - IQDB_HOST=iqdb
       - IQDB_PORT=${IQDB_PORT:-5588}
@@ -167,13 +183,10 @@ services:
       - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
       # Prevent Python from writing pyc files
       - PYTHONDONTWRITEBYTECODE=1
+      - UV_NO_CACHE=1
     volumes:
       - .:/app
       - ${STORAGE_PATH:-./storage}:${STORAGE_PATH:-/shuushuu/images}
-      # Anonymous volumes to isolate container artifacts
-      - /app/.venv
-      - /app/.pytest_cache
-      - /app/.ruff_cache
     depends_on:
       redis:
         condition: service_healthy
@@ -219,7 +232,7 @@ services:
     ports:
       - "5588:5588"
     volumes:
-      - iqdb_data:/data
+      - iqdb_data_dev:/data
     restart: unless-stopped
 
   # Adminer (Database management UI)
@@ -248,11 +261,11 @@ services:
     restart: unless-stopped
 
 volumes:
-  mariadb_data:
+  mariadb_data_dev:
     driver: local
-  redis_data:
+  redis_data_dev:
     driver: local
-  iqdb_data:
+  iqdb_data_dev:
     driver: local
 
 networks:

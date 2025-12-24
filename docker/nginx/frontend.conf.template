@@ -34,9 +34,6 @@ server {
     ssl_session_timeout 10m;
 
     # OCSP stapling
-    ssl_stapling on;
-    ssl_stapling_verify on;
-    # OCSP stapling
     # Note: For full OCSP stapling in production, you may need to:
     # - Add ssl_trusted_certificate directive pointing to your CA bundle
     # - Configure resolver directive (e.g., resolver 8.8.8.8 8.8.4.4 valid=300s;)
