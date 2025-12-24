@@ -1,0 +1,72 @@
+# Test override - HTTPS with Let's Encrypt
+services:
+  mariadb:
+    container_name: shuushuu-mariadb-test
+    volumes:
+      - mariadb_data_test:/var/lib/mysql
+
+  redis:
+    container_name: shuushuu-redis-test
+
+  frontend:
+    build:
+      context: ../shuushuu-frontend
+      dockerfile: Dockerfile
+      args:
+        - PUBLIC_ENVIRONMENT=test
+        - PUBLIC_API_URL=http://api:8000
+        - PUBLIC_DEBUG=false
+    container_name: shuushuu-frontend-test
+    environment:
+      - PUBLIC_ENVIRONMENT=test
+      - PUBLIC_API_URL=http://api:8000
+      - STORAGE_PATH=${STORAGE_PATH}
+      - NODE_OPTIONS=--max-old-space-size=4096
+    depends_on:
+      - api
+    restart: unless-stopped
+    # No ports exposed - accessed via nginx proxy
+    networks:
+      - default
+
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/frontend.conf.test:/etc/nginx/conf.d/frontend.conf.template:ro
+      - ./docker/certbot/conf:/etc/letsencrypt:ro
+      - ./docker/certbot/www:/var/www/certbot:ro
+    environment:
+      - NGINX_HOST=${DOMAIN}
+      - NGINX_PORT=443
+    restart: unless-stopped
+
+  api:
+    # Don't expose directly in production, go through nginx
+    ports: []
+    restart: always
+
+  arq-worker:
+    restart: always
+
+  iqdb:
+    container_name: shuushuu-iqdb-test
+
+  adminer:
+    container_name: shuushuu-adminer-test
+
+  redis-commander:
+    container_name: shuushuu-redis-commander-test
+
+  certbot:
+    profiles:
+      - test
+
+volumes:
+  mariadb_data_test:
+    driver: local
+  redis_data_test:
+    driver: local
+  iqdb_data_test:
+    driver: local
