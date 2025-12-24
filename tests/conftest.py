@@ -212,11 +212,15 @@ def setup_test_database():
 
         # Create test user if it doesn't exist
         conn.execute(
-            text(f"CREATE USER IF NOT EXISTS '{test_user}'@'%' IDENTIFIED BY '{test_password}'")
+            text("CREATE USER IF NOT EXISTS :username@'%' IDENTIFIED BY :password"),
+            {"username": test_user, "password": test_password},
         )
 
         # Grant permissions to test user on test database
-        conn.execute(text(f"GRANT ALL PRIVILEGES ON shuushuu_test.* TO '{test_user}'@'%'"))
+        conn.execute(
+            text("GRANT ALL PRIVILEGES ON shuushuu_test.* TO :username@'%'"),
+            {"username": test_user},
+        )
         conn.execute(text("FLUSH PRIVILEGES"))
 
     admin_engine.dispose()
