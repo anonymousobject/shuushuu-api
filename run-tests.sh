@@ -8,8 +8,10 @@ set -e
 # This ensures test credentials stay in sync with actual database credentials
 if [ -f .env ]; then
     echo "Loading database credentials from .env..."
-    # Export only the variables we need for tests
-    export $(grep -E '^(MARIADB_ROOT_PASSWORD|MARIADB_USER|MARIADB_PASSWORD)=' .env | xargs)
+    # Safely load variables from .env using Bash's own parser
+    set -a
+    . .env
+    set +a
 fi
 
 # Set test-specific credentials (can be overridden by environment)
