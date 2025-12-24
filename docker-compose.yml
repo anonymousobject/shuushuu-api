@@ -119,9 +119,13 @@ services:
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./docker/nginx/frontend.conf.template:/etc/nginx/conf.d/frontend.conf.template:ro
       # Basic auth credentials
-      # Generate this file (it is typically .gitignored) with e.g.:
-      #   htpasswd -c docker/nginx/.htpasswd <username>
-      - ./docker/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+      # By default we mount a sample file that should be tracked in git:
+      #   ./docker/nginx/.htpasswd.example  ->  /etc/nginx/.htpasswd
+      # To use custom credentials, either edit that file or replace it with:
+      #   cp docker/nginx/.htpasswd.example docker/nginx/.htpasswd
+      #   htpasswd docker/nginx/.htpasswd <username>
+      # and update this mount path if needed.
+      - ./docker/nginx/.htpasswd.example:/etc/nginx/.htpasswd:ro
       # Note: Let's Encrypt certificate volumes are in docker-compose.test.yml (test mode only)
     ports:
       - "80:80"
