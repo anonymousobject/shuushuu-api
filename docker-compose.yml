@@ -122,9 +122,7 @@ services:
       # Generate this file (it is typically .gitignored) with e.g.:
       #   htpasswd -c docker/nginx/.htpasswd <username>
       - ./docker/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
-      # Let's Encrypt certificates
-      - ./docker/certbot/conf:/etc/letsencrypt:ro
-      - ./docker/certbot/www:/var/www/certbot:ro
+      # Note: Let's Encrypt certificate volumes are in docker-compose.test.yml (test mode only)
     ports:
       - "80:80"
       - "443:443"
@@ -133,32 +131,6 @@ services:
     depends_on:
       - api
     restart: unless-stopped
-
-  # Certbot for Let's Encrypt SSL certificates (test mode only)
-  certbot:
-    image: certbot/certbot:latest
-    container_name: shuushuu-certbot
-    volumes:
-      - ./docker/certbot/conf:/etc/letsencrypt
-      - ./docker/certbot/www:/var/www/certbot
-    command: >
-      sh -c "
-      if [ -d /etc/letsencrypt/live ]; then
-        echo 'Certificates found. Starting renewal loop...'
-        while :; do
-          certbot renew --webroot -w /var/www/certbot --quiet || echo 'Renewal check completed'
-          sleep 12h
-        done
-      else
-        echo 'No certificates found in /etc/letsencrypt/live'
-        echo 'To generate certificates, run:'
-        echo '  certbot certonly -d your-domain.com'
-        echo 'Then restart the container.'
-        sleep infinity
-      fi
-      "
-    depends_on:
-      - nginx
 
   # Arq Worker - Background job processing
   arq-worker:

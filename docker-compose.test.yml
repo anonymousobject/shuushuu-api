@@ -63,9 +63,31 @@ services:
   redis-commander:
     container_name: shuushuu-redis-commander-test
 
+  # Certbot for Let's Encrypt SSL certificates (test mode only)
   certbot:
-    profiles:
-      - test
+    image: certbot/certbot:latest
+    container_name: shuushuu-certbot-test
+    volumes:
+      - ./docker/certbot/conf:/etc/letsencrypt
+      - ./docker/certbot/www:/var/www/certbot
+    command: >
+      sh -c "
+      if [ -d /etc/letsencrypt/live ]; then
+        echo 'Certificates found. Starting renewal loop...'
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet || echo 'Renewal check completed'
+          sleep 12h
+        done
+      else
+        echo 'No certificates found in /etc/letsencrypt/live'
+        echo 'To generate certificates, run:'
+        echo '  docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm certbot certonly --webroot -w /var/www/certbot -d your-domain.com'
+        echo 'Then restart the services.'
+        sleep infinity
+      fi
+      "
+    depends_on:
+      - nginx
 
 volumes:
   mariadb_data_test:
