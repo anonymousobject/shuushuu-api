@@ -100,7 +100,9 @@ jobs:
           # Test database URLs (used by conftest.py)
           TEST_DATABASE_URL: mysql+aiomysql://shuushuu:shuushuu_ci_password@127.0.0.1:3306/shuushuu_test?charset=utf8mb4
           TEST_DATABASE_URL_SYNC: mysql+pymysql://shuushuu:shuushuu_ci_password@127.0.0.1:3306/shuushuu_test?charset=utf8mb4
-          # Individual credentials for test_schema_sync.py (creates ephemeral DBs)
+          # Test database credentials (conftest.py auto-creates user and grants permissions)
+          MARIADB_ROOT_PASSWORD: root_password
+          TEST_DB_USER: shuushuu
           TEST_DB_PASSWORD: shuushuu_ci_password
           # Optional settings with defaults
           ENVIRONMENT: development
