@@ -9,18 +9,16 @@ ENVIRONMENT="${1:-development}"
 case "$ENVIRONMENT" in
     dev|development)
         echo "Starting in DEVELOPMENT mode (HTTP on localhost:3000)"
-        # Copy dev env to .env for docker-compose to pick up
-        cp "$SCRIPT_DIR/.env.development" "$SCRIPT_DIR/.env"
-        docker compose -f "$SCRIPT_DIR/docker-compose.yml" \
+        docker compose --env-file "$SCRIPT_DIR/.env.development" \
+                       -f "$SCRIPT_DIR/docker-compose.yml" \
                        -f "$SCRIPT_DIR/docker-compose.dev.yml" \
                        ${2:-up} ${@:3}
         ;;
     test)
         echo "Starting in TEST mode (HTTPS on test.shuushuu.com)"
         echo "⚠️  Make sure you have SSL certificates in ./docker/certbot/conf"
-        # Copy test env to .env for docker-compose to pick up
-        cp "$SCRIPT_DIR/.env.test" "$SCRIPT_DIR/.env"
-        docker compose -f "$SCRIPT_DIR/docker-compose.yml" \
+        docker compose --env-file "$SCRIPT_DIR/.env.test" \
+                       -f "$SCRIPT_DIR/docker-compose.yml" \
                        -f "$SCRIPT_DIR/docker-compose.test.yml" \
                        --profile test \
                        ${2:-up} ${@:3}
