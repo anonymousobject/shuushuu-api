@@ -1,5 +1,6 @@
 #!/bin/bash
 # Multi-environment Docker Compose helper script
+# If you get a "Permission denied" error when running this script, run: chmod +x dev.sh
 
 set -e
 
