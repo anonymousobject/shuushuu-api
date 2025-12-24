@@ -27,5 +27,5 @@ class UserSummary(BaseModel):
     def avatar_url(self) -> str | None:
         """Generate avatar URL from avatar field"""
         if self.avatar:
-            return f"{settings.IMAGE_BASE_URL}/storage/avatars/{self.avatar}"
+            return f"{settings.IMAGE_BASE_URL}/images/avatars/{self.avatar}"
         return None

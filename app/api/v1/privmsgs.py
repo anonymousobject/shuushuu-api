@@ -106,7 +106,7 @@ async def get_received_privmsgs(
         sender_avatar: str | None = row[2] if len(row) > 2 else None
         from_avatar_url: str | None = None
         if sender_avatar:
-            from_avatar_url = f"{settings.IMAGE_BASE_URL}/storage/avatars/{sender_avatar}"
+            from_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{sender_avatar}"
 
         data = {
             "privmsg_id": msg.privmsg_id,
@@ -188,7 +188,7 @@ async def get_sent_privmsgs(
         recipient_avatar: str | None = row[2] if len(row) > 2 else None
         to_avatar_url: str | None = None
         if recipient_avatar:
-            to_avatar_url = f"{settings.IMAGE_BASE_URL}/storage/avatars/{recipient_avatar}"
+            to_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{recipient_avatar}"
 
         data = {
             "privmsg_id": msg.privmsg_id,
@@ -261,9 +261,9 @@ async def get_privmsg(
     from_avatar_url: str | None = None
     to_avatar_url: str | None = None
     if sender_avatar:
-        from_avatar_url = f"{settings.IMAGE_BASE_URL}/storage/avatars/{sender_avatar}"
+        from_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{sender_avatar}"
     if recipient_avatar:
-        to_avatar_url = f"{settings.IMAGE_BASE_URL}/storage/avatars/{recipient_avatar}"
+        to_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{recipient_avatar}"
 
     data = {
         "privmsg_id": msg.privmsg_id,
