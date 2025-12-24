@@ -33,6 +33,7 @@ case "$ENVIRONMENT" in
         echo "  $0 dev down            # Stop development environment"
         echo "  $0 test up -d          # Start test environment in background"
         echo "  $0 test logs api       # View API logs in test environment"
+        echo "  $0 test up -d --build frontend  # Start test environment with frontend build"
         echo ""
         exit 1
         ;;
