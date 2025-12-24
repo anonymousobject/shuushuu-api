@@ -7,6 +7,8 @@ services:
 
   redis:
     container_name: shuushuu-redis-test
+    volumes:
+      - redis_data_test:/data
 
   frontend:
     build:
