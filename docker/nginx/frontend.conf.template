@@ -62,35 +62,35 @@ server {
     }
 
     # Serve images directly from storage
-    location ^~ /storage/fullsize/ {
+    location ^~ /images/fullsize/ {
         alias ${STORAGE_PATH}/fullsize/;
         autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /storage/large/ {
+    location ^~ /images/large/ {
         alias ${STORAGE_PATH}/large/;
         autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /storage/medium/ {
+    location ^~ /images/medium/ {
         alias ${STORAGE_PATH}/medium/;
         autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /storage/thumbs/ {
+    location ^~ /images/thumbs/ {
         alias ${STORAGE_PATH}/thumbs/;
         autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /storage/avatars/ {
+    location ^~ /images/avatars/ {
         alias ${STORAGE_PATH}/avatars/;
         autoindex off;
         expires 1m;
