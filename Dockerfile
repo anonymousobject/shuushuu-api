@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
 COPY pyproject.toml ./
 
 # Install Python dependencies using uv by installing the project (pyproject-based build)
-RUN uv pip install --system .
+RUN uv pip install --system -r pyproject.toml
 
 # Copy application code
 COPY . .

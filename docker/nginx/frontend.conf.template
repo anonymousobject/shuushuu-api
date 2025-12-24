@@ -1,7 +1,7 @@
 # HTTP server - Allow ACME challenges and redirect to HTTPS
 server {
     listen 80;
-    server_name test.shuushuu.com;
+    server_name ${NGINX_HOST};
 
     # Allow Let's Encrypt ACME challenges
     location /.well-known/acme-challenge/ {
@@ -17,12 +17,12 @@ server {
 # HTTPS server
 server {
     listen 443 ssl;
-    server_name test.shuushuu.com;
+    server_name ${NGINX_HOST};
     http2 on;
 
     # SSL Configuration - Let's Encrypt certificates
-    ssl_certificate /etc/letsencrypt/live/test.shuushuu.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/test.shuushuu.com/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/${NGINX_HOST}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${NGINX_HOST}/privkey.pem;
 
     # Modern SSL configuration
     ssl_protocols TLSv1.2 TLSv1.3;

@@ -79,7 +79,7 @@ services:
       - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
       # Prevent Python from writing pyc files and __pycache__ dirs
       - PYTHONDONTWRITEBYTECODE=1
-      # Disable UV cache  
+      # Disable UV cache
       - UV_NO_CACHE=${UV_NO_CACHE:-0}
     volumes:
       - .:/app
@@ -173,8 +173,6 @@ services:
       - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - ARQ_REDIS_URL=${ARQ_REDIS_URL:-redis://redis:6379/1}
-      - REDIS_URL=redis://redis:6379/0
-      - ARQ_REDIS_URL=redis://redis:6379/1
       - SECRET_KEY=${SECRET_KEY}
       - IQDB_HOST=iqdb
       - IQDB_PORT=${IQDB_PORT:-5588}

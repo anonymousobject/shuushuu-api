@@ -52,6 +52,8 @@ services:
 
   iqdb:
     container_name: shuushuu-iqdb-test
+    volumes:
+      - iqdb_data_test:/data
 
   adminer:
     container_name: shuushuu-adminer-test
