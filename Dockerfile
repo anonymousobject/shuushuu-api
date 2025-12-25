@@ -1,8 +1,8 @@
 # Dockerfile for Shuushuu API with uv
 FROM python:3.12-slim
 
-# Install uv from Astral's uv image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Install uv from Astral's uv image (copy binaries into a directory on PATH)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 # Set working directory
 WORKDIR /app
@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y \
 # Copy dependency files
 COPY pyproject.toml ./
 
-# Install Python dependencies using uv
+# Install Python dependencies using uv by installing the project (pyproject-based build)
 RUN uv pip install --system -r pyproject.toml
 
 # Copy application code

@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import settings
 from app.core.logging import (
@@ -73,6 +74,10 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Add proxy headers middleware (must be first to properly handle X-Forwarded-* headers)
+# Trust only the Docker bridge network to prevent header spoofing
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["172.16.0.0/12"])
 
 # Add request logging middleware (before CORS)
 app.add_middleware(RequestLoggingMiddleware)

@@ -60,7 +60,7 @@ class TagCreator(BaseModel):
     @property
     def avatar_url(self) -> str | None:
         if self.avatar:
-            return f"{settings.IMAGE_BASE_URL}/storage/avatars/{self.avatar}"
+            return f"{settings.IMAGE_BASE_URL}/images/avatars/{self.avatar}"
         return None
 
 

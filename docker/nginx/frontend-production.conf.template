@@ -1,7 +1,10 @@
-# HTTP server - Allow ACME challenges and redirect to HTTPS
+# Production nginx configuration for e-shuushuu.net
+# This file requires SSL certificates to be mounted into the container
+
+# Redirect HTTP to HTTPS
 server {
     listen 80;
-    server_name ${NGINX_HOST};
+    server_name e-shuushuu.net;
 
     # Allow Let's Encrypt ACME challenges
     location /.well-known/acme-challenge/ {
@@ -17,12 +20,16 @@ server {
 # HTTPS server
 server {
     listen 443 ssl;
-    server_name ${NGINX_HOST};
     http2 on;
+    server_name e-shuushuu.net;
 
-    # SSL Configuration - Let's Encrypt certificates
-    ssl_certificate /etc/letsencrypt/live/${NGINX_HOST}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${NGINX_HOST}/privkey.pem;
+    # Basic auth for tester access
+    auth_basic "Test access";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    # SSL Configuration
+    ssl_certificate /etc/letsencrypt/live/e-shuushuu.net/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/e-shuushuu.net/privkey.pem;
 
     # Modern SSL configuration
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -34,9 +41,6 @@ server {
     ssl_session_timeout 10m;
 
     # OCSP stapling
-    # Note: For full OCSP stapling in production, you may need to:
-    # - Add ssl_trusted_certificate directive pointing to your CA bundle
-    # - Configure resolver directive (e.g., resolver 8.8.8.8 8.8.4.4 valid=300s;)
     ssl_stapling on;
     ssl_stapling_verify on;
 
@@ -45,10 +49,6 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
-
-    # Basic auth for tester access
-    auth_basic "Test access";
-    auth_basic_user_file /etc/nginx/.htpasswd;
 
     # API proxy to FastAPI backend
     location /api/ {
@@ -62,35 +62,37 @@ server {
     }
 
     # Serve images directly from storage
-    location ^~ /images/fullsize/ {
+    # Note: This path will be substituted with $STORAGE_PATH at container startup
+    # Use ^~ to give these locations priority over regex locations
+    location ^~ /storage/fullsize/ {
         alias ${STORAGE_PATH}/fullsize/;
         autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /images/large/ {
+    location ^~ /storage/large/ {
         alias ${STORAGE_PATH}/large/;
         autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /images/medium/ {
+    location ^~ /storage/medium/ {
         alias ${STORAGE_PATH}/medium/;
         autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /images/thumbs/ {
+    location ^~ /storage/thumbs/ {
         alias ${STORAGE_PATH}/thumbs/;
         autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /images/avatars/ {
+    location ^~ /storage/avatars/ {
         alias ${STORAGE_PATH}/avatars/;
         autoindex off;
         expires 1m;
@@ -112,9 +114,10 @@ server {
         proxy_cache_bypass $http_upgrade;
     }
 
-    # Proxy all other requests to SvelteKit dev server
+    # Proxy to SvelteKit dev server on host
     location / {
         proxy_pass http://host.docker.internal:5173;
+
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-Host $http_host;
         proxy_set_header X-Forwarded-Port $server_port;

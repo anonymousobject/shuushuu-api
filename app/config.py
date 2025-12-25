@@ -134,12 +134,15 @@ class Settings(BaseSettings):
     REVIEW_EXTENSION_DAYS: int = 3  # Extension period when deadline expires without quorum
     REVIEW_QUORUM: int = 3  # Minimum votes required for a decision
 
-    # Frontend URL (for email links, etc.)
-    FRONTEND_URL: str = "http://localhost:3000"
+    # Frontend URL (for email links, verification links, etc.)
+    # Development: http://localhost:5173 (Vite dev server) or http://localhost:3000 (via nginx)
+    # Production: https://e-shuushuu.net (your domain)
+    FRONTEND_URL: str = "http://localhost:5173"
 
-    # Image Base URL (where images are served from - typically nginx in production)
-    # In development with FastAPI serving: http://localhost:8000
-    # In production with nginx: http://localhost:3000 (or your domain)
+    # Image Base URL (where images are served from - must be your public domain)
+    # Development: http://localhost:3000 (via nginx) or http://localhost:8000 (direct FastAPI)
+    # Production: https://e-shuushuu.net (HTTPS required for internet-exposed domain)
+    # CRITICAL: Must match the URL users see in their browser, or image URLs will be broken
     IMAGE_BASE_URL: str = "http://localhost:3000"
 
     @field_validator("CORS_ORIGINS", mode="before")

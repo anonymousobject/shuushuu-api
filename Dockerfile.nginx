@@ -19,7 +19,7 @@ echo "STORAGE_PATH: $STORAGE_PATH"
 rm -f /etc/nginx/conf.d/default.conf
 
 # Process nginx config template
-envsubst '${STORAGE_PATH}' < /etc/nginx/conf.d/frontend.conf.template > /etc/nginx/conf.d/default.conf
+envsubst '${STORAGE_PATH},${NGINX_HOST},${NGINX_PORT}' < /etc/nginx/conf.d/frontend.conf.template > /etc/nginx/conf.d/default.conf
 
 echo "Testing nginx config..."
 nginx -t

@@ -182,14 +182,20 @@ def setup_test_database():
     1. Test database is dropped and recreated (clean slate)
     2. Latest Alembic migrations are applied
     3. Schema matches production exactly
+    4. Test user is created with proper permissions
 
-    Note: Uses root credentials to create database, then runs migrations
-    with the shuushuu user credentials.
+    Note: Uses root credentials to create database and user, then runs migrations
+    with the test user credentials.
     """
     import os
 
     # Get MySQL root password from environment or use default
-    root_password = os.getenv("MYSQL_ROOT_PASSWORD", "root_password")
+    # First try MARIADB_ROOT_PASSWORD (from .env files), then fall back to MYSQL_ROOT_PASSWORD
+    root_password = os.getenv("MARIADB_ROOT_PASSWORD") or os.getenv("MYSQL_ROOT_PASSWORD", DEFAULT_ROOT_PASSWORD)
+
+    # Get test user credentials (these can be overridden via environment)
+    test_user = os.getenv("TEST_DB_USER", DEFAULT_TEST_DB_USER)
+    test_password = os.getenv("TEST_DB_PASSWORD", DEFAULT_TEST_DB_PASSWORD)
 
     # Use root user to drop/create database (needs elevated privileges)
     admin_engine = create_engine(
@@ -204,8 +210,17 @@ def setup_test_database():
             text("CREATE DATABASE shuushuu_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
         )
 
-        # Grant permissions to shuushuu user on test database
-        conn.execute(text("GRANT ALL PRIVILEGES ON shuushuu_test.* TO 'shuushuu'@'%'"))
+        # Create test user if it doesn't exist
+        conn.execute(
+            text("CREATE USER IF NOT EXISTS :username@'%' IDENTIFIED BY :password"),
+            {"username": test_user, "password": test_password},
+        )
+
+        # Grant permissions to test user on test database
+        conn.execute(
+            text("GRANT ALL PRIVILEGES ON shuushuu_test.* TO :username@'%'"),
+            {"username": test_user},
+        )
         conn.execute(text("FLUSH PRIVILEGES"))
 
     admin_engine.dispose()

@@ -1,0 +1,51 @@
+# Development override - HTTP only on localhost
+services:
+  mariadb:
+    container_name: shuushuu-mariadb-dev
+
+  redis:
+    container_name: shuushuu-redis-dev
+
+  nginx:
+    volumes:
+      # Override volumes to use dev config instead of production
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}:ro
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/frontend.conf.dev:/etc/nginx/conf.d/frontend.conf.template:ro
+    ports:
+      - "3000:80"
+    environment:
+      - NGINX_HOST=localhost
+      - NGINX_PORT=80
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  api:
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  arq-worker:
+    restart: unless-stopped
+
+  iqdb:
+    container_name: shuushuu-iqdb-dev
+
+  adminer:
+    container_name: shuushuu-adminer-dev
+
+  redis-commander:
+    container_name: shuushuu-redis-commander-dev
+
+volumes:
+  # Override generic volume names with dev-specific names for data isolation
+  mariadb_data:
+    name: mariadb_data_dev
+    driver: local
+  redis_data:
+    name: redis_data_dev
+    driver: local
+  iqdb_data:
+    name: iqdb_data_dev
+    driver: local
