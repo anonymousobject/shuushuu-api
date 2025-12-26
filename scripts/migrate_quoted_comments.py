@@ -24,7 +24,7 @@ import asyncio
 import re
 from typing import Optional
 
-from sqlalchemy import select, update, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
@@ -46,7 +46,7 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
 
     Returns the quoted text without markup, or None if no quotes found.
     """
-    import re
+
 
     # Try BBCode format: extract innermost quote recursively
     def extract_innermost_quote(text: str) -> Optional[str]:
@@ -124,7 +124,7 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
 
 def remove_quoted_text(comment_text: str) -> str:
     """Remove quoted text from comment (both formats)."""
-    import re
+
 
     # Remove BBCode format: [quote="..."]...[/quote] or [quote=&quot;...&quot;]...[/quote]
     text = re.sub(r'\[quote=(?:"[^"]*"|&quot;[^&]*&quot;)\].*?\[/quote\]', '', comment_text, flags=re.DOTALL)

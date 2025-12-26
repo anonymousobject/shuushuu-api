@@ -23,7 +23,7 @@ import argparse
 import asyncio
 from html import unescape as html_unescape
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session

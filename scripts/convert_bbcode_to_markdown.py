@@ -19,9 +19,9 @@ Usage:
 import argparse
 import asyncio
 import re
-from typing import Optional
 
-from sqlalchemy import select, update, func
+
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
