@@ -13,11 +13,20 @@ The permission system uses the existing database schema:
 """
 
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.permissions import GroupPerms, Perms, UserGroups, UserPerms
+
+if TYPE_CHECKING:
+    from app.core.permission_cache import get_cached_user_permissions
+else:
+    # Import at runtime to avoid circular dependency
+    def get_cached_user_permissions(*args, **kwargs):
+        from app.core.permission_cache import get_cached_user_permissions as _get_cached
+        return _get_cached(*args, **kwargs)
 
 
 class Permission(str, Enum):
@@ -141,24 +150,58 @@ async def has_permission(
         True if user has the permission, False otherwise
 
     Example:
-        if await has_permission(db, user_id, Permission.EDIT_IMG):
-            # User can edit images
-        
-        # With caching for better performance:
-        if await has_permission(db, user_id, Permission.EDIT_IMG, redis_client):
-            # User can edit images (cached)
+        Basic usage without caching:
+
+        ```python
+        from app.core.permissions import has_permission, Permission
+
+        if await has_permission(db, user_id, Permission.IMAGE_EDIT_META):
+            # User can edit image metadata
+            pass
+        ```
+
+        Usage within a FastAPI route with Redis caching:
+
+        ```python
+        from fastapi import APIRouter, Depends, HTTPException
+        from sqlalchemy.ext.asyncio import AsyncSession
+        import redis.asyncio as redis
+
+        from app.core.permissions import has_permission, Permission
+        from app.core.database import get_db
+        from app.core.redis import get_redis
+        from app.core.auth import get_current_user
+
+        router = APIRouter()
+
+        @router.get("/images/{image_id}")
+        async def read_image(
+            image_id: int,
+            db: AsyncSession = Depends(get_db),
+            redis_client: redis.Redis = Depends(get_redis),
+            current_user = Depends(get_current_user),
+        ):
+            has_perm = await has_permission(
+                db,
+                user_id=current_user.id,
+                permission=Permission.IMAGE_EDIT_META,
+                redis_client=redis_client,
+            )
+            if not has_perm:
+                raise HTTPException(status_code=403, detail="Not enough permissions")
+
+            return {"image_id": image_id}
+        ```
     """
     # Convert enum to string if needed
     perm_name = permission.value if isinstance(permission, Permission) else permission
 
     # Use cached version if Redis client is provided
     if redis_client is not None:
-        from app.core.permission_cache import get_cached_user_permissions
-
         permissions = await get_cached_user_permissions(db, redis_client, user_id)
     else:
         permissions = await get_user_permissions(db, user_id)
-    
+
     return perm_name in permissions
 
 
@@ -181,24 +224,57 @@ async def has_any_permission(
         True if user has at least one of the permissions, False otherwise
 
     Example:
-        if await has_any_permission(db, user_id, [Permission.EDIT_IMG, Permission.ADMIN_LEVEL]):
-            # User can edit images OR is an admin
-        
-        # With caching for better performance:
-        if await has_any_permission(db, user_id, [Permission.EDIT_IMG, Permission.ADMIN_LEVEL], redis_client):
-            # User can edit images OR is an admin (cached)
+        Basic usage without caching:
+
+        ```python
+        from app.core.permissions import has_any_permission, Permission
+
+        if await has_any_permission(db, user_id, [Permission.IMAGE_EDIT, Permission.TAG_CREATE]):
+            # User can edit images OR create tags
+            pass
+        ```
+
+        Usage within a FastAPI route with Redis caching:
+
+        ```python
+        from fastapi import APIRouter, Depends, HTTPException
+        from sqlalchemy.ext.asyncio import AsyncSession
+        import redis.asyncio as redis
+
+        from app.core.permissions import has_any_permission, Permission
+        from app.core.database import get_db
+        from app.core.redis import get_redis
+        from app.core.auth import get_current_user
+
+        router = APIRouter()
+
+        @router.post("/tags")
+        async def create_tag(
+            db: AsyncSession = Depends(get_db),
+            redis_client: redis.Redis = Depends(get_redis),
+            current_user = Depends(get_current_user),
+        ):
+            has_perm = await has_any_permission(
+                db,
+                user_id=current_user.id,
+                permissions=[Permission.TAG_CREATE, Permission.TAG_EDIT],
+                redis_client=redis_client,
+            )
+            if not has_perm:
+                raise HTTPException(status_code=403, detail="Not enough permissions")
+
+            return {"status": "ok"}
+        ```
     """
     # Convert enums to strings
     perm_names = {p.value if isinstance(p, Permission) else p for p in permissions}
 
     # Use cached version if Redis client is provided
     if redis_client is not None:
-        from app.core.permission_cache import get_cached_user_permissions
-
         user_permissions = await get_cached_user_permissions(db, redis_client, user_id)
     else:
         user_permissions = await get_user_permissions(db, user_id)
-    
+
     return bool(user_permissions & perm_names)
 
 
@@ -221,22 +297,55 @@ async def has_all_permissions(
         True if user has all of the permissions, False otherwise
 
     Example:
-        if await has_all_permissions(db, user_id, [Permission.EDIT_IMG, Permission.MOD_LEVEL]):
-            # User can edit images AND is a moderator
-        
-        # With caching for better performance:
-        if await has_all_permissions(db, user_id, [Permission.EDIT_IMG, Permission.MOD_LEVEL], redis_client):
-            # User can edit images AND is a moderator (cached)
+        Basic usage without caching:
+
+        ```python
+        from app.core.permissions import has_all_permissions, Permission
+
+        if await has_all_permissions(db, user_id, [Permission.IMAGE_EDIT, Permission.TAG_CREATE]):
+            # User can BOTH edit images AND create tags
+            pass
+        ```
+
+        Usage within a FastAPI route with Redis caching:
+
+        ```python
+        from fastapi import APIRouter, Depends, HTTPException
+        from sqlalchemy.ext.asyncio import AsyncSession
+        import redis.asyncio as redis
+
+        from app.core.permissions import has_all_permissions, Permission
+        from app.core.database import get_db
+        from app.core.redis import get_redis
+        from app.core.auth import get_current_user
+
+        router = APIRouter()
+
+        @router.post("/admin/groups")
+        async def manage_group(
+            db: AsyncSession = Depends(get_db),
+            redis_client: redis.Redis = Depends(get_redis),
+            current_user = Depends(get_current_user),
+        ):
+            has_perm = await has_all_permissions(
+                db,
+                user_id=current_user.id,
+                permissions=[Permission.GROUP_MANAGE, Permission.GROUP_PERM_MANAGE],
+                redis_client=redis_client,
+            )
+            if not has_perm:
+                raise HTTPException(status_code=403, detail="Not enough permissions")
+
+            return {"status": "ok"}
+        ```
     """
     # Convert enums to strings
     perm_names = {p.value if isinstance(p, Permission) else p for p in permissions}
 
     # Use cached version if Redis client is provided
     if redis_client is not None:
-        from app.core.permission_cache import get_cached_user_permissions
-
         user_permissions = await get_cached_user_permissions(db, redis_client, user_id)
     else:
         user_permissions = await get_user_permissions(db, user_id)
-    
+
     return perm_names.issubset(user_permissions)
