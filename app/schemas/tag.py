@@ -94,6 +94,7 @@ class TagWithStats(TagResponse):
     child_count: int = 0  # Number of child tags that inherit from this tag
     created_by: TagCreator | None = None  # User who created the tag
     date_added: datetime  # When the tag was created
+    links: list[str] = []  # External URLs associated with this tag
 
 
 class TagListResponse(BaseModel):
@@ -104,3 +105,30 @@ class TagListResponse(BaseModel):
     per_page: int
     tags: list[TagResponse]
     invalid_ids: list[str] | None = None  # IDs that were invalid and filtered out
+
+
+class TagExternalLinkCreate(BaseModel):
+    """Schema for adding a new external link to a tag"""
+
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        """Validate URL has http/https protocol and trim whitespace."""
+        v = v.strip()
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        if len(v) > 2000:
+            raise ValueError("URL exceeds maximum length of 2000 characters")
+        return v
+
+
+class TagExternalLinkResponse(BaseModel):
+    """Schema for tag external link response"""
+
+    link_id: int
+    url: str
+    date_added: datetime
+
+    model_config = {"from_attributes": True}

@@ -43,6 +43,7 @@ from app.models.privmsg import Privmsgs
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
 from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.user import Users
@@ -58,6 +59,7 @@ __all__ = [
     # Junction/relationship tables
     "Favorites",
     "TagLinks",
+    "TagExternalLinks",
     "TagHistory",
     "ImageRatings",
     "ImageReports",
