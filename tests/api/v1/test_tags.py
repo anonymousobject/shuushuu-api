@@ -19,6 +19,7 @@ from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 
@@ -1288,3 +1289,590 @@ class TestDeleteTag:
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestAddTagLink:
+    """Tests for POST /api/v1/tags/{tag_id}/links endpoint."""
+
+    async def test_add_link_to_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test adding an external link to a tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminlinks",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminlinks@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminlinks", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Add link to tag
+        link_data = {"url": "https://twitter.com/artist_name"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["url"] == "https://twitter.com/artist_name"
+        assert "link_id" in data
+        assert "date_added" in data
+
+    async def test_add_link_without_protocol(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that URLs without http/https are rejected."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminproto",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminproto@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminproto", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add link without protocol
+        link_data = {"url": "twitter.com/artist"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422  # Validation error
+
+    async def test_add_empty_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that empty URLs (whitespace only) are rejected."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminempty",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminempty@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminempty", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add empty/whitespace URL
+        link_data = {"url": "   "}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422  # Validation error
+
+    async def test_add_duplicate_link(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that adding duplicate URL to same tag returns 409."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindup",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindup@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag with existing link
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com")
+        db_session.add(link)
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindup", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add same URL again
+        link_data = {"url": "https://example.com"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 409
+
+    async def test_add_link_to_nonexistent_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test adding link to non-existent tag returns 404."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admin404",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin404@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin404", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add link to non-existent tag
+        link_data = {"url": "https://example.com"}
+        response = await client.post(
+            "/api/v1/tags/999999/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_add_link_without_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users without TAG_UPDATE permission cannot add links."""
+        # Create regular user without permission
+        user = Users(
+            username="regularlinkuser",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="regularlink@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "regularlinkuser", "password": "Password123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add link
+        link_data = {"url": "https://example.com"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestDeleteTagLink:
+    """Tests for DELETE /api/v1/tags/{tag_id}/links/{link_id} endpoint."""
+
+    async def test_delete_link_from_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test deleting an external link from a tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindellink",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindellink@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag with link
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindellink", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Delete link
+        response = await client.delete(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 204
+
+    async def test_delete_nonexistent_link(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test deleting non-existent link returns 404."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindel404",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindel404@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag (without link)
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindel404", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to delete non-existent link
+        response = await client.delete(
+            f"/api/v1/tags/{tag.tag_id}/links/999999",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_delete_link_from_wrong_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test deleting link using wrong tag_id returns 404."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindelwrong",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindelwrong@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create two tags
+        tag1 = Tags(title="tag1", desc="Test", type=TagType.ARTIST)
+        tag2 = Tags(title="tag2", desc="Test", type=TagType.ARTIST)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+
+        # Add link to tag1
+        link = TagExternalLinks(tag_id=tag1.tag_id, url="https://example.com")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindelwrong", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to delete link from wrong tag
+        response = await client.delete(
+            f"/api/v1/tags/{tag2.tag_id}/links/{link.link_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_delete_link_without_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users without TAG_UPDATE permission cannot delete links."""
+        # Create regular user without permission
+        user = Users(
+            username="regulardellinkuser",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="regulardellink@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Create tag with link
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "regulardellinkuser", "password": "Password123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to delete link
+        response = await client.delete(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestGetTagWithLinks:
+    """Tests for GET /api/v1/tags/{tag_id} endpoint with links."""
+
+    async def test_get_tag_with_links(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag details include external links."""
+        # Create tag with links
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Add multiple links
+        link1 = TagExternalLinks(tag_id=tag.tag_id, url="https://twitter.com/artist")
+        link2 = TagExternalLinks(tag_id=tag.tag_id, url="https://pixiv.net/users/123")
+        db_session.add_all([link1, link2])
+        await db_session.commit()
+
+        # Get tag details
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert "links" in data
+        assert len(data["links"]) == 2
+        assert "https://twitter.com/artist" in data["links"]
+        assert "https://pixiv.net/users/123" in data["links"]
+
+    async def test_get_tag_without_links(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tags without links have empty links array."""
+        # Create tag without links
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Get tag details
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert "links" in data
+        assert data["links"] == []

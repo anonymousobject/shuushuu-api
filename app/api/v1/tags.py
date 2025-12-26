@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import case, desc, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -13,9 +14,17 @@ from app.api.dependencies import ImageSortParams, PaginationParams
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
-from app.models import Images, TagLinks, Tags, Users
+from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.schemas.image import ImageListResponse, ImageResponse
-from app.schemas.tag import TagCreate, TagCreator, TagListResponse, TagResponse, TagWithStats
+from app.schemas.tag import (
+    TagCreate,
+    TagCreator,
+    TagExternalLinkCreate,
+    TagExternalLinkResponse,
+    TagListResponse,
+    TagResponse,
+    TagWithStats,
+)
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -376,6 +385,7 @@ async def get_tag(
     - Image count (includes images tagged with child tags in the hierarchy)
     - Creator user information (who created the tag)
     - Creation date (when the tag was created)
+    - External links (URLs associated with the tag)
     """
     # First resolve any alias (synonym) - join with Users to get creator info
     tag_result = await db.execute(
@@ -422,6 +432,14 @@ async def get_tag(
             user_id=user.user_id or 0, username=user.username, avatar=user.avatar or None
         )
 
+    # Fetch external links for this tag
+    links_result = await db.execute(
+        select(TagExternalLinks.url)  # type: ignore[call-overload]
+        .where(TagExternalLinks.tag_id == tag_id)
+        .order_by(TagExternalLinks.date_added)
+    )
+    links = links_result.scalars().all()
+
     return TagWithStats(
         tag_id=tag.tag_id or 0,
         title=tag.title,
@@ -434,6 +452,7 @@ async def get_tag(
         child_count=child_count or 0,
         created_by=created_by,
         date_added=tag.date_added,
+        links=list(links),
     )
 
 
@@ -549,4 +568,68 @@ async def delete_tag(
         raise HTTPException(status_code=404, detail="Tag not found")
 
     await db.delete(tag)
+    await db.commit()
+
+
+@router.post("/{tag_id}/links", response_model=TagExternalLinkResponse, status_code=201)
+async def add_tag_link(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    link_data: TagExternalLinkCreate,
+    _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
+    db: AsyncSession = Depends(get_db),
+) -> TagExternalLinkResponse:
+    """
+    Add an external link to a tag.
+
+    Requires TAG_UPDATE permission.
+    Returns 404 if tag doesn't exist.
+    Returns 409 if URL already exists for this tag.
+    """
+    # Verify tag exists
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    if not tag_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Create new link
+    new_link = TagExternalLinks(tag_id=tag_id, url=link_data.url)
+    db.add(new_link)
+
+    try:
+        await db.commit()
+        await db.refresh(new_link)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="URL already exists for this tag") from None
+
+    return TagExternalLinkResponse.model_validate(new_link)
+
+
+@router.delete("/{tag_id}/links/{link_id}", status_code=204)
+async def delete_tag_link(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    link_id: Annotated[int, Path(description="Link ID")],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Remove an external link from a tag.
+
+    Requires TAG_UPDATE permission.
+    Returns 404 if link doesn't exist or doesn't belong to the specified tag.
+    """
+    # Fetch and verify link belongs to this tag
+    link_result = await db.execute(
+        select(TagExternalLinks)
+        .where(TagExternalLinks.link_id == link_id)  # type: ignore[arg-type]
+        .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+    link = link_result.scalar_one_or_none()
+
+    if not link:
+        raise HTTPException(
+            status_code=404,
+            detail="Link not found or does not belong to this tag",
+        )
+
+    await db.delete(link)
     await db.commit()
