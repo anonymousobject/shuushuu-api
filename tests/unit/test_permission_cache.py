@@ -334,7 +334,6 @@ class TestPermissionCache:
         cached = await redis_client.get(_make_cache_key(user.user_id))
         assert cached is not None
         cached_str = cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
-        import json
         assert json.loads(cached_str) == []
 
         # Second call should still return False from cache

@@ -13,20 +13,11 @@ The permission system uses the existing database schema:
 """
 
 from enum import Enum
-from typing import TYPE_CHECKING
 
 from sqlalchemy import select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.permissions import GroupPerms, Perms, UserGroups, UserPerms
-
-if TYPE_CHECKING:
-    from app.core.permission_cache import get_cached_user_permissions
-else:
-    # Import at runtime to avoid circular dependency
-    def get_cached_user_permissions(*args, **kwargs):
-        from app.core.permission_cache import get_cached_user_permissions as _get_cached
-        return _get_cached(*args, **kwargs)
 
 
 class Permission(str, Enum):
@@ -198,6 +189,9 @@ async def has_permission(
 
     # Use cached version if Redis client is provided
     if redis_client is not None:
+        # Lazy import to avoid circular dependency (permission_cache imports from this module)
+        from app.core.permission_cache import get_cached_user_permissions
+
         permissions = await get_cached_user_permissions(db, redis_client, user_id)
     else:
         permissions = await get_user_permissions(db, user_id)
@@ -271,6 +265,9 @@ async def has_any_permission(
 
     # Use cached version if Redis client is provided
     if redis_client is not None:
+        # Lazy import to avoid circular dependency (permission_cache imports from this module)
+        from app.core.permission_cache import get_cached_user_permissions
+
         user_permissions = await get_cached_user_permissions(db, redis_client, user_id)
     else:
         user_permissions = await get_user_permissions(db, user_id)
@@ -344,6 +341,9 @@ async def has_all_permissions(
 
     # Use cached version if Redis client is provided
     if redis_client is not None:
+        # Lazy import to avoid circular dependency (permission_cache imports from this module)
+        from app.core.permission_cache import get_cached_user_permissions
+
         user_permissions = await get_cached_user_permissions(db, redis_client, user_id)
     else:
         user_permissions = await get_user_permissions(db, user_id)
