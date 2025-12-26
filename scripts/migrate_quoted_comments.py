@@ -305,27 +305,45 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
                 batch = updates_batch[batch_start:batch_start + batch_size]
 
                 # Use bulk UPDATE with CASE statements for maximum performance
-                await db.execute(
-                    text("""
+                # Build parameterized CASE expressions and IN clause to avoid SQL injection
+                parent_case_fragments = []
+                text_case_fragments = []
+                in_clause_fragments = []
+                params = {}
+                for u in batch:
+                    suffix = u["post_id"]
+                    parent_case_fragments.append(
+                        f"WHEN :post_id_{suffix} THEN :parent_id_{suffix}"
+                    )
+                    text_case_fragments.append(
+                        f"WHEN :post_id_{suffix} THEN :text_{suffix}"
+                    )
+                    in_clause_fragments.append(f":post_id_{suffix}")
+                    params[f"post_id_{suffix}"] = u["post_id"]
+                    params[f"parent_id_{suffix}"] = u["parent_id"]
+                    params[f"text_{suffix}"] = u["new_text"]
+
+                query = text(
+                    """
                         UPDATE posts
                         SET parent_comment_id = CASE post_id
-                            """ + "\n".join(
-                                f"WHEN {u['post_id']} THEN {u['parent_id']}"
-                                for u in batch
-                            ) + """
+                            """
+                    + "\n".join(parent_case_fragments)
+                    + """
                             ELSE parent_comment_id
                         END,
                         post_text = CASE post_id
-                            """ + "\n".join(
-                                f"WHEN {u['post_id']} THEN :text_{u['post_id']}"
-                                for u in batch
-                            ) + """
+                            """
+                    + "\n".join(text_case_fragments)
+                    + """
                             ELSE post_text
                         END
-                        WHERE post_id IN (""" + ",".join(str(u['post_id']) for u in batch) + ")"
-                    ),
-                    {f"text_{u['post_id']}": u['new_text'] for u in batch}
+                        WHERE post_id IN ("""
+                    + ",".join(in_clause_fragments)
+                    + ")"
                 )
+
+                await db.execute(query, params)
                 await db.commit()
 
                 comments_updated += len(batch)
