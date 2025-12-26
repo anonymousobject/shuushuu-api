@@ -4,7 +4,18 @@ API v1 Router
 
 from fastapi import APIRouter
 
-from app.api.v1 import admin, auth, comments, favorites, images, meta, privmsgs, tags, users
+from app.api.v1 import (
+    admin,
+    auth,
+    comments,
+    favorites,
+    images,
+    meta,
+    permissions,
+    privmsgs,
+    tags,
+    users,
+)
 
 router = APIRouter()
 
@@ -18,5 +29,6 @@ router.include_router(favorites.router)
 router.include_router(comments.router)
 router.include_router(privmsgs.router)
 router.include_router(meta.router)
+router.include_router(permissions.router)
 
 __all__ = ["router"]

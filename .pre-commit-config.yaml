@@ -32,3 +32,5 @@ repos:
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: mixed-line-ending
+      - id: no-commit-to-branch
+        args: ['--branch', 'main']

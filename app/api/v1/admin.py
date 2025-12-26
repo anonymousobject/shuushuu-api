@@ -16,6 +16,7 @@ These endpoints require admin-level permissions and provide:
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,8 +33,10 @@ from app.config import (
 )
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.permission_cache import invalidate_group_permissions, invalidate_user_permissions
 from app.core.permission_deps import require_all_permissions, require_permission
 from app.core.permissions import Permission
+from app.core.redis import get_redis
 from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_report import ImageReports
@@ -380,6 +383,7 @@ async def add_permission_to_group(
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
     permvalue: Annotated[int, Query(description="Permission value (1=enabled, 0=disabled)")] = 1,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> MessageResponse:
     """
     Add a permission to a group.
@@ -411,6 +415,9 @@ async def add_permission_to_group(
     db.add(group_perm)
     await db.commit()
 
+    # Invalidate permission cache for all users in this group
+    await invalidate_group_permissions(redis_client, db, group_id)
+
     return MessageResponse(message="Permission added to group successfully")
 
 
@@ -423,6 +430,7 @@ async def remove_permission_from_group(
     perm_id: Annotated[int, Path(description="Permission ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> None:
     """
     Remove a permission from a group.
@@ -443,6 +451,9 @@ async def remove_permission_from_group(
 
     await db.delete(group_perm)
     await db.commit()
+
+    # Invalidate permission cache for all users in this group
+    await invalidate_group_permissions(redis_client, db, group_id)
 
 
 # ===== Direct User Permissions =====
@@ -501,6 +512,7 @@ async def add_permission_to_user(
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
     permvalue: Annotated[int, Query(description="Permission value (1=enabled, 0=disabled)")] = 1,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> MessageResponse:
     """
     Add a direct permission to a user.
@@ -532,6 +544,9 @@ async def add_permission_to_user(
     db.add(user_perm)
     await db.commit()
 
+    # Invalidate permission cache for this user
+    await invalidate_user_permissions(redis_client, user_id)
+
     return MessageResponse(message="Permission added to user successfully")
 
 
@@ -544,6 +559,7 @@ async def remove_permission_from_user(
     perm_id: Annotated[int, Path(description="Permission ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> None:
     """
     Remove a direct permission from a user.
@@ -564,6 +580,9 @@ async def remove_permission_from_user(
 
     await db.delete(user_perm)
     await db.commit()
+
+    # Invalidate permission cache for this user
+    await invalidate_user_permissions(redis_client, user_id)
 
 
 # ===== Permission Listing =====

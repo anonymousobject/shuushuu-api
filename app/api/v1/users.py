@@ -29,6 +29,7 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.core.auth import get_client_ip, get_current_user, get_current_user_id
 from app.core.database import get_db
+from app.core.permission_cache import get_cached_user_permissions
 from app.core.redis import get_redis
 from app.core.security import get_password_hash, validate_password_strength
 from app.models import Favorites, Images, TagLinks, Users
@@ -128,11 +129,13 @@ async def list_users(
 async def get_current_user_profile(
     current_user_id: Annotated[int, Depends(get_current_user_id)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserPrivateResponse:
     """
     Get the profile of the currently authenticated user.
 
-    This includes private settings like email, email_verified, and email_pm_pref.
+    This includes private settings like email, email_verified, email_pm_pref,
+    and the user's permissions (cached for performance).
     """
     user_result = await db.execute(select(Users).where(Users.user_id == current_user_id))  # type: ignore[arg-type]
     user = user_result.scalar_one_or_none()
@@ -140,7 +143,15 @@ async def get_current_user_profile(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return UserPrivateResponse.model_validate(user)
+    # Fetch user permissions (cached)
+    permissions = await get_cached_user_permissions(db, redis_client, current_user_id)
+
+    # Convert to response model and add permissions
+    response = UserPrivateResponse.model_validate(user)
+    response_dict = response.model_dump()
+    response_dict["permissions"] = sorted(permissions)  # Sort for consistency
+
+    return UserPrivateResponse(**response_dict)
 
 
 @router.patch("/me", response_model=UserPrivateResponse)

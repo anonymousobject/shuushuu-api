@@ -599,11 +599,12 @@ async def add_tag_to_image(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Check ownership or permission
+    # Check ownership, admin, or permission
     is_owner = image.user_id == current_user.id
+    is_admin = current_user.admin
     has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_ADD)
 
-    if not is_owner and not has_edit_permission:
+    if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
 
     # Verify tag exists and resolve aliases
@@ -660,11 +661,12 @@ async def remove_tag_from_image(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Check ownership or permission
+    # Check ownership, admin, or permission
     is_owner = image.user_id == current_user.id
+    is_admin = current_user.admin
     has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_REMOVE)
 
-    if not is_owner and not has_edit_permission:
+    if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
 
     # Check if tag link exists

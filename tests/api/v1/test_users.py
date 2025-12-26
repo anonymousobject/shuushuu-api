@@ -430,6 +430,153 @@ class TestGetCurrentUserProfile:
         response = await client.get("/api/v1/users/me")
         assert response.status_code == 401
 
+    async def test_get_current_user_profile_includes_empty_permissions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that /users/me includes empty permissions array for user without permissions."""
+        # Create user without permissions
+        user = Users(
+            username="nopermuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="noperm@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "nopermuser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get profile
+        response = await client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "permissions" in data
+        assert isinstance(data["permissions"], list)
+        assert len(data["permissions"]) == 0
+
+    async def test_get_current_user_profile_includes_permissions_from_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that /users/me includes permissions from user's groups."""
+        from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
+
+        # Create permissions
+        perm1 = Perms(title="image_tag_add", desc="Add tags to images")
+        perm2 = Perms(title="image_tag_remove", desc="Remove tags from images")
+        db_session.add(perm1)
+        db_session.add(perm2)
+        await db_session.commit()
+        await db_session.refresh(perm1)
+        await db_session.refresh(perm2)
+
+        # Create group with permissions
+        group = Groups(title="Taggers", desc="Users who can manage tags")
+        db_session.add(group)
+        await db_session.commit()
+        await db_session.refresh(group)
+
+        # Add permissions to group
+        db_session.add(GroupPerms(group_id=group.group_id, perm_id=perm1.perm_id, permvalue=1))
+        db_session.add(GroupPerms(group_id=group.group_id, perm_id=perm2.perm_id, permvalue=1))
+        await db_session.commit()
+
+        # Create user and add to group
+        user = Users(
+            username="taggeruser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagger@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        db_session.add(UserGroups(user_id=user.user_id, group_id=group.group_id))
+        await db_session.commit()
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "taggeruser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get profile
+        response = await client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "permissions" in data
+        assert "image_tag_add" in data["permissions"]
+        assert "image_tag_remove" in data["permissions"]
+
+    async def test_get_current_user_profile_permissions_sorted(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that permissions array is sorted alphabetically."""
+        from app.models.permissions import Perms, UserPerms
+
+        # Create permissions in non-alphabetical order
+        perm1 = Perms(title="user_ban", desc="Ban users")
+        perm2 = Perms(title="image_edit", desc="Edit images")
+        perm3 = Perms(title="tag_create", desc="Create tags")
+        db_session.add_all([perm1, perm2, perm3])
+        await db_session.commit()
+        await db_session.refresh(perm1)
+        await db_session.refresh(perm2)
+        await db_session.refresh(perm3)
+
+        # Create user with multiple permissions
+        user = Users(
+            username="sorteduser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="sorted@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Add permissions in non-alphabetical order
+        db_session.add(UserPerms(user_id=user.user_id, perm_id=perm1.perm_id, permvalue=1))
+        db_session.add(UserPerms(user_id=user.user_id, perm_id=perm2.perm_id, permvalue=1))
+        db_session.add(UserPerms(user_id=user.user_id, perm_id=perm3.perm_id, permvalue=1))
+        await db_session.commit()
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "sorteduser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get profile
+        response = await client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "permissions" in data
+        # Should be sorted alphabetically
+        assert data["permissions"] == ["image_edit", "tag_create", "user_ban"]
+
 
 @pytest.mark.api
 class TestUpdateUserProfile:

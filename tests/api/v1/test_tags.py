@@ -174,6 +174,36 @@ class TestListTags:
         # Empty strings should not be reported as invalid
         assert data.get("invalid_ids") is None
 
+    async def test_filter_tags_with_duplicate_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags deduplicates duplicate IDs."""
+        # Create test tags
+        tag1 = Tags(title="tag1", type=TagType.THEME)
+        tag2 = Tags(title="tag2", type=TagType.CHARACTER)
+        tag3 = Tags(title="tag3", type=TagType.ARTIST)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+        await db_session.refresh(tag3)
+
+        # Request with duplicate IDs (e.g., ids=1,1,1,2,2,3)
+        response = await client.get(
+            f"/api/v1/tags/?ids={tag1.tag_id},{tag1.tag_id},{tag1.tag_id},"
+            f"{tag2.tag_id},{tag2.tag_id},{tag3.tag_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return only unique tags (total = 3, not 6)
+        assert data["total"] == 3
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert returned_ids == {tag1.tag_id, tag2.tag_id, tag3.tag_id}
+
+        # No invalid IDs
+        assert data.get("invalid_ids") is None
+
     async def test_filter_tags_by_parent_tag_id(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -325,7 +355,7 @@ class TestListTags:
 @pytest.mark.api
 class TestAliasOfName:
     """Tests for alias_of_name field in tag list responses.
-    
+
     This feature was added to include the title of the tag being aliased
     in the tag list response, requiring a self-join on the Tags table.
     """
