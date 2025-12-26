@@ -331,6 +331,48 @@ async def run_alembic_upgrade(project_root: Path, database_url: str) -> bool:
     return success
 
 
+async def stop_docker_services(project_root: Path) -> bool:
+    """
+    Stop API and worker containers to prevent database connection conflicts.
+
+    Args:
+        project_root: Project root directory
+
+    Returns:
+        True if successful, False otherwise
+    """
+    cmd = ["docker", "compose", "stop", "api", "arq-worker"]
+
+    success = await run_command(
+        cmd,
+        "Stop API and worker containers",
+        cwd=project_root,
+    )
+
+    return success
+
+
+async def start_docker_services(project_root: Path) -> bool:
+    """
+    Start API and worker containers after migration completes.
+
+    Args:
+        project_root: Project root directory
+
+    Returns:
+        True if successful, False otherwise
+    """
+    cmd = ["docker", "compose", "start", "api", "arq-worker"]
+
+    success = await run_command(
+        cmd,
+        "Start API and worker containers",
+        cwd=project_root,
+    )
+
+    return success
+
+
 async def run_step(step: dict, dry_run: bool = False, auto_confirm: bool = False, database_url: str | None = None) -> bool:
     """
     Run a migration step script.
@@ -424,10 +466,18 @@ async def run_migration(
 
         if not auto_confirm:
             print(f"⚠️  WARNING: This will DROP and recreate database '{db_config['database']}'")
+            print("⚠️  WARNING: This will STOP the API and worker containers during migration")
             response = input("Continue? (yes/no): ")
             if response.lower() != "yes":
                 print("Migration cancelled.")
                 return False
+
+        # Step 0: Stop Docker services to prevent connection conflicts
+        print("\n" + "=" * 80)
+        print("[0/4] Stopping Docker services")
+        print("=" * 80)
+        if not await stop_docker_services(project_root):
+            print("⚠️  Warning: Failed to stop Docker services (continuing anyway)")
 
         # Step 1: Drop and create database
         print("\n" + "=" * 80)
@@ -547,6 +597,18 @@ async def run_migration(
             print(f"  uv run python {Path(__file__).name}")
         else:
             print("✓ Migration completed successfully!")
+
+            # Restart Docker services if we stopped them
+            if sql_dump:
+                print("\n" + "=" * 80)
+                print("Restarting Docker services")
+                print("=" * 80)
+                if await start_docker_services(project_root):
+                    print("✅ Docker services restarted successfully")
+                else:
+                    print("⚠️  Warning: Failed to restart Docker services")
+                    print("You may need to manually restart: docker compose start api arq-worker")
+
             print("\nNext steps:")
             print("  1. Verify data integrity in database")
             print("  2. Check frontend rendering of comments")
@@ -554,6 +616,11 @@ async def run_migration(
     else:
         print("❌ Migration failed!")
         print("\nPlease investigate the errors above and retry.")
+
+        # Try to restart Docker services even if migration failed
+        if sql_dump:
+            print("\n⚠️  Attempting to restart Docker services...")
+            await start_docker_services(project_root)
 
     return all_succeeded
 
