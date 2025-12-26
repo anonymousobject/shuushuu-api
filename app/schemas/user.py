@@ -119,6 +119,9 @@ class UserPrivateResponse(UserResponse):
     email: EmailStr  # User's own email (private)
     email_verified: bool  # Email verification status
     email_pm_pref: int  # PM email notification preference (0=disabled, 1=enabled)
+    permissions: list[
+        str
+    ] = []  # List of permission strings (e.g., ["image_tag_add", "tag_create"])
 
     @field_validator("email_verified", mode="before")
     @classmethod

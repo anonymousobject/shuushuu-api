@@ -81,7 +81,7 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
     }
-    
+
     # API proxy
     location /api/ {
         proxy_pass http://api:8000;

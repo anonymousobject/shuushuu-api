@@ -30,7 +30,7 @@ DEFAULT_TEST_DB_USER = "shuushuu"
 DEFAULT_TEST_DB_PASSWORD = "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
 DEFAULT_TEST_DB_HOST = "localhost"
 DEFAULT_TEST_DB_PORT = "3306"
-DEFAULT_TEST_DB_NAME = "shuushuu_test"
+DEFAULT_TEST_DB_NAME = "shuushuu_pytest"  # Separate from staging environment (shuushuu_test in .env.test)
 DEFAULT_ROOT_PASSWORD = "root_password"
 
 
@@ -203,11 +203,14 @@ def setup_test_database():
         isolation_level="AUTOCOMMIT",
     )
 
+    # Extract database name from test URL for operations
+    test_db_name = os.getenv("TEST_DB_NAME", DEFAULT_TEST_DB_NAME)
+
     with admin_engine.connect() as conn:
         # Drop and recreate test database
-        conn.execute(text("DROP DATABASE IF EXISTS shuushuu_test"))
+        conn.execute(text(f"DROP DATABASE IF EXISTS {test_db_name}"))
         conn.execute(
-            text("CREATE DATABASE shuushuu_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+            text(f"CREATE DATABASE {test_db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
         )
 
         # Create test user if it doesn't exist
@@ -218,7 +221,7 @@ def setup_test_database():
 
         # Grant permissions to test user on test database
         conn.execute(
-            text("GRANT ALL PRIVILEGES ON shuushuu_test.* TO :username@'%'"),
+            text(f"GRANT ALL PRIVILEGES ON {test_db_name}.* TO :username@'%'"),
             {"username": test_user},
         )
         conn.execute(text("FLUSH PRIVILEGES"))
@@ -291,7 +294,7 @@ def setup_test_database():
     #     isolation_level="AUTOCOMMIT",
     # )
     # with admin_engine.connect() as conn:
-    #     conn.execute(text("DROP DATABASE IF EXISTS shuushuu_test"))
+    #     conn.execute(text(f"DROP DATABASE IF EXISTS {test_db_name}"))
     # admin_engine.dispose()
 
 
@@ -395,10 +398,12 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
 
 @pytest.fixture
 async def mock_redis():
-    """Mock Redis client."""
+    """Mock Redis client for permission caching and other features."""
     mock = MagicMock()
-    mock.get = AsyncMock(return_value=None)
+    mock.get = AsyncMock(return_value=None)  # Cache miss by default
     mock.set = AsyncMock()
+    mock.setex = AsyncMock()  # For permission cache with TTL
+    mock.delete = AsyncMock()  # For cache invalidation
     mock.incr = AsyncMock()
     mock.expire = AsyncMock()
     mock.close = AsyncMock()

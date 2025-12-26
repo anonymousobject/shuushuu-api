@@ -4,6 +4,7 @@ Privmsgs API endpoints
 
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,7 @@ from app.config import settings
 from app.core.auth import VerifiedUser, get_current_user
 from app.core.database import get_db
 from app.core.permissions import Permission, has_permission
+from app.core.redis import get_redis
 from app.models import Privmsgs, Users
 from app.schemas.privmsg import PrivmsgCreate, PrivmsgMessage, PrivmsgMessages
 from app.tasks.queue import enqueue_job
@@ -53,6 +55,7 @@ async def get_received_privmsgs(
     current_user: Annotated[Users, Depends(get_current_user)],
     user_id: Annotated[int | None, Query(description="Filter by user ID (admin only)")] = None,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> PrivmsgMessages:
     """
     Retrieve received private messages.
@@ -70,7 +73,9 @@ async def get_received_privmsgs(
 
     # Users with PRIVMSG_VIEW permission can filter by any user_id
     if user_id is not None:
-        if not await has_permission(db, current_user.user_id, Permission.PRIVMSG_VIEW):
+        if not await has_permission(
+            db, current_user.user_id, Permission.PRIVMSG_VIEW, redis_client
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view other users' messages",
@@ -135,6 +140,7 @@ async def get_sent_privmsgs(
     current_user: Annotated[Users, Depends(get_current_user)],
     user_id: Annotated[int | None, Query(description="Filter by user ID (admin only)")] = None,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> PrivmsgMessages:
     """
     Retrieve sent private messages.
@@ -152,7 +158,9 @@ async def get_sent_privmsgs(
 
     # Users with PRIVMSG_VIEW permission can filter by any user_id
     if user_id is not None:
-        if not await has_permission(db, current_user.user_id, Permission.PRIVMSG_VIEW):
+        if not await has_permission(
+            db, current_user.user_id, Permission.PRIVMSG_VIEW, redis_client
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view other users' messages",

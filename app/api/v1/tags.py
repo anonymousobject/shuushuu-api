@@ -154,6 +154,8 @@ async def list_tags(
                 tag_ids.append(int(id_str))
             else:
                 invalid_ids.append(id_str)
+        # Deduplicate tag IDs to prevent duplicate results
+        tag_ids = list(dict.fromkeys(tag_ids))
         if tag_ids:  # Only apply filter if we have valid IDs
             query = query.where(Tags.tag_id.in_(tag_ids))  # type: ignore[union-attr]
         else:
