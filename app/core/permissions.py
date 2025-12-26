@@ -122,7 +122,12 @@ async def get_user_permissions(db: AsyncSession, user_id: int) -> set[str]:
     return permissions
 
 
-async def has_permission(db: AsyncSession, user_id: int, permission: str | Permission) -> bool:
+async def has_permission(
+    db: AsyncSession,
+    user_id: int,
+    permission: str | Permission,
+    redis_client: "redis.Redis | None" = None,  # type: ignore[name-defined]
+) -> bool:
     """
     Check if a user has a specific permission.
 
@@ -130,6 +135,7 @@ async def has_permission(db: AsyncSession, user_id: int, permission: str | Permi
         db: Database session
         user_id: User ID to check
         permission: Permission to check (string or Permission enum)
+        redis_client: Optional Redis client for caching (recommended for performance)
 
     Returns:
         True if user has the permission, False otherwise
@@ -137,16 +143,30 @@ async def has_permission(db: AsyncSession, user_id: int, permission: str | Permi
     Example:
         if await has_permission(db, user_id, Permission.EDIT_IMG):
             # User can edit images
+        
+        # With caching for better performance:
+        if await has_permission(db, user_id, Permission.EDIT_IMG, redis_client):
+            # User can edit images (cached)
     """
     # Convert enum to string if needed
     perm_name = permission.value if isinstance(permission, Permission) else permission
 
-    permissions = await get_user_permissions(db, user_id)
+    # Use cached version if Redis client is provided
+    if redis_client is not None:
+        from app.core.permission_cache import get_cached_user_permissions
+
+        permissions = await get_cached_user_permissions(db, redis_client, user_id)
+    else:
+        permissions = await get_user_permissions(db, user_id)
+    
     return perm_name in permissions
 
 
 async def has_any_permission(
-    db: AsyncSession, user_id: int, permissions: list[str | Permission]
+    db: AsyncSession,
+    user_id: int,
+    permissions: list[str | Permission],
+    redis_client: "redis.Redis | None" = None,  # type: ignore[name-defined]
 ) -> bool:
     """
     Check if a user has ANY of the specified permissions.
@@ -155,6 +175,7 @@ async def has_any_permission(
         db: Database session
         user_id: User ID to check
         permissions: List of permissions to check
+        redis_client: Optional Redis client for caching (recommended for performance)
 
     Returns:
         True if user has at least one of the permissions, False otherwise
@@ -162,16 +183,30 @@ async def has_any_permission(
     Example:
         if await has_any_permission(db, user_id, [Permission.EDIT_IMG, Permission.ADMIN_LEVEL]):
             # User can edit images OR is an admin
+        
+        # With caching for better performance:
+        if await has_any_permission(db, user_id, [Permission.EDIT_IMG, Permission.ADMIN_LEVEL], redis_client):
+            # User can edit images OR is an admin (cached)
     """
     # Convert enums to strings
     perm_names = {p.value if isinstance(p, Permission) else p for p in permissions}
 
-    user_permissions = await get_user_permissions(db, user_id)
+    # Use cached version if Redis client is provided
+    if redis_client is not None:
+        from app.core.permission_cache import get_cached_user_permissions
+
+        user_permissions = await get_cached_user_permissions(db, redis_client, user_id)
+    else:
+        user_permissions = await get_user_permissions(db, user_id)
+    
     return bool(user_permissions & perm_names)
 
 
 async def has_all_permissions(
-    db: AsyncSession, user_id: int, permissions: list[str | Permission]
+    db: AsyncSession,
+    user_id: int,
+    permissions: list[str | Permission],
+    redis_client: "redis.Redis | None" = None,  # type: ignore[name-defined]
 ) -> bool:
     """
     Check if a user has ALL of the specified permissions.
@@ -180,6 +215,7 @@ async def has_all_permissions(
         db: Database session
         user_id: User ID to check
         permissions: List of permissions to check
+        redis_client: Optional Redis client for caching (recommended for performance)
 
     Returns:
         True if user has all of the permissions, False otherwise
@@ -187,9 +223,20 @@ async def has_all_permissions(
     Example:
         if await has_all_permissions(db, user_id, [Permission.EDIT_IMG, Permission.MOD_LEVEL]):
             # User can edit images AND is a moderator
+        
+        # With caching for better performance:
+        if await has_all_permissions(db, user_id, [Permission.EDIT_IMG, Permission.MOD_LEVEL], redis_client):
+            # User can edit images AND is a moderator (cached)
     """
     # Convert enums to strings
     perm_names = {p.value if isinstance(p, Permission) else p for p in permissions}
 
-    user_permissions = await get_user_permissions(db, user_id)
+    # Use cached version if Redis client is provided
+    if redis_client is not None:
+        from app.core.permission_cache import get_cached_user_permissions
+
+        user_permissions = await get_cached_user_permissions(db, redis_client, user_id)
+    else:
+        user_permissions = await get_user_permissions(db, user_id)
+    
     return perm_names.issubset(user_permissions)
