@@ -117,6 +117,8 @@ class TagExternalLinkCreate(BaseModel):
     def validate_url(cls, v: str) -> str:
         """Validate URL has http/https protocol and trim whitespace."""
         v = v.strip()
+        if not v:
+            raise ValueError("URL cannot be empty")
         if not v.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
         if len(v) > 2000:

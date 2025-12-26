@@ -13,7 +13,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Index, text
+from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
 
 
@@ -44,7 +44,19 @@ class TagExternalLinks(TagExternalLinkBase, table=True):
 
     __tablename__ = "tag_external_links"
 
+    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
+    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
+    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
+    # these definitions may drift from the actual database structure over time. When in doubt,
+    # treat Alembic migrations as the source of truth for production schema.
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tag_id"],
+            ["tags.tag_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_tag_external_links_tag_id",
+        ),
         Index("idx_tag_id", "tag_id"),
         Index("unique_tag_url", "tag_id", "url", unique=True),
     )
