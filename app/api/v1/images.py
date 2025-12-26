@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path as FilePath
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import (
     APIRouter,
     Depends,
@@ -32,6 +33,7 @@ from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optio
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
+from app.core.redis import get_redis
 from app.models import (
     Comments,
     Favorites,
@@ -580,6 +582,7 @@ async def add_tag_to_image(
     tag_id: Annotated[int, Path(description="Tag ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> dict[str, str]:
     """
     Add a tag to an image.
@@ -602,7 +605,9 @@ async def add_tag_to_image(
     # Check ownership, admin, or permission
     is_owner = image.user_id == current_user.id
     is_admin = current_user.admin
-    has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_ADD)
+    has_edit_permission = await has_permission(
+        db, current_user.id, Permission.IMAGE_TAG_ADD, redis_client
+    )
 
     if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
@@ -645,6 +650,7 @@ async def remove_tag_from_image(
     tag_id: Annotated[int, Path(description="Tag ID")],
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> None:
     """
     Remove a tag from an image.
@@ -664,7 +670,9 @@ async def remove_tag_from_image(
     # Check ownership, admin, or permission
     is_owner = image.user_id == current_user.id
     is_admin = current_user.admin
-    has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_REMOVE)
+    has_edit_permission = await has_permission(
+        db, current_user.id, Permission.IMAGE_TAG_REMOVE, redis_client
+    )
 
     if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
