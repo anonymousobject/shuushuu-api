@@ -256,16 +256,16 @@ async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
     # Filter out None values
     mysql_cmd = [arg for arg in mysql_cmd if arg is not None]
 
-    # Stream the SQL file into the mariadb client via stdin to avoid shell injection
-    sql_fh = sql_file.open("rb")
-    try:
-        success = await run_command(
-            mysql_cmd,
-            f"Import SQL dump into '{db_config['database']}'",
-            stdin=sql_fh,
-        )
-    finally:
-        sql_fh.close()
+    # Build the full command with proper shell quoting
+    # Use stdin redirection for the SQL file
+    cmd_str = " ".join(f'"{arg}"' if " " in arg or ";" in arg else arg for arg in mysql_cmd)
+    import_cmd = f"{cmd_str} < {sql_file}"
+
+    success = await run_command(
+        ["bash", "-c", import_cmd],
+        f"Import SQL dump into '{db_config['database']}'",
+    )
+
     return success
 
 
