@@ -10,10 +10,14 @@ The permission system uses the existing database schema:
 - Users can have permissions through groups (user_groups → group_perms)
 - Users can have direct permission overrides (user_perms)
 - All permissions are resolved in a single query for efficiency
+
+Note: Permission checking functions accept an optional Redis client for caching.
+When provided, permissions are cached in Redis for better performance.
 """
 
 from enum import Enum
 
+import redis.asyncio as redis
 from sqlalchemy import select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,7 +130,7 @@ async def has_permission(
     db: AsyncSession,
     user_id: int,
     permission: str | Permission,
-    redis_client: "redis.Redis | None" = None,  # type: ignore[name-defined]
+    redis_client: redis.Redis | None = None,  # type: ignore[type-arg]
 ) -> bool:
     """
     Check if a user has a specific permission.
@@ -165,12 +169,13 @@ async def has_permission(
 
         router = APIRouter()
 
+
         @router.get("/images/{image_id}")
         async def read_image(
             image_id: int,
             db: AsyncSession = Depends(get_db),
             redis_client: redis.Redis = Depends(get_redis),
-            current_user = Depends(get_current_user),
+            current_user=Depends(get_current_user),
         ):
             has_perm = await has_permission(
                 db,
@@ -203,7 +208,7 @@ async def has_any_permission(
     db: AsyncSession,
     user_id: int,
     permissions: list[str | Permission],
-    redis_client: "redis.Redis | None" = None,  # type: ignore[name-defined]
+    redis_client: redis.Redis | None = None,  # type: ignore[type-arg]
 ) -> bool:
     """
     Check if a user has ANY of the specified permissions.
@@ -242,11 +247,12 @@ async def has_any_permission(
 
         router = APIRouter()
 
+
         @router.post("/tags")
         async def create_tag(
             db: AsyncSession = Depends(get_db),
             redis_client: redis.Redis = Depends(get_redis),
-            current_user = Depends(get_current_user),
+            current_user=Depends(get_current_user),
         ):
             has_perm = await has_any_permission(
                 db,
@@ -279,7 +285,7 @@ async def has_all_permissions(
     db: AsyncSession,
     user_id: int,
     permissions: list[str | Permission],
-    redis_client: "redis.Redis | None" = None,  # type: ignore[name-defined]
+    redis_client: redis.Redis | None = None,  # type: ignore[type-arg]
 ) -> bool:
     """
     Check if a user has ALL of the specified permissions.
@@ -318,11 +324,12 @@ async def has_all_permissions(
 
         router = APIRouter()
 
+
         @router.post("/admin/groups")
         async def manage_group(
             db: AsyncSession = Depends(get_db),
             redis_client: redis.Redis = Depends(get_redis),
-            current_user = Depends(get_current_user),
+            current_user=Depends(get_current_user),
         ):
             has_perm = await has_all_permissions(
                 db,
