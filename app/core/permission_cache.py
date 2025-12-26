@@ -102,7 +102,7 @@ async def invalidate_group_permissions(
         group_id: Group ID whose members' caches should be invalidated
     """
     # Get all users in the group
-    result = await db.execute(select(UserGroups.user_id).where(UserGroups.group_id == group_id))  # type: ignore[arg-type]
+    result = await db.execute(select(UserGroups.user_id).where(UserGroups.group_id == group_id))  # type: ignore[call-overload]
     user_ids = [row[0] for row in result.fetchall()]
 
     # Invalidate each user's cache
