@@ -150,6 +150,8 @@ async def get_current_user_profile(
     response = UserPrivateResponse.model_validate(user)
     response.permissions = sorted(permissions)
     return response
+
+
 @router.patch("/me", response_model=UserPrivateResponse)
 async def update_current_user_profile(
     user_data: UserUpdate,
