@@ -14,7 +14,7 @@ from app.core.permission_cache import (
     invalidate_user_permissions,
 )
 from app.core.security import get_password_hash
-from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
+from app.models.permissions import Groups, Perms, UserGroups, UserPerms
 from app.models.user import Users
 
 
