@@ -597,7 +597,7 @@ Examples:
     parser.add_argument(
         "--step",
         type=str,
-        help="Run specific step (by number 1-3 or name)",
+        help="Run specific step (by number 1-4 or name)",
     )
 
     parser.add_argument(
