@@ -395,10 +395,12 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
 
 @pytest.fixture
 async def mock_redis():
-    """Mock Redis client."""
+    """Mock Redis client for permission caching and other features."""
     mock = MagicMock()
-    mock.get = AsyncMock(return_value=None)
+    mock.get = AsyncMock(return_value=None)  # Cache miss by default
     mock.set = AsyncMock()
+    mock.setex = AsyncMock()  # For permission cache with TTL
+    mock.delete = AsyncMock()  # For cache invalidation
     mock.incr = AsyncMock()
     mock.expire = AsyncMock()
     mock.close = AsyncMock()
