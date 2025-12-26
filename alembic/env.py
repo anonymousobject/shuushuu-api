@@ -13,8 +13,14 @@ from app.models import *  # noqa: F403, F401
 # access to the values within pyproject.toml [tool.alembic]
 config = context.config
 
-# Override with your DATABASE_URL_SYNC (for migrations)
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL_SYNC)
+# Check if database URL was passed via -x dbUrl command line option
+# This allows overriding the database URL without changing .env files
+db_url = context.get_x_argument(as_dictionary=True).get("dbUrl")
+if db_url:
+    config.set_main_option("sqlalchemy.url", db_url)
+else:
+    # Override with your DATABASE_URL_SYNC (for migrations)
+    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL_SYNC)
 
 # Set up basic logging (config is now in pyproject.toml)
 logging.basicConfig(

@@ -280,21 +280,21 @@ async def stamp_initial_migration(project_root: Path, database_url: str) -> bool
     Returns:
         True if successful, False otherwise
     """
-    cmd = ["uv", "run", "alembic", "stamp", INITIAL_MIGRATION_REVISION]
-
-    # Override both DATABASE_URL and DATABASE_URL_SYNC to use localhost
     # Convert async URL to sync URL for alembic
     sync_url = database_url.replace("mysql+aiomysql://", "mysql+pymysql://")
-    env = {
-        "DATABASE_URL": database_url,
-        "DATABASE_URL_SYNC": sync_url,
-    }
+
+    # Use alembic's -x option to override the database URL directly
+    # This avoids issues with environment variables being overridden by .env
+    cmd = [
+        "uv", "run", "alembic",
+        "-x", f"dbUrl={sync_url}",
+        "stamp", INITIAL_MIGRATION_REVISION
+    ]
 
     success = await run_command(
         cmd,
         f"Stamp database with initial migration ({INITIAL_MIGRATION_REVISION})",
         cwd=project_root,
-        env=env,
     )
 
     return success
@@ -311,21 +311,21 @@ async def run_alembic_upgrade(project_root: Path, database_url: str) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    cmd = ["uv", "run", "alembic", "upgrade", "head"]
-
-    # Override both DATABASE_URL and DATABASE_URL_SYNC to use localhost
     # Convert async URL to sync URL for alembic
     sync_url = database_url.replace("mysql+aiomysql://", "mysql+pymysql://")
-    env = {
-        "DATABASE_URL": database_url,
-        "DATABASE_URL_SYNC": sync_url,
-    }
+
+    # Use alembic's -x option to override the database URL directly
+    # This avoids issues with environment variables being overridden by .env
+    cmd = [
+        "uv", "run", "alembic",
+        "-x", f"dbUrl={sync_url}",
+        "upgrade", "head"
+    ]
 
     success = await run_command(
         cmd,
         "Run alembic migrations (upgrade head)",
         cwd=project_root,
-        env=env,
     )
 
     return success
