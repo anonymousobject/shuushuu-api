@@ -605,7 +605,9 @@ async def add_tag_to_image(
     # Check ownership, admin, or permission
     is_owner = image.user_id == current_user.id
     is_admin = current_user.admin
-    has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_ADD, redis_client)
+    has_edit_permission = await has_permission(
+        db, current_user.id, Permission.IMAGE_TAG_ADD, redis_client
+    )
 
     if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
@@ -668,7 +670,9 @@ async def remove_tag_from_image(
     # Check ownership, admin, or permission
     is_owner = image.user_id == current_user.id
     is_admin = current_user.admin
-    has_edit_permission = await has_permission(db, current_user.id, Permission.IMAGE_TAG_REMOVE, redis_client)
+    has_edit_permission = await has_permission(
+        db, current_user.id, Permission.IMAGE_TAG_REMOVE, redis_client
+    )
 
     if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")

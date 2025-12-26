@@ -73,7 +73,9 @@ async def get_received_privmsgs(
 
     # Users with PRIVMSG_VIEW permission can filter by any user_id
     if user_id is not None:
-        if not await has_permission(db, current_user.user_id, Permission.PRIVMSG_VIEW, redis_client):
+        if not await has_permission(
+            db, current_user.user_id, Permission.PRIVMSG_VIEW, redis_client
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view other users' messages",
@@ -156,7 +158,9 @@ async def get_sent_privmsgs(
 
     # Users with PRIVMSG_VIEW permission can filter by any user_id
     if user_id is not None:
-        if not await has_permission(db, current_user.user_id, Permission.PRIVMSG_VIEW, redis_client):
+        if not await has_permission(
+            db, current_user.user_id, Permission.PRIVMSG_VIEW, redis_client
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view other users' messages",
