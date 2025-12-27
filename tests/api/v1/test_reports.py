@@ -280,6 +280,41 @@ class TestAdminReportsList:
         assert response.status_code == 200
         assert response.json()["total"] == 1
 
+    async def test_list_reports_default_shows_pending(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Default listing (no status param) should show only pending reports."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        # One pending and one dismissed
+        pending = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            status=ReportStatus.PENDING,
+        )
+        dismissed = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            status=ReportStatus.DISMISSED,
+        )
+        db_session.add(pending)
+        db_session.add(dismissed)
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/admin/reports",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+
     async def test_list_reports_without_permission(
         self, client: AsyncClient, db_session: AsyncSession
     ):

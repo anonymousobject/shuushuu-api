@@ -665,7 +665,7 @@ async def list_reports(
     status_filter: Annotated[
         int | None,
         Query(alias="status", description="Filter by status (0=pending, 1=reviewed, 2=dismissed)"),
-    ] = None,
+    ] = ReportStatus.PENDING,
     page: Annotated[int, Query(ge=1, description="Page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
     db: AsyncSession = Depends(get_db),
@@ -675,28 +675,42 @@ async def list_reports(
 
     Requires REPORT_VIEW permission.
     """
-    query = select(ImageReports)
-
+    # Build a filtered base query against ImageReports (used for counting)
+    base_query = select(ImageReports)
     if status_filter is not None:
-        query = query.where(ImageReports.status == status_filter)  # type: ignore[arg-type]
+        # SQLModel/SQLAlchemy equality comparisons sometimes confuse mypy; ignore arg-type here
+        base_query = base_query.where(ImageReports.status == status_filter)  # type: ignore[arg-type]
 
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
+    # Count total rows efficiently using ImageReports only
+    count_query = select(func.count()).select_from(base_query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
+    # Now select ImageReports rows plus the reporting user's username, joining on user_id
+    query = select(ImageReports, Users.username)  # type: ignore[call-overload]
+    query = query.join(Users, Users.user_id == ImageReports.user_id)
+    if status_filter is not None:
+        query = query.where(ImageReports.status == status_filter)
+
     # Apply pagination and ordering (newest first)
     offset = (page - 1) * per_page
-    query = query.order_by(desc(ImageReports.created_at)).offset(offset).limit(per_page)  # type: ignore[arg-type]
+    query = query.order_by(desc(ImageReports.created_at))  # type: ignore[arg-type]
+    query = query.offset(offset).limit(per_page)
 
     result = await db.execute(query)
-    reports = result.scalars().all()
+    rows = result.all()
+
+    items: list[ReportResponse] = []
+    for report, username in rows:
+        response = ReportResponse.model_validate(report)
+        response.username = username
+        items.append(response)
 
     return ReportListResponse(
         total=total,
         page=page,
         per_page=per_page,
-        items=[ReportResponse.model_validate(r) for r in reports],
+        items=items,
     )
 
 
