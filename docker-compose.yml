@@ -62,7 +62,7 @@ services:
       dockerfile: Dockerfile
     container_name: shuushuu-api
     user: "${UID:-1000}:${GID:-1000}"
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude '.venv/*' --reload-exclude 'tests/*' --reload-exclude '*.pyc' --reload-exclude '__pycache__/*'
+    command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude 'tests/*' --reload-exclude '*.pyc' --reload-exclude '__pycache__/*'
     ports:
       - "8000:8000"
     environment:
@@ -82,7 +82,11 @@ services:
       # Disable UV cache
       - UV_NO_CACHE=${UV_NO_CACHE:-0}
     volumes:
-      - .:/app
+      # Mount only necessary directories, excluding .venv to prevent conflicts
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
     depends_on:
       mariadb:
@@ -143,7 +147,7 @@ services:
       dockerfile: Dockerfile
     container_name: shuushuu-arq-worker
     user: "${UID:-1000}:${GID:-1000}"
-    command: uv run arq app.tasks.worker.WorkerSettings
+    command: uv run --no-project arq app.tasks.worker.WorkerSettings
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
@@ -159,7 +163,11 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - UV_NO_CACHE=1
     volumes:
-      - .:/app
+      # Mount only necessary directories, excluding .venv to prevent conflicts
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-./storage}:${STORAGE_PATH:-/shuushuu/images}
     depends_on:
       redis:

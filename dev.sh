@@ -11,8 +11,6 @@ case "$ENVIRONMENT" in
     dev|development)
         echo "Starting in DEVELOPMENT mode (HTTP on localhost:3000)"
         docker compose --env-file "$SCRIPT_DIR/.env.development" \
-                       -f "$SCRIPT_DIR/docker-compose.yml" \
-                       -f "$SCRIPT_DIR/docker-compose.dev.yml" \
                        ${2:-up} ${@:3}
         ;;
     test)
