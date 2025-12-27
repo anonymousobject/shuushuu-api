@@ -22,7 +22,10 @@ from app.tasks.queue import enqueue_job
 router = APIRouter(prefix="/privmsgs", tags=["privmsgs"])
 
 
-@router.post("/", response_model=PrivmsgMessage, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/", response_model=PrivmsgMessage, status_code=status.HTTP_201_CREATED, include_in_schema=False
+)
+@router.post("", response_model=PrivmsgMessage, status_code=status.HTTP_201_CREATED)
 async def send_privmsg(
     privmsg: PrivmsgCreate,
     current_user: VerifiedUser,

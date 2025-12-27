@@ -26,7 +26,7 @@ from app.models.user import Users
 
 @pytest.mark.api
 class TestListTags:
-    """Tests for GET /api/v1/tags/ endpoint."""
+    """Tests for GET /api/v1/tags endpoint."""
 
     async def test_list_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Test listing tags."""
@@ -40,7 +40,7 @@ class TestListTags:
             db_session.add(tag)
         await db_session.commit()
 
-        response = await client.get("/api/v1/tags/")
+        response = await client.get("/api/v1/tags")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] >= 5
@@ -56,7 +56,7 @@ class TestListTags:
         await db_session.commit()
 
         # Search for "school"
-        response = await client.get("/api/v1/tags/?search=school")
+        response = await client.get("/api/v1/tags?search=school")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -74,7 +74,7 @@ class TestListTags:
         await db_session.commit()
 
         # Filter by THEME type
-        response = await client.get(f"/api/v1/tags/?type={TagType.THEME}")
+        response = await client.get(f"/api/v1/tags?type={TagType.THEME}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
@@ -96,7 +96,7 @@ class TestListTags:
         await db_session.refresh(tag3)
 
         # Filter by specific IDs
-        response = await client.get(f"/api/v1/tags/?ids={tag1.tag_id},{tag3.tag_id}")
+        response = await client.get(f"/api/v1/tags?ids={tag1.tag_id},{tag3.tag_id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
@@ -118,7 +118,7 @@ class TestListTags:
         await db_session.refresh(tag2)
 
         # Mix valid IDs with invalid ones (non-numeric)
-        response = await client.get(f"/api/v1/tags/?ids={tag1.tag_id},abc,{tag2.tag_id},xyz")
+        response = await client.get(f"/api/v1/tags?ids={tag1.tag_id},abc,{tag2.tag_id},xyz")
         assert response.status_code == 200
         data = response.json()
 
@@ -141,7 +141,7 @@ class TestListTags:
         await db_session.commit()
 
         # Only invalid IDs
-        response = await client.get("/api/v1/tags/?ids=abc,xyz,foo")
+        response = await client.get("/api/v1/tags?ids=abc,xyz,foo")
         assert response.status_code == 200
         data = response.json()
 
@@ -164,7 +164,7 @@ class TestListTags:
         await db_session.refresh(tag1)
 
         # IDs with empty strings (trailing commas, double commas)
-        response = await client.get(f"/api/v1/tags/?ids={tag1.tag_id},,")
+        response = await client.get(f"/api/v1/tags?ids={tag1.tag_id},,")
         assert response.status_code == 200
         data = response.json()
 
@@ -191,7 +191,7 @@ class TestListTags:
 
         # Request with duplicate IDs (e.g., ids=1,1,1,2,2,3)
         response = await client.get(
-            f"/api/v1/tags/?ids={tag1.tag_id},{tag1.tag_id},{tag1.tag_id},"
+            f"/api/v1/tags?ids={tag1.tag_id},{tag1.tag_id},{tag1.tag_id},"
             f"{tag2.tag_id},{tag2.tag_id},{tag3.tag_id}"
         )
         assert response.status_code == 200
@@ -236,7 +236,7 @@ class TestListTags:
         await db_session.refresh(child2)
 
         # Filter by parent tag ID
-        response = await client.get(f"/api/v1/tags/?parent_tag_id={parent_tag.tag_id}")
+        response = await client.get(f"/api/v1/tags?parent_tag_id={parent_tag.tag_id}")
         assert response.status_code == 200
         data = response.json()
 
@@ -260,7 +260,7 @@ class TestListTags:
         await db_session.refresh(parent_tag)
 
         # Filter by this parent tag ID
-        response = await client.get(f"/api/v1/tags/?parent_tag_id={parent_tag.tag_id}")
+        response = await client.get(f"/api/v1/tags?parent_tag_id={parent_tag.tag_id}")
         assert response.status_code == 200
         data = response.json()
 
@@ -301,7 +301,7 @@ class TestListTags:
         await db_session.refresh(grandchild_tag)
 
         # Filter by parent tag ID
-        response = await client.get(f"/api/v1/tags/?parent_tag_id={parent_tag.tag_id}")
+        response = await client.get(f"/api/v1/tags?parent_tag_id={parent_tag.tag_id}")
         assert response.status_code == 200
         data = response.json()
 
@@ -342,7 +342,7 @@ class TestListTags:
 
         # Filter by parent tag ID and type
         response = await client.get(
-            f"/api/v1/tags/?parent_tag_id={parent_tag.tag_id}&type={TagType.THEME}"
+            f"/api/v1/tags?parent_tag_id={parent_tag.tag_id}&type={TagType.THEME}"
         )
         assert response.status_code == 200
         data = response.json()
@@ -387,7 +387,7 @@ class TestAliasOfName:
         await db_session.refresh(alias_tag)
 
         # Get the tag list
-        response = await client.get("/api/v1/tags/")
+        response = await client.get("/api/v1/tags")
         assert response.status_code == 200
         data = response.json()
 
@@ -427,7 +427,7 @@ class TestAliasOfName:
         await db_session.refresh(regular_tag)
 
         # Get the tag list
-        response = await client.get("/api/v1/tags/")
+        response = await client.get("/api/v1/tags")
         assert response.status_code == 200
         data = response.json()
 
@@ -483,7 +483,7 @@ class TestAliasOfName:
         await db_session.refresh(theme_alias)
 
         # Filter by CHARACTER type
-        response = await client.get(f"/api/v1/tags/?type={TagType.CHARACTER}")
+        response = await client.get(f"/api/v1/tags?type={TagType.CHARACTER}")
         assert response.status_code == 200
         data = response.json()
 
@@ -523,7 +523,7 @@ class TestAliasOfName:
         await db_session.refresh(alias_tag)
 
         # Search for "neko" (should find the alias)
-        response = await client.get("/api/v1/tags/?search=neko")
+        response = await client.get("/api/v1/tags?search=neko")
         assert response.status_code == 200
         data = response.json()
 
@@ -566,7 +566,7 @@ class TestAliasOfName:
         await db_session.refresh(alias_tag)
 
         # Get tags excluding aliases
-        response = await client.get("/api/v1/tags/?exclude_aliases=true")
+        response = await client.get("/api/v1/tags?exclude_aliases=true")
         assert response.status_code == 200
         data = response.json()
 
@@ -601,7 +601,7 @@ class TestFuzzyTagSearch:
         await db_session.commit()
 
         # Search for "sa" (2 chars) - should match prefix only
-        response = await client.get("/api/v1/tags/?search=sa")
+        response = await client.get("/api/v1/tags?search=sa")
         assert response.status_code == 200
         data = response.json()
         # Should find tags starting with "sa" (sakura kinomoto, sakura card)
@@ -637,7 +637,7 @@ class TestFuzzyTagSearch:
         # Uses FULLTEXT with +sakura* +kinomoto* (AND logic - both words required)
         # So it matches tags with BOTH "sakura" AND "kinomoto", regardless of order
         # But NOT "sakura mitsuki" since it lacks "kinomoto"
-        response = await client.get("/api/v1/tags/?search=sakura%20kinomoto")
+        response = await client.get("/api/v1/tags?search=sakura%20kinomoto")
         assert response.status_code == 200
         data = response.json()
 
@@ -667,7 +667,7 @@ class TestFuzzyTagSearch:
         await db_session.commit()
 
         # Search for "school" (6 chars, full word)
-        response = await client.get("/api/v1/tags/?search=school")
+        response = await client.get("/api/v1/tags?search=school")
         assert response.status_code == 200
         data = response.json()
         # FULLTEXT matches complete words, so "school" should find:
@@ -691,7 +691,7 @@ class TestFuzzyTagSearch:
         await db_session.commit()
 
         # Search for "cat" (3 chars) - should use full-text
-        response = await client.get("/api/v1/tags/?search=cat")
+        response = await client.get("/api/v1/tags?search=cat")
         assert response.status_code == 200
         data = response.json()
 
@@ -717,7 +717,7 @@ class TestFuzzyTagSearch:
         await db_session.commit()
 
         # Search for "maid" (4 chars) - should use full-text with exact match prioritization
-        response = await client.get("/api/v1/tags/?search=maid")
+        response = await client.get("/api/v1/tags?search=maid")
         assert response.status_code == 200
         data = response.json()
 
@@ -740,7 +740,7 @@ class TestFuzzyTagSearch:
         await db_session.commit()
 
         # Search for lowercase "sa"
-        response = await client.get("/api/v1/tags/?search=sa")
+        response = await client.get("/api/v1/tags?search=sa")
         assert response.status_code == 200
         data = response.json()
         # Should find all tags starting with "sa" (case-insensitive)
@@ -758,7 +758,7 @@ class TestFuzzyTagSearch:
         await db_session.commit()
 
         # Search for "sakura" with type filter (CHARACTER only)
-        response = await client.get("/api/v1/tags/?search=sakura&type=4")
+        response = await client.get("/api/v1/tags?search=sakura&type=4")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2  # Both CHARACTER tags
@@ -766,7 +766,7 @@ class TestFuzzyTagSearch:
             assert tag["type"] == TagType.CHARACTER
 
         # Search for "sakura" excluding aliases
-        response = await client.get("/api/v1/tags/?search=sakura&exclude_aliases=true")
+        response = await client.get("/api/v1/tags?search=sakura&exclude_aliases=true")
         assert response.status_code == 200
         data = response.json()
         # Should not include alias tags
@@ -923,7 +923,7 @@ class TestGetImagesByTag:
 
 @pytest.mark.api
 class TestCreateTag:
-    """Tests for POST /api/v1/tags/ endpoint (admin only)."""
+    """Tests for POST /api/v1/tags endpoint (admin only)."""
 
     async def test_create_tag_as_admin(
         self, client: AsyncClient, db_session: AsyncSession
@@ -972,7 +972,7 @@ class TestCreateTag:
             "type": TagType.THEME,
         }
         response = await client.post(
-            "/api/v1/tags/",
+            "/api/v1/tags",
             json=tag_data,
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -1012,7 +1012,7 @@ class TestCreateTag:
             "type": TagType.THEME,
         }
         response = await client.post(
-            "/api/v1/tags/",
+            "/api/v1/tags",
             json=tag_data,
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -1025,7 +1025,7 @@ class TestCreateTag:
             "desc": "Should not be created",
             "type": TagType.THEME,
         }
-        response = await client.post("/api/v1/tags/", json=tag_data)
+        response = await client.post("/api/v1/tags", json=tag_data)
         assert response.status_code == 401
 
     async def test_create_duplicate_tag(
@@ -1079,7 +1079,7 @@ class TestCreateTag:
             "type": TagType.THEME,
         }
         response = await client.post(
-            "/api/v1/tags/",
+            "/api/v1/tags",
             json=tag_data,
             headers={"Authorization": f"Bearer {access_token}"},
         )

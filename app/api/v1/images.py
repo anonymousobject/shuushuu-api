@@ -76,7 +76,8 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
 
-@router.get("/", response_model=ImageDetailedListResponse)
+@router.get("/", response_model=ImageDetailedListResponse, include_in_schema=False)
+@router.get("", response_model=ImageDetailedListResponse)
 async def list_images(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],

@@ -21,7 +21,7 @@ from app.models.user import Users
 
 @pytest.mark.api
 class TestListComments:
-    """Tests for GET /api/v1/comments/ endpoint."""
+    """Tests for GET /api/v1/comments endpoint."""
 
     async def test_list_comments(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
@@ -43,7 +43,7 @@ class TestListComments:
             db_session.add(comment)
         await db_session.commit()
 
-        response = await client.get("/api/v1/comments/")
+        response = await client.get("/api/v1/comments")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] >= 5
@@ -86,7 +86,7 @@ class TestListComments:
         await db_session.commit()
 
         # Filter by image1
-        response = await client.get(f"/api/v1/comments/?image_id={image1.image_id}")
+        response = await client.get(f"/api/v1/comments?image_id={image1.image_id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 3
@@ -111,7 +111,7 @@ class TestListComments:
         await db_session.commit()
 
         # Filter by user 2
-        response = await client.get("/api/v1/comments/?user_id=2")
+        response = await client.get("/api/v1/comments?user_id=2")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -142,7 +142,7 @@ class TestListComments:
         await db_session.commit()
 
         # Search for "awesome"
-        response = await client.get("/api/v1/comments/?search_text=awesome&search_mode=like")
+        response = await client.get("/api/v1/comments?search_text=awesome&search_mode=like")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -314,7 +314,7 @@ class TestGetCommentStats:
 
 @pytest.mark.api
 class TestCreateComment:
-    """Tests for POST /api/v1/comments/ endpoint."""
+    """Tests for POST /api/v1/comments endpoint."""
 
     async def test_create_top_level_comment(
         self,
@@ -331,7 +331,7 @@ class TestCreateComment:
         await db_session.refresh(image)
 
         response = await authenticated_client.post(
-            "/api/v1/comments/",
+            "/api/v1/comments",
             json={
                 "image_id": image.image_id,
                 "post_text": "Great artwork!",
@@ -373,7 +373,7 @@ class TestCreateComment:
 
         # Create reply
         response = await authenticated_client.post(
-            "/api/v1/comments/",
+            "/api/v1/comments",
             json={
                 "image_id": image.image_id,
                 "post_text": "Thanks!",
@@ -388,7 +388,7 @@ class TestCreateComment:
     async def test_create_comment_requires_auth(self, client: AsyncClient):
         """Test that creating a comment requires authentication."""
         response = await client.post(
-            "/api/v1/comments/",
+            "/api/v1/comments",
             json={
                 "image_id": 999,
                 "post_text": "Comment",
@@ -402,7 +402,7 @@ class TestCreateComment:
     ):
         """Test creating a comment on non-existent image."""
         response = await authenticated_client.post(
-            "/api/v1/comments/",
+            "/api/v1/comments",
             json={
                 "image_id": 99999,
                 "post_text": "Comment",
@@ -425,7 +425,7 @@ class TestCreateComment:
         await db_session.refresh(image)
 
         response = await authenticated_client.post(
-            "/api/v1/comments/",
+            "/api/v1/comments",
             json={
                 "image_id": image.image_id,
                 "post_text": "Reply",
@@ -467,7 +467,7 @@ class TestCreateComment:
 
         # Try to reply on image2 with parent from image1
         response = await authenticated_client.post(
-            "/api/v1/comments/",
+            "/api/v1/comments",
             json={
                 "image_id": image2.image_id,
                 "post_text": "Reply on wrong image",
@@ -490,7 +490,7 @@ class TestCreateComment:
         await db_session.refresh(image)
 
         response = await authenticated_client.post(
-            "/api/v1/comments/",
+            "/api/v1/comments",
             json={
                 "image_id": image.image_id,
                 "post_text": "",
