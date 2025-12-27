@@ -494,7 +494,7 @@ class TestImageDetail:
 
     async def test_get_nonexistent_image(self, client: AsyncClient):
         """Test getting an image that doesn't exist."""
-        response = await client.get("/api/v1/images999999")
+        response = await client.get("/api/v1/images/999999")
         assert response.status_code == 404
 
 
@@ -1071,7 +1071,7 @@ class TestImageFavorites:
         self, authenticated_client: AsyncClient
     ):
         """Test favoriting a nonexistent image returns 404."""
-        response = await authenticated_client.post("/api/v1/images999999/favorite")
+        response = await authenticated_client.post("/api/v1/images/999999/favorite")
         assert response.status_code == 404
         data = response.json()
         assert "not found" in data["detail"].lower()
@@ -1080,7 +1080,7 @@ class TestImageFavorites:
         self, authenticated_client: AsyncClient
     ):
         """Test unfavoriting a nonexistent image returns 404."""
-        response = await authenticated_client.delete("/api/v1/images999999/favorite")
+        response = await authenticated_client.delete("/api/v1/images/999999/favorite")
         assert response.status_code == 404
         data = response.json()
         assert "not found" in data["detail"].lower()

@@ -795,7 +795,7 @@ class TestGetTag:
 
     async def test_get_nonexistent_tag(self, client: AsyncClient):
         """Test getting a tag that doesn't exist."""
-        response = await client.get("/api/v1/tags999999")
+        response = await client.get("/api/v1/tags/999999")
         assert response.status_code == 404
 
     async def test_get_tag_includes_creator_and_date(
@@ -917,7 +917,7 @@ class TestGetImagesByTag:
 
     async def test_get_images_by_nonexistent_tag(self, client: AsyncClient):
         """Test getting images for non-existent tag."""
-        response = await client.get("/api/v1/tags999999/images")
+        response = await client.get("/api/v1/tags/999999/images")
         assert response.status_code == 404
 
 
@@ -1566,7 +1566,7 @@ class TestAddTagLink:
         # Try to add link to non-existent tag
         link_data = {"url": "https://example.com"}
         response = await client.post(
-            "/api/v1/tags999999/links",
+            "/api/v1/tags/999999/links",
             json=link_data,
             headers={"Authorization": f"Bearer {access_token}"},
         )
