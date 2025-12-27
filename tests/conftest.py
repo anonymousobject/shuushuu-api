@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.database import get_db
@@ -324,11 +325,15 @@ async def engine():
         # Disable foreign key checks temporarily
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
 
+        # Get database name from the connection URL
+        db_url = make_url(TEST_DATABASE_URL)
+        db_name = db_url.database
+
         # Get all tables
         result = await conn.execute(
             text(
                 "SELECT table_name FROM information_schema.tables "
-                f"WHERE table_schema = '{DEFAULT_TEST_DB_NAME}' AND table_type = 'BASE TABLE'"
+                f"WHERE table_schema = '{db_name}' AND table_type = 'BASE TABLE'"
             )
         )
         tables = [row[0] for row in result]
