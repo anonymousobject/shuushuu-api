@@ -17,11 +17,11 @@ from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 
 @pytest.mark.api
 class TestImagesList:
-    """Tests for GET /api/v1/images/ endpoint."""
+    """Tests for GET /api/v1/images endpoint."""
 
     async def test_list_images_empty(self, client: AsyncClient):
         """Test listing images when database is empty."""
-        await client.get("/api/v1/images/")
+        await client.get("/api/v1/images")
 
         # assert response.status_code == 200
         # data = response.json()
@@ -40,7 +40,7 @@ class TestImagesList:
         await db_session.commit()
         await db_session.refresh(image)
 
-        response = await client.get("/api/v1/images/")
+        response = await client.get("/api/v1/images")
 
         assert response.status_code == 200
         data = response.json()
@@ -70,7 +70,7 @@ class TestImagesList:
         await db_session.commit()
 
         # Test first page
-        response = await client.get("/api/v1/images/?page=1&per_page=10")
+        response = await client.get("/api/v1/images?page=1&per_page=10")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 25
@@ -79,14 +79,14 @@ class TestImagesList:
         assert len(data["images"]) == 10
 
         # Test second page
-        response = await client.get("/api/v1/images/?page=2&per_page=10")
+        response = await client.get("/api/v1/images?page=2&per_page=10")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 2
         assert len(data["images"]) == 10
 
         # Test third page
-        response = await client.get("/api/v1/images/?page=3&per_page=10")
+        response = await client.get("/api/v1/images?page=3&per_page=10")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 3
@@ -95,11 +95,11 @@ class TestImagesList:
     async def test_list_images_invalid_pagination(self, client: AsyncClient):
         """Test invalid pagination parameters."""
         # Negative page
-        response = await client.get("/api/v1/images/?page=0")
+        response = await client.get("/api/v1/images?page=0")
         assert response.status_code == 422
 
         # Too large per_page
-        response = await client.get("/api/v1/images/?per_page=200")
+        response = await client.get("/api/v1/images?per_page=200")
         assert response.status_code == 422
 
     async def test_list_images_includes_tags(
@@ -126,7 +126,7 @@ class TestImagesList:
         await db_session.commit()
 
         # Call list_images
-        response = await client.get("/api/v1/images/")
+        response = await client.get("/api/v1/images")
 
         assert response.status_code == 200
         data = response.json()
@@ -172,7 +172,7 @@ class TestImagesFiltering:
         await db_session.commit()
 
         # Filter by user_id=2
-        response = await client.get("/api/v1/images/?user_id=2")
+        response = await client.get("/api/v1/images?user_id=2")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 3
@@ -196,7 +196,7 @@ class TestImagesFiltering:
         await db_session.commit()
 
         # Filter min_width
-        response = await client.get("/api/v1/images/?min_width=1920")
+        response = await client.get("/api/v1/images?min_width=1920")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2  # 1920x1080 and 3840x2160
@@ -204,7 +204,7 @@ class TestImagesFiltering:
             assert img["width"] >= 1920
 
         # Filter max_width
-        response = await client.get("/api/v1/images/?max_width=1920")
+        response = await client.get("/api/v1/images?max_width=1920")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2  # 800x600 and 1920x1080
@@ -227,7 +227,7 @@ class TestImagesFiltering:
         await db_session.commit()
 
         # Filter by minimum rating
-        response = await client.get("/api/v1/images/?min_rating=5.0")
+        response = await client.get("/api/v1/images?min_rating=5.0")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 3  # 5.0, 7.5, 10.0
@@ -260,7 +260,7 @@ class TestTagSearchValidation:
 
         # Try to search with more tags than allowed
         tags_param = ",".join(str(tid) for tid in tag_ids)
-        response = await client.get(f"/api/v1/images/?tags={tags_param}")
+        response = await client.get(f"/api/v1/images?tags={tags_param}")
 
         assert response.status_code == 400
         data = response.json()
@@ -293,7 +293,7 @@ class TestTagSearchValidation:
 
         # Search with exactly MAX_SEARCH_TAGS tags should succeed
         tags_param = ",".join(str(tid) for tid in tag_ids)
-        response = await client.get(f"/api/v1/images/?tags={tags_param}&tags_mode=all")
+        response = await client.get(f"/api/v1/images?tags={tags_param}&tags_mode=all")
 
         assert response.status_code == 200
         data = response.json()
@@ -327,7 +327,7 @@ class TestTagSearchValidation:
 
         # Search with fewer tags should succeed
         tags_param = ",".join(str(tid) for tid in tag_ids)
-        response = await client.get(f"/api/v1/images/?tags={tags_param}")
+        response = await client.get(f"/api/v1/images?tags={tags_param}")
 
         assert response.status_code == 200
         data = response.json()
@@ -364,7 +364,7 @@ class TestTagSearchValidation:
         await db_session.commit()
 
         # Search by alias tag ID should find the image
-        response = await client.get(f"/api/v1/images/?tags={alias_tag.tag_id}")
+        response = await client.get(f"/api/v1/images?tags={alias_tag.tag_id}")
 
         assert response.status_code == 200
         data = response.json()
@@ -416,7 +416,7 @@ class TestTagSearchValidation:
 
         # Search by alias IDs in ANY mode should find both images
         response = await client.get(
-            f"/api/v1/images/?tags={alias1.tag_id},{alias2.tag_id}&tags_mode=any"
+            f"/api/v1/images?tags={alias1.tag_id},{alias2.tag_id}&tags_mode=any"
         )
 
         assert response.status_code == 200
@@ -455,7 +455,7 @@ class TestImagesSorting:
 
         # Sort descending (newest first) - default
         # Since images were inserted in chronological order, newest = highest image_id
-        response = await client.get("/api/v1/images/?sort_by=date_added&sort_order=DESC")
+        response = await client.get("/api/v1/images?sort_by=date_added&sort_order=DESC")
         assert response.status_code == 200
         data = response.json()
 
@@ -464,7 +464,7 @@ class TestImagesSorting:
         assert data["images"][-1]["filename"] == "date-2024-01-01"
 
         # Sort ascending (oldest first)
-        response = await client.get("/api/v1/images/?sort_by=date_added&sort_order=ASC")
+        response = await client.get("/api/v1/images?sort_by=date_added&sort_order=ASC")
         assert response.status_code == 200
         data = response.json()
         assert data["images"][0]["filename"] == "date-2024-01-01"
@@ -494,7 +494,7 @@ class TestImageDetail:
 
     async def test_get_nonexistent_image(self, client: AsyncClient):
         """Test getting an image that doesn't exist."""
-        response = await client.get("/api/v1/images/999999")
+        response = await client.get("/api/v1/images999999")
         assert response.status_code == 404
 
 
@@ -688,7 +688,7 @@ class TestFavoritedByUserIdFilter:
         await db_session.commit()
 
         # Filter by user1's favorites
-        response = await client.get(f"/api/v1/images/?favorited_by_user_id={user1.user_id}")
+        response = await client.get(f"/api/v1/images?favorited_by_user_id={user1.user_id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 3
@@ -696,7 +696,7 @@ class TestFavoritedByUserIdFilter:
         assert favorited_filenames == {"fav-test-0", "fav-test-1", "fav-test-2"}
 
         # Filter by user2's favorites
-        response = await client.get(f"/api/v1/images/?favorited_by_user_id={user2.user_id}")
+        response = await client.get(f"/api/v1/images?favorited_by_user_id={user2.user_id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 3
@@ -728,7 +728,7 @@ class TestFavoritedByUserIdFilter:
         await db_session.commit()
 
         # Filter by user's favorites (should be empty)
-        response = await client.get(f"/api/v1/images/?favorited_by_user_id={user.user_id}")
+        response = await client.get(f"/api/v1/images?favorited_by_user_id={user.user_id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 0
@@ -816,7 +816,7 @@ class TestFavoritedByUserIdFilter:
 
         # Test: favorited_by_user_id + user_id filter
         response = await client.get(
-            f"/api/v1/images/?favorited_by_user_id={favoriter.user_id}&user_id={uploader.user_id}"
+            f"/api/v1/images?favorited_by_user_id={favoriter.user_id}&user_id={uploader.user_id}"
         )
         assert response.status_code == 200
         data = response.json()
@@ -826,7 +826,7 @@ class TestFavoritedByUserIdFilter:
 
         # Test: favorited_by_user_id + tags filter
         response = await client.get(
-            f"/api/v1/images/?favorited_by_user_id={favoriter.user_id}&tags={tag1.tag_id}"
+            f"/api/v1/images?favorited_by_user_id={favoriter.user_id}&tags={tag1.tag_id}"
         )
         assert response.status_code == 200
         data = response.json()
@@ -864,7 +864,7 @@ class TestFavoritedByUserIdFilter:
 
         # Test first page
         response = await client.get(
-            f"/api/v1/images/?favorited_by_user_id={user.user_id}&page=1&per_page=10"
+            f"/api/v1/images?favorited_by_user_id={user.user_id}&page=1&per_page=10"
         )
         assert response.status_code == 200
         data = response.json()
@@ -875,7 +875,7 @@ class TestFavoritedByUserIdFilter:
 
         # Test second page
         response = await client.get(
-            f"/api/v1/images/?favorited_by_user_id={user.user_id}&page=2&per_page=10"
+            f"/api/v1/images?favorited_by_user_id={user.user_id}&page=2&per_page=10"
         )
         assert response.status_code == 200
         data = response.json()
@@ -885,7 +885,7 @@ class TestFavoritedByUserIdFilter:
 
         # Test third page (remaining 5 images)
         response = await client.get(
-            f"/api/v1/images/?favorited_by_user_id={user.user_id}&page=3&per_page=10"
+            f"/api/v1/images?favorited_by_user_id={user.user_id}&page=3&per_page=10"
         )
         assert response.status_code == 200
         data = response.json()
@@ -1071,7 +1071,7 @@ class TestImageFavorites:
         self, authenticated_client: AsyncClient
     ):
         """Test favoriting a nonexistent image returns 404."""
-        response = await authenticated_client.post("/api/v1/images/999999/favorite")
+        response = await authenticated_client.post("/api/v1/images999999/favorite")
         assert response.status_code == 404
         data = response.json()
         assert "not found" in data["detail"].lower()
@@ -1080,7 +1080,7 @@ class TestImageFavorites:
         self, authenticated_client: AsyncClient
     ):
         """Test unfavoriting a nonexistent image returns 404."""
-        response = await authenticated_client.delete("/api/v1/images/999999/favorite")
+        response = await authenticated_client.delete("/api/v1/images999999/favorite")
         assert response.status_code == 404
         data = response.json()
         assert "not found" in data["detail"].lower()
@@ -1260,7 +1260,7 @@ class TestTagUsageCount:
 
 @pytest.mark.api
 class TestCommentFilters:
-    """Tests for comment-based filtering in GET /api/v1/images/ endpoint."""
+    """Tests for comment-based filtering in GET /api/v1/images endpoint."""
 
     async def test_filter_by_commenter(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
@@ -1317,21 +1317,21 @@ class TestCommentFilters:
         await db_session.commit()
 
         # Filter by user1's comments - should get only image1
-        response = await client.get(f"/api/v1/images/?commenter={user1.id}")
+        response = await client.get(f"/api/v1/images?commenter={user1.id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
         assert data["images"][0]["filename"] == "img1"
 
         # Filter by user2's comments - should get only image2
-        response = await client.get(f"/api/v1/images/?commenter={user2.id}")
+        response = await client.get(f"/api/v1/images?commenter={user2.id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
         assert data["images"][0]["filename"] == "img2"
 
         # No results for non-existent commenter
-        response = await client.get("/api/v1/images/?commenter=9999")
+        response = await client.get("/api/v1/images?commenter=9999")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 0
@@ -1389,7 +1389,7 @@ class TestCommentFilters:
         await db_session.commit()
 
         # Search for "awesome" using LIKE mode (always works, doesn't need fulltext index)
-        response = await client.get("/api/v1/images/?commentsearch=awesome&commentsearch_mode=like")
+        response = await client.get("/api/v1/images?commentsearch=awesome&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
@@ -1397,14 +1397,14 @@ class TestCommentFilters:
         assert filenames == {"img1", "img2"}
 
         # Search for "terrible" - should get only image3
-        response = await client.get("/api/v1/images/?commentsearch=terrible&commentsearch_mode=like")
+        response = await client.get("/api/v1/images?commentsearch=terrible&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
         assert data["images"][0]["filename"] == "img3"
 
         # Search for non-existent text
-        response = await client.get("/api/v1/images/?commentsearch=nonexistent&commentsearch_mode=like")
+        response = await client.get("/api/v1/images?commentsearch=nonexistent&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 0
@@ -1449,7 +1449,7 @@ class TestCommentFilters:
         await db_session.commit()
 
         # Filter by user1's comments - should get image exactly once
-        response = await client.get(f"/api/v1/images/?commenter={user1.id}")
+        response = await client.get(f"/api/v1/images?commenter={user1.id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -1508,7 +1508,7 @@ class TestCommentFilters:
         # Filter: user1's comments containing "awesome"
         # Should get only image1 (user1 commented, and comment text contains "awesome")
         # Use LIKE mode to work in test environment
-        response = await client.get(f"/api/v1/images/?commenter={user1.id}&commentsearch=awesome&commentsearch_mode=like")
+        response = await client.get(f"/api/v1/images?commenter={user1.id}&commentsearch=awesome&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -1562,7 +1562,7 @@ class TestCommentFilters:
 
         # LIKE search: "cat" as substring should match "concatenation"
         # Works in all environments (doesn't require FULLTEXT index)
-        response = await client.get("/api/v1/images/?commentsearch=cat&commentsearch_mode=like")
+        response = await client.get("/api/v1/images?commentsearch=cat&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -1613,7 +1613,7 @@ class TestCommentFilters:
         await db_session.commit()
 
         # Filter: hascomments=true should return only image1 and image3
-        response = await client.get("/api/v1/images/?hascomments=true")
+        response = await client.get("/api/v1/images?hascomments=true")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
@@ -1663,7 +1663,7 @@ class TestCommentFilters:
         await db_session.commit()
 
         # Filter: hascomments=false should return only image2 and image3
-        response = await client.get("/api/v1/images/?hascomments=false")
+        response = await client.get("/api/v1/images?hascomments=false")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2

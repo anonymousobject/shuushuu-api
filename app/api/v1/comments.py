@@ -25,7 +25,8 @@ from app.schemas.comment import (
 router = APIRouter(prefix="/comments", tags=["comments"])
 
 
-@router.get("/", response_model=CommentListResponse)
+@router.get("/", response_model=CommentListResponse, include_in_schema=False)
+@router.get("", response_model=CommentListResponse)
 async def list_comments(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[CommentSortParams, Depends()],
@@ -330,7 +331,13 @@ async def get_comment_stats(db: AsyncSession = Depends(get_db)) -> CommentStatsR
     )
 
 
-@router.post("/", response_model=CommentResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=CommentResponse,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
+@router.post("", response_model=CommentResponse, status_code=status.HTTP_201_CREATED)
 async def create_comment(
     body: CommentCreate,
     current_user: Annotated[Users, Depends(get_current_user)],

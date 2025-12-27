@@ -55,7 +55,8 @@ from app.tasks.queue import enqueue_job
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("/", response_model=UserListResponse)
+@router.get("/", response_model=UserListResponse, include_in_schema=False)
+@router.get("", response_model=UserListResponse)
 async def list_users(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[UserSortParams, Depends()],
@@ -551,7 +552,8 @@ async def get_user_favorites(
     )
 
 
-@router.post("/", response_model=UserCreateResponse)
+@router.post("/", response_model=UserCreateResponse, include_in_schema=False)
+@router.post("", response_model=UserCreateResponse)
 async def create_user(
     user_data: UserCreate,
     request: Request,

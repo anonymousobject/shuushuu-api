@@ -328,7 +328,7 @@ async def engine():
         result = await conn.execute(
             text(
                 "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'shuushuu_test' AND table_type = 'BASE TABLE'"
+                f"WHERE table_schema = '{DEFAULT_TEST_DB_NAME}' AND table_type = 'BASE TABLE'"
             )
         )
         tables = [row[0] for row in result]

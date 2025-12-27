@@ -97,7 +97,8 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int) -> list[int]:
     return tag_ids
 
 
-@router.get("/", response_model=TagListResponse)
+@router.get("/", response_model=TagListResponse, include_in_schema=False)
+@router.get("", response_model=TagListResponse)
 async def list_tags(
     pagination: Annotated[PaginationParams, Depends()],
     search: Annotated[str | None, Query(description="Search tags by name")] = None,
@@ -456,7 +457,8 @@ async def get_tag(
     )
 
 
-@router.post("/", response_model=TagResponse)
+@router.post("/", response_model=TagResponse, include_in_schema=False)
+@router.post("", response_model=TagResponse)
 async def create_tag(
     tag_data: TagCreate,
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],

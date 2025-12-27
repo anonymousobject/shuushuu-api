@@ -24,11 +24,11 @@ from app.models.user import Users
 
 @pytest.mark.api
 class TestListUsers:
-    """Tests for GET /api/v1/users/ endpoint."""
+    """Tests for GET /api/v1/users endpoint."""
 
     async def test_list_users(self, client: AsyncClient, db_session: AsyncSession):
         """Test listing users."""
-        response = await client.get("/api/v1/users/")
+        response = await client.get("/api/v1/users")
         assert response.status_code == 200
         data = response.json()
         assert "total" in data
@@ -51,7 +51,7 @@ class TestListUsers:
         await db_session.commit()
 
         # Test pagination
-        response = await client.get("/api/v1/users/?page=1&per_page=5")
+        response = await client.get("/api/v1/users?page=1&per_page=5")
         assert response.status_code == 200
         data = response.json()
         assert data["per_page"] == 5
@@ -79,7 +79,7 @@ class TestListUsers:
         await db_session.commit()
 
         # Search for "alice" (should match Alice and AliceWonderland)
-        response = await client.get("/api/v1/users/?search=alice")
+        response = await client.get("/api/v1/users?search=alice")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
@@ -107,7 +107,7 @@ class TestListUsers:
 
         # Test different case variations
         for search_term in ["john", "JOHN", "JoHn", "johndoe"]:
-            response = await client.get(f"/api/v1/users/?search={search_term}")
+            response = await client.get(f"/api/v1/users?search={search_term}")
             assert response.status_code == 200
             data = response.json()
             assert data["total"] >= 1
@@ -118,7 +118,7 @@ class TestListUsers:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Test searching with no matching results."""
-        response = await client.get("/api/v1/users/?search=nonexistentuserxyz")
+        response = await client.get("/api/v1/users?search=nonexistentuserxyz")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 0
@@ -187,7 +187,7 @@ class TestListUsers:
         await db_session.commit()
 
         # Search with pagination
-        response = await client.get("/api/v1/users/?search=searchuser&per_page=20")
+        response = await client.get("/api/v1/users?search=searchuser&per_page=20")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 25
@@ -195,7 +195,7 @@ class TestListUsers:
         assert data["per_page"] == 20
 
         # Get second page
-        response = await client.get("/api/v1/users/?search=searchuser&page=2&per_page=20")
+        response = await client.get("/api/v1/users?search=searchuser&page=2&per_page=20")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 25
@@ -224,7 +224,7 @@ class TestListUsers:
         await db_session.commit()
 
         # Search for "user" should match all three
-        response = await client.get("/api/v1/users/?search=user")
+        response = await client.get("/api/v1/users?search=user")
         assert response.status_code == 200
         data = response.json()
         usernames = [u["username"] for u in data["users"]]
@@ -260,7 +260,7 @@ class TestListUsers:
         await db_session.commit()
 
         # Search for 'ran' and expect 'Ran' to appear in results and be first
-        response = await client.get("/api/v1/users/?search=ran&per_page=10")
+        response = await client.get("/api/v1/users?search=ran&per_page=10")
         assert response.status_code == 200
         data = response.json()
         usernames = [u["username"] for u in data["users"]]
@@ -290,14 +290,14 @@ class TestListUsers:
         await db_session.commit()
 
         # Get total users without search parameter (baseline)
-        response_no_search = await client.get("/api/v1/users/")
+        response_no_search = await client.get("/api/v1/users")
         assert response_no_search.status_code == 200
         data_no_search = response_no_search.json()
         total_users = data_no_search["total"]
         assert total_users >= 3  # At least our 3 test users
 
         # Test with empty string search parameter - should return same total as no search
-        response_empty_search = await client.get("/api/v1/users/?search=")
+        response_empty_search = await client.get("/api/v1/users?search=")
         assert response_empty_search.status_code == 200
         data_empty_search = response_empty_search.json()
         assert data_empty_search["total"] == total_users
@@ -325,7 +325,7 @@ class TestGetUser:
 
 @pytest.mark.api
 class TestCreateUser:
-    """Tests for POST /api/v1/users/ endpoint."""
+    """Tests for POST /api/v1/users endpoint."""
 
     async def test_create_user_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test successful user creation."""
@@ -336,7 +336,7 @@ class TestCreateUser:
             "turnstile_token": "test-token",
         }
 
-        response = await client.post("/api/v1/users/", json=user_data)
+        response = await client.post("/api/v1/users", json=user_data)
         assert response.status_code == 200
         data = response.json()
         assert data["username"] == "newuser123"
@@ -354,7 +354,7 @@ class TestCreateUser:
             "password": "SecurePassword123!",
             "turnstile_token": "test-token",
         }
-        response = await client.post("/api/v1/users/", json=user_data)
+        response = await client.post("/api/v1/users", json=user_data)
         assert response.status_code == 200
 
         # Try to create second user with same username
@@ -364,7 +364,7 @@ class TestCreateUser:
             "password": "SecurePassword123!",
             "turnstile_token": "test-token",
         }
-        response = await client.post("/api/v1/users/", json=user_data2)
+        response = await client.post("/api/v1/users", json=user_data2)
         assert response.status_code == 409
         assert "already exists" in response.json()["detail"].lower()
 
@@ -376,7 +376,7 @@ class TestCreateUser:
             "password": "SecurePassword123!",
             "turnstile_token": "test-token",
         }
-        response = await client.post("/api/v1/users/", json=user_data)
+        response = await client.post("/api/v1/users", json=user_data)
         assert response.status_code == 400
 
     async def test_create_user_weak_password(self, client: AsyncClient):
@@ -387,7 +387,7 @@ class TestCreateUser:
             "password": "weak",
             "turnstile_token": "test-token",
         }
-        response = await client.post("/api/v1/users/", json=user_data)
+        response = await client.post("/api/v1/users", json=user_data)
         assert response.status_code == 400
 
 
@@ -1000,7 +1000,7 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=ASC&search=sortuser")
+        response = await client.get("/api/v1/users?sort_by=user_id&sort_order=ASC&search=sortuser")
         assert response.status_code == 200
         data = response.json()
         # Only our test users should be returned
@@ -1030,7 +1030,7 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users/?sort_by=user_id&sort_order=DESC&search=sortuser")
+        response = await client.get("/api/v1/users?sort_by=user_id&sort_order=DESC&search=sortuser")
         assert response.status_code == 200
         data = response.json()
         returned_usernames = [u["username"] for u in data["users"]]
@@ -1059,7 +1059,7 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users/?sort_by=username&sort_order=ASC&search=sortuser")
+        response = await client.get("/api/v1/users?sort_by=username&sort_order=ASC&search=sortuser")
         assert response.status_code == 200
         data = response.json()
         returned_usernames = [u["username"] for u in data["users"]]
@@ -1088,7 +1088,7 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users/?sort_by=username&sort_order=DESC&search=sortuser")
+        response = await client.get("/api/v1/users?sort_by=username&sort_order=DESC&search=sortuser")
         assert response.status_code == 200
         data = response.json()
         returned_usernames = [u["username"] for u in data["users"]]
@@ -1117,7 +1117,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=date_joined&sort_order=ASC&search=datejoinuser")
+        response = await client.get("/api/v1/users?sort_by=date_joined&sort_order=ASC&search=datejoinuser")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1147,7 +1147,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=date_joined&sort_order=DESC&search=datejoinuser_desc")
+        response = await client.get("/api/v1/users?sort_by=date_joined&sort_order=DESC&search=datejoinuser_desc")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1177,7 +1177,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=last_login&sort_order=ASC&search=loginuser")
+        response = await client.get("/api/v1/users?sort_by=last_login&sort_order=ASC&search=loginuser")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1208,7 +1208,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=last_login&sort_order=DESC&search=loginuser_desc")
+        response = await client.get("/api/v1/users?sort_by=last_login&sort_order=DESC&search=loginuser_desc")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1245,7 +1245,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=image_posts&sort_order=ASC&search=imgpostuser")
+        response = await client.get("/api/v1/users?sort_by=image_posts&sort_order=ASC&search=imgpostuser")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1273,7 +1273,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=image_posts&sort_order=DESC&search=imgpostuser_desc")
+        response = await client.get("/api/v1/users?sort_by=image_posts&sort_order=DESC&search=imgpostuser_desc")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1301,7 +1301,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=posts&sort_order=ASC&search=postsuser")
+        response = await client.get("/api/v1/users?sort_by=posts&sort_order=ASC&search=postsuser")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1329,7 +1329,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=posts&sort_order=DESC&search=postsuser_desc")
+        response = await client.get("/api/v1/users?sort_by=posts&sort_order=DESC&search=postsuser_desc")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1357,7 +1357,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=favorites&sort_order=ASC&search=favuser")
+        response = await client.get("/api/v1/users?sort_by=favorites&sort_order=ASC&search=favuser")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1385,7 +1385,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users/?sort_by=favorites&sort_order=DESC&search=favuser_desc")
+        response = await client.get("/api/v1/users?sort_by=favorites&sort_order=DESC&search=favuser_desc")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1396,7 +1396,7 @@ class TestUserSorting:
 
     async def test_default_sorting(self, client: AsyncClient, db_session: AsyncSession):
         """Test default sorting behavior when no sort parameters are provided."""
-        response = await client.get("/api/v1/users/")
+        response = await client.get("/api/v1/users")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) > 0
@@ -1429,12 +1429,12 @@ class TestUserSorting:
         await db_session.commit()
 
         # Test ASC order - filter to only our test users
-        response_asc = await client.get("/api/v1/users/?sort_by=last_login&sort_order=ASC&search=nullloginuser")
+        response_asc = await client.get("/api/v1/users?sort_by=last_login&sort_order=ASC&search=nullloginuser")
         assert response_asc.status_code == 200
         data_asc = response_asc.json()
 
         # Test DESC order - filter to only our test users
-        response_desc = await client.get("/api/v1/users/?sort_by=last_login&sort_order=DESC&search=nullloginuser")
+        response_desc = await client.get("/api/v1/users?sort_by=last_login&sort_order=DESC&search=nullloginuser")
         assert response_desc.status_code == 200
         data_desc = response_desc.json()
 
@@ -1476,14 +1476,14 @@ class TestUserSorting:
 
         # Get first page sorted by image_posts DESC
         response_page1 = await client.get(
-            "/api/v1/users/?sort_by=image_posts&sort_order=DESC&page=1&per_page=5&search=sortpaginuser"
+            "/api/v1/users?sort_by=image_posts&sort_order=DESC&page=1&per_page=5&search=sortpaginuser"
         )
         assert response_page1.status_code == 200
         data_page1 = response_page1.json()
 
         # Get second page
         response_page2 = await client.get(
-            "/api/v1/users/?sort_by=image_posts&sort_order=DESC&page=2&per_page=5&search=sortpaginuser"
+            "/api/v1/users?sort_by=image_posts&sort_order=DESC&page=2&per_page=5&search=sortpaginuser"
         )
         assert response_page2.status_code == 200
         data_page2 = response_page2.json()
@@ -1527,7 +1527,7 @@ class TestUserSorting:
 
         # Search and sort
         response = await client.get(
-            "/api/v1/users/?search=searchsortuser&sort_by=posts&sort_order=ASC"
+            "/api/v1/users?search=searchsortuser&sort_by=posts&sort_order=ASC"
         )
         assert response.status_code == 200
         data = response.json()
