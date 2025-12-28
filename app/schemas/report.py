@@ -10,9 +10,31 @@ These schemas handle:
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.config import ReportCategory
+
+# ===== Tag Suggestion Schemas =====
+
+
+class TagSuggestion(BaseModel):
+    """Schema for a tag suggestion in a report response."""
+
+    suggestion_id: int
+    tag_id: int
+    tag_name: str
+    tag_type: int | None = None
+    accepted: bool | None = None  # NULL=pending, True=approved, False=rejected
+
+    model_config = {"from_attributes": True}
+
+
+class SkippedTagsInfo(BaseModel):
+    """Feedback about tags that were skipped during report creation."""
+
+    already_on_image: list[int] = []  # Tag IDs already applied to image
+    invalid_tag_ids: list[int] = []  # Tag IDs that don't exist
+
 
 # ===== Report Schemas =====
 
@@ -25,6 +47,10 @@ class ReportCreate(BaseModel):
         description="Report category (1=repost, 2=inappropriate, 3=spam, 4=missing_tags, 127=other)",
     )
     reason_text: str | None = Field(None, max_length=1000, description="Optional explanation")
+    suggested_tag_ids: list[int] | None = Field(
+        None,
+        description="Tag IDs to suggest (only for MISSING_TAGS category)",
+    )
 
     @field_validator("reason_text")
     @classmethod
@@ -38,6 +64,21 @@ class ReportCreate(BaseModel):
         if v is None:
             return v
         return v.strip()
+
+    @field_validator("suggested_tag_ids")
+    @classmethod
+    def dedupe_tag_ids(cls, v: list[int] | None) -> list[int] | None:
+        """Remove duplicate tag IDs while preserving order."""
+        if v is None:
+            return v
+        return list(dict.fromkeys(v))
+
+    @model_validator(mode="after")
+    def validate_tag_suggestions(self) -> "ReportCreate":
+        """Validate tag suggestions are only for MISSING_TAGS category."""
+        if self.suggested_tag_ids and self.category != ReportCategory.MISSING_TAGS:
+            raise ValueError("Tag suggestions only allowed for MISSING_TAGS reports")
+        return self
 
 
 class ReportResponse(BaseModel):
@@ -55,6 +96,9 @@ class ReportResponse(BaseModel):
     created_at: datetime | None
     reviewed_by: int | None
     reviewed_at: datetime | None
+    admin_notes: str | None = None
+    suggested_tags: list[TagSuggestion] | None = None
+    skipped_tags: SkippedTagsInfo | None = None  # Only in create response
 
     model_config = {"from_attributes": True}
 
