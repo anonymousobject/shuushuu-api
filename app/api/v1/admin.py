@@ -40,10 +40,12 @@ from app.core.redis import get_redis
 from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_report import ImageReports
+from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
+from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.models.user_suspension import UserSuspensions
 from app.schemas.admin import (
@@ -67,6 +69,8 @@ from app.schemas.admin import (
     UserPermsResponse,
 )
 from app.schemas.report import (
+    ApplyTagSuggestionsRequest,
+    ApplyTagSuggestionsResponse,
     ReportActionRequest,
     ReportEscalateRequest,
     ReportListResponse,
@@ -755,6 +759,109 @@ async def dismiss_report(
     await db.commit()
 
     return MessageResponse(message="Report dismissed successfully")
+
+
+@router.post(
+    "/reports/{report_id}/apply-tag-suggestions",
+    response_model=ApplyTagSuggestionsResponse,
+)
+async def apply_tag_suggestions(
+    report_id: Annotated[int, Path(description="Report ID")],
+    request_data: ApplyTagSuggestionsRequest,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
+    db: AsyncSession = Depends(get_db),
+) -> ApplyTagSuggestionsResponse:
+    """
+    Apply tag suggestions from a MISSING_TAGS report.
+
+    Approves specified suggestions, rejects others, adds approved tags
+    to the image, and marks the report as reviewed.
+
+    Requires REPORT_MANAGE permission.
+    """
+    # Get the report
+    result = await db.execute(
+        select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
+    )
+    report = result.scalar_one_or_none()
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    if report.status != ReportStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Report has already been processed")
+
+    # Get all suggestions for this report
+    suggestions_result = await db.execute(
+        select(ImageReportTagSuggestions).where(
+            ImageReportTagSuggestions.report_id == report_id  # type: ignore[arg-type]
+        )
+    )
+    suggestions = list(suggestions_result.scalars().all())
+
+    if not suggestions:
+        raise HTTPException(status_code=400, detail="This report has no tag suggestions")
+
+    # Validate approved_suggestion_ids belong to this report
+    suggestion_ids = {s.suggestion_id for s in suggestions}
+    for sid in request_data.approved_suggestion_ids:
+        if sid not in suggestion_ids:
+            raise HTTPException(status_code=400, detail=f"Invalid suggestion ID: {sid}")
+
+    # Get existing tags on image
+    existing_tags_result = await db.execute(
+        select(TagLinks.tag_id).where(TagLinks.image_id == report.image_id)  # type: ignore[arg-type]
+    )
+    existing_tag_ids = set(existing_tags_result.scalars().all())
+
+    approved_ids = set(request_data.approved_suggestion_ids)
+    applied_tags: list[int] = []
+    already_present: list[int] = []
+
+    for suggestion in suggestions:
+        if suggestion.suggestion_id in approved_ids:
+            suggestion.accepted = True
+            # Add tag to image if not already present
+            if suggestion.tag_id not in existing_tag_ids:
+                tag_link = TagLinks(image_id=report.image_id, tag_id=suggestion.tag_id)
+                db.add(tag_link)
+                applied_tags.append(suggestion.tag_id)
+                existing_tag_ids.add(suggestion.tag_id)  # Track to avoid duplicates
+            else:
+                already_present.append(suggestion.tag_id)
+        else:
+            suggestion.accepted = False
+
+    # Update report
+    report.status = ReportStatus.REVIEWED
+    report.reviewed_by = current_user.user_id
+    report.reviewed_at = datetime.now(UTC)
+    if request_data.admin_notes:
+        report.admin_notes = request_data.admin_notes
+
+    # Log action
+    action = AdminActions(
+        user_id=current_user.user_id,
+        action_type=AdminActionType.REPORT_ACTION,
+        report_id=report_id,
+        image_id=report.image_id,
+        details={
+            "action": "apply_tag_suggestions",
+            "approved_count": len(approved_ids),
+            "rejected_count": len(suggestions) - len(approved_ids),
+            "applied_tags": applied_tags,
+        },
+    )
+    db.add(action)
+
+    await db.commit()
+
+    return ApplyTagSuggestionsResponse(
+        message=f"Applied {len(applied_tags)} tags to image",
+        applied_tags=applied_tags,
+        already_present=already_present,
+    )
 
 
 @router.post("/reports/{report_id}/action", response_model=MessageResponse)

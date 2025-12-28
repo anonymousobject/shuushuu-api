@@ -254,6 +254,24 @@ class ReviewListResponse(BaseModel):
     items: list[ReviewResponse]
 
 
+# ===== Tag Suggestion Admin Schemas =====
+
+
+class ApplyTagSuggestionsRequest(BaseModel):
+    """Request schema for applying tag suggestions."""
+
+    approved_suggestion_ids: list[int] = Field(..., description="IDs of suggestions to approve")
+    admin_notes: str | None = Field(None, max_length=2000, description="Optional admin notes")
+
+
+class ApplyTagSuggestionsResponse(BaseModel):
+    """Response schema for apply tag suggestions endpoint."""
+
+    message: str
+    applied_tags: list[int]  # Tag IDs actually added to image
+    already_present: list[int] = []  # Tag IDs that were already on image
+
+
 # ===== Simple Response =====
 
 
