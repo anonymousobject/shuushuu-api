@@ -14,8 +14,11 @@ from app.config import ImageStatus, ReportStatus, ReviewStatus
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.image_report import ImageReports
+from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
+from app.models.tag import Tags
+from app.models.tag_link import TagLinks
 from app.models.user import Users
 
 
@@ -114,6 +117,29 @@ async def grant_permission(db_session: AsyncSession, user_id: int, perm_title: s
         user_group = UserGroups(user_id=user_id, group_id=group.group_id)
         db_session.add(user_group)
 
+    await db_session.commit()
+
+
+async def create_test_tags(db_session: AsyncSession, count: int = 3) -> list[Tags]:
+    """Create test tags and return them."""
+    tags = []
+    for i in range(count):
+        tag = Tags(
+            title=f"test_tag_{i}",
+            type=1,  # Theme
+        )
+        db_session.add(tag)
+        tags.append(tag)
+    await db_session.commit()
+    for tag in tags:
+        await db_session.refresh(tag)
+    return tags
+
+
+async def add_tag_to_image(db_session: AsyncSession, image_id: int, tag_id: int) -> None:
+    """Add a tag to an image."""
+    tag_link = TagLinks(image_id=image_id, tag_id=tag_id)
+    db_session.add(tag_link)
     await db_session.commit()
 
 
@@ -655,3 +681,144 @@ class TestReportValidation:
         To enforce valid values, add a validator to ReportActionRequest schema.
         """
         pass
+
+
+@pytest.mark.api
+class TestReportWithTagSuggestions:
+    """Tests for MISSING_TAGS reports with tag suggestions."""
+
+    async def test_report_with_valid_tag_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating MISSING_TAGS report with valid tag suggestions."""
+        user, password = await create_auth_user(db_session, username="taguser1")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,  # MISSING_TAGS
+                "reason_text": "Missing character tags",
+                "suggested_tag_ids": [t.tag_id for t in tags],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["category"] == 4
+        assert data["suggested_tags"] is not None
+        assert len(data["suggested_tags"]) == 3
+
+    async def test_report_skips_invalid_tag_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that invalid tag IDs are skipped and reported."""
+        user, password = await create_auth_user(db_session, username="taguser2")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "suggested_tag_ids": [tags[0].tag_id, 999999, tags[1].tag_id],  # 999999 is invalid
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["suggested_tags"]) == 2
+        assert data["skipped_tags"]["invalid_tag_ids"] == [999999]
+
+    async def test_report_skips_tags_already_on_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tags already on image are skipped and reported."""
+        user, password = await create_auth_user(db_session, username="taguser3")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        # Add first tag to image
+        await add_tag_to_image(db_session, image.image_id, tags[0].tag_id)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "suggested_tag_ids": [t.tag_id for t in tags],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["suggested_tags"]) == 2
+        assert tags[0].tag_id in data["skipped_tags"]["already_on_image"]
+
+    async def test_report_rejects_tag_suggestions_for_non_missing_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag suggestions are rejected for non-MISSING_TAGS categories."""
+        user, password = await create_auth_user(db_session, username="taguser4")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 1,  # REPOST, not MISSING_TAGS
+                "suggested_tag_ids": [t.tag_id for t in tags],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_report_with_duplicate_tag_ids_dedupes(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that duplicate tag IDs are deduplicated."""
+        user, password = await create_auth_user(db_session, username="taguser5")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "suggested_tag_ids": [tags[0].tag_id, tags[0].tag_id, tags[1].tag_id],  # Duplicate
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["suggested_tags"]) == 2
+
+    async def test_report_missing_tags_without_suggestions_still_works(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test MISSING_TAGS report without suggestions (just reason_text) still works."""
+        user, password = await create_auth_user(db_session, username="taguser6")
+        image = await create_test_image(db_session, user.user_id)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "reason_text": "Missing some tags but I don't know which ones",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["suggested_tags"] is None or len(data["suggested_tags"]) == 0
