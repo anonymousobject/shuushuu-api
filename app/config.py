@@ -245,6 +245,7 @@ class ReportCategory:
         INAPPROPRIATE: "Inappropriate Image",
         SPAM: "Spam",
         MISSING_TAGS: "Missing Tag Info",
+        SPOILER: "Spoiler",
         OTHER: "Other",
     }
 
