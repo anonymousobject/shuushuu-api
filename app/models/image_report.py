@@ -40,6 +40,9 @@ class ImageReportBase(SQLModel):
     # Status: 0=pending, 1=reviewed, 2=dismissed
     status: int = Field(default=ReportStatus.PENDING)
 
+    # Optional admin notes for moderator comments
+    admin_notes: str | None = Field(default=None)
+
 
 class ImageReports(ImageReportBase, table=True):
     """
