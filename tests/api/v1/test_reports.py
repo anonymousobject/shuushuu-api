@@ -413,6 +413,46 @@ class TestAdminReportDismiss:
 
         assert response.status_code == 400
 
+    async def test_dismiss_report_with_tag_suggestions_marks_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test dismissing report with tag suggestions marks all as rejected."""
+        admin, password = await create_auth_user(db_session, username="dismisstest", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # MISSING_TAGS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/dismiss",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify all suggestions marked as rejected
+        for s in suggestions:
+            await db_session.refresh(s)
+            assert s.accepted is False
+
 
 @pytest.mark.api
 class TestAdminReportAction:

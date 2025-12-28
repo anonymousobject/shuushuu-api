@@ -741,6 +741,15 @@ async def dismiss_report(
     if report.status != ReportStatus.PENDING:
         raise HTTPException(status_code=400, detail="Report has already been processed")
 
+    # Mark all tag suggestions as rejected
+    suggestions_result = await db.execute(
+        select(ImageReportTagSuggestions).where(
+            ImageReportTagSuggestions.report_id == report_id  # type: ignore[arg-type]
+        )
+    )
+    for suggestion in suggestions_result.scalars().all():
+        suggestion.accepted = False
+
     # Update report
     report.status = ReportStatus.DISMISSED
     report.reviewed_by = current_user.user_id
