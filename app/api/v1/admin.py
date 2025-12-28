@@ -45,6 +45,7 @@ from app.models.image_review import ImageReviews
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
+from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.models.user_suspension import UserSuspensions
@@ -83,6 +84,7 @@ from app.schemas.report import (
     ReviewListResponse,
     ReviewResponse,
     ReviewVoteRequest,
+    TagSuggestion,
     VoteResponse,
 )
 
@@ -705,10 +707,37 @@ async def list_reports(
     result = await db.execute(query)
     rows = result.all()
 
+    # Collect report IDs to fetch tag suggestions
+    report_ids = [report.report_id for report, _ in rows]
+
+    # Fetch tag suggestions for all reports in one query
+    suggestions_by_report: dict[int, list[TagSuggestion]] = {}
+    if report_ids:
+        suggestions_result = await db.execute(
+            select(ImageReportTagSuggestions, Tags)
+            .join(Tags, Tags.tag_id == ImageReportTagSuggestions.tag_id)
+            .where(ImageReportTagSuggestions.report_id.in_(report_ids))  # type: ignore[union-attr]
+        )
+        for suggestion, tag in suggestions_result.all():
+            if suggestion.report_id not in suggestions_by_report:
+                suggestions_by_report[suggestion.report_id] = []
+            suggestions_by_report[suggestion.report_id].append(
+                TagSuggestion(
+                    suggestion_id=suggestion.suggestion_id or 0,
+                    tag_id=suggestion.tag_id,
+                    tag_name=tag.title or "",
+                    tag_type=tag.type,
+                    accepted=suggestion.accepted,
+                )
+            )
+
     items: list[ReportResponse] = []
     for report, username in rows:
         response = ReportResponse.model_validate(report)
         response.username = username
+        # Add tag suggestions if present
+        if report.report_id in suggestions_by_report:
+            response.suggested_tags = suggestions_by_report[report.report_id]
         items.append(response)
 
     return ReportListResponse(

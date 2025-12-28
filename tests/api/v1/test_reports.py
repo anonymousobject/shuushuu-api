@@ -355,6 +355,43 @@ class TestAdminReportsList:
 
         assert response.status_code == 403
 
+    async def test_list_reports_includes_tag_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that list reports includes tag suggestions for MISSING_TAGS reports."""
+        admin, password = await create_auth_user(db_session, username="listtest", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, admin.username, password)
+
+        # Create report with suggestions
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # MISSING_TAGS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/admin/reports",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        report_item = data["items"][0]
+        assert report_item["suggested_tags"] is not None
+        assert len(report_item["suggested_tags"]) == 2
+
 
 @pytest.mark.api
 class TestAdminReportDismiss:
