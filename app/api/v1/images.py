@@ -28,7 +28,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
-from app.config import ReportStatus, settings
+from app.config import ReportCategory, ReportStatus, settings
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
@@ -39,6 +39,7 @@ from app.models import (
     Favorites,
     ImageRatings,
     ImageReports,
+    ImageReportTagSuggestions,
     Images,
     TagLinks,
     Tags,
@@ -54,7 +55,7 @@ from app.schemas.image import (
     ImageTagsResponse,
     ImageUploadResponse,
 )
-from app.schemas.report import ReportCreate, ReportResponse
+from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
 from app.schemas.user import UserListResponse, UserResponse
 from app.services.image_processing import get_image_dimensions
 from app.services.iqdb import check_iqdb_similarity
@@ -1169,8 +1170,13 @@ async def report_image(
     - 1: Repost (duplicate of another image)
     - 2: Inappropriate content
     - 3: Spam
-    - 4: Missing tags
+    - 4: Missing tags (can include tag suggestions)
+    - 5: Spoiler
     - 127: Other
+
+    For MISSING_TAGS (category 4), users can optionally include a list of
+    suggested_tag_ids. Invalid tags and tags already on the image are
+    skipped and reported in the response.
 
     A user can only have one pending report per image. The report goes into
     a triage queue for admin review.
@@ -1198,6 +1204,31 @@ async def report_image(
             detail="You already have a pending report for this image",
         )
 
+    # Process tag suggestions for MISSING_TAGS category
+    skipped_tags = SkippedTagsInfo()
+    valid_tag_ids: list[int] = []
+
+    if report_data.category == ReportCategory.MISSING_TAGS and report_data.suggested_tag_ids:
+        # Get existing tags on image
+        existing_tags_result = await db.execute(
+            select(TagLinks.tag_id).where(TagLinks.image_id == image_id)  # type: ignore[arg-type]
+        )
+        existing_tag_ids = set(existing_tags_result.scalars().all())
+
+        # Validate which tag IDs exist
+        valid_tags_result = await db.execute(
+            select(Tags.tag_id).where(Tags.tag_id.in_(report_data.suggested_tag_ids))  # type: ignore[union-attr]
+        )
+        valid_db_tag_ids = set(valid_tags_result.scalars().all())
+
+        for tag_id in report_data.suggested_tag_ids:
+            if tag_id not in valid_db_tag_ids:
+                skipped_tags.invalid_tag_ids.append(tag_id)
+            elif tag_id in existing_tag_ids:
+                skipped_tags.already_on_image.append(tag_id)
+            else:
+                valid_tag_ids.append(tag_id)
+
     # Create the report
     new_report = ImageReports(
         image_id=image_id,
@@ -1207,8 +1238,22 @@ async def report_image(
         status=ReportStatus.PENDING,
     )
     db.add(new_report)
+    await db.flush()  # Get report_id
+
+    # Create tag suggestions
+    suggestions: list[ImageReportTagSuggestions] = []
+    for tag_id in valid_tag_ids:
+        suggestion = ImageReportTagSuggestions(
+            report_id=new_report.report_id,
+            tag_id=tag_id,
+        )
+        db.add(suggestion)
+        suggestions.append(suggestion)
+
     await db.commit()
     await db.refresh(new_report)
+    for s in suggestions:
+        await db.refresh(s)
 
     logger.info(
         "image_reported",
@@ -1216,9 +1261,35 @@ async def report_image(
         image_id=image_id,
         user_id=current_user.id,
         category=report_data.category,
+        tag_suggestions_count=len(suggestions),
     )
 
+    # Build response
     response = ReportResponse.model_validate(new_report)
-    # Include reporting user's username in the response for convenience
     response.username = current_user.username
+
+    # Add tag suggestions to response
+    if suggestions:
+        # Fetch tag names for the suggestions
+        tag_ids = [s.tag_id for s in suggestions]
+        tags_result = await db.execute(
+            select(Tags).where(Tags.tag_id.in_(tag_ids))  # type: ignore[union-attr]
+        )
+        tags_by_id = {t.tag_id: t for t in tags_result.scalars().all()}
+
+        response.suggested_tags = [
+            TagSuggestion(
+                suggestion_id=s.suggestion_id or 0,
+                tag_id=s.tag_id,
+                tag_name=tags_by_id[s.tag_id].title or "",
+                tag_type=tags_by_id[s.tag_id].type,
+                accepted=s.accepted,
+            )
+            for s in suggestions
+        ]
+
+    # Include skipped tags info if any were skipped
+    if skipped_tags.invalid_tag_ids or skipped_tags.already_on_image:
+        response.skipped_tags = skipped_tags
+
     return response
