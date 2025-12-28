@@ -453,6 +453,37 @@ class TestAdminReportDismiss:
             await db_session.refresh(s)
             assert s.accepted is False
 
+    async def test_dismiss_report_with_admin_notes(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test dismissing report with admin notes."""
+        admin, password = await create_auth_user(db_session, username="dismissnotes", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/dismiss",
+            json={"admin_notes": "Not a valid report, user misunderstood."},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify admin notes saved
+        await db_session.refresh(report)
+        assert report.admin_notes == "Not a valid report, user misunderstood."
+
 
 @pytest.mark.api
 class TestAdminReportAction:

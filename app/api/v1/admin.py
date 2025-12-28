@@ -72,6 +72,7 @@ from app.schemas.report import (
     ApplyTagSuggestionsRequest,
     ApplyTagSuggestionsResponse,
     ReportActionRequest,
+    ReportDismissRequest,
     ReportEscalateRequest,
     ReportListResponse,
     ReportResponse,
@@ -724,9 +725,12 @@ async def dismiss_report(
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
     db: AsyncSession = Depends(get_db),
+    request_data: ReportDismissRequest | None = None,
 ) -> MessageResponse:
     """
     Dismiss a report without taking action on the image.
+
+    Optionally include admin_notes to document why the report was dismissed.
 
     Requires REPORT_MANAGE permission.
     """
@@ -754,6 +758,8 @@ async def dismiss_report(
     report.status = ReportStatus.DISMISSED
     report.reviewed_by = current_user.user_id
     report.reviewed_at = datetime.now(UTC)
+    if request_data and request_data.admin_notes:
+        report.admin_notes = request_data.admin_notes
 
     # Log action
     action = AdminActions(

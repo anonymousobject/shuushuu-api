@@ -121,6 +121,12 @@ class ReportListResponse(BaseModel):
     items: list[ReportResponse]
 
 
+class ReportDismissRequest(BaseModel):
+    """Schema for dismissing a report with optional notes."""
+
+    admin_notes: str | None = Field(None, max_length=2000, description="Optional admin notes")
+
+
 class ReportActionRequest(BaseModel):
     """Schema for taking action on a report (changing image status)."""
 
