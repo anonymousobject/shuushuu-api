@@ -1218,4 +1218,7 @@ async def report_image(
         category=report_data.category,
     )
 
-    return ReportResponse.model_validate(new_report)
+    response = ReportResponse.model_validate(new_report)
+    # Include reporting user's username in the response for convenience
+    response.username = current_user.username
+    return response

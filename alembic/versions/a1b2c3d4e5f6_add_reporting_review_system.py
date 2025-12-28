@@ -314,14 +314,111 @@ def upgrade() -> None:
         "INSERT INTO perms (title, `desc`) VALUES ('review_close_early', 'Close review before deadline')"
     )
 
+    # =========================================================================
+    # 6. Add new permissions to existing admin groups
+    # =========================================================================
+
+    # Insert permissions for 'mods' by looking up the group's id by title and avoid duplicates
+    # Note: if the 'mods' group does not exist on a target instance, the SELECT will return
+    # no rows and the INSERT will be a no-op — this keeps the migration safe across installs.
+    op.execute(
+        """
+        INSERT INTO group_perms (group_id, perm_id, permvalue)
+        SELECT g.group_id, p.perm_id, 1
+        FROM perms p
+        JOIN groups g ON g.title = 'mods'
+        WHERE p.title IN (
+            'image_tag_remove',
+            'privmsg_view',
+            'report_view',
+            'report_manage',
+            'review_view',
+            'review_start',
+            'review_vote',
+            'review_close_early'
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM group_perms gp WHERE gp.group_id = g.group_id AND gp.perm_id = p.perm_id
+        )
+        """
+    )
+
+    # Insert permissions for 'admins' by looking up the group's id by title and avoid duplicates
+    op.execute(
+        """
+        INSERT INTO group_perms (group_id, perm_id, permvalue)
+        SELECT g.group_id, p.perm_id, 1
+        FROM perms p
+        JOIN groups g ON g.title = 'admins'
+        WHERE p.title IN (
+            'image_tag_remove',
+            'privmsg_view',
+            'report_view',
+            'report_manage',
+            'review_view',
+            'review_start',
+            'review_vote',
+            'review_close_early'
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM group_perms gp WHERE gp.group_id = g.group_id AND gp.perm_id = p.perm_id
+        )
+        """
+    )
+
+
+
+
 
 def downgrade() -> None:
     """Revert reporting and review system changes."""
 
     # =========================================================================
-    # 5. Remove permissions
+    # 5. Remove permissions and related group assignments
     # =========================================================================
 
+    # Remove group_perms for the perms we added by looking up group ids by title to avoid relying on hardcoded ids
+    # Note: these DELETEs are safe to run even if the groups or permissions are missing; they
+    # will simply delete zero rows if nothing matches (no-op).
+    op.execute(
+        """
+        DELETE gp
+        FROM group_perms gp
+        JOIN perms p ON gp.perm_id = p.perm_id
+        JOIN groups g ON gp.group_id = g.group_id
+        WHERE g.title = 'mods' AND p.title IN (
+            'image_tag_remove',
+            'privmsg_view',
+            'report_view',
+            'report_manage',
+            'review_view',
+            'review_start',
+            'review_vote',
+            'review_close_early'
+        )
+        """
+    )
+
+    op.execute(
+        """
+        DELETE gp
+        FROM group_perms gp
+        JOIN perms p ON gp.perm_id = p.perm_id
+        JOIN groups g ON gp.group_id = g.group_id
+        WHERE g.title = 'admins' AND p.title IN (
+            'image_tag_remove',
+            'privmsg_view',
+            'report_view',
+            'report_manage',
+            'review_view',
+            'review_start',
+            'review_vote',
+            'review_close_early'
+        )
+        """
+    )
+
+    # Remove the perms themselves
     op.execute("DELETE FROM perms WHERE title = 'report_view'")
     op.execute("DELETE FROM perms WHERE title = 'report_manage'")
     op.execute("DELETE FROM perms WHERE title = 'review_view'")

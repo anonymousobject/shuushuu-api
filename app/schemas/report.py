@@ -46,6 +46,7 @@ class ReportResponse(BaseModel):
     report_id: int
     image_id: int
     user_id: int
+    username: str | None = None
     category: int | None
     category_label: str | None = None
     reason_text: str | None
