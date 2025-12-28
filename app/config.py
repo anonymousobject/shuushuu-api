@@ -237,6 +237,7 @@ class ReportCategory:
     INAPPROPRIATE = 2
     SPAM = 3
     MISSING_TAGS = 4
+    SPOILER = 5
     OTHER = 127
 
     LABELS = {
