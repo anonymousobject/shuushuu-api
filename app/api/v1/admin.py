@@ -753,8 +753,8 @@ async def list_reports(
 async def dismiss_report(
     report_id: Annotated[int, Path(description="Report ID")],
     request_data: ReportDismissRequest | None = None,
-    current_user: Annotated[Users, Depends(get_current_user)] = None,  # type: ignore[assignment]
-    _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))] = None,
+    current_user: Annotated[Users, Depends(get_current_user)],  # type: ignore[assignment]
+    _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
