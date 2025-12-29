@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import (
     AdminActionType,
     ImageStatus,
+    ReportCategory,
     ReportStatus,
     ReviewOutcome,
     ReviewStatus,
