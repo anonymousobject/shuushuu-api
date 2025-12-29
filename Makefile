@@ -4,7 +4,7 @@
 # Ensure bash is used for all commands (required for read -p in clean target)
 SHELL := /bin/bash
 
-.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps clean
+.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend clean
 
 # Default target
 help:
@@ -23,6 +23,7 @@ help:
 	@echo "  test-down    Stop test environment"
 	@echo "  test-logs    Follow all logs"
 	@echo "  test-ps      Show running containers"
+	@echo "  test-build-frontend     Rebuild frontend image"
 	@echo ""
 	@echo "Other:"
 	@echo "  clean        Stop all and remove volumes (DESTRUCTIVE)"
@@ -66,6 +67,9 @@ test-logs:
 
 test-ps:
 	$(COMPOSE_TEST) ps
+
+test-build-frontend:
+	$(COMPOSE_TEST) build --no-cache frontend
 
 # Cleanup (removes volumes - use with caution)
 clean:
