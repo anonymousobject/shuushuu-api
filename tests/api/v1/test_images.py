@@ -638,6 +638,134 @@ class TestImageDetailWithFavoriteStatus:
 
 
 @pytest.mark.api
+class TestListImagesFavoriteStatus:
+    """Tests for is_favorited field in list images endpoint."""
+
+    async def test_list_images_unauthenticated_shows_no_favorite_status(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that unauthenticated users see is_favorited=False for all images."""
+        # Create images
+        for i in range(3):
+            image_data = sample_image_data.copy()
+            image_data["source_url"] = f"http://example.com/image{i}.jpg"
+            image = Images(**image_data)
+            db_session.add(image)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert len(data["images"]) == 3
+        for img in data["images"]:
+            assert img["is_favorited"] is False
+
+    async def test_list_images_authenticated_not_favorited(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test that authenticated users who haven't favorited see is_favorited=False."""
+        # Create images
+        for i in range(3):
+            image_data = sample_image_data.copy()
+            image_data["source_url"] = f"http://example.com/image{i}.jpg"
+            image = Images(**image_data)
+            db_session.add(image)
+        await db_session.commit()
+
+        response = await authenticated_client.get("/api/v1/images")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert len(data["images"]) == 3
+        for img in data["images"]:
+            assert img["is_favorited"] is False
+
+    async def test_list_images_authenticated_with_favorites(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test that authenticated users see correct is_favorited status for each image."""
+        # Create 3 images
+        images = []
+        for i in range(3):
+            image_data = sample_image_data.copy()
+            image_data["source_url"] = f"http://example.com/image{i}.jpg"
+            image = Images(**image_data)
+            db_session.add(image)
+            images.append(image)
+        await db_session.commit()
+        for img in images:
+            await db_session.refresh(img)
+
+        # Favorite only the first and third images
+        favorite1 = Favorites(user_id=sample_user.user_id, image_id=images[0].image_id)
+        favorite3 = Favorites(user_id=sample_user.user_id, image_id=images[2].image_id)
+        db_session.add(favorite1)
+        db_session.add(favorite3)
+        await db_session.commit()
+
+        response = await authenticated_client.get("/api/v1/images")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert len(data["images"]) == 3
+
+        # Build a map of image_id -> is_favorited from response
+        favorited_status = {img["image_id"]: img["is_favorited"] for img in data["images"]}
+
+        # Verify correct favorite status
+        assert favorited_status[images[0].image_id] is True
+        assert favorited_status[images[1].image_id] is False
+        assert favorited_status[images[2].image_id] is True
+
+    async def test_list_images_favorite_status_user_specific(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """Test that favorite status is specific to the authenticated user."""
+        # Create another user who will have different favorites
+        other_user = Users(
+            username="other_user",
+            password="fakehash",
+            password_type="bcrypt",
+            salt="testsalt0000099",
+            email="other@example.com",
+        )
+        db_session.add(other_user)
+
+        # Create an image
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        await db_session.refresh(other_user)
+
+        # Other user favorites the image (not our authenticated user)
+        favorite = Favorites(user_id=other_user.user_id, image_id=image.image_id)
+        db_session.add(favorite)
+        await db_session.commit()
+
+        # Our authenticated user should still see is_favorited=False
+        response = await authenticated_client.get("/api/v1/images")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert len(data["images"]) == 1
+        assert data["images"][0]["is_favorited"] is False
+
+
+@pytest.mark.api
 class TestFavoritedByUserIdFilter:
     """Tests for favorited_by_user_id filter in image list endpoint."""
 
