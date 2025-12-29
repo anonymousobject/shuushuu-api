@@ -1293,16 +1293,25 @@ async def report_image(
         )
         tags_by_id = {t.tag_id: t for t in tags_result.scalars().all()}
 
-        response.suggested_tags = [
-            TagSuggestion(
-                suggestion_id=s.suggestion_id or 0,
-                tag_id=s.tag_id,
-                tag_name=tags_by_id[s.tag_id].title or "",
-                tag_type=tags_by_id[s.tag_id].type,
-                accepted=s.accepted,
+        response.suggested_tags = []
+        for s in suggestions:
+            tag = tags_by_id.get(s.tag_id)
+            if not tag:
+                logger.warning(
+                    "missing_tag_for_suggestion",
+                    suggestion_id=s.suggestion_id,
+                    tag_id=s.tag_id,
+                )
+                continue
+            response.suggested_tags.append(
+                TagSuggestion(
+                    suggestion_id=s.suggestion_id or 0,
+                    tag_id=s.tag_id,
+                    tag_name=tag.title or "",
+                    tag_type=tag.type,
+                    accepted=s.accepted,
+                )
             )
-            for s in suggestions
-        ]
 
     # Include skipped tags info if any were skipped
     if skipped_tags.invalid_tag_ids or skipped_tags.already_on_image:
