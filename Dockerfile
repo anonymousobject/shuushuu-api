@@ -21,8 +21,9 @@ COPY pyproject.toml ./
 # Install Python dependencies using uv by installing the project (pyproject-based build)
 RUN uv pip install --system -r pyproject.toml
 
-# Copy application code
-COPY . .
+# Copy only what's needed for runtime (explicit allowlist)
+COPY app/ ./app/
+COPY alembic/ ./alembic/
 
 # Expose port
 EXPOSE 8000
