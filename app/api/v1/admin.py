@@ -795,7 +795,6 @@ async def dismiss_report(
     details = {}
     if request_data and request_data.admin_notes:
         details["admin_notes"] = request_data.admin_notes
-    
     action = AdminActions(
         user_id=current_user.user_id,
         action_type=AdminActionType.REPORT_DISMISS,
