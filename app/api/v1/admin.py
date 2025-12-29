@@ -715,8 +715,8 @@ async def list_reports(
     if report_ids:
         suggestions_result = await db.execute(
             select(ImageReportTagSuggestions, Tags)
-            .join(Tags, Tags.tag_id == ImageReportTagSuggestions.tag_id)
-            .where(ImageReportTagSuggestions.report_id.in_(report_ids))  # type: ignore[union-attr]
+            .join(Tags, Tags.tag_id == ImageReportTagSuggestions.tag_id)  # type: ignore[arg-type]
+            .where(ImageReportTagSuggestions.report_id.in_(report_ids))  # type: ignore[attr-defined]
         )
         for suggestion, tag in suggestions_result.all():
             if suggestion.report_id not in suggestions_by_report:
@@ -855,7 +855,7 @@ async def apply_tag_suggestions(
 
     # Get existing tags on image
     existing_tags_result = await db.execute(
-        select(TagLinks.tag_id).where(TagLinks.image_id == report.image_id)  # type: ignore[arg-type]
+        select(TagLinks.tag_id).where(TagLinks.image_id == report.image_id)  # type: ignore[call-overload]
     )
     existing_tag_ids = set(existing_tags_result.scalars().all())
 

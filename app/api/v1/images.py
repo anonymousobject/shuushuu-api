@@ -1227,13 +1227,13 @@ async def report_image(
     if report_data.category == ReportCategory.MISSING_TAGS and report_data.suggested_tag_ids:
         # Get existing tags on image
         existing_tags_result = await db.execute(
-            select(TagLinks.tag_id).where(TagLinks.image_id == image_id)  # type: ignore[arg-type]
+            select(TagLinks.tag_id).where(TagLinks.image_id == image_id)  # type: ignore[call-overload]
         )
         existing_tag_ids = set(existing_tags_result.scalars().all())
 
         # Validate which tag IDs exist
         valid_tags_result = await db.execute(
-            select(Tags.tag_id).where(Tags.tag_id.in_(report_data.suggested_tag_ids))  # type: ignore[union-attr]
+            select(Tags.tag_id).where(Tags.tag_id.in_(report_data.suggested_tag_ids))  # type: ignore[call-overload,union-attr]
         )
         valid_db_tag_ids = set(valid_tags_result.scalars().all())
 
