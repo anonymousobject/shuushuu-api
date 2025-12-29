@@ -128,6 +128,7 @@ async def list_images(
         Query(description="Filter to images that have comments (true) or no comments (false)"),
     ] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: Users | None = Depends(get_optional_current_user),
 ) -> ImageDetailedListResponse:
     """
     Search and list images with comprehensive filtering.
@@ -327,11 +328,26 @@ async def list_images(
     result = await db.execute(final_query)
     images = result.scalars().all()
 
+    # Get favorite status for authenticated users (separate query for clean separation)
+    favorited_ids: set[int] = set()
+    if current_user and images:
+        image_ids = [img.image_id for img in images]
+        fav_result = await db.execute(
+            select(Favorites.image_id).where(  # type: ignore[call-overload]
+                Favorites.user_id == current_user.id,
+                Favorites.image_id.in_(image_ids),  # type: ignore[attr-defined]
+            )
+        )
+        favorited_ids = set(fav_result.scalars().all())
+
     return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        images=[ImageDetailedResponse.from_db_model(img) for img in images],
+        images=[
+            ImageDetailedResponse.from_db_model(img, is_favorited=img.image_id in favorited_ids)
+            for img in images
+        ],
     )
 
 

@@ -1,18 +1,9 @@
-# Don't copy these to Docker image
+# Prevent cache invalidation from unrelated changes
+.git/
 .venv/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
 .pytest_cache/
 .coverage
 htmlcov/
-.git/
-.gitignore
-*.md
-.env
-.env.*
-docker-compose*.yml
-Dockerfile
-.dockerignore
 .ruff_cache/
