@@ -752,9 +752,9 @@ async def list_reports(
 @router.post("/reports/{report_id}/dismiss", response_model=MessageResponse)
 async def dismiss_report(
     report_id: Annotated[int, Path(description="Report ID")],
-    request_data: ReportDismissRequest | None = None,
-    current_user: Annotated[Users, Depends(get_current_user)],  # type: ignore[assignment]
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
+    request_data: ReportDismissRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
@@ -843,8 +843,7 @@ async def apply_tag_suggestions(
     # Validate this is a MISSING_TAGS report
     if report.category != ReportCategory.MISSING_TAGS:
         raise HTTPException(
-            status_code=400,
-            detail="Tag suggestions can only be applied to MISSING_TAGS reports"
+            status_code=400, detail="Tag suggestions can only be applied to MISSING_TAGS reports"
         )
 
     # Get all suggestions for this report
