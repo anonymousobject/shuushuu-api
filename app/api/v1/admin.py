@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import (
     AdminActionType,
     ImageStatus,
+    ReportCategory,
     ReportStatus,
     ReviewOutcome,
     ReviewStatus,
@@ -753,8 +754,8 @@ async def dismiss_report(
     report_id: Annotated[int, Path(description="Report ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
-    db: AsyncSession = Depends(get_db),
     request_data: ReportDismissRequest | None = None,
+    db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
     Dismiss a report without taking action on the image.
@@ -791,12 +792,15 @@ async def dismiss_report(
         report.admin_notes = request_data.admin_notes
 
     # Log action
+    details = {}
+    if request_data and request_data.admin_notes:
+        details["admin_notes"] = request_data.admin_notes
     action = AdminActions(
         user_id=current_user.user_id,
         action_type=AdminActionType.REPORT_DISMISS,
         report_id=report_id,
         image_id=report.image_id,
-        details={},
+        details=details,
     )
     db.add(action)
 
@@ -835,6 +839,12 @@ async def apply_tag_suggestions(
 
     if report.status != ReportStatus.PENDING:
         raise HTTPException(status_code=400, detail="Report has already been processed")
+
+    # Validate this is a MISSING_TAGS report
+    if report.category != ReportCategory.MISSING_TAGS:
+        raise HTTPException(
+            status_code=400, detail="Tag suggestions can only be applied to MISSING_TAGS reports"
+        )
 
     # Get all suggestions for this report
     suggestions_result = await db.execute(

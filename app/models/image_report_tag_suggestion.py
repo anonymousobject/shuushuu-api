@@ -8,7 +8,7 @@ contribution metrics and potential promotion to tagging roles.
 
 from datetime import datetime
 
-from sqlalchemy import Column, ForeignKey, Index, Integer, text
+from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -36,6 +36,7 @@ class ImageReportTagSuggestions(ImageReportTagSuggestionBase, table=True):
         Index("idx_report_id", "report_id"),
         Index("idx_tag_id", "tag_id"),
         Index("idx_accepted", "accepted"),
+        UniqueConstraint("report_id", "tag_id", name="unique_report_tag"),
     )
 
     suggestion_id: int | None = Field(default=None, primary_key=True)

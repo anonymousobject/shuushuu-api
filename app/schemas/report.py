@@ -68,9 +68,12 @@ class ReportCreate(BaseModel):
     @field_validator("suggested_tag_ids")
     @classmethod
     def dedupe_tag_ids(cls, v: list[int] | None) -> list[int] | None:
-        """Remove duplicate tag IDs while preserving order."""
-        if v is None:
-            return v
+        """Remove duplicate tag IDs while preserving order.
+
+        Also normalizes empty lists to None so that [] and None are treated equivalently.
+        """
+        if not v:
+            return None
         return list(dict.fromkeys(v))
 
     @model_validator(mode="after")
