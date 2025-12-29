@@ -1146,3 +1146,91 @@ class TestAdminApplyTagSuggestions:
         )
 
         assert response.status_code == 403
+
+    async def test_apply_to_non_missing_tags_report_fails(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test applying tag suggestions to non-MISSING_TAGS report fails."""
+        admin, password = await create_auth_user(db_session, username="applytest6", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, password)
+
+        # Create a REPOST report (category 1), not MISSING_TAGS (category 4)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,  # REPOST
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": []},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 400
+        assert "MISSING_TAGS" in response.json()["detail"]
+
+    async def test_tag_already_added_between_report_and_review(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test handling when a suggested tag is already on the image at review time."""
+        admin, password = await create_auth_user(db_session, username="applytest7", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        token = await login_user(client, admin.username, password)
+
+        # Create MISSING_TAGS report with suggestions
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # MISSING_TAGS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        # Add suggestions for all three tags
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        # Simulate someone already adding the first tag to the image
+        # (this happens between report creation and admin review)
+        await add_tag_to_image(db_session, image.image_id, tags[0].tag_id)
+
+        # Try to approve all suggestions
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": [s.suggestion_id for s in suggestions]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should have 2 applied tags (tags[1] and tags[2])
+        # and 1 already present (tags[0])
+        assert len(data["applied_tags"]) == 2
+        assert len(data["already_present"]) == 1
+        assert tags[0].tag_id in data["already_present"]
+
+        # Verify only 2 new tags were actually added
+        from sqlalchemy import select as sql_select
+
+        tag_links = await db_session.execute(
+            sql_select(TagLinks).where(TagLinks.image_id == image.image_id)
+        )
+        all_tag_links = tag_links.scalars().all()
+        assert len(all_tag_links) == 3  # 1 already present + 2 newly added
