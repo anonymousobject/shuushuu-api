@@ -23,7 +23,7 @@ help:
 	@echo "  test-down    Stop test environment"
 	@echo "  test-logs    Follow all logs"
 	@echo "  test-ps      Show running containers"
-	@echo "  test-build-frontend  Rebuild frontend image"
+	@echo "  test-build-frontend     Rebuild frontend image"
 	@echo ""
 	@echo "Other:"
 	@echo "  clean        Stop all and remove volumes (DESTRUCTIVE)"
