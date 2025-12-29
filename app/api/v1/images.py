@@ -333,9 +333,9 @@ async def list_images(
     if current_user and images:
         image_ids = [img.image_id for img in images]
         fav_result = await db.execute(
-            select(Favorites.image_id).where(
+            select(Favorites.image_id).where(  # type: ignore[call-overload]
                 Favorites.user_id == current_user.id,
-                Favorites.image_id.in_(image_ids),  # type: ignore[union-attr]
+                Favorites.image_id.in_(image_ids),  # type: ignore[attr-defined]
             )
         )
         favorited_ids = set(fav_result.scalars().all())
