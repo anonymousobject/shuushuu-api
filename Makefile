@@ -1,6 +1,9 @@
 # Docker Compose environment management
 # Run `make` or `make help` to see available targets
 
+# Ensure bash is used for all commands (required for read -p in clean target)
+SHELL := /bin/bash
+
 .PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps clean
 
 # Default target
