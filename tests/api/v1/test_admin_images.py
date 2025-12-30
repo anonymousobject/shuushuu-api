@@ -346,30 +346,34 @@ class TestImageStatusChangeAuditLog:
         await grant_permission(db_session, admin.user_id, "image_edit")
         image = await create_test_image(db_session, admin.user_id)
 
+        # Capture IDs before API call to avoid lazy loading issues after expire_all()
+        image_id = image.image_id
+        admin_user_id = admin.user_id
+
         token = await login_user(client, admin.username, admin_password)
 
         response = await client.patch(
-            f"/api/v1/admin/images/{image.image_id}",
+            f"/api/v1/admin/images/{image_id}",
             json={"status": ImageStatus.SPOILER},
             headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 200
 
-        # Refresh session to see changes from the API request
+        # Expire cached objects to see changes from the API request
         db_session.expire_all()
 
         # Verify audit log entry
         stmt = select(AdminActions).where(
-            AdminActions.image_id == image.image_id,
+            AdminActions.image_id == image_id,
             AdminActions.action_type == AdminActionType.IMAGE_STATUS_CHANGE,
         )
         result = await db_session.execute(stmt)
         action = result.scalar_one_or_none()
 
         assert action is not None
-        assert action.user_id == admin.user_id
-        assert action.image_id == image.image_id
+        assert action.user_id == admin_user_id
+        assert action.image_id == image_id
         assert action.details is not None
         assert action.details.get("new_status") == ImageStatus.SPOILER
         assert action.details.get("previous_status") == ImageStatus.ACTIVE
@@ -393,33 +397,37 @@ class TestImageStatusChangeAuditLog:
         await db_session.commit()
         await db_session.refresh(repost_image)
 
+        # Capture IDs before API call to avoid lazy loading issues after expire_all()
+        repost_image_id = repost_image.image_id
+        original_image_id = original_image.image_id
+        admin_user_id = admin.user_id
+
         token = await login_user(client, admin.username, admin_password)
 
         response = await client.patch(
-            f"/api/v1/admin/images/{repost_image.image_id}",
+            f"/api/v1/admin/images/{repost_image_id}",
             json={
                 "status": ImageStatus.REPOST,
-                "replacement_id": original_image.image_id,
+                "replacement_id": original_image_id,
             },
             headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 200
 
-        # Refresh session to see changes from the API request
+        # Expire cached objects to see changes from the API request
         db_session.expire_all()
 
         # Verify audit log entry
         stmt = select(AdminActions).where(
-            AdminActions.image_id == repost_image.image_id,
+            AdminActions.image_id == repost_image_id,
             AdminActions.action_type == AdminActionType.IMAGE_STATUS_CHANGE,
         )
         result = await db_session.execute(stmt)
         action = result.scalar_one_or_none()
 
         assert action is not None
-        assert action.user_id == admin.user_id
+        assert action.user_id == admin_user_id
         assert action.details is not None
         assert action.details.get("new_status") == ImageStatus.REPOST
-        assert action.details.get("replacement_id") == original_image.image_id
-
+        assert action.details.get("replacement_id") == original_image_id
