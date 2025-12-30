@@ -17,7 +17,7 @@ services:
     container_name: shuushuu-frontend-test
     environment:
       - PUBLIC_ENVIRONMENT=test
-      - PUBLIC_API_URL=http://nginx
+      - PUBLIC_API_URL=http://nginx:8080
       - STORAGE_PATH=${STORAGE_PATH}
       - NODE_OPTIONS=--max-old-space-size=4096
     depends_on:
