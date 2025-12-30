@@ -59,6 +59,8 @@ from app.schemas.admin import (
     GroupPermsResponse,
     GroupResponse,
     GroupUpdate,
+    ImageStatusResponse,
+    ImageStatusUpdate,
     MessageResponse,
     PermListResponse,
     PermResponse,
@@ -662,6 +664,85 @@ async def list_user_groups(
         total=len(groups),
         groups=[UserGroupItem(group_id=g.group_id, title=g.title, desc=g.desc) for g in groups],
     )
+
+
+# ===== Direct Image Moderation =====
+
+
+@router.patch("/images/{image_id}", response_model=ImageStatusResponse)
+async def change_image_status(
+    image_id: Annotated[int, Path(description="Image ID")],
+    status_data: ImageStatusUpdate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.IMAGE_EDIT))],
+    db: AsyncSession = Depends(get_db),
+) -> ImageStatusResponse:
+    """
+    Change an image's status directly.
+
+    Use this for quick moderation actions without creating a report.
+
+    Requires IMAGE_EDIT permission.
+    """
+    # Get the image
+    result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    previous_status = image.status
+
+    # Handle repost status
+    if status_data.status == ImageStatus.REPOST:
+        if status_data.replacement_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="replacement_id is required when marking as repost",
+            )
+        if status_data.replacement_id == image_id:
+            raise HTTPException(
+                status_code=400,
+                detail="An image cannot be a repost of itself",
+            )
+        # Verify original image exists
+        original_result = await db.execute(
+            select(Images).where(Images.image_id == status_data.replacement_id)  # type: ignore[arg-type]
+        )
+        if not original_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=404,
+                detail="Original image not found",
+            )
+        image.replacement_id = status_data.replacement_id
+    else:
+        # Clear replacement_id when not a repost
+        image.replacement_id = None
+
+    # Update image status
+    image.status = status_data.status
+    image.status_user_id = current_user.user_id
+    image.status_updated = datetime.now(UTC)
+
+    # Log admin action
+    action = AdminActions(
+        user_id=current_user.user_id,
+        action_type=AdminActionType.IMAGE_STATUS_CHANGE,
+        image_id=image_id,
+        details={
+            "previous_status": previous_status,
+            "new_status": status_data.status,
+            "replacement_id": status_data.replacement_id,
+        },
+    )
+    db.add(action)
+
+    await db.commit()
+    await db.refresh(image)
+
+    return ImageStatusResponse.model_validate(image)
 
 
 # ===== Report Triage =====

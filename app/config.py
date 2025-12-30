@@ -218,6 +218,8 @@ class AdminActionType:
     REVIEW_VOTE = 4
     REVIEW_CLOSE = 5
     REVIEW_EXTEND = 6
+    IMAGE_STATUS_CHANGE = 7
+    COMMENT_DELETE = 8
 
 
 class TagType:
