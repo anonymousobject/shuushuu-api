@@ -12,6 +12,7 @@ These tests cover the /api/v1/tags endpoints including:
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
@@ -980,6 +981,13 @@ class TestCreateTag:
         data = response.json()
         assert data["title"] == "new tag"
         assert data["type"] == TagType.THEME
+
+        # Verify user_id is stored in database
+        tag_result = await db_session.execute(
+            select(Tags).where(Tags.tag_id == data["tag_id"])
+        )
+        created_tag = tag_result.scalar_one()
+        assert created_tag.user_id == admin.user_id
 
     async def test_create_tag_as_non_admin(
         self, client: AsyncClient, db_session: AsyncSession
