@@ -14,11 +14,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_password_hash
 from app.models.favorite import Favorites
 from app.models.image import Images
+from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.user import Users
 
 
@@ -915,24 +917,23 @@ class TestAvatarUpload:
         )
         assert response.status_code == 403
 
-    async def test_upload_avatar_admin_can_update_other(
+    async def test_upload_avatar_user_with_permission_can_update_other(
         self, client: AsyncClient, db_session: AsyncSession, tmp_path
     ):
-        """Test admin can upload avatar for other users."""
+        """Test user with USER_EDIT_PROFILE permission can upload avatar for other users."""
         from io import BytesIO
         from unittest.mock import patch
 
         from PIL import Image
 
-        # Create admin user
-        admin = Users(
+        # Create user with permission to edit profiles
+        editor = Users(
             username="avataradmin",
             password=get_password_hash("TestPassword123!"),
             password_type="bcrypt",
             salt="",
             email="avataradmin@example.com",
             active=1,
-            admin=1,
         )
         # Create regular user
         user = Users(
@@ -943,12 +944,29 @@ class TestAvatarUpload:
             email="avatar5@example.com",
             active=1,
         )
-        db_session.add(admin)
+        db_session.add(editor)
         db_session.add(user)
         await db_session.commit()
+        await db_session.refresh(editor)
         await db_session.refresh(user)
 
-        # Login as admin
+        # Grant USER_EDIT_PROFILE permission to editor
+        perm = Perms(title="user_edit_profile", desc="Edit user profiles")
+        db_session.add(perm)
+        await db_session.flush()
+
+        group = Groups(title="avatar_edit_group", desc="Avatar edit group")
+        db_session.add(group)
+        await db_session.flush()
+
+        group_perm = GroupPerms(group_id=group.group_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(group_perm)
+
+        user_group = UserGroups(user_id=editor.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Login as editor
         login_response = await client.post(
             "/api/v1/auth/login",
             json={"username": "avataradmin", "password": "TestPassword123!"},
@@ -961,7 +979,7 @@ class TestAvatarUpload:
         img.save(img_bytes, format="PNG")
         img_bytes.seek(0)
 
-        # Admin uploads to regular user's profile (mock storage path)
+        # Editor uploads to regular user's profile (mock storage path)
         with patch("app.services.avatar.settings") as mock_settings:
             mock_settings.AVATAR_STORAGE_PATH = str(tmp_path)
             mock_settings.MAX_AVATAR_SIZE = 1024 * 1024
@@ -1622,19 +1640,18 @@ class TestAvatarDelete:
         )
         assert response.status_code == 403
 
-    async def test_delete_avatar_admin_can_delete_other(
+    async def test_delete_avatar_user_with_permission_can_delete_other(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test admin can delete another user's avatar."""
-        # Create admin user
-        admin = Users(
+        """Test user with USER_EDIT_PROFILE permission can delete another user's avatar."""
+        # Create user with permission to edit profiles
+        editor = Users(
             username="delavataradmin",
             password=get_password_hash("TestPassword123!"),
             password_type="bcrypt",
             salt="",
             email="delavataradmin@example.com",
             active=1,
-            admin=1,
         )
         # Create regular user with avatar
         user = Users(
@@ -1646,19 +1663,36 @@ class TestAvatarDelete:
             active=1,
             avatar="user_avatar.png",
         )
-        db_session.add(admin)
+        db_session.add(editor)
         db_session.add(user)
         await db_session.commit()
+        await db_session.refresh(editor)
         await db_session.refresh(user)
 
-        # Login as admin
+        # Grant USER_EDIT_PROFILE permission to editor
+        perm = Perms(title="user_edit_profile", desc="Edit user profiles")
+        db_session.add(perm)
+        await db_session.flush()
+
+        group = Groups(title="avatar_delete_group", desc="Avatar delete group")
+        db_session.add(group)
+        await db_session.flush()
+
+        group_perm = GroupPerms(group_id=group.group_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(group_perm)
+
+        user_group = UserGroups(user_id=editor.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Login as editor
         login_response = await client.post(
             "/api/v1/auth/login",
             json={"username": "delavataradmin", "password": "TestPassword123!"},
         )
         access_token = login_response.json()["access_token"]
 
-        # Admin deletes regular user's avatar
+        # Editor deletes regular user's avatar
         response = await client.delete(
             f"/api/v1/users/{user.user_id}/avatar",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -1666,3 +1700,146 @@ class TestAvatarDelete:
         assert response.status_code == 200
         data = response.json()
         assert data["avatar"] == ""
+
+
+# ===== User Profile Edit Authorization Tests =====
+
+
+async def create_test_user_with_password(
+    db_session: AsyncSession,
+    username: str,
+    email: str,
+) -> tuple[Users, str]:
+    """Create a test user and return user object and password."""
+    password = "TestPassword123!"
+    user = Users(
+        username=username,
+        password=get_password_hash(password),
+        password_type="bcrypt",
+        salt="",
+        email=email,
+        active=1,
+        admin=0,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user, password
+
+
+async def grant_user_permission(db_session: AsyncSession, user_id: int, perm_title: str):
+    """Grant a permission to a user via a group."""
+    result = await db_session.execute(select(Perms).where(Perms.title == perm_title))
+    perm = result.scalar_one_or_none()
+    if not perm:
+        perm = Perms(title=perm_title, desc=f"Test permission {perm_title}")
+        db_session.add(perm)
+        await db_session.flush()
+
+    result = await db_session.execute(
+        select(Groups).where(Groups.title == "user_edit_test_group")
+    )
+    group = result.scalar_one_or_none()
+    if not group:
+        group = Groups(title="user_edit_test_group", desc="User edit test group")
+        db_session.add(group)
+        await db_session.flush()
+
+    result = await db_session.execute(
+        select(GroupPerms).where(
+            GroupPerms.group_id == group.group_id, GroupPerms.perm_id == perm.perm_id
+        )
+    )
+    if not result.scalar_one_or_none():
+        group_perm = GroupPerms(group_id=group.group_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(group_perm)
+        await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserGroups).where(
+            UserGroups.user_id == user_id, UserGroups.group_id == group.group_id
+        )
+    )
+    if not result.scalar_one_or_none():
+        user_group = UserGroups(user_id=user_id, group_id=group.group_id)
+        db_session.add(user_group)
+
+    await db_session.commit()
+
+
+async def login_test_user(client: AsyncClient, username: str, password: str) -> str:
+    """Login and return the access token."""
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": username, "password": password},
+    )
+    assert response.status_code == 200
+    return response.json()["access_token"]
+
+
+@pytest.mark.api
+class TestUserProfileEditAuthorization:
+    """Tests for user profile edit authorization using permission system."""
+
+    async def test_user_can_edit_own_profile(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that a user can edit their own profile."""
+        user, password = await create_test_user_with_password(
+            db_session, "selfeditor", "selfeditor@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        response = await client.patch(
+            f"/api/v1/users/{user.user_id}",
+            json={"location": "New York"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["location"] == "New York"
+
+    async def test_user_with_permission_can_edit_others(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that a user with USER_EDIT_PROFILE permission can edit others."""
+        editor, editor_password = await create_test_user_with_password(
+            db_session, "profileeditor", "profileeditor@example.com"
+        )
+        await grant_user_permission(db_session, editor.user_id, "user_edit_profile")
+
+        target, _ = await create_test_user_with_password(
+            db_session, "editme", "editme@example.com"
+        )
+
+        token = await login_test_user(client, editor.username, editor_password)
+
+        response = await client.patch(
+            f"/api/v1/users/{target.user_id}",
+            json={"location": "Los Angeles"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["location"] == "Los Angeles"
+
+    async def test_user_without_permission_cannot_edit_others(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that a user without permission cannot edit others."""
+        user, password = await create_test_user_with_password(
+            db_session, "noeditperm", "noeditperm@example.com"
+        )
+        target, _ = await create_test_user_with_password(
+            db_session, "donteditme", "donteditme@example.com"
+        )
+
+        token = await login_test_user(client, user.username, password)
+
+        response = await client.patch(
+            f"/api/v1/users/{target.user_id}",
+            json={"location": "Chicago"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
