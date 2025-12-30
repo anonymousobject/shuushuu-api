@@ -1103,7 +1103,7 @@ async def list_reviews(
     )
 
     if status_filter is not None:
-        query = query.where(ImageReviews.status == status_filter)  # type: ignore[arg-type]
+        query = query.where(ImageReviews.status == status_filter)
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -1125,7 +1125,7 @@ async def list_reviews(
             select(
                 func.count().label("total"),
                 func.sum(ReviewVotes.vote).label("keep_votes"),  # vote=1 is keep
-            ).where(ReviewVotes.review_id == review.review_id)  # type: ignore[arg-type]
+            ).where(ReviewVotes.review_id == review.review_id)
         )
         vote_row = vote_result.one()
         vote_count = vote_row.total or 0
@@ -1173,7 +1173,7 @@ async def get_review(
         )
         .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
         .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
-        .where(ImageReviews.review_id == review_id)  # type: ignore[arg-type]
+        .where(ImageReviews.review_id == review_id)
     )
     row = result.one_or_none()
 
