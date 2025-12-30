@@ -249,11 +249,6 @@ class ReviewResponse(BaseModel):
         # Outcome
         outcome_labels = {0: "Pending", 1: "Keep", 2: "Remove"}
         self.outcome_label = outcome_labels.get(self.outcome, "Unknown")
-        # Source report category label
-        if self.source_report_category is not None:
-            self.source_report_category_label = ReportCategory.LABELS.get(
-                self.source_report_category, "Unknown"
-            )
 
 
 class ReviewDetailResponse(ReviewResponse):
