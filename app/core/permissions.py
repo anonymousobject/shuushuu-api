@@ -77,39 +77,42 @@ class Permission(str, Enum):
     @property
     def description(self) -> str:
         """Human-readable description for this permission."""
-        descriptions = {
-            # Tag management
-            Permission.TAG_CREATE: "Create new tags",
-            Permission.TAG_EDIT: "Edit existing tags",
-            Permission.TAG_UPDATE: "Update tag information",
-            Permission.TAG_DELETE: "Delete tags",
-            # Image management
-            Permission.IMAGE_EDIT_META: "Edit image metadata",
-            Permission.IMAGE_EDIT: "Deactivate or delete images",
-            Permission.IMAGE_MARK_REPOST: "Mark images as reposts",
-            Permission.IMAGE_TAG_ADD: "Add tags to images",
-            Permission.IMAGE_TAG_REMOVE: "Remove tags from images",
-            # User/Group management
-            Permission.GROUP_MANAGE: "Add and edit groups",
-            Permission.GROUP_PERM_MANAGE: "Add and edit group permissions",
-            Permission.USER_EDIT_PROFILE: "Edit user profiles",
-            Permission.USER_BAN: "Ban users and IPs",
-            Permission.PRIVMSG_VIEW: "View private messages",
-            # Content moderation
-            Permission.POST_EDIT: "Edit text posts and comments",
-            # Special permissions
-            Permission.THEME_EDIT: "Theme editor and scheduler access",
-            Permission.RATING_REVOKE: "Revoke image rating rights",
-            Permission.REPORT_REVOKE: "Revoke image reporting rights",
-            # Report & Review system
-            Permission.REPORT_VIEW: "View report triage queue",
-            Permission.REPORT_MANAGE: "Dismiss, action, or escalate reports",
-            Permission.REVIEW_VIEW: "View open reviews",
-            Permission.REVIEW_START: "Initiate appropriateness review",
-            Permission.REVIEW_VOTE: "Cast votes on reviews",
-            Permission.REVIEW_CLOSE_EARLY: "Close review before deadline",
-        }
-        return descriptions.get(self, "")
+        return _PERMISSION_DESCRIPTIONS.get(self, "")
+
+
+# Module-level constant to avoid recreating dict on each property access
+_PERMISSION_DESCRIPTIONS: dict["Permission", str] = {
+    # Tag management
+    Permission.TAG_CREATE: "Create new tags",
+    Permission.TAG_EDIT: "Edit existing tags",
+    Permission.TAG_UPDATE: "Update tag information",
+    Permission.TAG_DELETE: "Delete tags",
+    # Image management
+    Permission.IMAGE_EDIT_META: "Edit image metadata",
+    Permission.IMAGE_EDIT: "Deactivate or delete images",
+    Permission.IMAGE_MARK_REPOST: "Mark images as reposts",
+    Permission.IMAGE_TAG_ADD: "Add tags to images",
+    Permission.IMAGE_TAG_REMOVE: "Remove tags from images",
+    # User/Group management
+    Permission.GROUP_MANAGE: "Add and edit groups",
+    Permission.GROUP_PERM_MANAGE: "Add and edit group permissions",
+    Permission.USER_EDIT_PROFILE: "Edit user profiles",
+    Permission.USER_BAN: "Ban users and IPs",
+    Permission.PRIVMSG_VIEW: "View private messages",
+    # Content moderation
+    Permission.POST_EDIT: "Edit text posts and comments",
+    # Special permissions
+    Permission.THEME_EDIT: "Theme editor and scheduler access",
+    Permission.RATING_REVOKE: "Revoke image rating rights",
+    Permission.REPORT_REVOKE: "Revoke image reporting rights",
+    # Report & Review system
+    Permission.REPORT_VIEW: "View report triage queue",
+    Permission.REPORT_MANAGE: "Dismiss, action, or escalate reports",
+    Permission.REVIEW_VIEW: "View open reviews",
+    Permission.REVIEW_START: "Initiate appropriateness review",
+    Permission.REVIEW_VOTE: "Cast votes on reviews",
+    Permission.REVIEW_CLOSE_EARLY: "Close review before deadline",
+}
 
 
 async def get_user_permissions(db: AsyncSession, user_id: int) -> set[str]:
