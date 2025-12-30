@@ -234,3 +234,52 @@ class SuspensionListResponse(BaseModel):
     username: str
     total: int
     suspensions: list[SuspensionResponse]
+
+
+# ===== Image Status Schemas =====
+
+
+class ImageStatusUpdate(BaseModel):
+    """Request schema for changing image status directly."""
+
+    status: int = Field(
+        ...,
+        description="New status: -4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler",
+    )
+    replacement_id: int | None = Field(
+        None,
+        description="Original image ID when marking as repost (required when status=-1)",
+    )
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: int) -> int:
+        """Validate status is one of the allowed ImageStatus constants."""
+        from app.config import ImageStatus
+
+        valid_statuses = {
+            ImageStatus.REVIEW,
+            ImageStatus.INAPPROPRIATE,
+            ImageStatus.REPOST,
+            ImageStatus.OTHER,
+            ImageStatus.ACTIVE,
+            ImageStatus.SPOILER,
+        }
+        if v not in valid_statuses:
+            raise ValueError(
+                f"Invalid status: {v}. Must be one of: "
+                "-4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler"
+            )
+        return v
+
+
+class ImageStatusResponse(BaseModel):
+    """Response schema for image status change."""
+
+    image_id: int
+    status: int
+    replacement_id: int | None
+    status_user_id: int | None
+    status_updated: datetime | None
+
+    model_config = {"from_attributes": True}
