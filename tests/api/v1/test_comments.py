@@ -14,8 +14,10 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import get_password_hash
 from app.models.comment import Comments
 from app.models.image import Images
+from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.user import Users
 
 
@@ -746,3 +748,185 @@ class TestDeleteComment:
         # (We can't easily test this without creating another real user, so we skip this edge case)
         # The important thing is the endpoint enforces ownership, which we verify in other tests
         pytest.skip("Skipping cross-user authorization test - requires complex fixture setup")
+
+
+async def create_mod_user(
+    db_session: AsyncSession,
+    username: str = "moduser",
+    email: str = "mod@example.com",
+) -> tuple[Users, str]:
+    """Create a moderator user and return the user object and password."""
+    password = "TestPassword123!"
+    user = Users(
+        username=username,
+        password=get_password_hash(password),
+        password_type="bcrypt",
+        salt="",
+        email=email,
+        active=1,
+        admin=0,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user, password
+
+
+async def grant_mod_permission(db_session: AsyncSession, user_id: int, perm_title: str):
+    """Grant a permission to a user via a group."""
+    result = await db_session.execute(select(Perms).where(Perms.title == perm_title))
+    perm = result.scalar_one_or_none()
+    if not perm:
+        perm = Perms(title=perm_title, desc=f"Test permission {perm_title}")
+        db_session.add(perm)
+        await db_session.flush()
+
+    result = await db_session.execute(
+        select(Groups).where(Groups.title == "comment_mod_group")
+    )
+    group = result.scalar_one_or_none()
+    if not group:
+        group = Groups(title="comment_mod_group", desc="Comment mod group")
+        db_session.add(group)
+        await db_session.flush()
+
+    result = await db_session.execute(
+        select(GroupPerms).where(
+            GroupPerms.group_id == group.group_id, GroupPerms.perm_id == perm.perm_id
+        )
+    )
+    if not result.scalar_one_or_none():
+        group_perm = GroupPerms(group_id=group.group_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(group_perm)
+        await db_session.flush()
+
+    result = await db_session.execute(
+        select(UserGroups).where(
+            UserGroups.user_id == user_id, UserGroups.group_id == group.group_id
+        )
+    )
+    if not result.scalar_one_or_none():
+        user_group = UserGroups(user_id=user_id, group_id=group.group_id)
+        db_session.add(user_group)
+
+    await db_session.commit()
+
+
+async def login_as_user(client: AsyncClient, username: str, password: str) -> str:
+    """Login and return the access token."""
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": username, "password": password},
+    )
+    assert response.status_code == 200
+    return response.json()["access_token"]
+
+
+@pytest.mark.api
+class TestAdminCommentDeletion:
+    """Tests for admin comment deletion functionality."""
+
+    async def test_mod_can_delete_other_users_comment(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that a user with POST_EDIT permission can delete others' comments."""
+        # Create moderator
+        mod, mod_password = await create_mod_user(db_session)
+        await grant_mod_permission(db_session, mod.user_id, "post_edit")
+
+        # Create image and comment by another user
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        comment = Comments(
+            image_id=image.image_id,
+            user_id=1,  # Test user from conftest
+            post_text="Comment by another user",
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        # Login as mod and delete the comment
+        token = await login_as_user(client, mod.username, mod_password)
+
+        response = await client.delete(
+            f"/api/v1/comments/{comment.post_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted"] is True
+        assert data["post_text"] == "[deleted]"
+
+    async def test_user_without_permission_cannot_delete_others_comment(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that a user without POST_EDIT cannot delete others' comments."""
+        # Create regular user (no permissions)
+        regular_user, regular_password = await create_mod_user(
+            db_session, username="nomod", email="nomod@example.com"
+        )
+
+        # Create image and comment by another user
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        comment = Comments(
+            image_id=image.image_id,
+            user_id=1,
+            post_text="Comment by another user",
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        # Login as regular user and try to delete
+        token = await login_as_user(client, regular_user.username, regular_password)
+
+        response = await client.delete(
+            f"/api/v1/comments/{comment.post_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+
+    async def test_owner_can_still_delete_own_comment(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that comment owner can still delete their own comment."""
+        # Create a user
+        owner, owner_password = await create_mod_user(
+            db_session, username="commentowner", email="owner@example.com"
+        )
+
+        # Create image and comment by owner
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        comment = Comments(
+            image_id=image.image_id,
+            user_id=owner.user_id,
+            post_text="My own comment",
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        # Login and delete own comment
+        token = await login_as_user(client, owner.username, owner_password)
+
+        response = await client.delete(
+            f"/api/v1/comments/{comment.post_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["deleted"] is True
