@@ -28,48 +28,91 @@ class Permission(str, Enum):
     """
     Type-safe permission constants mapped to database perm titles.
 
-    These match the 'title' field in the perms table.
+    The enum is the source of truth for permissions. The database is seeded
+    from this enum on startup via sync_permissions().
+
     Using an enum provides:
     - IDE autocomplete
     - Type safety (catch typos at development time)
     - Centralized permission name management
+    - Human-readable descriptions via the description property
     """
 
     # Tag management
-    TAG_CREATE = "tag_create"  # Create new tags
-    TAG_EDIT = "tag_edit"  # Edit existing tags
-    TAG_UPDATE = "tag_update"  # Update tag information
-    TAG_DELETE = "tag_delete"  # Delete tags
+    TAG_CREATE = "tag_create"
+    TAG_EDIT = "tag_edit"
+    TAG_UPDATE = "tag_update"
+    TAG_DELETE = "tag_delete"
 
     # Image management
     IMAGE_EDIT_META = "image_edit_meta"
-    IMAGE_EDIT = "image_edit"  # Deactivate, delete images
-    IMAGE_MARK_REPOST = "image_mark_repost"  # Mark images as reposts
-    IMAGE_TAG_ADD = "image_tag_add"  # Add tags to images
-    IMAGE_TAG_REMOVE = "image_tag_remove"  # Remove tags from images
+    IMAGE_EDIT = "image_edit"
+    IMAGE_MARK_REPOST = "image_mark_repost"
+    IMAGE_TAG_ADD = "image_tag_add"
+    IMAGE_TAG_REMOVE = "image_tag_remove"
 
     # User/Group management
-    GROUP_MANAGE = "group_manage"  # Add, edit groups
-    GROUP_PERM_MANAGE = "group_perm_manage"  # Add, edit group permissions
-    USER_EDIT_PROFILE = "user_edit_profile"  # Edit user profiles
-    USER_BAN = "user_ban"  # Ban users/IPs
-    PRIVMSG_VIEW = "privmsg_view"  # View private messages
+    GROUP_MANAGE = "group_manage"
+    GROUP_PERM_MANAGE = "group_perm_manage"
+    USER_EDIT_PROFILE = "user_edit_profile"
+    USER_BAN = "user_ban"
+    PRIVMSG_VIEW = "privmsg_view"
 
     # Content moderation
-    POST_EDIT = "post_edit"  # Edit text posts (comments)
+    POST_EDIT = "post_edit"
 
     # Special permissions
-    THEME_EDIT = "theme_edit"  # Theme editor/scheduler access
-    RATING_REVOKE = "rating_revoke"  # Revoke image rating rights
-    REPORT_REVOKE = "report_revoke"  # Revoke image reporting rights
+    THEME_EDIT = "theme_edit"
+    RATING_REVOKE = "rating_revoke"
+    REPORT_REVOKE = "report_revoke"
 
     # Report & Review system
-    REPORT_VIEW = "report_view"  # View report triage queue
-    REPORT_MANAGE = "report_manage"  # Dismiss/action/escalate reports
-    REVIEW_VIEW = "review_view"  # View open reviews
-    REVIEW_START = "review_start"  # Initiate appropriateness review
-    REVIEW_VOTE = "review_vote"  # Cast votes on reviews
-    REVIEW_CLOSE_EARLY = "review_close_early"  # Close review before deadline
+    REPORT_VIEW = "report_view"
+    REPORT_MANAGE = "report_manage"
+    REVIEW_VIEW = "review_view"
+    REVIEW_START = "review_start"
+    REVIEW_VOTE = "review_vote"
+    REVIEW_CLOSE_EARLY = "review_close_early"
+
+    @property
+    def description(self) -> str:
+        """Human-readable description for this permission."""
+        return _PERMISSION_DESCRIPTIONS.get(self, "")
+
+
+# Module-level constant to avoid recreating dict on each property access
+_PERMISSION_DESCRIPTIONS: dict["Permission", str] = {
+    # Tag management
+    Permission.TAG_CREATE: "Create new tags",
+    Permission.TAG_EDIT: "Edit existing tags",
+    Permission.TAG_UPDATE: "Update tag information",
+    Permission.TAG_DELETE: "Delete tags",
+    # Image management
+    Permission.IMAGE_EDIT_META: "Edit image metadata",
+    Permission.IMAGE_EDIT: "Deactivate or delete images",
+    Permission.IMAGE_MARK_REPOST: "Mark images as reposts",
+    Permission.IMAGE_TAG_ADD: "Add tags to images",
+    Permission.IMAGE_TAG_REMOVE: "Remove tags from images",
+    # User/Group management
+    Permission.GROUP_MANAGE: "Add and edit groups",
+    Permission.GROUP_PERM_MANAGE: "Add and edit group permissions",
+    Permission.USER_EDIT_PROFILE: "Edit user profiles",
+    Permission.USER_BAN: "Ban users and IPs",
+    Permission.PRIVMSG_VIEW: "View private messages",
+    # Content moderation
+    Permission.POST_EDIT: "Edit text posts and comments",
+    # Special permissions
+    Permission.THEME_EDIT: "Theme editor and scheduler access",
+    Permission.RATING_REVOKE: "Revoke image rating rights",
+    Permission.REPORT_REVOKE: "Revoke image reporting rights",
+    # Report & Review system
+    Permission.REPORT_VIEW: "View report triage queue",
+    Permission.REPORT_MANAGE: "Dismiss, action, or escalate reports",
+    Permission.REVIEW_VIEW: "View open reviews",
+    Permission.REVIEW_START: "Initiate appropriateness review",
+    Permission.REVIEW_VOTE: "Cast votes on reviews",
+    Permission.REVIEW_CLOSE_EARLY: "Close review before deadline",
+}
 
 
 async def get_user_permissions(db: AsyncSession, user_id: int) -> set[str]:
