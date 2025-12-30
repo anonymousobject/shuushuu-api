@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.api.dependencies import ImageSortParams, PaginationParams
+from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
@@ -461,6 +462,7 @@ async def get_tag(
 @router.post("", response_model=TagResponse)
 async def create_tag(
     tag_data: TagCreate,
+    user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagResponse:
@@ -497,6 +499,7 @@ async def create_tag(
         desc=tag_data.desc,
         inheritedfrom_id=tag_data.inheritedfrom_id,
         alias_of=tag_data.alias_of,
+        user_id=user.user_id,
     )
     db.add(new_tag)
     await db.commit()
