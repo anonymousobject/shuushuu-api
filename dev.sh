@@ -10,8 +10,8 @@ ENVIRONMENT="${1:-development}"
 case "$ENVIRONMENT" in
     dev|development)
         echo "Starting in DEVELOPMENT mode (HTTP on localhost:3000)"
-        docker compose --env-file "$SCRIPT_DIR/.env.development" \
-                       ${2:-up} ${@:3}
+        # Uses .env by default (docker-compose's default behavior)
+        docker compose ${2:-up} ${@:3}
         ;;
     test)
         echo "Starting in TEST mode (HTTPS on test.shuushuu.com)"
