@@ -12,12 +12,12 @@ services:
       dockerfile: Dockerfile
       args:
         - PUBLIC_ENVIRONMENT=test
-        - PUBLIC_API_URL=http://api:8000
+        - PUBLIC_API_URL=http://nginx
         - PUBLIC_DEBUG=false
     container_name: shuushuu-frontend-test
     environment:
       - PUBLIC_ENVIRONMENT=test
-      - PUBLIC_API_URL=http://api:8000
+      - PUBLIC_API_URL=http://nginx
       - STORAGE_PATH=${STORAGE_PATH}
       - NODE_OPTIONS=--max-old-space-size=4096
     depends_on:
