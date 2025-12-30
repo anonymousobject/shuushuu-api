@@ -31,17 +31,7 @@ server {
 
     client_max_body_size 100M;
 
-    # Frontend - proxy to SvelteKit SSR server
-    location / {
-        proxy_pass http://frontend:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto http;
-        proxy_http_version 1.1;
-    }
-
-    # API proxy
+    # API proxy - the only endpoint SSR needs
     location /api/ {
         proxy_pass http://api:8000;
         proxy_set_header Host $host;
