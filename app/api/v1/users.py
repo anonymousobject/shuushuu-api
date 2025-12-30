@@ -30,6 +30,7 @@ from app.api.dependencies import ImageSortParams, PaginationParams, UserSortPara
 from app.core.auth import get_client_ip, get_current_user, get_current_user_id
 from app.core.database import get_db
 from app.core.permission_cache import get_cached_user_permissions
+from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.core.security import get_password_hash, validate_password_strength
 from app.models import Favorites, Images, TagLinks, Users
@@ -190,18 +191,24 @@ async def upload_user_avatar(
     avatar: Annotated[UploadFile, File(description="Avatar image file")],
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserResponse:
     """
     Upload avatar for a specified user.
 
     - Regular users can only upload their own avatar (user_id must match their ID)
-    - Admins can upload avatars for any user
+    - Users with USER_EDIT_PROFILE permission can upload avatars for any user
 
     Accepts JPG, PNG, or GIF (animated supported). Images are resized to fit
     within 200x200 pixels while preserving aspect ratio. Maximum file size is 1MB.
     """
-    # Check permission: user can update themselves, or must be admin
-    if current_user.user_id != user_id and not current_user.admin:
+    # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
+    is_self = current_user.user_id == user_id
+    has_edit_permission = await has_permission(
+        db, current_user.user_id, Permission.USER_EDIT_PROFILE, redis_client
+    )
+
+    if not is_self and not has_edit_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this user's avatar",
@@ -284,15 +291,21 @@ async def delete_user_avatar(
     user_id: Annotated[int, Path(description="User ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserResponse:
     """
     Remove avatar for a specified user.
 
     - Regular users can only delete their own avatar (user_id must match their ID)
-    - Admins can delete avatars for any user
+    - Users with USER_EDIT_PROFILE permission can delete avatars for any user
     """
-    # Check permission: user can update themselves, or must be admin
-    if current_user.user_id != user_id and not current_user.admin:
+    # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
+    is_self = current_user.user_id == user_id
+    has_edit_permission = await has_permission(
+        db, current_user.user_id, Permission.USER_EDIT_PROFILE, redis_client
+    )
+
+    if not is_self and not has_edit_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this user's avatar",
@@ -343,17 +356,23 @@ async def update_user_profile(
     user_data: UserUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserResponse:
     """
     Update a user's profile.
 
     - Regular users can only update their own profile (user_id must match their ID)
-    - Admins can update any user's profile
+    - Users with USER_EDIT_PROFILE permission can update any user's profile
 
     All fields are optional. Only provided fields will be updated.
     """
-    # Check permission: user can update themselves, or must be admin
-    if current_user.user_id != user_id and not current_user.admin:
+    # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
+    is_self = current_user.user_id == user_id
+    has_edit_permission = await has_permission(
+        db, current_user.user_id, Permission.USER_EDIT_PROFILE, redis_client
+    )
+
+    if not is_self and not has_edit_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this user",

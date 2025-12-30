@@ -917,24 +917,23 @@ class TestAvatarUpload:
         )
         assert response.status_code == 403
 
-    async def test_upload_avatar_admin_can_update_other(
+    async def test_upload_avatar_user_with_permission_can_update_other(
         self, client: AsyncClient, db_session: AsyncSession, tmp_path
     ):
-        """Test admin can upload avatar for other users."""
+        """Test user with USER_EDIT_PROFILE permission can upload avatar for other users."""
         from io import BytesIO
         from unittest.mock import patch
 
         from PIL import Image
 
-        # Create admin user
-        admin = Users(
+        # Create user with permission to edit profiles
+        editor = Users(
             username="avataradmin",
             password=get_password_hash("TestPassword123!"),
             password_type="bcrypt",
             salt="",
             email="avataradmin@example.com",
             active=1,
-            admin=1,
         )
         # Create regular user
         user = Users(
@@ -945,12 +944,29 @@ class TestAvatarUpload:
             email="avatar5@example.com",
             active=1,
         )
-        db_session.add(admin)
+        db_session.add(editor)
         db_session.add(user)
         await db_session.commit()
+        await db_session.refresh(editor)
         await db_session.refresh(user)
 
-        # Login as admin
+        # Grant USER_EDIT_PROFILE permission to editor
+        perm = Perms(title="user_edit_profile", desc="Edit user profiles")
+        db_session.add(perm)
+        await db_session.flush()
+
+        group = Groups(title="avatar_edit_group", desc="Avatar edit group")
+        db_session.add(group)
+        await db_session.flush()
+
+        group_perm = GroupPerms(group_id=group.group_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(group_perm)
+
+        user_group = UserGroups(user_id=editor.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Login as editor
         login_response = await client.post(
             "/api/v1/auth/login",
             json={"username": "avataradmin", "password": "TestPassword123!"},
@@ -963,7 +979,7 @@ class TestAvatarUpload:
         img.save(img_bytes, format="PNG")
         img_bytes.seek(0)
 
-        # Admin uploads to regular user's profile (mock storage path)
+        # Editor uploads to regular user's profile (mock storage path)
         with patch("app.services.avatar.settings") as mock_settings:
             mock_settings.AVATAR_STORAGE_PATH = str(tmp_path)
             mock_settings.MAX_AVATAR_SIZE = 1024 * 1024
@@ -1624,19 +1640,18 @@ class TestAvatarDelete:
         )
         assert response.status_code == 403
 
-    async def test_delete_avatar_admin_can_delete_other(
+    async def test_delete_avatar_user_with_permission_can_delete_other(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test admin can delete another user's avatar."""
-        # Create admin user
-        admin = Users(
+        """Test user with USER_EDIT_PROFILE permission can delete another user's avatar."""
+        # Create user with permission to edit profiles
+        editor = Users(
             username="delavataradmin",
             password=get_password_hash("TestPassword123!"),
             password_type="bcrypt",
             salt="",
             email="delavataradmin@example.com",
             active=1,
-            admin=1,
         )
         # Create regular user with avatar
         user = Users(
@@ -1648,19 +1663,36 @@ class TestAvatarDelete:
             active=1,
             avatar="user_avatar.png",
         )
-        db_session.add(admin)
+        db_session.add(editor)
         db_session.add(user)
         await db_session.commit()
+        await db_session.refresh(editor)
         await db_session.refresh(user)
 
-        # Login as admin
+        # Grant USER_EDIT_PROFILE permission to editor
+        perm = Perms(title="user_edit_profile", desc="Edit user profiles")
+        db_session.add(perm)
+        await db_session.flush()
+
+        group = Groups(title="avatar_delete_group", desc="Avatar delete group")
+        db_session.add(group)
+        await db_session.flush()
+
+        group_perm = GroupPerms(group_id=group.group_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(group_perm)
+
+        user_group = UserGroups(user_id=editor.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Login as editor
         login_response = await client.post(
             "/api/v1/auth/login",
             json={"username": "delavataradmin", "password": "TestPassword123!"},
         )
         access_token = login_response.json()["access_token"]
 
-        # Admin deletes regular user's avatar
+        # Editor deletes regular user's avatar
         response = await client.delete(
             f"/api/v1/users/{user.user_id}/avatar",
             headers={"Authorization": f"Bearer {access_token}"},
