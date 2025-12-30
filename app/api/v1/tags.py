@@ -462,7 +462,7 @@ async def get_tag(
 @router.post("", response_model=TagResponse)
 async def create_tag(
     tag_data: TagCreate,
-    user: Annotated[Users, Depends(get_current_user)],
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagResponse:
@@ -499,7 +499,7 @@ async def create_tag(
         desc=tag_data.desc,
         inheritedfrom_id=tag_data.inheritedfrom_id,
         alias_of=tag_data.alias_of,
-        user_id=user.user_id,
+        user_id=current_user.user_id,
     )
     db.add(new_tag)
     await db.commit()
