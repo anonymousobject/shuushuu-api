@@ -6,6 +6,9 @@ SHELL := /bin/bash
 
 .PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend clean
 
+# Capture extra arguments for logs commands (e.g., `make dev-logs api`)
+ARGS = $(filter-out $@,$(MAKECMDGOALS))
+
 # Default target
 help:
 	@echo "Usage: make [target]"
@@ -29,11 +32,12 @@ help:
 	@echo "  clean        Stop all and remove volumes (DESTRUCTIVE)"
 	@echo ""
 	@echo "Tip: Follow specific service logs with:"
-	@echo "  make dev-logs s=api"
-	@echo "  make dev-logs s='api arq-worker'"
+	@echo "  make dev-logs api"
+	@echo "  make dev-logs api arq-worker"
 
 # Common compose commands
-COMPOSE_DEV = docker compose -f docker-compose.yml -f docker-compose.override.yml --env-file .env.development
+# Dev uses .env by default (docker-compose's default behavior)
+COMPOSE_DEV = docker compose -f docker-compose.yml -f docker-compose.override.yml
 COMPOSE_TEST = docker compose -f docker-compose.yml -f docker-compose.test.yml --env-file .env.test
 
 # Development targets
@@ -47,7 +51,7 @@ dev-down:
 	$(COMPOSE_DEV) down
 
 dev-logs:
-	$(COMPOSE_DEV) logs -f $(s)
+	$(COMPOSE_DEV) logs --tail 40 -f $(ARGS)
 
 dev-ps:
 	$(COMPOSE_DEV) ps
@@ -63,7 +67,7 @@ test-down:
 	$(COMPOSE_TEST) down
 
 test-logs:
-	$(COMPOSE_TEST) logs -f $(s)
+	$(COMPOSE_TEST) logs --tail 40 -f $(ARGS)
 
 test-ps:
 	$(COMPOSE_TEST) ps
@@ -77,3 +81,7 @@ clean:
 	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	$(COMPOSE_DEV) down -v 2>/dev/null || true
 	$(COMPOSE_TEST) down -v 2>/dev/null || true
+
+# Catch-all to allow passing service names as arguments (e.g., `make dev-logs api`)
+%:
+	@:

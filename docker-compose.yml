@@ -65,22 +65,15 @@ services:
     command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude 'tests/*' --reload-exclude '*.pyc' --reload-exclude '__pycache__/*'
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      - ENVIRONMENT=${ENVIRONMENT:-development}
+      # Container-specific overrides (hostnames differ from host machine)
       - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - SECRET_KEY=${SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
-      - IQDB_PORT=${IQDB_PORT:-5588}
-      - TASK_QUEUE_TYPE=${TASK_QUEUE_TYPE:-background}
-      - DEBUG=${DEBUG:-True}
-      - IMAGE_BASE_URL=${IMAGE_BASE_URL:-http://localhost:3000}
-      - TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}
-      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
       # Prevent Python from writing pyc files and __pycache__ dirs
       - PYTHONDONTWRITEBYTECODE=1
-      # Disable UV cache
-      - UV_NO_CACHE=${UV_NO_CACHE:-0}
     volumes:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
@@ -148,27 +141,22 @@ services:
     container_name: shuushuu-arq-worker
     user: "${UID:-1000}:${GID:-1000}"
     command: uv run --no-project arq app.tasks.worker.WorkerSettings
+    env_file: .env
     environment:
-      - ENVIRONMENT=${ENVIRONMENT:-development}
+      # Container-specific overrides (hostnames differ from host machine)
       - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - ARQ_REDIS_URL=${ARQ_REDIS_URL:-redis://redis:6379/1}
-      - SECRET_KEY=${SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
-      - IQDB_PORT=${IQDB_PORT:-5588}
-      - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
-      - TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}
-      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
       # Prevent Python from writing pyc files
       - PYTHONDONTWRITEBYTECODE=1
-      - UV_NO_CACHE=1
     volumes:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
       - ./alembic:/app/alembic
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
-      - ${STORAGE_PATH:-./storage}:${STORAGE_PATH:-/shuushuu/images}
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
     depends_on:
       redis:
         condition: service_healthy
