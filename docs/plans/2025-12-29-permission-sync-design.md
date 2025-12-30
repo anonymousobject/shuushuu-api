@@ -176,14 +176,14 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import async_engine
+from app.core.database import AsyncSessionLocal
 from app.core.permission_sync import sync_permissions
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: sync permissions
-    async with AsyncSession(async_engine) as db:
+    async with AsyncSessionLocal() as db:
         await sync_permissions(db)
 
     yield
