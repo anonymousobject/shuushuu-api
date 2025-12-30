@@ -4,8 +4,6 @@ Tests for image moderation admin endpoints.
 These tests cover the PATCH /api/v1/admin/images/{image_id} endpoint.
 """
 
-from datetime import UTC, datetime
-
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -13,9 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus
 from app.core.security import get_password_hash
+from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.user import Users
+
+
+# Import AdminActionType
+from app.config import AdminActionType
+
 
 
 async def create_admin_user(
@@ -32,7 +36,7 @@ async def create_admin_user(
         salt="",
         email=email,
         active=1,
-        admin=1,
+        admin=0,
     )
     db_session.add(user)
     await db_session.commit()
@@ -333,3 +337,88 @@ class TestImageStatusChange:
         )
 
         assert response.status_code == 422
+
+
+@pytest.mark.api
+class TestImageStatusChangeAuditLog:
+    """Tests for audit logging when changing image status."""
+
+    async def test_status_change_creates_audit_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that changing image status creates IMAGE_STATUS_CHANGE audit entry."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.SPOILER},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify audit log entry
+        stmt = select(AdminActions).where(
+            AdminActions.image_id == image.image_id,
+            AdminActions.action_type == AdminActionType.IMAGE_STATUS_CHANGE,
+        )
+        result = await db_session.execute(stmt)
+        action = result.scalar_one_or_none()
+
+        assert action is not None
+        assert action.user_id == admin.user_id
+        assert action.image_id == image.image_id
+        assert action.details is not None
+        assert action.details.get("new_status") == ImageStatus.SPOILER
+        assert action.details.get("previous_status") == ImageStatus.ACTIVE
+
+    async def test_repost_audit_includes_replacement_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that marking as repost includes replacement_id in audit details."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+
+        original_image = await create_test_image(db_session, admin.user_id)
+        repost_image = Images(
+            user_id=admin.user_id,
+            filename="repost_image",
+            ext="jpg",
+            md5_hash="auditrepost123auditrepost123audit",
+            status=ImageStatus.ACTIVE,
+        )
+        db_session.add(repost_image)
+        await db_session.commit()
+        await db_session.refresh(repost_image)
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{repost_image.image_id}",
+            json={
+                "status": ImageStatus.REPOST,
+                "replacement_id": original_image.image_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify audit log entry
+        stmt = select(AdminActions).where(
+            AdminActions.image_id == repost_image.image_id,
+            AdminActions.action_type == AdminActionType.IMAGE_STATUS_CHANGE,
+        )
+        result = await db_session.execute(stmt)
+        action = result.scalar_one_or_none()
+
+        assert action is not None
+        assert action.user_id == admin.user_id
+        assert action.details is not None
+        assert action.details.get("new_status") == ImageStatus.REPOST
+        assert action.details.get("replacement_id") == original_image.image_id
+
