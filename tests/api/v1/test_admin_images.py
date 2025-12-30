@@ -17,7 +17,6 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.user import Users
 
 
-
 async def create_admin_user(
     db_session: AsyncSession,
     username: str = "imageadmin",

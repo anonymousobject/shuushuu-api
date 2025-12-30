@@ -986,7 +986,7 @@ class TestAdminCommentDeletion:
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """Test that owner deleting their own comment does NOT create audit entry."""
-        # Create a user
+        # Create a regular user (create_mod_user creates a regular user without permissions)
         owner, owner_password = await create_mod_user(
             db_session, username="commentowner2", email="owner2@example.com"
         )
