@@ -13,12 +13,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import settings
+from app.core.database import AsyncSessionLocal
 from app.core.logging import (
     clear_request_context,
     configure_logging,
     get_logger,
     set_request_context,
 )
+from app.core.permission_sync import sync_permissions
 from app.tasks.queue import close_queue
 
 # Configure logging on module import
@@ -59,6 +61,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         environment=settings.ENVIRONMENT,
         version="2.0.0",
     )
+
+    # Sync permissions: ensure database matches Permission enum
+    async with AsyncSessionLocal() as db:
+        await sync_permissions(db)
+
     yield
     # Shutdown
     logger.info("application_shutting_down")

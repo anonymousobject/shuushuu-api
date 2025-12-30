@@ -351,3 +351,15 @@ class TestPermissionEnum:
         perm = Permission.IMAGE_EDIT
         assert isinstance(perm.value, str)
         assert perm == Permission.IMAGE_EDIT
+
+    def test_permission_has_description(self):
+        """Each permission should have a human-readable description."""
+        assert Permission.TAG_CREATE.description == "Create new tags"
+        assert Permission.IMAGE_EDIT.description == "Deactivate or delete images"
+        assert Permission.USER_BAN.description == "Ban users and IPs"
+
+    def test_all_permissions_have_descriptions(self):
+        """Every permission in the enum should have a non-empty description."""
+        for perm in Permission:
+            assert perm.description, f"{perm.name} has no description"
+            assert isinstance(perm.description, str)
