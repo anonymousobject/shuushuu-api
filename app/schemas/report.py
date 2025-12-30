@@ -216,6 +216,9 @@ class ReviewResponse(BaseModel):
     review_id: int
     image_id: int
     source_report_id: int | None
+    source_report_category: int | None = None
+    source_report_category_label: str | None = None
+    source_report_reason: str | None = None
     initiated_by: int | None
     initiated_by_username: str | None = None
     review_type: int
