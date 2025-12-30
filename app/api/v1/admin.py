@@ -1091,7 +1091,16 @@ async def list_reviews(
 
     Requires REVIEW_VIEW permission.
     """
-    query = select(ImageReviews)
+    query = (
+        select(  # type: ignore[call-overload]
+            ImageReviews,
+            Users.username,
+            ImageReports.category,
+            ImageReports.reason_text,
+        )
+        .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
+        .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
+    )
 
     if status_filter is not None:
         query = query.where(ImageReviews.status == status_filter)  # type: ignore[arg-type]
@@ -1106,11 +1115,11 @@ async def list_reviews(
     query = query.order_by(desc(ImageReviews.created_at)).offset(offset).limit(per_page)  # type: ignore[arg-type]
 
     result = await db.execute(query)
-    reviews = result.scalars().all()
+    rows = result.all()
 
     # Build responses with vote counts
     items = []
-    for review in reviews:
+    for review, initiated_by_username, report_category, report_reason in rows:
         # Get vote counts
         vote_result = await db.execute(
             select(
@@ -1124,6 +1133,13 @@ async def list_reviews(
         remove_votes = vote_count - keep_votes
 
         response = ReviewResponse.model_validate(review)
+        response.initiated_by_username = initiated_by_username
+        response.source_report_category = report_category
+        if report_category is not None:
+            response.source_report_category_label = ReportCategory.LABELS.get(
+                report_category, "Unknown"
+            )
+        response.source_report_reason = report_reason
         response.vote_count = vote_count
         response.keep_votes = keep_votes
         response.remove_votes = remove_votes
@@ -1149,12 +1165,22 @@ async def get_review(
     Requires REVIEW_VIEW permission.
     """
     result = await db.execute(
-        select(ImageReviews).where(ImageReviews.review_id == review_id)  # type: ignore[arg-type]
+        select(  # type: ignore[call-overload]
+            ImageReviews,
+            Users.username,
+            ImageReports.category,
+            ImageReports.reason_text,
+        )
+        .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
+        .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
+        .where(ImageReviews.review_id == review_id)  # type: ignore[arg-type]
     )
-    review = result.scalar_one_or_none()
+    row = result.one_or_none()
 
-    if not review:
+    if not row:
         raise HTTPException(status_code=404, detail="Review not found")
+
+    review, initiated_by_username, report_category, report_reason = row
 
     # Get votes with usernames
     votes_result = await db.execute(
@@ -1178,6 +1204,13 @@ async def get_review(
             remove_votes += 1
 
     response = ReviewDetailResponse.model_validate(review)
+    response.initiated_by_username = initiated_by_username
+    response.source_report_category = report_category
+    if report_category is not None:
+        response.source_report_category_label = ReportCategory.LABELS.get(
+            report_category, "Unknown"
+        )
+    response.source_report_reason = report_reason
     response.votes = votes
     response.vote_count = len(votes)
     response.keep_votes = keep_votes
