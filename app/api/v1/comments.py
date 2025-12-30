@@ -5,15 +5,20 @@ Comments API endpoints
 from datetime import UTC, datetime
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import asc, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import CommentSortParams, PaginationParams
+from app.config import AdminActionType
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.permissions import Permission, has_permission
+from app.core.redis import get_redis
 from app.models import Comments, Images, Users
+from app.models.admin_action import AdminActions
 from app.schemas.comment import (
     CommentCreate,
     CommentListResponse,
@@ -455,15 +460,19 @@ async def delete_comment(
     comment_id: int,
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> CommentResponse:
     """
     Delete a comment (soft-delete).
+
+    - Comment owners can delete their own comments
+    - Users with POST_EDIT permission can delete any comment
 
     **Returns:** 200 OK with updated comment (deleted flag set to True)
 
     **Errors:**
     - 401: Not authenticated
-    - 403: User doesn't own the comment
+    - 403: User doesn't own the comment and lacks POST_EDIT permission
     - 404: Comment not found
     """
     # Load comment
@@ -475,12 +484,31 @@ async def delete_comment(
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
 
-    # Verify ownership
-    if comment.user_id != current_user.user_id:
+    # Check authorization: owner or has POST_EDIT permission
+    is_owner = comment.user_id == current_user.user_id
+    has_mod_permission = await has_permission(
+        db, current_user.user_id, Permission.POST_EDIT, redis_client
+    )
+
+    if not is_owner and not has_mod_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only delete your own comments",
         )
+
+    # Log admin action if moderator deleting someone else's comment
+    if not is_owner and has_mod_permission:
+        action = AdminActions(
+            user_id=current_user.user_id,
+            action_type=AdminActionType.COMMENT_DELETE,
+            image_id=comment.image_id,
+            details={
+                "comment_id": comment_id,
+                "original_user_id": comment.user_id,
+                "post_text_preview": comment.post_text[:100] if comment.post_text else None,
+            },
+        )
+        db.add(action)
 
     # Soft delete: Set deleted flag to True
     # This preserves conversation flow and reply threading
