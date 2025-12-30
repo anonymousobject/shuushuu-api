@@ -9,16 +9,12 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import ImageStatus
+from app.config import AdminActionType, ImageStatus
 from app.core.security import get_password_hash
 from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.user import Users
-
-
-# Import AdminActionType
-from app.config import AdminActionType
 
 
 
