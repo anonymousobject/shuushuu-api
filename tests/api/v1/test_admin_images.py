@@ -356,6 +356,9 @@ class TestImageStatusChangeAuditLog:
 
         assert response.status_code == 200
 
+        # Refresh session to see changes from the API request
+        await db_session.expire_all()
+
         # Verify audit log entry
         stmt = select(AdminActions).where(
             AdminActions.image_id == image.image_id,
@@ -402,6 +405,9 @@ class TestImageStatusChangeAuditLog:
         )
 
         assert response.status_code == 200
+
+        # Refresh session to see changes from the API request
+        await db_session.expire_all()
 
         # Verify audit log entry
         stmt = select(AdminActions).where(
