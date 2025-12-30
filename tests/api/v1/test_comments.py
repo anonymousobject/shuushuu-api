@@ -14,7 +14,9 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import AdminActionType
 from app.core.security import get_password_hash
+from app.models.admin_action import AdminActions
 from app.models.comment import Comments
 from app.models.image import Images
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
@@ -930,3 +932,103 @@ class TestAdminCommentDeletion:
 
         assert response.status_code == 200
         assert response.json()["deleted"] is True
+
+    async def test_moderator_delete_creates_audit_entry(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that moderator deleting someone else's comment creates COMMENT_DELETE audit entry."""
+        # Create moderator
+        mod, mod_password = await create_mod_user(db_session)
+        await grant_mod_permission(db_session, mod.user_id, "post_edit")
+
+        # Create image and comment by another user
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        comment = Comments(
+            image_id=image.image_id,
+            user_id=1,  # Test user from conftest
+            post_text="Comment to be deleted by moderator",
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        # Login as mod and delete the comment
+        token = await login_as_user(client, mod.username, mod_password)
+
+        response = await client.delete(
+            f"/api/v1/comments/{comment.post_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Refresh session to see changes from the API request
+        db_session.expire_all()
+
+        # Verify audit log entry
+        stmt = select(AdminActions).where(
+            AdminActions.image_id == image.image_id,
+            AdminActions.action_type == AdminActionType.COMMENT_DELETE,
+        )
+        result = await db_session.execute(stmt)
+        action = result.scalar_one_or_none()
+
+        assert action is not None
+        assert action.user_id == mod.user_id
+        assert action.image_id == image.image_id
+        assert action.details is not None
+        assert action.details.get("comment_id") == comment.post_id
+        assert action.details.get("original_user_id") == 1
+        assert action.details.get("post_text_preview") == "Comment to be deleted by moderator"
+
+    async def test_owner_delete_no_audit_entry(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that owner deleting their own comment does NOT create audit entry."""
+        # Create a regular user (create_mod_user creates a regular user without permissions)
+        owner, owner_password = await create_mod_user(
+            db_session, username="commentowner2", email="owner2@example.com"
+        )
+
+        # Create image and comment by owner
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        comment = Comments(
+            image_id=image.image_id,
+            user_id=owner.user_id,
+            post_text="Owner's own comment",
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        # Login and delete own comment
+        token = await login_as_user(client, owner.username, owner_password)
+
+        response = await client.delete(
+            f"/api/v1/comments/{comment.post_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Refresh session to see changes from the API request
+        db_session.expire_all()
+
+        # Verify NO audit log entry (owner deleting own comment is not logged)
+        stmt = select(AdminActions).where(
+            AdminActions.image_id == image.image_id,
+            AdminActions.action_type == AdminActionType.COMMENT_DELETE,
+        )
+        result = await db_session.execute(stmt)
+        action = result.scalar_one_or_none()
+
+        assert action is None  # No audit entry should exist
+

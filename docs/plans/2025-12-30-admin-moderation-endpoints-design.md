@@ -43,7 +43,7 @@ PATCH /admin/images/{image_id}
 
 ```python
 class ImageStatusUpdate(BaseModel):
-    status: int  # -4=Review, -3=LowQuality, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler
+    status: int  # -4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler
     replacement_id: int | None = None  # Required when status=-1 (Repost)
 ```
 
