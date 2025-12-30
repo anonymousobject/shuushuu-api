@@ -378,7 +378,7 @@ async def update_user_profile(
             detail="Not authorized to update this user",
         )
 
-    user = await _update_user_profile(user_id, user_data, current_user.id, db)
+    user = await _update_user_profile(user_id, user_data, current_user.user_id, db)
     return UserResponse.model_validate(user)
 
 
