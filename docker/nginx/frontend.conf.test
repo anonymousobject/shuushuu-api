@@ -14,11 +14,27 @@ server {
     }
 }
 
-# Internal HTTP server for SSR requests (container-to-container)
-# SSR uses http://nginx which doesn't need HTTPS for internal Docker network
+# =============================================================================
+# Internal HTTP server for SSR requests (Docker container-to-container ONLY)
+# =============================================================================
+# NOT EXPOSED TO THE INTERNET - This server block only handles requests where
+# the Host header is literally "nginx" (the Docker container name). External
+# requests come in with Host: test.shuushuu.com and match the block above,
+# which redirects them to HTTPS.
+#
+# Purpose: SvelteKit SSR runs inside the frontend container and needs to fetch
+# data from the API. It uses http://nginx/api/... for these requests. Since
+# this is internal Docker network traffic, HTTPS is unnecessary and would
+# require additional certificate configuration.
+#
+# Security: External clients cannot reach this endpoint because:
+# 1. They connect via the public domain (test.shuushuu.com), not "nginx"
+# 2. The "nginx" hostname only resolves within the Docker network
+# 3. Port 80 external traffic matches the first server block (HTTPS redirect)
+# =============================================================================
 server {
     listen 80 default_server;
-    server_name nginx;
+    server_name nginx;  # Only matches Docker-internal requests
 
     client_max_body_size 100M;
 
