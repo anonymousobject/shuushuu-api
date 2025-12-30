@@ -357,7 +357,7 @@ class TestImageStatusChangeAuditLog:
         assert response.status_code == 200
 
         # Refresh session to see changes from the API request
-        await db_session.expire_all()
+        db_session.expire_all()
 
         # Verify audit log entry
         stmt = select(AdminActions).where(
@@ -386,7 +386,7 @@ class TestImageStatusChangeAuditLog:
             user_id=admin.user_id,
             filename="repost_image",
             ext="jpg",
-            md5_hash="auditrepost123auditrepost123audit",
+            md5_hash="auditrepost123456789012345678",
             status=ImageStatus.ACTIVE,
         )
         db_session.add(repost_image)
@@ -407,7 +407,7 @@ class TestImageStatusChangeAuditLog:
         assert response.status_code == 200
 
         # Refresh session to see changes from the API request
-        await db_session.expire_all()
+        db_session.expire_all()
 
         # Verify audit log entry
         stmt = select(AdminActions).where(
