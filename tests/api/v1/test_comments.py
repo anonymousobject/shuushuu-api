@@ -956,32 +956,37 @@ class TestAdminCommentDeletion:
         await db_session.commit()
         await db_session.refresh(comment)
 
+        # Capture IDs before API call to avoid lazy loading issues after expire_all()
+        image_id = image.image_id
+        mod_user_id = mod.user_id
+        comment_post_id = comment.post_id
+
         # Login as mod and delete the comment
         token = await login_as_user(client, mod.username, mod_password)
 
         response = await client.delete(
-            f"/api/v1/comments/{comment.post_id}",
+            f"/api/v1/comments/{comment_post_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 200
 
-        # Refresh session to see changes from the API request
+        # Expire cached objects to see changes from the API request
         db_session.expire_all()
 
         # Verify audit log entry
         stmt = select(AdminActions).where(
-            AdminActions.image_id == image.image_id,
+            AdminActions.image_id == image_id,
             AdminActions.action_type == AdminActionType.COMMENT_DELETE,
         )
         result = await db_session.execute(stmt)
         action = result.scalar_one_or_none()
 
         assert action is not None
-        assert action.user_id == mod.user_id
-        assert action.image_id == image.image_id
+        assert action.user_id == mod_user_id
+        assert action.image_id == image_id
         assert action.details is not None
-        assert action.details.get("comment_id") == comment.post_id
+        assert action.details.get("comment_id") == comment_post_id
         assert action.details.get("original_user_id") == 1
         assert action.details.get("post_text_preview") == "Comment to be deleted by moderator"
 
@@ -1009,26 +1014,29 @@ class TestAdminCommentDeletion:
         await db_session.commit()
         await db_session.refresh(comment)
 
+        # Capture IDs before API call to avoid lazy loading issues after expire_all()
+        image_id = image.image_id
+        comment_post_id = comment.post_id
+
         # Login and delete own comment
         token = await login_as_user(client, owner.username, owner_password)
 
         response = await client.delete(
-            f"/api/v1/comments/{comment.post_id}",
+            f"/api/v1/comments/{comment_post_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 200
 
-        # Refresh session to see changes from the API request
+        # Expire cached objects to see changes from the API request
         db_session.expire_all()
 
         # Verify NO audit log entry (owner deleting own comment is not logged)
         stmt = select(AdminActions).where(
-            AdminActions.image_id == image.image_id,
+            AdminActions.image_id == image_id,
             AdminActions.action_type == AdminActionType.COMMENT_DELETE,
         )
         result = await db_session.execute(stmt)
         action = result.scalar_one_or_none()
 
         assert action is None  # No audit entry should exist
-
