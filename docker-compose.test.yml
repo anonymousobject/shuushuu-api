@@ -12,7 +12,7 @@ services:
       dockerfile: Dockerfile
       args:
         - PUBLIC_ENVIRONMENT=test
-        - PUBLIC_API_URL=http://nginx
+        - PUBLIC_API_URL=http://nginx:8080
         - PUBLIC_DEBUG=false
     container_name: shuushuu-frontend-test
     environment:
