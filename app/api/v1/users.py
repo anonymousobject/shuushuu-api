@@ -202,6 +202,9 @@ async def upload_user_avatar(
     Accepts JPG, PNG, or GIF (animated supported). Images are resized to fit
     within 200x200 pixels while preserving aspect ratio. Maximum file size is 1MB.
     """
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
     # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
     is_self = current_user.user_id == user_id
     has_edit_permission = await has_permission(
@@ -299,6 +302,9 @@ async def delete_user_avatar(
     - Regular users can only delete their own avatar (user_id must match their ID)
     - Users with USER_EDIT_PROFILE permission can delete avatars for any user
     """
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
     # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
     is_self = current_user.user_id == user_id
     has_edit_permission = await has_permission(
@@ -366,6 +372,9 @@ async def update_user_profile(
 
     All fields are optional. Only provided fields will be updated.
     """
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
     # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
     is_self = current_user.user_id == user_id
     has_edit_permission = await has_permission(

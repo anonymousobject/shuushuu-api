@@ -484,6 +484,9 @@ async def delete_comment(
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
 
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
     # Check authorization: owner or has POST_EDIT permission
     is_owner = comment.user_id == current_user.user_id
     has_mod_permission = await has_permission(
