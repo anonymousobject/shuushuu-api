@@ -747,6 +747,139 @@ class TestFuzzyTagSearch:
         # Should find all tags starting with "sa" (case-insensitive)
         assert data["total"] == 3
 
+    async def test_search_with_stopwords(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search works correctly when query contains stopwords like 'The'.
+
+        This addresses a bug where searching for "The Forgotten" would fail because
+        "the" is a MySQL/MariaDB fulltext stopword. When combined with the `+` required
+        operator, the entire query would fail.
+
+        The fix filters out stopwords and short terms before building the fulltext query.
+        """
+        # Create tags with "The" in the title
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        tag2 = Tags(title="The 8th son? Are you kidding me?", type=TagType.CHARACTER)
+        tag3 = Tags(title="Forgotten Dreams", type=TagType.CHARACTER)  # No "The"
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for "The Forgotten" - should find "The Forgotten Field"
+        response = await client.get("/api/v1/tags?search=The%20Forgotten")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find at least one result
+        assert data["total"] >= 1, "Search for 'The Forgotten' should return results"
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "The Forgotten Field" in titles, "Should find 'The Forgotten Field'"
+        # Should NOT include "Forgotten Dreams" (lacks "The" if we're being strict about matching)
+        # Actually after fix, we filter out "The" as a stopword, so "Forgotten" is what's searched
+        # This means "Forgotten Dreams" might also be returned - that's acceptable
+
+    async def test_search_with_short_terms(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search works when query contains very short terms (< 3 chars).
+
+        MySQL/MariaDB fulltext has a minimum token size (default 3). Terms shorter
+        than this are ignored in fulltext search, which can cause issues when combined
+        with the `+` required operator.
+
+        Example: Searching "The F" would fail because "F" is below min token size.
+        """
+        # Create tags
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        tag2 = Tags(title="The Five Star Stories", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "The F" - should still work by filtering out short terms
+        response = await client.get("/api/v1/tags?search=The%20F")
+        assert response.status_code == 200
+        data = response.json()
+
+        # With stopword and short term filtering, this becomes empty or just searches
+        # based on valid terms. The important thing is it doesn't crash or return 0
+        # when there are valid tags starting with "The F".
+        # After fix: "The" is stopword, "F" is too short, so we might need fallback
+        # For now, just ensure we get some results that match "The F" prefix
+        assert data["total"] >= 1, "Search for 'The F' should return results"
+
+    async def test_search_with_special_like_characters(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that LIKE special characters (% and _) are escaped in search.
+
+        Without escaping, a search containing '%' or '_' would be interpreted
+        as wildcards, potentially matching unintended results.
+        """
+        # Create tags with special characters in title
+        tag1 = Tags(title="100% Orange Juice", type=TagType.CHARACTER)
+        tag2 = Tags(title="Orange Soda", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "100%" - should only find exact prefix match, not wildcard
+        # The % should be escaped so it doesn't match everything
+        response = await client.get("/api/v1/tags?search=100%25")  # URL encoded %
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find "100% Orange Juice" but not "Orange Soda"
+        assert data["total"] == 1
+        assert data["tags"][0]["title"] == "100% Orange Juice"
+
+    async def test_search_with_fulltext_special_characters(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that fulltext boolean operators are stripped from search terms.
+
+        MySQL fulltext BOOLEAN MODE uses characters like +, -, *, ~, ", (), <, >, @
+        as operators. Without sanitization, searching for "C++" would create
+        "+C++*" which interprets the extra + as operators.
+        """
+        # Create tags with special characters
+        tag1 = Tags(title="C++ Programming", type=TagType.CHARACTER)
+        tag2 = Tags(title="C Sharp Programming", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "C++" - the ++ should be stripped, searching for just "C"
+        # which is too short (< 3 chars), so it falls back to LIKE
+        response = await client.get("/api/v1/tags?search=C%2B%2B")  # URL encoded C++
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should not crash and should return some results
+        # After stripping ++, "C" is too short, falls back to LIKE "C++%"
+        assert data["total"] >= 1
+
+    async def test_search_with_obfuscated_stopwords(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that stopwords are detected after sanitization.
+
+        A term like "+the+" should be recognized as stopword "the" after
+        stripping the special characters, not pass through as a non-stopword.
+        """
+        # Create tag
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        db_session.add_all([tag1])
+        await db_session.commit()
+
+        # Search for "+the+ Forgotten" - "+the+" should become "the" (stopword)
+        # and be filtered out, leaving just "Forgotten" for fulltext search
+        response = await client.get("/api/v1/tags?search=%2Bthe%2B%20Forgotten")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find results since "Forgotten" is a valid search term
+        assert data["total"] >= 1
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "The Forgotten Field" in titles
+
     async def test_hybrid_search_with_filters(
         self, client: AsyncClient, db_session: AsyncSession
     ):
