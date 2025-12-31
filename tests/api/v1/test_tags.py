@@ -856,6 +856,30 @@ class TestFuzzyTagSearch:
         # After stripping ++, "C" is too short, falls back to LIKE "C++%"
         assert data["total"] >= 1
 
+    async def test_search_with_obfuscated_stopwords(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that stopwords are detected after sanitization.
+
+        A term like "+the+" should be recognized as stopword "the" after
+        stripping the special characters, not pass through as a non-stopword.
+        """
+        # Create tag
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        db_session.add_all([tag1])
+        await db_session.commit()
+
+        # Search for "+the+ Forgotten" - "+the+" should become "the" (stopword)
+        # and be filtered out, leaving just "Forgotten" for fulltext search
+        response = await client.get("/api/v1/tags?search=%2Bthe%2B%20Forgotten")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find results since "Forgotten" is a valid search term
+        assert data["total"] >= 1
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "The Forgotten Field" in titles
+
     async def test_hybrid_search_with_filters(
         self, client: AsyncClient, db_session: AsyncSession
     ):

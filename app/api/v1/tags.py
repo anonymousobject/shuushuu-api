@@ -261,14 +261,16 @@ async def list_tags(
             # Additionally, strip special fulltext boolean operators from terms to prevent
             # unexpected behavior (e.g., "C++" becoming "+C++*" with extra operators).
             search_terms = search.split()
-            # Sanitize terms first, then filter by stopwords and length
-            # Order matters: we need to check length AFTER sanitization
-            # e.g., "C++" becomes "C" after stripping operators, which is too short
+            # Sanitize terms first, then filter by stopwords and length.
+            # Order matters: we need to check stopwords and length AFTER sanitization.
+            # e.g., "+the+" becomes "the" (a stopword), and "C++" becomes "C" (too short).
             valid_terms = []
             for term in search_terms:
-                if term.lower() in FULLTEXT_STOPWORDS:
-                    continue
                 sanitized = _sanitize_fulltext_term(term)
+                if not sanitized:
+                    continue
+                if sanitized.lower() in FULLTEXT_STOPWORDS:
+                    continue
                 if len(sanitized) >= FULLTEXT_MIN_TOKEN_SIZE:
                     valid_terms.append(sanitized)
 
