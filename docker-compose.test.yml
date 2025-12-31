@@ -12,18 +12,18 @@ services:
       dockerfile: Dockerfile
       args:
         - PUBLIC_ENVIRONMENT=test
-        - PUBLIC_API_URL=http://api:8000
+        - PUBLIC_API_URL=http://nginx:8080
         - PUBLIC_DEBUG=false
     container_name: shuushuu-frontend-test
     environment:
       - PUBLIC_ENVIRONMENT=test
-      - PUBLIC_API_URL=http://api:8000
+      - PUBLIC_API_URL=http://nginx:8080
       - STORAGE_PATH=${STORAGE_PATH}
       - NODE_OPTIONS=--max-old-space-size=4096
     depends_on:
       - api
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health"]
       interval: 10s
       timeout: 5s
       retries: 3

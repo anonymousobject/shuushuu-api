@@ -14,6 +14,41 @@ server {
     }
 }
 
+# =============================================================================
+# Internal HTTP server for SSR requests (Docker container-to-container ONLY)
+# =============================================================================
+# Listens on port 8080 which is NOT exposed to the Internet (only 80/443 are
+# mapped in docker-compose). This ensures external clients cannot reach this
+# endpoint even by spoofing the Host header.
+#
+# Purpose: SvelteKit SSR runs inside the frontend container and needs to fetch
+# data from the API. It uses http://nginx:8080/api/... for these requests.
+# Since this is internal Docker network traffic, HTTPS is unnecessary.
+# =============================================================================
+server {
+    listen 8080;
+    server_name nginx;  # Only matches Docker-internal requests
+
+    client_max_body_size 100M;
+
+    # API proxy - the only endpoint SSR needs
+    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto http;
+        proxy_http_version 1.1;
+    }
+
+    # Health check
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+}
+
 # HTTPS server
 server {
     listen 443 ssl;
@@ -103,7 +138,7 @@ server {
     # Health check
     location /health {
         access_log off;
-        return 200 "healthy\n";
         add_header Content-Type text/plain;
+        return 200 "healthy\n";
     }
 }
