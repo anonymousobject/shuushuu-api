@@ -29,6 +29,51 @@ from app.schemas.tag import (
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
+# MySQL/MariaDB default fulltext stopwords that cause search failures when used with `+` (required) operator
+# Source: INFORMATION_SCHEMA.INNODB_FT_DEFAULT_STOPWORD
+FULLTEXT_STOPWORDS = frozenset(
+    {
+        "a",
+        "about",
+        "an",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "com",
+        "de",
+        "en",
+        "for",
+        "from",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "la",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "was",
+        "what",
+        "when",
+        "where",
+        "who",
+        "will",
+        "with",
+        "und",
+        "www",
+    }
+)
+
+# Minimum token size for InnoDB fulltext (innodb_ft_min_token_size default is 3)
+FULLTEXT_MIN_TOKEN_SIZE = 3
+
 # TODO: Create tag proposal/review system. Let users petition for new tags, and allow admins to review and approve them.
 
 
@@ -190,13 +235,30 @@ async def list_tags(
             # Long query: word-order independent full-text search with wildcard expansion
             # Split search into words and add wildcard to each word to match partial terms
             # e.g., "sakura kinomoto" -> "+sakura* +kinomoto*"
+            #
+            # IMPORTANT: Filter out stopwords and short terms to prevent search failures.
+            # MySQL/MariaDB fulltext treats words like "the", "a", "of" as stopwords.
+            # When combined with `+` (required), the entire query fails if a stopword is required.
+            # Also, terms shorter than innodb_ft_min_token_size (default 3) are ignored.
             search_terms = search.split()
-            fulltext_query_str = " ".join(f"+{term}*" for term in search_terms)
-            query = query.where(
-                text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
-                    search=fulltext_query_str
+            valid_terms = [
+                term
+                for term in search_terms
+                if term.lower() not in FULLTEXT_STOPWORDS and len(term) >= FULLTEXT_MIN_TOKEN_SIZE
+            ]
+
+            if valid_terms:
+                # Build fulltext query with valid terms only
+                fulltext_query_str = " ".join(f"+{term}*" for term in valid_terms)
+                query = query.where(
+                    text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
+                        search=fulltext_query_str
+                    )
                 )
-            )
+            else:
+                # All terms were stopwords or too short - fall back to LIKE prefix search
+                # This handles edge cases like searching for "The" or "A" or "The A"
+                query = query.where(Tags.title.like(f"{search}%"))  # type: ignore[union-attr]
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
     if parent_tag_id is not None:
@@ -212,8 +274,8 @@ async def list_tags(
     # Sort: For search queries, use smart ranking
     # For general listing, sort by date added
     if search:
-        if len(search) < 3:
-            # Short query (prefix match): prioritize exact and starts-with
+        if len(search) < 3 or not fulltext_query_str:
+            # Short query or fallback to LIKE (prefix match): prioritize exact and starts-with
             # 1. Exact matches first
             # 2. Starts-with matches second
             # 3. Contains matches last (alphabetical within each group)

@@ -747,6 +747,66 @@ class TestFuzzyTagSearch:
         # Should find all tags starting with "sa" (case-insensitive)
         assert data["total"] == 3
 
+    async def test_search_with_stopwords(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search works correctly when query contains stopwords like 'The'.
+
+        This addresses a bug where searching for "The Forgotten" would fail because
+        "the" is a MySQL/MariaDB fulltext stopword. When combined with the `+` required
+        operator, the entire query would fail.
+
+        The fix filters out stopwords and short terms before building the fulltext query.
+        """
+        # Create tags with "The" in the title
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        tag2 = Tags(title="The 8th son? Are you kidding me?", type=TagType.CHARACTER)
+        tag3 = Tags(title="Forgotten Dreams", type=TagType.CHARACTER)  # No "The"
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for "The Forgotten" - should find "The Forgotten Field"
+        response = await client.get("/api/v1/tags?search=The%20Forgotten")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find at least one result
+        assert data["total"] >= 1, "Search for 'The Forgotten' should return results"
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "The Forgotten Field" in titles, "Should find 'The Forgotten Field'"
+        # Should NOT include "Forgotten Dreams" (lacks "The" if we're being strict about matching)
+        # Actually after fix, we filter out "The" as a stopword, so "Forgotten" is what's searched
+        # This means "Forgotten Dreams" might also be returned - that's acceptable
+
+    async def test_search_with_short_terms(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search works when query contains very short terms (< 3 chars).
+
+        MySQL/MariaDB fulltext has a minimum token size (default 3). Terms shorter
+        than this are ignored in fulltext search, which can cause issues when combined
+        with the `+` required operator.
+
+        Example: Searching "The F" would fail because "F" is below min token size.
+        """
+        # Create tags
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        tag2 = Tags(title="The Five Star Stories", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "The F" - should still work by filtering out short terms
+        response = await client.get("/api/v1/tags?search=The%20F")
+        assert response.status_code == 200
+        data = response.json()
+
+        # With stopword and short term filtering, this becomes empty or just searches
+        # based on valid terms. The important thing is it doesn't crash or return 0
+        # when there are valid tags starting with "The F".
+        # After fix: "The" is stopword, "F" is too short, so we might need fallback
+        # For now, just ensure we get some results that match "The F" prefix
+        assert data["total"] >= 1, "Search for 'The F' should return results"
+
     async def test_hybrid_search_with_filters(
         self, client: AsyncClient, db_session: AsyncSession
     ):
