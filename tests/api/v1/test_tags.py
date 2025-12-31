@@ -807,6 +807,55 @@ class TestFuzzyTagSearch:
         # For now, just ensure we get some results that match "The F" prefix
         assert data["total"] >= 1, "Search for 'The F' should return results"
 
+    async def test_search_with_special_like_characters(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that LIKE special characters (% and _) are escaped in search.
+
+        Without escaping, a search containing '%' or '_' would be interpreted
+        as wildcards, potentially matching unintended results.
+        """
+        # Create tags with special characters in title
+        tag1 = Tags(title="100% Orange Juice", type=TagType.CHARACTER)
+        tag2 = Tags(title="Orange Soda", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "100%" - should only find exact prefix match, not wildcard
+        # The % should be escaped so it doesn't match everything
+        response = await client.get("/api/v1/tags?search=100%25")  # URL encoded %
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find "100% Orange Juice" but not "Orange Soda"
+        assert data["total"] == 1
+        assert data["tags"][0]["title"] == "100% Orange Juice"
+
+    async def test_search_with_fulltext_special_characters(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that fulltext boolean operators are stripped from search terms.
+
+        MySQL fulltext BOOLEAN MODE uses characters like +, -, *, ~, ", (), <, >, @
+        as operators. Without sanitization, searching for "C++" would create
+        "+C++*" which interprets the extra + as operators.
+        """
+        # Create tags with special characters
+        tag1 = Tags(title="C++ Programming", type=TagType.CHARACTER)
+        tag2 = Tags(title="C Sharp Programming", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "C++" - the ++ should be stripped, searching for just "C"
+        # which is too short (< 3 chars), so it falls back to LIKE
+        response = await client.get("/api/v1/tags?search=C%2B%2B")  # URL encoded C++
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should not crash and should return some results
+        # After stripping ++, "C" is too short, falls back to LIKE "C++%"
+        assert data["total"] >= 1
+
     async def test_hybrid_search_with_filters(
         self, client: AsyncClient, db_session: AsyncSession
     ):
