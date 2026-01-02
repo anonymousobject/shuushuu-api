@@ -303,7 +303,7 @@ async def list_images(
 
     # Secondary sort by image_id ensures consistent ordering when primary sort has ties
     # (e.g., multiple images with same favorites count). Use descending for "newest first".
-    secondary_order = desc(Images.image_id)
+    secondary_order = desc(Images.image_id)  # type: ignore[var-annotated,arg-type]
 
     # Subquery: Apply all filters, sort, and limit to get matching image_ids
     # When comment filters are used with JOIN, apply distinct() to avoid duplicate rows
