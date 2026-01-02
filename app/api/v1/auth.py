@@ -99,11 +99,32 @@ async def _check_and_handle_suspension(
                 db.add(reactivation)
                 # Note: Caller must commit
             else:
-                # Still suspended - show reason
-                reason = suspension.reason or "Your account has been suspended."
+                # Still suspended - build detailed message
+                if suspension.suspended_until:
+                    # Temporary suspension - show duration
+                    remaining = suspension.suspended_until - datetime.now(UTC).replace(tzinfo=None)
+                    days = remaining.days
+                    hours = remaining.seconds // 3600
+                    minutes = (remaining.seconds % 3600) // 60
+
+                    if days > 0:
+                        duration = f"{days} day{'s' if days != 1 else ''}"
+                    elif hours > 0:
+                        duration = f"{hours} hour{'s' if hours != 1 else ''}"
+                    else:
+                        duration = f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+                    message = f"Suspended for {duration}."
+                else:
+                    # Permanent suspension
+                    message = "Permanently suspended."
+
+                if suspension.reason:
+                    message += f" Reason: {suspension.reason}"
+
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=reason,
+                    detail=message,
                 )
         else:
             # Inactive but not suspended
