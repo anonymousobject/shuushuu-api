@@ -213,3 +213,69 @@ class TestServeThumbnailEndpoint:
             f"/internal/thumbs/{public_image.md5_hash}.jpeg"
             in response.headers["X-Accel-Redirect"]
         )
+
+
+class TestVisibilityMatrix:
+    """Integration tests for the complete visibility matrix."""
+
+    @pytest.fixture
+    async def images_by_status(self, db_session: AsyncSession):
+        """Create images with different statuses."""
+        statuses = {
+            "review": ImageStatus.REVIEW,
+            "inappropriate": ImageStatus.INAPPROPRIATE,
+            "repost": ImageStatus.REPOST,
+            "other": ImageStatus.OTHER,
+            "active": ImageStatus.ACTIVE,
+            "spoiler": ImageStatus.SPOILER,
+        }
+        images = {}
+        for name, status in statuses.items():
+            image = Images(
+                filename=f"2026-01-02-{400 + len(images)}",
+                ext="png",
+                md5_hash=f"matrix{name}hash",
+                filesize=1000,
+                width=100,
+                height=100,
+                user_id=1,  # Owned by testuser
+                status=status,
+            )
+            db_session.add(image)
+            await db_session.flush()
+            images[name] = image
+        await db_session.commit()
+        return images
+
+    async def test_anonymous_sees_public_statuses_only(
+        self, client: AsyncClient, images_by_status: dict
+    ):
+        """Anonymous users can only see REPOST, ACTIVE, SPOILER."""
+        public = ["repost", "active", "spoiler"]
+        protected = ["review", "inappropriate", "other"]
+
+        for name in public:
+            img = images_by_status[name]
+            response = await client.get(f"/images/2026-01-02-{img.image_id}.png")
+            assert response.status_code == 200, f"Expected 200 for {name}, got {response.status_code}"
+
+        for name in protected:
+            img = images_by_status[name]
+            response = await client.get(f"/images/2026-01-02-{img.image_id}.png")
+            assert response.status_code == 404, f"Expected 404 for {name}, got {response.status_code}"
+
+    async def test_owner_sees_all_statuses(
+        self, client: AsyncClient, images_by_status: dict, db_session: AsyncSession
+    ):
+        """Image owner can see all their images regardless of status."""
+        owner = await db_session.get(Users, 1)
+        owner.active = 1  # Ensure user is active for auth
+        await db_session.commit()
+        token = create_access_token(owner.user_id)
+
+        for name, img in images_by_status.items():
+            response = await client.get(
+                f"/images/2026-01-02-{img.image_id}.png",
+                cookies={"access_token": token},
+            )
+            assert response.status_code == 200, f"Owner should see {name}, got {response.status_code}"
