@@ -11,7 +11,17 @@ Authentication is cookie-based (access_token HTTPOnly cookie).
 Note: Future enhancement could support ?token=xxx query param for non-browser clients.
 """
 
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Response
+from fastapi.exceptions import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.auth import get_optional_current_user
+from app.core.database import get_db
+from app.models.image import Images
+from app.models.user import Users
+from app.services.image_visibility import can_view_image_file
 
 router = APIRouter()
 
@@ -52,3 +62,58 @@ def get_extension_from_filename(filename: str) -> str:
     if "." not in filename:
         return ""
     return filename.rsplit(".", 1)[-1]
+
+
+@router.get("/images/{filename}")
+async def serve_fullsize_image(
+    filename: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Users | None, Depends(get_optional_current_user)],
+) -> Response:
+    """
+    Serve fullsize image with permission check.
+    Returns X-Accel-Redirect header for nginx to serve the actual file.
+    Authentication: Cookie-based (access_token).
+    """
+    return await _serve_image(filename, "fullsize", db, current_user)
+
+
+@router.get("/thumbs/{filename}")
+async def serve_thumbnail(
+    filename: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Users | None, Depends(get_optional_current_user)],
+) -> Response:
+    """
+    Serve thumbnail with permission check.
+    Returns X-Accel-Redirect header for nginx to serve the actual file.
+    Note: Thumbnails are always JPEG format.
+    """
+    return await _serve_image(filename, "thumbs", db, current_user)
+
+
+async def _serve_image(
+    filename: str,
+    image_type: str,
+    db: AsyncSession,
+    current_user: Users | None,
+) -> Response:
+    """Internal handler for serving images."""
+    image_id = parse_image_id_from_filename(filename)
+    if image_id is None:
+        raise HTTPException(status_code=404)
+
+    image = await db.get(Images, image_id)
+    if image is None:
+        raise HTTPException(status_code=404)
+
+    if not await can_view_image_file(image, current_user, db):
+        raise HTTPException(status_code=404)
+
+    if image_type == "thumbs":
+        ext = "jpeg"
+    else:
+        ext = get_extension_from_filename(filename)
+
+    internal_path = f"/internal/{image_type}/{image.md5_hash}.{ext}"
+    return Response(status_code=200, headers={"X-Accel-Redirect": internal_path})

@@ -132,5 +132,11 @@ from app.api.v1 import router as api_v1_router  # noqa: E402
 
 app.include_router(api_v1_router, prefix="/api/v1")
 
+from app.api.v1.media import router as media_router  # noqa: E402
+
+# Mount media routes at root level (not under /api/v1)
+# These serve image files with permission checks via X-Accel-Redirect
+app.include_router(media_router)
+
 # Note: Static images are served directly by nginx for better performance
 # See docker/nginx/frontend.conf.template for configuration
