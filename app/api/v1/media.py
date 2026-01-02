@@ -11,7 +11,7 @@ Authentication is cookie-based (access_token HTTPOnly cookie).
 Note: Future enhancement could support ?token=xxx query param for non-browser clients.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Response
 from fastapi.exceptions import HTTPException
@@ -94,7 +94,7 @@ async def serve_thumbnail(
 
 async def _serve_image(
     filename: str,
-    image_type: str,
+    image_type: Literal["fullsize", "thumbs"],
     db: AsyncSession,
     current_user: Users | None,
 ) -> Response:
@@ -110,10 +110,11 @@ async def _serve_image(
     if not await can_view_image_file(image, current_user, db):
         raise HTTPException(status_code=404)
 
+    # Use database extension for fullsize, always jpeg for thumbnails
     if image_type == "thumbs":
         ext = "jpeg"
     else:
-        ext = get_extension_from_filename(filename)
+        ext = image.ext
 
     internal_path = f"/internal/{image_type}/{image.md5_hash}.{ext}"
     return Response(status_code=200, headers={"X-Accel-Redirect": internal_path})
