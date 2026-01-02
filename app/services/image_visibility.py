@@ -65,6 +65,7 @@ async def can_view_image_file(
         return True
 
     # Moderators can view all - check for IMAGE_EDIT or REVIEW_VIEW
+    assert user.user_id is not None
     return await has_any_permission(
         db,
         user.user_id,

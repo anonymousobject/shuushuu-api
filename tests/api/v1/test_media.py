@@ -210,8 +210,7 @@ class TestServeThumbnailEndpoint:
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
         assert (
-            f"/internal/thumbs/{public_image.md5_hash}.jpeg"
-            in response.headers["X-Accel-Redirect"]
+            f"/internal/thumbs/{public_image.md5_hash}.jpeg" in response.headers["X-Accel-Redirect"]
         )
 
 
@@ -257,12 +256,16 @@ class TestVisibilityMatrix:
         for name in public:
             img = images_by_status[name]
             response = await client.get(f"/images/2026-01-02-{img.image_id}.png")
-            assert response.status_code == 200, f"Expected 200 for {name}, got {response.status_code}"
+            assert response.status_code == 200, (
+                f"Expected 200 for {name}, got {response.status_code}"
+            )
 
         for name in protected:
             img = images_by_status[name]
             response = await client.get(f"/images/2026-01-02-{img.image_id}.png")
-            assert response.status_code == 404, f"Expected 404 for {name}, got {response.status_code}"
+            assert response.status_code == 404, (
+                f"Expected 404 for {name}, got {response.status_code}"
+            )
 
     async def test_owner_sees_all_statuses(
         self, client: AsyncClient, images_by_status: dict, db_session: AsyncSession
@@ -278,4 +281,6 @@ class TestVisibilityMatrix:
                 f"/images/2026-01-02-{img.image_id}.png",
                 cookies={"access_token": token},
             )
-            assert response.status_code == 200, f"Owner should see {name}, got {response.status_code}"
+            assert response.status_code == 200, (
+                f"Owner should see {name}, got {response.status_code}"
+            )
