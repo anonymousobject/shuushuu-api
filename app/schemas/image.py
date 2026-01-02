@@ -93,14 +93,14 @@ class ImageResponse(ImageBase):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def url(self) -> str:
-        """Generate image URL"""
-        return f"{settings.IMAGE_BASE_URL}/images/fullsize/{self.filename}.{self.ext}"
+        """Generate image URL (protected path with permission check)"""
+        return f"{settings.IMAGE_BASE_URL}/images/{self.filename}.{self.ext}"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def thumbnail_url(self) -> str:
-        """Generate thumbnail URL"""
-        return f"{settings.IMAGE_BASE_URL}/images/thumbs/{self.filename}.jpeg"  # Currently all thumbs are jpeg
+        """Generate thumbnail URL (protected path with permission check)"""
+        return f"{settings.IMAGE_BASE_URL}/thumbs/{self.filename}.jpeg"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
