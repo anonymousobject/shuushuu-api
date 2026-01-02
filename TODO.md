@@ -1,16 +1,17 @@
 # TODO Items
 
-## Redis Caching
-**Priority:** Medium
-**Status:** Not Started
+## Completed Items
 
-Implement Redis caching for frequently accessed data to improve performance.
+### ✅ Redis Caching
+**Status:** COMPLETED (2025-12)
 
-## Image Processing
+Redis caching implemented for:
+- Permission caching with TTL (`app/core/permission_cache.py`)
+- Rate limiting for registration and search (`app/services/rate_limit.py`)
+- Cache invalidation on permission changes
 
-### ✅ Implement Image Variant Generation
-**Priority:** Medium
-**Status:** ✅ COMPLETED (2025-11-30)
+### ✅ Image Variant Generation
+**Status:** COMPLETED (2025-11-30)
 
 Medium and large image variants are now automatically generated during upload.
 
@@ -20,9 +21,26 @@ Medium and large image variants are now automatically generated during upload.
 - File size check: Deletes variants if not smaller than original
 - Database updates: Sets `has_medium`/`has_large` to 0 when variants deleted
 
-**Files Modified:**
-- `app/services/image_processing.py` - Variant generation functions
-- `app/schemas/image.py` - Added `medium_url` and `large_url` fields
+### ✅ Storage Path Configuration
+**Status:** COMPLETED (2025-12)
+
+Storage paths are properly configurable via `app/config.py`:
+- `STORAGE_PATH`, `AVATAR_STORAGE_PATH`, `IMAGE_BASE_URL` all from settings
+
+### ✅ Legacy BBCode Handling
+**Status:** COMPLETED (2025-12)
+
+Legacy BBCode from PHP database is handled via `app/utils/markdown.py`:
+- `parse_markdown()` converts BBCode quotes to HTML blockquotes
+- `normalize_legacy_entities()` decodes old HTML entities
+- New content uses safe Markdown (bold, italic, links, blockquotes)
+
+### ✅ JPEG Extension Standardization
+**Status:** COMPLETED (2025-12)
+
+Thumbnails standardized to `.jpeg` extension intentionally. Original images keep their uploaded extension.
+
+---
 
 ## API Features
 
@@ -72,7 +90,7 @@ The current system uses a 1-10 rating scale (910,409 existing ratings, avg 8.53)
 
 Allow users to petition for new tags and enable admins to review and approve them.
 
-**Location:** `app/api/v1/tags.py:21`
+**Location:** `app/api/v1/tags.py:93`
 
 **Tasks:**
 1. Design tag proposal schema (user, tag_name, reason, status)
@@ -83,11 +101,15 @@ Allow users to petition for new tags and enable admins to review and approve the
 
 ### Image Similarity Check Confirmation Flow
 **Priority:** Medium
-**Status:** Not Started
+**Status:** Partial
 
 Currently, IQDB similarity checks are performed but don't block duplicate uploads. Need to implement user confirmation flow.
 
-**Location:** `app/api/v1/images.py:685`
+**Location:** `app/api/v1/images.py:1013-1021`
+
+**Current State:**
+- IQDB check runs via `check_iqdb_similarity()`
+- Results logged but no user confirmation required
 
 **Tasks:**
 1. Return 409 status with list of similar images when high-scoring matches found
@@ -110,13 +132,15 @@ if similar_images and not skip_similarity_check:
 
 Add intelligent detection of the most efficient search method based on input parameters.
 
-**Location:** `app/api/v1/comments.py:43`
+**Location:** `app/api/v1/comments.py:57`
 
 **Tasks:**
 1. Analyze input patterns (text length, special characters, operators)
 2. Automatically select between LIKE, natural fulltext, or boolean fulltext
 3. Document the detection logic
 4. Add tests for various input scenarios
+
+---
 
 ## Code Quality & Refactoring
 
@@ -126,7 +150,7 @@ Add intelligent detection of the most efficient search method based on input par
 
 User creation endpoint has inline validation that should be extracted into reusable functions.
 
-**Location:** `app/api/v1/users.py:474`
+**Location:** `app/api/v1/users.py:609`
 
 **Tasks:**
 1. Extract username format validation to utility function
@@ -138,68 +162,8 @@ User creation endpoint has inline validation that should be extracted into reusa
 - Username format: `^[a-zA-Z0-9_.-]{3,20}$`
 - Username/email uniqueness check
 
-### Remove Hardcoded Storage Paths in Image URLs
-**Priority:** Low
-**Status:** Not Started
-
-Strings like `/storage/large/` in image URL generation should come from config variables, not hardcoded values.
-
-**Location:** `app/schemas/image.py` - URL property methods
-
-**Tasks:**
-1. Create config variables for storage path prefixes (fullsize, large, medium, thumbs)
-2. Update URL generation methods to use config variables instead of hardcoded strings
-3. Update tests to verify config is being used correctly
-4. Document the config variables in .env.example
-
 ### Investigate using autogen for Alembic Migrations
 **Priority:** Low
 **Status:** Not Started
-Research if we can leverage Alembic's autogenerate feature to simplify migration creation. Right now, we write migrations manually.
-The database models and the migrations can get out of sync.
 
-
-
-## Content Migration
-
-### Convert Legacy BBCode to Markdown
-**Priority:** Medium
-**Status:** Not Started
-
-Legacy image comments in the database use BBCode formatting (`[quote]`, `[spoiler]`, `[url]`).
-These need to be converted to Markdown format for consistency with the new API.
-
-**Tasks:**
-1. Create migration script to convert BBCode → Markdown:
-   - `[quote="author"]text[/quote]` → `> **author wrote:** text`
-   - `[spoiler]text[/spoiler]` → `> **Spoiler:** text`
-   - `[url]link[/url]` → `link` (auto-linked)
-   - `[url=link]text[/url]` → `[text](link)`
-2. Test conversion on sample data
-3. Run migration against production data (requires downtime or versioned API)
-4. Remove BBCode parser from PHP codebase once migration complete
-
-**Files Affected:**
-- `app/models/comment.py` - `post_text` field contains BBCode
-- Legacy PHP: `shuu-php/common/functions/image.php` - `applybbCode()` function
-- New parser: `app/utils/markdown.py`
-
-**Notes:**
-- Consider keeping BBCode parser temporarily for backwards compatibility
-- May need dual-mode rendering during transition period
-- Check if any users have BBCode in their private messages (shouldn't exist but verify)
-
-
-## JPEG extension Standardization
-**Priority:** Low
-**Status:** Not Started
-
-Standardize all JPEG file extensions to `.jpg` in database and codebase.
-
-**Tasks:**
-1. Create migration to update `filename` fields in `images` table:
-   - Change `.jpeg` extensions to `.jpg`
-2. Update code references to use `.jpg` consistently
-   - `app/schemas/image.py` - `thumbnail_url` property
-3. Rename all .jpeg files in storage to .jpg
-4. Test image retrieval to ensure no broken links
+Research if we can leverage Alembic's autogenerate feature to simplify migration creation. Right now, we write migrations manually. The database models and the migrations can get out of sync.

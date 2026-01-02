@@ -234,6 +234,29 @@ class TestImagesFiltering:
         for img in data["images"]:
             assert img["rating"] >= 5.0
 
+    async def test_filter_by_num_ratings(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test filtering images by minimum number of ratings."""
+        # Create images with different num_ratings values
+        for num_ratings in [0, 2, 4, 6, 10]:
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"numratings-{num_ratings}"
+            image_data["md5_hash"] = f"numratings{num_ratings:020d}"
+            image_data["num_ratings"] = num_ratings
+            image_data["bayesian_rating"] = 7.0  # All have same rating
+            db_session.add(Images(**image_data))
+
+        await db_session.commit()
+
+        # Filter by minimum number of ratings
+        response = await client.get("/api/v1/images?min_num_ratings=4")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3  # 4, 6, 10
+        for img in data["images"]:
+            assert img["num_ratings"] >= 4
+
 
 @pytest.mark.api
 class TestTagSearchValidation:
