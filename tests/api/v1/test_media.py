@@ -121,7 +121,7 @@ class TestServeImageEndpoint:
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
         assert (
-            f"/internal/fullsize/{public_image.md5_hash}.png"
+            f"/internal/fullsize/{public_image.filename}.png"
             in response.headers["X-Accel-Redirect"]
         )
 
@@ -232,7 +232,7 @@ class TestServeThumbnailEndpoint:
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
         assert (
-            f"/internal/thumbs/{public_image.md5_hash}.jpeg" in response.headers["X-Accel-Redirect"]
+            f"/internal/thumbs/{public_image.filename}.jpeg" in response.headers["X-Accel-Redirect"]
         )
 
 
@@ -286,7 +286,7 @@ class TestServeMediumEndpoint:
         response = await client.get(f"/medium/2026-01-02-{image_with_medium.image_id}.png")
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
-        assert f"/internal/medium/{image_with_medium.md5_hash}.png" in response.headers["X-Accel-Redirect"]
+        assert f"/internal/medium/{image_with_medium.filename}.png" in response.headers["X-Accel-Redirect"]
 
     async def test_medium_returns_404_when_variant_missing(
         self, client: AsyncClient, image_without_medium: Images
@@ -346,7 +346,7 @@ class TestServeLargeEndpoint:
         response = await client.get(f"/large/2026-01-02-{image_with_large.image_id}.jpeg")
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
-        assert f"/internal/large/{image_with_large.md5_hash}.jpeg" in response.headers["X-Accel-Redirect"]
+        assert f"/internal/large/{image_with_large.filename}.jpeg" in response.headers["X-Accel-Redirect"]
 
     async def test_large_returns_404_when_variant_missing(
         self, client: AsyncClient, image_without_large: Images

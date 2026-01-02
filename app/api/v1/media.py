@@ -150,5 +150,6 @@ async def _serve_image(
     else:
         ext = image.ext
 
-    internal_path = f"/internal/{image_type}/{image.md5_hash}.{ext}"
+    # Files are stored with filename (e.g., 2025-12-29-1112174.jpeg)
+    internal_path = f"/internal/{image_type}/{image.filename}.{ext}"
     return Response(status_code=200, headers={"X-Accel-Redirect": internal_path})
