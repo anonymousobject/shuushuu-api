@@ -152,6 +152,8 @@ class TestServeImageEndpoint:
     ):
         """Protected image returns 404 for non-owner regular user."""
         non_owner = await db_session.get(Users, 2)
+        non_owner.active = 1  # Must be active to authenticate
+        await db_session.commit()
         token = create_access_token(non_owner.user_id)
         response = await client.get(
             f"/images/2026-01-02-{protected_image.image_id}.png",
@@ -159,7 +161,7 @@ class TestServeImageEndpoint:
         )
         assert response.status_code == 404
 
-    async def test_protected_image_moderator_returns_xaccel(
+    async def test_protected_image_moderator_with_image_edit_returns_xaccel(
         self, client: AsyncClient, protected_image: Images, db_session: AsyncSession
     ):
         """Protected image returns X-Accel-Redirect for moderator with IMAGE_EDIT."""
@@ -172,6 +174,26 @@ class TestServeImageEndpoint:
         await db_session.commit()
 
         token = create_access_token(moderator.user_id)
+        response = await client.get(
+            f"/images/2026-01-02-{protected_image.image_id}.png",
+            cookies={"access_token": token},
+        )
+        assert response.status_code == 200
+        assert "X-Accel-Redirect" in response.headers
+
+    async def test_protected_image_reviewer_with_review_view_returns_xaccel(
+        self, client: AsyncClient, protected_image: Images, db_session: AsyncSession
+    ):
+        """Protected image returns X-Accel-Redirect for user with REVIEW_VIEW."""
+        reviewer = await db_session.get(Users, 2)
+        reviewer.active = 1  # Must be active to authenticate
+        perm = Perms(perm_id=2, title=Permission.REVIEW_VIEW.value)
+        db_session.add(perm)
+        user_perm = UserPerms(user_id=reviewer.user_id, perm_id=2, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        token = create_access_token(reviewer.user_id)
         response = await client.get(
             f"/images/2026-01-02-{protected_image.image_id}.png",
             cookies={"access_token": token},
