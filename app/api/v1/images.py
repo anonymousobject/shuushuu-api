@@ -110,6 +110,9 @@ async def list_images(
         float | None, Query(ge=1, le=10, description="Minimum rating (1-10)")
     ] = None,
     min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
+    min_num_ratings: Annotated[
+        int | None, Query(ge=0, description="Minimum number of ratings")
+    ] = None,
     # Comment filtering
     commenter: Annotated[
         int | None, Query(description="Filter by user who commented on the image")
@@ -229,6 +232,8 @@ async def list_images(
         query = query.where(Images.bayesian_rating >= min_rating)  # type: ignore[arg-type]
     if min_favorites is not None:
         query = query.where(Images.favorites >= min_favorites)  # type: ignore[arg-type]
+    if min_num_ratings is not None:
+        query = query.where(Images.num_ratings >= min_num_ratings)  # type: ignore[arg-type]
 
     # Comment filtering
     # Note: We use distinct() to avoid duplicate rows when an image has multiple comments
