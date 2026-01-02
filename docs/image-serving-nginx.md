@@ -158,9 +158,9 @@ To maintain compatibility with the original e-shuushuu.net URLs, protected image
 Client → nginx → FastAPI (permission check) → X-Accel-Redirect → nginx → file
 ```
 
-1. nginx proxies `/images/*` and `/thumbs/*` requests to FastAPI
+1. nginx proxies `/images/*`, `/thumbs/*`, `/medium/*`, `/large/*` requests to FastAPI
 2. FastAPI checks if user can view the image (based on status, ownership, permissions)
-3. If authorized: returns `X-Accel-Redirect: /internal/{type}/{hash}.{ext}`
+3. If authorized: returns `X-Accel-Redirect: /internal/{type}/{filename}.{ext}`
 4. If unauthorized: returns 404 (not 403, to hide existence)
 5. nginx serves from internal location (not directly accessible)
 
@@ -203,7 +203,7 @@ location ~ ^/large/\d{4}-\d{2}-\d{2}-\d+\.(png|jpg|jpeg|gif|webp)$ {
 }
 
 # Internal locations - only accessible via X-Accel-Redirect from FastAPI
-# These serve actual files from storage using md5 hash filenames
+# Files are stored with the filename format (e.g., 2025-12-29-1112174.jpeg)
 location /internal/fullsize/ {
     internal;  # Cannot be accessed directly by clients
     alias ${STORAGE_PATH}/fullsize/;
