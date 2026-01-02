@@ -4,6 +4,8 @@ Media file serving endpoints with permission checks.
 Routes:
 - GET /images/{filename} - Serve fullsize image with permission check
 - GET /thumbs/{filename} - Serve thumbnail with permission check
+- GET /medium/{filename} - Serve medium variant (1280px) with permission check
+- GET /large/{filename} - Serve large variant (2048px) with permission check
 
 These endpoints return X-Accel-Redirect headers for nginx to serve the actual files.
 Authentication is cookie-based (access_token HTTPOnly cookie).
@@ -92,9 +94,35 @@ async def serve_thumbnail(
     return await _serve_image(filename, "thumbs", db, current_user)
 
 
+@router.get("/medium/{filename}")
+async def serve_medium_image(
+    filename: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Users | None, Depends(get_optional_current_user)],
+) -> Response:
+    """
+    Serve medium variant (1280px edge) with permission check.
+    Returns 404 if medium variant doesn't exist for this image.
+    """
+    return await _serve_image(filename, "medium", db, current_user)
+
+
+@router.get("/large/{filename}")
+async def serve_large_image(
+    filename: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Users | None, Depends(get_optional_current_user)],
+) -> Response:
+    """
+    Serve large variant (2048px edge) with permission check.
+    Returns 404 if large variant doesn't exist for this image.
+    """
+    return await _serve_image(filename, "large", db, current_user)
+
+
 async def _serve_image(
     filename: str,
-    image_type: Literal["fullsize", "thumbs"],
+    image_type: Literal["fullsize", "thumbs", "medium", "large"],
     db: AsyncSession,
     current_user: Users | None,
 ) -> Response:
@@ -107,10 +135,16 @@ async def _serve_image(
     if image is None:
         raise HTTPException(status_code=404)
 
+    # Check if variant exists (medium/large are optional)
+    if image_type == "medium" and not image.medium:
+        raise HTTPException(status_code=404)
+    if image_type == "large" and not image.large:
+        raise HTTPException(status_code=404)
+
     if not await can_view_image_file(image, current_user, db):
         raise HTTPException(status_code=404)
 
-    # Use database extension for fullsize, always jpeg for thumbnails
+    # Use database extension for fullsize/medium/large, always jpeg for thumbnails
     if image_type == "thumbs":
         ext = "jpeg"
     else:

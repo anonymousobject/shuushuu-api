@@ -147,8 +147,10 @@ Some images require permission checks before serving (e.g., images under review,
 ### Legacy-Compatible URL Pattern
 
 To maintain compatibility with the original e-shuushuu.net URLs, protected images use:
-- `/images/{date}-{image_id}.{ext}` (e.g., `/images/2026-01-02-1112196.png`)
-- `/thumbs/{date}-{image_id}.{ext}` (e.g., `/thumbs/2026-01-02-1112196.png`)
+- `/images/{date}-{image_id}.{ext}` (e.g., `/images/2026-01-02-1112196.png`) - fullsize
+- `/thumbs/{date}-{image_id}.{ext}` (e.g., `/thumbs/2026-01-02-1112196.png`) - thumbnail
+- `/medium/{date}-{image_id}.{ext}` - medium variant (1280px edge, if available)
+- `/large/{date}-{image_id}.{ext}` - large variant (2048px edge, if available)
 
 ### Request Flow
 
@@ -184,6 +186,22 @@ location ~ ^/thumbs/\d{4}-\d{2}-\d{2}-\d+\.(png|jpg|jpeg|gif|webp)$ {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
 
+location ~ ^/medium/\d{4}-\d{2}-\d{2}-\d+\.(png|jpg|jpeg|gif|webp)$ {
+    proxy_pass http://fastapi:8000;
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+
+location ~ ^/large/\d{4}-\d{2}-\d{2}-\d+\.(png|jpg|jpeg|gif|webp)$ {
+    proxy_pass http://fastapi:8000;
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+
 # Internal locations - only accessible via X-Accel-Redirect from FastAPI
 # These serve actual files from storage using md5 hash filenames
 location /internal/fullsize/ {
@@ -196,6 +214,20 @@ location /internal/fullsize/ {
 location /internal/thumbs/ {
     internal;  # Cannot be accessed directly by clients
     alias ${STORAGE_PATH}/thumbs/;
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+}
+
+location /internal/medium/ {
+    internal;  # Cannot be accessed directly by clients
+    alias ${STORAGE_PATH}/medium/;
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+}
+
+location /internal/large/ {
+    internal;  # Cannot be accessed directly by clients
+    alias ${STORAGE_PATH}/large/;
     expires 1y;
     add_header Cache-Control "public, immutable";
 }

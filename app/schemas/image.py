@@ -105,17 +105,17 @@ class ImageResponse(ImageBase):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def medium_url(self) -> str | None:
-        """Generate medium variant URL (1280px edge) if available"""
+        """Generate medium variant URL (1280px edge, protected path) if available"""
         if self.medium:
-            return f"{settings.IMAGE_BASE_URL}/images/medium/{self.filename}.{self.ext}"
+            return f"{settings.IMAGE_BASE_URL}/medium/{self.filename}.{self.ext}"
         return None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def large_url(self) -> str | None:
-        """Generate large variant URL (2048px edge) if available"""
+        """Generate large variant URL (2048px edge, protected path) if available"""
         if self.large:
-            return f"{settings.IMAGE_BASE_URL}/images/large/{self.filename}.{self.ext}"
+            return f"{settings.IMAGE_BASE_URL}/large/{self.filename}.{self.ext}"
         return None
 
 
