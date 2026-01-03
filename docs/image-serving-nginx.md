@@ -255,17 +255,26 @@ Permission checks use the `access_token` HTTPOnly cookie for authentication. Ano
 ### Caching Considerations
 
 Since the same URL can return different responses based on authentication:
-- nginx should NOT cache responses from `/images/*` or `/thumbs/*`
+- nginx should NOT cache responses from `/images/*`, `/thumbs/*`, `/medium/*`, `/large/*`
 - The internal locations (`/internal/*`) use immutable caching since they bypass permission checks
 
-To prevent nginx caching protected paths, ensure proxy_cache is disabled:
+To prevent nginx caching protected paths, add `proxy_cache off` to each proxy location:
 
 ```nginx
-location ~ ^/images/ {
+location ~ "^/images/..." {
     proxy_cache off;  # Don't cache permission-dependent responses
-    # ... rest of config
+    proxy_pass http://api:8000;
+    # ... other headers
+}
+
+location ~ "^/thumbs/..." {
+    proxy_cache off;  # Don't cache permission-dependent responses
+    proxy_pass http://api:8000;
+    # ... other headers
 }
 ```
+
+Note: The development config (`frontend.conf.dev`) doesn't enable proxy caching by default, so this is primarily relevant for production deployments with caching enabled.
 
 ## Migration Notes
 

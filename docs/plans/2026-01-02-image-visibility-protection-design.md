@@ -18,12 +18,13 @@ Protect image files from unauthorized viewing while keeping API metadata accessi
 
 **Status reference:**
 - `-4` REVIEW — Under moderator review (protected)
-- `-3` LOW_QUALITY — Marked low quality (protected)
 - `-2` INAPPROPRIATE — Flagged inappropriate (protected)
 - `-1` REPOST — Duplicate/repost (public)
 - `0` OTHER — Uncategorized/flagged (protected)
 - `1` ACTIVE — Normal public image (public)
 - `2` SPOILER — Visible but marked spoiler (public)
+
+Note: LOW_QUALITY (-3) is defined in config but not currently a valid status in the Images model.
 
 ## Architecture
 
