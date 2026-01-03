@@ -1,10 +1,10 @@
-# Production nginx configuration for e-shuushuu.net
-# This file requires SSL certificates to be mounted into the container
-
-# Redirect HTTP to HTTPS
+# Production nginx configuration
+# Requires SSL certificates to be mounted into the container
+#
+# HTTP server - Allow ACME challenges and redirect to HTTPS
 server {
     listen 80;
-    server_name e-shuushuu.net;
+    server_name ${NGINX_HOST};
 
     # Allow Let's Encrypt ACME challenges
     location /.well-known/acme-challenge/ {
@@ -17,19 +17,50 @@ server {
     }
 }
 
+# =============================================================================
+# Internal HTTP server for SSR requests (Docker container-to-container ONLY)
+# =============================================================================
+# Listens on port 8080 which is NOT exposed to the Internet (only 80/443 are
+# mapped in docker-compose). This ensures external clients cannot reach this
+# endpoint even by spoofing the Host header.
+#
+# Purpose: SvelteKit SSR runs inside the frontend container and needs to fetch
+# data from the API. It uses http://nginx:8080/api/... for these requests.
+# Since this is internal Docker network traffic, HTTPS is unnecessary.
+# =============================================================================
+server {
+    listen 8080;
+    server_name nginx;  # Only matches Docker-internal requests
+
+    client_max_body_size 100M;
+
+    # API proxy - the only endpoint SSR needs
+    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto http;
+        proxy_http_version 1.1;
+    }
+
+    # Health check
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+}
+
 # HTTPS server
 server {
     listen 443 ssl;
+    server_name ${NGINX_HOST};
     http2 on;
-    server_name e-shuushuu.net;
 
-    # Basic auth for tester access
-    auth_basic "Test access";
-    auth_basic_user_file /etc/nginx/.htpasswd;
-
-    # SSL Configuration
-    ssl_certificate /etc/letsencrypt/live/e-shuushuu.net/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/e-shuushuu.net/privkey.pem;
+    # SSL Configuration - Let's Encrypt certificates
+    ssl_certificate /etc/letsencrypt/live/${NGINX_HOST}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${NGINX_HOST}/privkey.pem;
 
     # Modern SSL configuration
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -41,6 +72,9 @@ server {
     ssl_session_timeout 10m;
 
     # OCSP stapling
+    # Note: For full OCSP stapling in production, you may need to:
+    # - Add ssl_trusted_certificate directive pointing to your CA bundle
+    # - Configure resolver directive (e.g., resolver 8.8.8.8 8.8.4.4 valid=300s;)
     ssl_stapling on;
     ssl_stapling_verify on;
 
@@ -49,6 +83,8 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
+
+    client_max_body_size 100M;
 
     # API proxy to FastAPI backend
     location /api/ {
@@ -128,41 +164,33 @@ server {
     }
 
     # Avatars - no protection needed, serve directly
-    location ^~ /images/avatars/ {
+    location /images/avatars/ {
         alias ${STORAGE_PATH}/avatars/;
-        autoindex off;
-        expires 1m;
+        expires 30d;
         add_header Cache-Control "public, immutable";
     }
 
-    # Proxy Vite HMR and dev server assets
-    location ~ ^/(node_modules|@vite|@fs|@id|src)/ {
-        proxy_pass http://host.docker.internal:5173;
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Forwarded-Host $http_host;
-        proxy_set_header X-Forwarded-Port $server_port;
+    # Frontend - proxy to SvelteKit SSR server (production build in Docker)
+    location / {
+        proxy_pass http://frontend:3000;
+        proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_cache_bypass $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Increase buffer sizes for large SvelteKit modulepreload headers
+        proxy_buffer_size 16k;
+        proxy_buffers 4 16k;
+        proxy_busy_buffers_size 32k;
     }
 
-    # Proxy to SvelteKit dev server on host
-    location / {
-        proxy_pass http://host.docker.internal:5173;
-
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Forwarded-Host $http_host;
-        proxy_set_header X-Forwarded-Port $server_port;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_cache_bypass $http_upgrade;
+    # Health check
+    location /health {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "healthy\n";
     }
 }
