@@ -88,6 +88,7 @@ class ImageResponse(ImageBase):
     num_ratings: int
     medium: int
     large: int
+    replacement_id: int | None = None  # Original image ID when this is a repost (status=-1)
 
     # Computed fields
     @computed_field  # type: ignore[prop-decorator]
