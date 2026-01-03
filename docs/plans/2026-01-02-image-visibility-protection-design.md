@@ -133,7 +133,9 @@ async def _serve_image(
         raise HTTPException(status_code=404)  # 404, not 403
 
     # Return X-Accel-Redirect to internal nginx location
-    internal_path = f"/internal/{image_type}/{image.file_hash}.{_get_extension(filename)}"
+    # Files stored with filename (e.g., 2025-12-29-1112174.jpeg)
+    ext = "jpeg" if image_type == "thumbs" else image.ext
+    internal_path = f"/internal/{image_type}/{image.filename}.{ext}"
     return Response(
         status_code=200,
         headers={"X-Accel-Redirect": internal_path},

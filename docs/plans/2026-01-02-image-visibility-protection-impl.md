@@ -521,7 +521,7 @@ class TestServeImageEndpoint:
         response = await client.get(f"/images/2026-01-02-{public_image.image_id}.png")
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
-        assert f"/internal/fullsize/{public_image.md5_hash}.png" in response.headers["X-Accel-Redirect"]
+        assert f"/internal/fullsize/{public_image.filename}.png" in response.headers["X-Accel-Redirect"]
 
     async def test_protected_image_anonymous_returns_404(self, client: AsyncClient, protected_image: Images):
         """Protected image returns 404 for anonymous user (not 403 to hide existence)."""
@@ -611,7 +611,7 @@ class TestServeThumbnailEndpoint:
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
         # Thumbnails are always jpeg regardless of original format
-        assert f"/internal/thumbs/{public_image.md5_hash}.jpeg" in response.headers["X-Accel-Redirect"]
+        assert f"/internal/thumbs/{public_image.filename}.jpeg" in response.headers["X-Accel-Redirect"]
 ```
 
 **Step 2: Run tests to verify they fail**
@@ -719,10 +719,11 @@ async def _serve_image(
         # Thumbnails are always JPEG
         ext = "jpeg"
     else:
-        ext = get_extension_from_filename(filename)
+        ext = image.ext  # Use database extension for fullsize/medium/large
 
     # Return X-Accel-Redirect for nginx to serve the file
-    internal_path = f"/internal/{image_type}/{image.md5_hash}.{ext}"
+    # Files stored with filename (e.g., 2025-12-29-1112174.jpeg)
+    internal_path = f"/internal/{image_type}/{image.filename}.{ext}"
     return Response(
         status_code=200,
         headers={"X-Accel-Redirect": internal_path},

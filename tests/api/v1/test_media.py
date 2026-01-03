@@ -295,6 +295,50 @@ class TestServeMediumEndpoint:
         response = await client.get(f"/medium/2026-01-02-{image_without_medium.image_id}.png")
         assert response.status_code == 404
 
+    @pytest.fixture
+    async def protected_image_with_medium(self, db_session: AsyncSession):
+        """Create a protected (REVIEW) image with medium variant."""
+        image = Images(
+            image_id=402,
+            filename="2026-01-02-402",
+            ext="png",
+            md5_hash="protectedmedium123",
+            filesize=2000,
+            width=1920,
+            height=1080,
+            user_id=1,
+            status=ImageStatus.REVIEW,  # Protected status
+            medium=1,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        return image
+
+    async def test_protected_medium_anonymous_returns_404(
+        self, client: AsyncClient, protected_image_with_medium: Images
+    ):
+        """Protected medium variant returns 404 for anonymous user."""
+        response = await client.get(
+            f"/medium/2026-01-02-{protected_image_with_medium.image_id}.png"
+        )
+        assert response.status_code == 404
+
+    async def test_protected_medium_owner_returns_xaccel(
+        self, client: AsyncClient, protected_image_with_medium: Images, db_session: AsyncSession
+    ):
+        """Protected medium variant returns X-Accel-Redirect for owner."""
+        owner = await db_session.get(Users, 1)
+        owner.active = 1
+        await db_session.commit()
+        token = create_access_token(owner.user_id)
+        response = await client.get(
+            f"/medium/2026-01-02-{protected_image_with_medium.image_id}.png",
+            cookies={"access_token": token},
+        )
+        assert response.status_code == 200
+        assert "X-Accel-Redirect" in response.headers
+
 
 class TestServeLargeEndpoint:
     """Tests for GET /large/{filename} endpoint."""
@@ -354,6 +398,50 @@ class TestServeLargeEndpoint:
         """Large endpoint returns 404 when variant doesn't exist."""
         response = await client.get(f"/large/2026-01-02-{image_without_large.image_id}.jpeg")
         assert response.status_code == 404
+
+    @pytest.fixture
+    async def protected_image_with_large(self, db_session: AsyncSession):
+        """Create a protected (INAPPROPRIATE) image with large variant."""
+        image = Images(
+            image_id=502,
+            filename="2026-01-02-502",
+            ext="jpeg",
+            md5_hash="protectedlarge123",
+            filesize=5000,
+            width=4000,
+            height=3000,
+            user_id=1,
+            status=ImageStatus.INAPPROPRIATE,  # Protected status
+            large=1,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        return image
+
+    async def test_protected_large_anonymous_returns_404(
+        self, client: AsyncClient, protected_image_with_large: Images
+    ):
+        """Protected large variant returns 404 for anonymous user."""
+        response = await client.get(
+            f"/large/2026-01-02-{protected_image_with_large.image_id}.jpeg"
+        )
+        assert response.status_code == 404
+
+    async def test_protected_large_owner_returns_xaccel(
+        self, client: AsyncClient, protected_image_with_large: Images, db_session: AsyncSession
+    ):
+        """Protected large variant returns X-Accel-Redirect for owner."""
+        owner = await db_session.get(Users, 1)
+        owner.active = 1
+        await db_session.commit()
+        token = create_access_token(owner.user_id)
+        response = await client.get(
+            f"/large/2026-01-02-{protected_image_with_large.image_id}.jpeg",
+            cookies={"access_token": token},
+        )
+        assert response.status_code == 200
+        assert "X-Accel-Redirect" in response.headers
 
 
 class TestVisibilityMatrix:

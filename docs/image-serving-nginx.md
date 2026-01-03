@@ -258,20 +258,26 @@ Since the same URL can return different responses based on authentication:
 - nginx should NOT cache responses from `/images/*`, `/thumbs/*`, `/medium/*`, `/large/*`
 - The internal locations (`/internal/*`) use immutable caching since they bypass permission checks
 
-To prevent nginx caching protected paths, add `proxy_cache off` to each proxy location:
+To prevent nginx caching protected paths, add `proxy_cache off;` to each protected image location block:
 
 ```nginx
-location ~ "^/images/..." {
+# Example: Add proxy_cache off to the existing proxy_pass locations
+location ~ "^/images/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
     proxy_cache off;  # Don't cache permission-dependent responses
     proxy_pass http://api:8000;
-    # ... other headers
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
 
-location ~ "^/thumbs/..." {
+location ~ "^/thumbs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
     proxy_cache off;  # Don't cache permission-dependent responses
     proxy_pass http://api:8000;
-    # ... other headers
+    # ... same headers as above
 }
+
+# Apply the same pattern to /medium/ and /large/ locations
 ```
 
 Note: The development config (`frontend.conf.dev`) doesn't enable proxy caching by default, so this is primarily relevant for production deployments with caching enabled.

@@ -135,13 +135,14 @@ async def _serve_image(
     if image is None:
         raise HTTPException(status_code=404)
 
+    # Permission check first - prevents leaking info about protected images
+    if not await can_view_image_file(image, current_user, db):
+        raise HTTPException(status_code=404)
+
     # Check if variant exists (medium/large are optional)
     if image_type == "medium" and not image.medium:
         raise HTTPException(status_code=404)
     if image_type == "large" and not image.large:
-        raise HTTPException(status_code=404)
-
-    if not await can_view_image_file(image, current_user, db):
         raise HTTPException(status_code=404)
 
     # Use database extension for fullsize/medium/large, always jpeg for thumbnails
