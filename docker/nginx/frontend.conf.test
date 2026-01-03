@@ -72,6 +72,10 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
 
+    # Basic auth for tester access
+    auth_basic "Test access";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
     client_max_body_size 100M;
 
     # Protected image routes - proxy to FastAPI for permission checks

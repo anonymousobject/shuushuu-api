@@ -114,7 +114,9 @@ services:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}:ro
       # Mount nginx configs
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/nginx/frontend.conf.template:/etc/nginx/conf.d/frontend.conf.template:ro
+      # Note: frontend.conf is provided by environment-specific compose files:
+      #   - docker-compose.override.yml (dev) -> frontend.conf.dev
+      #   - docker-compose.test.yml (test) -> frontend.conf.test
       # Basic auth credentials
       # By default we mount a sample file that should be tracked in git:
       #   ./docker/nginx/.htpasswd.example  ->  /etc/nginx/.htpasswd
