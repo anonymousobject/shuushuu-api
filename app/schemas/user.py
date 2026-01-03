@@ -42,6 +42,11 @@ class UserUpdate(BaseModel):
     password: str | None = None
     email_pm_pref: int | None = None
 
+    # User settings
+    show_all_images: int | None = None
+    spoiler_warning_pref: int | None = None
+    timezone: str | None = None  # Accepts string, converted to Decimal
+
     @field_validator("location", "website", "interests", "user_title")
     @classmethod
     def sanitize_text_fields(cls, v: str | None) -> str | None:
@@ -63,12 +68,28 @@ class UserUpdate(BaseModel):
             raise ValueError("Gender must be 'M', 'F', 'O', or empty")
         return v
 
-    @field_validator("email_pm_pref")
+    @field_validator("email_pm_pref", "show_all_images", "spoiler_warning_pref")
     @classmethod
-    def validate_email_pm_pref(cls, v: int | None) -> int | None:
-        """Validate email_pm_pref is 0 or 1"""
+    def validate_boolean_prefs(cls, v: int | None) -> int | None:
+        """Validate boolean preference fields are 0 or 1"""
         if v is not None and v not in [0, 1]:
-            raise ValueError("email_pm_pref must be 0 or 1")
+            raise ValueError("Value must be 0 or 1")
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str | None) -> str | None:
+        """Validate timezone is a valid UTC offset between -12 and +14"""
+        if v is None:
+            return v
+        from decimal import Decimal, InvalidOperation
+
+        try:
+            tz = Decimal(v)
+        except InvalidOperation as err:
+            raise ValueError("Timezone must be a valid decimal number") from err
+        if tz < Decimal("-12") or tz > Decimal("14"):
+            raise ValueError("Timezone must be between -12 and +14")
         return v
 
 
@@ -123,6 +144,11 @@ class UserPrivateResponse(UserResponse):
         str
     ] = []  # List of permission strings (e.g., ["image_tag_add", "tag_create"])
 
+    # User settings
+    show_all_images: int  # Show disabled/pending images (0=no, 1=yes)
+    spoiler_warning_pref: int  # Show spoiler warnings (0=disabled, 1=enabled)
+    timezone: str  # UTC offset as string (e.g., "-5.00", "0.00", "5.50")
+
     @field_validator("email_verified", mode="before")
     @classmethod
     def convert_email_verified_to_bool(cls, v: int | bool) -> bool:
@@ -130,6 +156,12 @@ class UserPrivateResponse(UserResponse):
         if isinstance(v, bool):
             return v
         return bool(v)
+
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def convert_timezone_to_str(cls, v: str | int | float | object) -> str:
+        """Convert Decimal timezone to string"""
+        return str(v)
 
 
 class UserCreateResponse(UserBase):
