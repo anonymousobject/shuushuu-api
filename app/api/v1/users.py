@@ -418,6 +418,12 @@ async def _update_user_profile(
     # Update only provided fields
     update_data = user_data.model_dump(exclude_unset=True)
 
+    # Handle timezone conversion (string to Decimal)
+    if "timezone" in update_data:
+        from decimal import Decimal
+
+        update_data["timezone"] = Decimal(update_data["timezone"])
+
     # Handle password separately with validation and hashing
     if "password" in update_data:
         password = update_data.pop("password")

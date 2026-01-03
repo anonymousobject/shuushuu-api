@@ -652,6 +652,228 @@ class TestUpdateUserProfile:
         await db_session.refresh(user)
         assert user.email_pm_pref == 1
 
+    async def test_update_user_settings_via_me(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that PATCH /api/v1/users/me accepts and returns user settings."""
+        from decimal import Decimal
+
+        # Create user with default settings
+        user = Users(
+            username="settingstest",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="settingstest@example.com",
+            active=1,
+            show_all_images=0,
+            spoiler_warning_pref=1,
+            timezone=Decimal("0.00"),
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "settingstest", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Update all settings
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={
+                "show_all_images": 1,
+                "spoiler_warning_pref": 0,
+                "timezone": "-5.00",
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify response includes updated settings
+        assert data.get("show_all_images") == 1
+        assert data.get("spoiler_warning_pref") == 0
+        assert Decimal(data.get("timezone")) == Decimal("-5")
+
+        # Verify persisted in DB
+        await db_session.refresh(user)
+        assert user.show_all_images == 1
+        assert user.spoiler_warning_pref == 0
+        assert user.timezone == Decimal("-5")
+
+    async def test_update_user_settings_validation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that user settings have proper validation."""
+        # Create user
+        user = Users(
+            username="settingsvalidation",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="settingsvalidation@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "settingsvalidation", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Test invalid show_all_images (must be 0 or 1)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"show_all_images": 2},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Test invalid spoiler_warning_pref (must be 0 or 1)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"spoiler_warning_pref": -1},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Test invalid timezone (must be between -12 and 14)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"timezone": "15.00"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"timezone": "-13.00"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+    async def test_update_display_preferences_via_me(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that PATCH /api/v1/users/me accepts display preference settings."""
+        # Create user with default settings
+        user = Users(
+            username="displayprefs",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="displayprefs@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "displayprefs", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Update display preferences
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={
+                "thumb_layout": 1,
+                "sorting_pref": "favorites",
+                "sorting_pref_order": "asc",  # lowercase to test case normalization
+                "images_per_page": 50,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify response includes updated settings
+        assert data.get("thumb_layout") == 1
+        assert data.get("sorting_pref") == "favorites"
+        assert data.get("sorting_pref_order") == "ASC"  # Should be uppercase
+        assert data.get("images_per_page") == 50
+
+        # Verify persisted in DB
+        await db_session.refresh(user)
+        assert user.thumb_layout == 1
+        assert user.sorting_pref == "favorites"
+        assert user.sorting_pref_order == "ASC"
+        assert user.images_per_page == 50
+
+    async def test_update_display_preferences_validation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that display preference settings have proper validation."""
+        # Create user
+        user = Users(
+            username="displayvalidation",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="displayvalidation@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "displayvalidation", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Test invalid thumb_layout (must be 0 or 1)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"thumb_layout": 2},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Test invalid sorting_pref (must be valid ImageSortBy value)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"sorting_pref": "invalid_sort"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Test invalid sorting_pref_order (must be ASC or DESC)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"sorting_pref_order": "RANDOM"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Test invalid images_per_page (must be 1-100)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"images_per_page": 0},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"images_per_page": 101},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
     async def test_update_other_user_profile_forbidden(
         self, client: AsyncClient, db_session: AsyncSession
     ):
