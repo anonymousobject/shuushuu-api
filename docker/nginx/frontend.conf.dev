@@ -5,33 +5,73 @@ server {
 
     client_max_body_size 100M;
 
-    # Image storage - serve static files from specific subdirectories
-    location /images/thumbs/ {
-        alias ${STORAGE_PATH}/thumbs/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
+    # Protected image routes - proxy to FastAPI for permission checks
+    # These use X-Accel-Redirect to serve files after permission verification
+    # Pattern: /images/YYYY-MM-DD-ID.ext (e.g., /images/2025-12-29-1112174.jpeg)
+    location ~ "^/images/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
-    location /images/fullsize/ {
+    location ~ "^/thumbs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location ~ "^/medium/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location ~ "^/large/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Internal locations - only accessible via X-Accel-Redirect from FastAPI
+    location /internal/fullsize/ {
+        internal;
         alias ${STORAGE_PATH}/fullsize/;
-        expires 30d;
+        expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
+    location /internal/thumbs/ {
+        internal;
+        alias ${STORAGE_PATH}/thumbs/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /internal/medium/ {
+        internal;
+        alias ${STORAGE_PATH}/medium/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /internal/large/ {
+        internal;
+        alias ${STORAGE_PATH}/large/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Avatars - no protection needed, serve directly
     location /images/avatars/ {
         alias ${STORAGE_PATH}/avatars/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location /images/medium/ {
-        alias ${STORAGE_PATH}/medium/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location /images/large/ {
-        alias ${STORAGE_PATH}/large/;
         expires 30d;
         add_header Cache-Control "public, immutable";
     }

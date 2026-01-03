@@ -301,6 +301,10 @@ async def list_images(
     else:
         subquery_order = asc(sort_column)
 
+    # Secondary sort by image_id ensures consistent ordering when primary sort has ties
+    # (e.g., multiple images with same favorites count). Use descending for "newest first".
+    secondary_order = desc(Images.image_id)  # type: ignore[var-annotated,arg-type]
+
     # Subquery: Apply all filters, sort, and limit to get matching image_ids
     # When comment filters are used with JOIN, apply distinct() to avoid duplicate rows
     # (one image can have multiple comments)
@@ -312,7 +316,7 @@ async def list_images(
         image_id_subquery = image_id_subquery.distinct()
 
     imageset = (
-        image_id_subquery.order_by(subquery_order)
+        image_id_subquery.order_by(subquery_order, secondary_order)
         .offset(pagination.offset)
         .limit(pagination.per_page)
         .subquery("imageset")
@@ -327,7 +331,7 @@ async def list_images(
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
         .join(imageset, Images.image_id == imageset.c.image_id)  # type: ignore[arg-type]
-        .order_by(subquery_order)  # Re-apply same sort order
+        .order_by(subquery_order, secondary_order)  # Re-apply same sort order
     )
 
     # Execute query

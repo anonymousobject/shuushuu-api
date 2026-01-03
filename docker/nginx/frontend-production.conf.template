@@ -61,38 +61,74 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Serve images directly from storage
-    # Note: This path will be substituted with $STORAGE_PATH at container startup
-    # Use ^~ to give these locations priority over regex locations
-    location ^~ /storage/fullsize/ {
+    # Protected image routes - proxy to FastAPI for permission checks
+    location ~ "^/images/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ "^/thumbs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ "^/medium/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ "^/large/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Internal locations - only accessible via X-Accel-Redirect from FastAPI
+    location /internal/fullsize/ {
+        internal;
         alias ${STORAGE_PATH}/fullsize/;
-        autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /storage/large/ {
-        alias ${STORAGE_PATH}/large/;
-        autoindex off;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location ^~ /storage/medium/ {
-        alias ${STORAGE_PATH}/medium/;
-        autoindex off;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location ^~ /storage/thumbs/ {
+    location /internal/thumbs/ {
+        internal;
         alias ${STORAGE_PATH}/thumbs/;
-        autoindex off;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ^~ /storage/avatars/ {
+    location /internal/medium/ {
+        internal;
+        alias ${STORAGE_PATH}/medium/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /internal/large/ {
+        internal;
+        alias ${STORAGE_PATH}/large/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Avatars - no protection needed, serve directly
+    location ^~ /images/avatars/ {
         alias ${STORAGE_PATH}/avatars/;
         autoindex off;
         expires 1m;
