@@ -753,6 +753,120 @@ class TestUpdateUserProfile:
         )
         assert response.status_code == 422
 
+    async def test_update_display_preferences_via_me(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that PATCH /api/v1/users/me accepts display preference settings."""
+        # Create user with default settings
+        user = Users(
+            username="displayprefs",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="displayprefs@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "displayprefs", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Update display preferences
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={
+                "thumb_layout": 1,
+                "sorting_pref": "favorites",
+                "sorting_pref_order": "asc",  # lowercase to test case normalization
+                "images_per_page": 50,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify response includes updated settings
+        assert data.get("thumb_layout") == 1
+        assert data.get("sorting_pref") == "favorites"
+        assert data.get("sorting_pref_order") == "ASC"  # Should be uppercase
+        assert data.get("images_per_page") == 50
+
+        # Verify persisted in DB
+        await db_session.refresh(user)
+        assert user.thumb_layout == 1
+        assert user.sorting_pref == "favorites"
+        assert user.sorting_pref_order == "ASC"
+        assert user.images_per_page == 50
+
+    async def test_update_display_preferences_validation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that display preference settings have proper validation."""
+        # Create user
+        user = Users(
+            username="displayvalidation",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="displayvalidation@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "displayvalidation", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Test invalid thumb_layout (must be 0 or 1)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"thumb_layout": 2},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Test invalid sorting_pref (must be valid ImageSortBy value)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"sorting_pref": "invalid_sort"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Test invalid sorting_pref_order (must be ASC or DESC)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"sorting_pref_order": "RANDOM"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Test invalid images_per_page (must be 1-100)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"images_per_page": 0},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"images_per_page": 101},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
     async def test_update_other_user_profile_forbidden(
         self, client: AsyncClient, db_session: AsyncSession
     ):

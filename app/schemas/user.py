@@ -47,6 +47,12 @@ class UserUpdate(BaseModel):
     spoiler_warning_pref: int | None = None
     timezone: str | None = None  # Accepts string, converted to Decimal
 
+    # Display preferences
+    thumb_layout: int | None = None  # 0=list view, 1=grid view
+    sorting_pref: str | None = None  # ImageSortBy enum value
+    sorting_pref_order: str | None = None  # ASC or DESC
+    images_per_page: int | None = None  # 1-100
+
     @field_validator("location", "website", "interests", "user_title")
     @classmethod
     def sanitize_text_fields(cls, v: str | None) -> str | None:
@@ -68,12 +74,46 @@ class UserUpdate(BaseModel):
             raise ValueError("Gender must be 'M', 'F', 'O', or empty")
         return v
 
-    @field_validator("email_pm_pref", "show_all_images", "spoiler_warning_pref")
+    @field_validator("email_pm_pref", "show_all_images", "spoiler_warning_pref", "thumb_layout")
     @classmethod
     def validate_boolean_prefs(cls, v: int | None) -> int | None:
         """Validate boolean preference fields are 0 or 1"""
         if v is not None and v not in [0, 1]:
             raise ValueError("Value must be 0 or 1")
+        return v
+
+    @field_validator("sorting_pref")
+    @classmethod
+    def validate_sorting_pref(cls, v: str | None) -> str | None:
+        """Validate sorting_pref is a valid ImageSortBy value"""
+        if v is None:
+            return v
+        from app.models.image import ImageSortBy
+
+        valid_values = [e.value for e in ImageSortBy]
+        if v not in valid_values:
+            raise ValueError(f"sorting_pref must be one of: {', '.join(valid_values)}")
+        return v
+
+    @field_validator("sorting_pref_order")
+    @classmethod
+    def validate_sorting_pref_order(cls, v: str | None) -> str | None:
+        """Validate and normalize sorting_pref_order to uppercase ASC or DESC"""
+        if v is None:
+            return v
+        v_upper = v.upper()
+        if v_upper not in ["ASC", "DESC"]:
+            raise ValueError("sorting_pref_order must be 'ASC' or 'DESC'")
+        return v_upper
+
+    @field_validator("images_per_page")
+    @classmethod
+    def validate_images_per_page(cls, v: int | None) -> int | None:
+        """Validate images_per_page is between 1 and 100"""
+        if v is None:
+            return v
+        if v < 1 or v > 100:
+            raise ValueError("images_per_page must be between 1 and 100")
         return v
 
     @field_validator("timezone")
@@ -148,6 +188,12 @@ class UserPrivateResponse(UserResponse):
     show_all_images: int  # Show disabled/pending images (0=no, 1=yes)
     spoiler_warning_pref: int  # Show spoiler warnings (0=disabled, 1=enabled)
     timezone: str  # UTC offset as string (e.g., "-5.00", "0.00", "5.50")
+
+    # Display preferences
+    thumb_layout: int  # 0=list view, 1=grid view
+    sorting_pref: str  # ImageSortBy enum value (e.g., "image_id", "favorites")
+    sorting_pref_order: str  # "ASC" or "DESC"
+    images_per_page: int  # 1-100
 
     @field_validator("email_verified", mode="before")
     @classmethod
