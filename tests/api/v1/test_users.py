@@ -753,6 +753,13 @@ class TestUpdateUserProfile:
         )
         assert response.status_code == 422
 
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"timezone": "-13.00"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
     async def test_update_display_preferences_via_me(
         self, client: AsyncClient, db_session: AsyncSession
     ):
