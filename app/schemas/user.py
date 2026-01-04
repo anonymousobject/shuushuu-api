@@ -53,7 +53,7 @@ class UserUpdate(BaseModel):
     sorting_pref_order: str | None = None  # ASC or DESC
     images_per_page: int | None = None  # 1-100
 
-    @field_validator("location", "website", "interests", "user_title")
+    @field_validator("location", "website", "interests", "user_title", "gender")
     @classmethod
     def sanitize_text_fields(cls, v: str | None) -> str | None:
         """
@@ -68,10 +68,10 @@ class UserUpdate(BaseModel):
 
     @field_validator("gender")
     @classmethod
-    def validate_gender(cls, v: str | None) -> str | None:
-        """Validate gender is one of the allowed values"""
-        if v is not None and v not in ["", "M", "F", "O"]:
-            raise ValueError("Gender must be 'M', 'F', 'O', or empty")
+    def validate_gender_length(cls, v: str | None) -> str | None:
+        """Validate gender is within max length (50 chars)."""
+        if v is not None and len(v) > 50:
+            raise ValueError("Gender must be 50 characters or less")
         return v
 
     @field_validator("email_pm_pref", "show_all_images", "spoiler_warning_pref", "thumb_layout")

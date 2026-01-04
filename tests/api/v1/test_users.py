@@ -2065,3 +2065,93 @@ class TestUserProfileEditAuthorization:
         )
 
         assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestGenderField:
+    """Tests for free-form gender field."""
+
+    async def test_update_gender_freeform_text(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that gender field accepts free-form text input."""
+        user, password = await create_test_user_with_password(
+            db_session, "genderuser", "genderuser@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        # Test free-form gender value
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"gender": "Non-binary"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["gender"] == "Non-binary"
+
+    async def test_update_gender_longer_text(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that gender field accepts longer descriptive text."""
+        user, password = await create_test_user_with_password(
+            db_session, "genderuser2", "genderuser2@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        # Test longer free-form gender value
+        gender_value = "Prefer not to say"
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"gender": gender_value},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["gender"] == gender_value
+
+    async def test_update_gender_empty_string(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that gender field accepts empty string."""
+        user, password = await create_test_user_with_password(
+            db_session, "genderuser3", "genderuser3@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"gender": ""},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["gender"] == ""
+
+    async def test_gender_max_length(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that gender field has reasonable max length (50 chars)."""
+        user, password = await create_test_user_with_password(
+            db_session, "genderuser4", "genderuser4@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        # Test at max length (50 chars)
+        gender_50 = "a" * 50
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"gender": gender_50},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["gender"] == gender_50
+
+        # Test over max length should fail
+        gender_51 = "a" * 51
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"gender": gender_51},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
