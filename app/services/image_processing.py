@@ -243,7 +243,11 @@ def _convert_to_srgb(img: Image.Image) -> Image.Image:
         icc_profile = img.info.get("icc_profile")
         if icc_profile:
             input_profile = ImageCms.ImageCmsProfile(ImageCms.getOpenProfile(icc_profile))
-            img = ImageCms.profileToProfile(img, input_profile, _srgb_profile, outputMode="RGB")  # type: ignore[assignment]
+            # Preserve grayscale mode; only force RGB for non-grayscale images
+            if img.mode == "L":
+                img = ImageCms.profileToProfile(img, input_profile, _srgb_profile)  # type: ignore[assignment]
+            else:
+                img = ImageCms.profileToProfile(img, input_profile, _srgb_profile, outputMode="RGB")  # type: ignore[assignment]
     except (PyCMSError, OSError, TypeError):
         # If color profile conversion fails, just ensure RGB mode
         if img.mode not in ("RGB", "L"):

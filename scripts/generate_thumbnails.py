@@ -125,42 +125,45 @@ def get_images_streaming(
     async def _fetch_images() -> list[tuple[int, str, str]]:
         engine = create_async_engine(settings.DATABASE_URL, echo=False)
 
-        async with engine.connect() as conn:
-            if image_ids:
-                # Fetch specific images
-                result = await conn.execute(
-                    select(Images.image_id, Images.filename, Images.ext)  # type: ignore[call-overload]
-                    .where(Images.image_id.in_(image_ids))  # type: ignore[union-attr]
-                    .order_by(Images.image_id)
-                )
-                return [(r[0], r[1], r[2]) for r in result.fetchall()]
-
-            elif all_images:
-                # Stream all images in batches using keyset pagination (newest first)
-                all_results: list[tuple[int, str, str]] = []
-                last_id = 2**31  # Start high, work backwards
-
-                while True:
+        try:
+            async with engine.connect() as conn:
+                if image_ids:
+                    # Fetch specific images
                     result = await conn.execute(
                         select(Images.image_id, Images.filename, Images.ext)  # type: ignore[call-overload]
-                        .where(Images.status == 1)  # type: ignore[arg-type]
-                        .where(Images.image_id < last_id)  # type: ignore[arg-type,operator]
-                        .order_by(Images.image_id.desc())  # type: ignore[union-attr]
-                        .limit(batch_size)
+                        .where(Images.image_id.in_(image_ids))  # type: ignore[union-attr]
+                        .order_by(Images.image_id)
                     )
-                    batch = result.fetchall()
+                    return [(r[0], r[1], r[2]) for r in result.fetchall()]
 
-                    if not batch:
-                        break
+                elif all_images:
+                    # Stream all images in batches using keyset pagination (newest first)
+                    all_results: list[tuple[int, str, str]] = []
+                    last_id = 2**31  # Start high, work backwards
 
-                    for row in batch:
-                        all_results.append((row[0], row[1], row[2]))
+                    while True:
+                        result = await conn.execute(
+                            select(Images.image_id, Images.filename, Images.ext)  # type: ignore[call-overload]
+                            .where(Images.status == 1)  # type: ignore[arg-type]
+                            .where(Images.image_id < last_id)  # type: ignore[arg-type,operator]
+                            .order_by(Images.image_id.desc())  # type: ignore[union-attr]
+                            .limit(batch_size)
+                        )
+                        batch = result.fetchall()
 
-                    last_id = batch[-1][0]
+                        if not batch:
+                            break
 
-                return all_results
+                        for row in batch:
+                            all_results.append((row[0], row[1], row[2]))
 
-        return []
+                        last_id = batch[-1][0]
+
+                    return all_results
+
+            return []
+        finally:
+            await engine.dispose()
 
     # Run async function and yield results
     results = asyncio.run(_fetch_images())
@@ -182,11 +185,14 @@ def get_image_count(all_images: bool = False, image_ids: list[int] | None = None
 
     async def _count() -> int:
         engine = create_async_engine(settings.DATABASE_URL, echo=False)
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                select(func.count()).select_from(Images).where(Images.status == 1)  # type: ignore[arg-type]
-            )
-            return result.scalar() or 0
+        try:
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    select(func.count()).select_from(Images).where(Images.status == 1)  # type: ignore[arg-type]
+                )
+                return result.scalar() or 0
+        finally:
+            await engine.dispose()
 
     return asyncio.run(_count())
 
