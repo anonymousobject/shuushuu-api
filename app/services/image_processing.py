@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path as FilePath
 
 from fastapi import HTTPException, UploadFile, status
-from PIL import Image
+from PIL import Image, ImageCms, ImageFilter
+from PIL.ImageCms import PyCMSError
 from sqlalchemy import update
 
 from app.config import settings
@@ -16,6 +17,9 @@ from app.core.database import get_async_session
 from app.core.logging import bind_context, get_logger
 
 logger = get_logger(__name__)
+
+# Load sRGB profile for color space conversion
+_srgb_profile = ImageCms.createProfile("sRGB")
 
 
 async def _update_image_variant_field(image_id: int, field: str, value: int) -> None:
@@ -92,6 +96,9 @@ def _create_variant(
         with Image.open(source_path) as img:
             original_size = img.size
 
+            # Convert to sRGB for consistent web display
+            img = _convert_to_srgb(img)
+
             # Convert RGBA to RGB for JPEG compatibility
             if img.mode in ("RGBA", "LA") and ext.lower() in ("jpg", "jpeg"):
                 background = Image.new("RGB", img.size, (255, 255, 255))
@@ -112,7 +119,7 @@ def _create_variant(
             elif ext.lower() == "webp":
                 save_kwargs["quality"] = settings.LARGE_QUALITY
 
-            img.save(variant_path, **save_kwargs)
+            img.save(variant_path, **save_kwargs)  # type: ignore[arg-type]
 
             # Check file sizes - delete variant if it's not smaller than original
             original_file_size = source_path.stat().st_size
@@ -223,13 +230,40 @@ def validate_image_file(
         ) from e
 
 
+def _convert_to_srgb(img: Image.Image) -> Image.Image:
+    """Convert image to sRGB color space if it has an embedded ICC profile.
+
+    Args:
+        img: PIL Image object
+
+    Returns:
+        Image converted to sRGB, or original if no profile/conversion fails
+    """
+    try:
+        icc_profile = img.info.get("icc_profile")
+        if icc_profile:
+            input_profile = ImageCms.ImageCmsProfile(ImageCms.getOpenProfile(icc_profile))
+            # Preserve grayscale mode; only force RGB for non-grayscale images
+            if img.mode == "L":
+                img = ImageCms.profileToProfile(img, input_profile, _srgb_profile)  # type: ignore[assignment]
+            else:
+                img = ImageCms.profileToProfile(img, input_profile, _srgb_profile, outputMode="RGB")  # type: ignore[assignment]
+    except (PyCMSError, OSError, TypeError):
+        # If color profile conversion fails, just ensure RGB mode
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+    return img
+
+
 def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_path: str) -> None:
     """Create thumbnail for uploaded image (ARQ task).
 
     Called by create_thumbnail_job in app/tasks/image_jobs.py.
-    Generates thumbnail using settings from config:
-    - MAX_THUMB_WIDTH and MAX_THUMB_HEIGHT define max dimensions
-    - THUMBNAIL_QUALITY defines JPEG/WebP compression quality
+    Generates WebP thumbnail optimized for modern web display:
+    - MAX_THUMB_WIDTH/MAX_THUMB_HEIGHT define max dimensions (500px recommended)
+    - THUMBNAIL_QUALITY defines WebP compression quality (75 recommended)
+    - Converts to sRGB for consistent color display
+    - Applies gentle sharpening to restore detail after downscaling
     - Maintains aspect ratio
     """
     # Bind context for this ARQ task
@@ -242,19 +276,24 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
         thumbs_dir = FilePath(storage_path) / "thumbs"
         thumbs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate thumbnail filename (we always store thumbnails as JPEG)
+        # Generate thumbnail filename (WebP format for better compression)
         # Extract date prefix from source filename (assumes format: {date_prefix}-{image_id}.{ext})
-        # Split from right to get everything before the image_id
         date_prefix = source_path.stem.rsplit("-", 1)[0]
-        thumb_filename = f"{date_prefix}-{image_id}.jpeg"
+        thumb_filename = f"{date_prefix}-{image_id}.webp"
         thumb_path = thumbs_dir / thumb_filename
 
         # Open image and create thumbnail
         with Image.open(source_path) as img:
             original_size = img.size
 
-            # Ensure image is RGB for JPEG output
-            if img.mode not in ("RGB", "L"):
+            # Convert to sRGB for consistent web display
+            img = _convert_to_srgb(img)
+
+            # Ensure image is RGB (handle grayscale, palette, RGBA)
+            if img.mode == "RGBA":
+                # Preserve alpha for WebP (it supports transparency)
+                pass
+            elif img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
 
             # Calculate thumbnail size maintaining aspect ratio
@@ -263,13 +302,20 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
                 Image.Resampling.LANCZOS,  # High-quality downsampling
             )
 
-            # Save thumbnail with quality setting
-            save_kwargs = {}
-            # Save thumbnail as JPEG regardless of original extension
-            save_kwargs["quality"] = settings.THUMBNAIL_QUALITY
-            save_kwargs["optimize"] = True
+            # Apply subtle sharpening to restore detail lost during downscaling
+            # UnsharpMask(radius, percent, threshold)
+            # - radius: blur radius (1.0 is subtle)
+            # - percent: strength (50 = gentle)
+            # - threshold: minimum brightness change to sharpen (3 avoids noise)
+            img = img.filter(ImageFilter.UnsharpMask(radius=1.0, percent=50, threshold=3))
 
-            img.save(thumb_path, format="JPEG", **save_kwargs)
+            # Save thumbnail as WebP with quality setting
+            img.save(
+                thumb_path,
+                format="WEBP",
+                quality=settings.THUMBNAIL_QUALITY,
+                method=4,  # Compression method 0-6 (4 is good balance of speed/size)
+            )
 
             logger.info(
                 "thumbnail_generated",

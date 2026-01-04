@@ -101,7 +101,7 @@ class ImageResponse(ImageBase):
     @property
     def thumbnail_url(self) -> str:
         """Generate thumbnail URL (protected path with permission check)"""
-        return f"{settings.IMAGE_BASE_URL}/thumbs/{self.filename}.jpeg"
+        return f"{settings.IMAGE_BASE_URL}/thumbs/{self.filename}.webp"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
