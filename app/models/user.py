@@ -39,7 +39,7 @@ class UserBase(SQLModel):
 
     # Avatar
     avatar: str = Field(default="", max_length=255)
-    gender: str = Field(default="", max_length=1)
+    gender: str = Field(default="", max_length=50)
 
     # Public stats
     posts: int = Field(default=0)
