@@ -1109,7 +1109,7 @@ async def upload_image(
 
         # Add to IQDB index AFTER thumbnail is created
         # Use defer to ensure thumbnail completes first (simple approach)
-        thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{date_prefix}-{image_id}.jpeg"
+        thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{date_prefix}-{image_id}.webp"
         await enqueue_job(
             "add_to_iqdb_job",
             image_id=image_id,

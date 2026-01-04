@@ -89,7 +89,7 @@ async def serve_thumbnail(
     """
     Serve thumbnail with permission check.
     Returns X-Accel-Redirect header for nginx to serve the actual file.
-    Note: Thumbnails are always JPEG format.
+    Note: Thumbnails are always WebP format.
     """
     return await _serve_image(filename, "thumbs", db, current_user)
 
@@ -145,9 +145,9 @@ async def _serve_image(
     if image_type == "large" and not image.large:
         raise HTTPException(status_code=404)
 
-    # Use database extension for fullsize/medium/large, always jpeg for thumbnails
+    # Use database extension for fullsize/medium/large, always webp for thumbnails
     if image_type == "thumbs":
-        ext = "jpeg"
+        ext = "webp"
     else:
         ext = image.ext
 

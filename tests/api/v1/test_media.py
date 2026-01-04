@@ -228,11 +228,11 @@ class TestServeThumbnailEndpoint:
         self, client: AsyncClient, public_image: Images
     ):
         """Thumbnail endpoint returns X-Accel-Redirect with /internal/thumbs/ path."""
-        response = await client.get(f"/thumbs/2026-01-02-{public_image.image_id}.jpeg")
+        response = await client.get(f"/thumbs/2026-01-02-{public_image.image_id}.webp")
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
         assert (
-            f"/internal/thumbs/{public_image.filename}.jpeg" in response.headers["X-Accel-Redirect"]
+            f"/internal/thumbs/{public_image.filename}.webp" in response.headers["X-Accel-Redirect"]
         )
 
 

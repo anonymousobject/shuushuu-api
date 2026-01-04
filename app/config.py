@@ -77,11 +77,11 @@ class Settings(BaseSettings):
 
     # Image Processing
     MAX_IMAGE_SIZE: int = 32 * 1024 * 1024  # 32MB
-    MAX_THUMB_WIDTH: int = 250
-    MAX_THUMB_HEIGHT: int = 200
+    MAX_THUMB_WIDTH: int = 500  # Thumbnail longest edge (WebP format)
+    MAX_THUMB_HEIGHT: int = 500
     MEDIUM_EDGE: int = 1280
     LARGE_EDGE: int = 2048
-    THUMBNAIL_QUALITY: int = 80
+    THUMBNAIL_QUALITY: int = 75  # WebP quality (75 is sweet spot for thumbnails)
     LARGE_QUALITY: int = 90
 
     # Avatar Settings
