@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path as FilePath
 
 from fastapi import HTTPException, UploadFile, status
-from PIL import Image, ImageCms, ImageFilter
+from PIL import Image, ImageCms, ImageFile, ImageFilter
 from PIL.ImageCms import PyCMSError
 from sqlalchemy import update
 
@@ -17,6 +17,12 @@ from app.core.database import get_async_session
 from app.core.logging import bind_context, get_logger
 
 logger = get_logger(__name__)
+
+# Allow loading truncated/corrupt images (common with old files)
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+# Increase pixel limit for trusted content (default 178M → 250M)
+Image.MAX_IMAGE_PIXELS = 250_000_000
 
 # Load sRGB profile for color space conversion
 _srgb_profile = ImageCms.createProfile("sRGB")
