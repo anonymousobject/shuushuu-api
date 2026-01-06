@@ -21,9 +21,9 @@ depends_on: Union[str, Sequence[str], None] = None
 deprecated_perms = [
     'image_check_dupes',
     'image_edit_filename',
-    'level_tagger',
-    'level_mod',
-    'level_admin'
+    'taggerlevel',
+    'modlevel',
+    'adminlevel'
 ]
 
 def upgrade() -> None:
@@ -53,14 +53,33 @@ def upgrade() -> None:
     op.execute("UPDATE perms SET title = 'rating_revoke' WHERE title = 'revokerating'")
     op.execute("UPDATE perms SET title = 'report_revoke' WHERE title = 'revokereports'")
 
-    # Remove deprecated permissions if they exist
+    # Remove deprecated permissions if they exist (must delete FK references first)
     for perm in deprecated_perms:
+        op.execute(f"""
+            DELETE gp FROM group_perms gp
+            JOIN perms p ON gp.perm_id = p.perm_id
+            WHERE p.title = '{perm}'
+        """)
+        op.execute(f"""
+            DELETE up FROM user_perms up
+            JOIN perms p ON up.perm_id = p.perm_id
+            WHERE p.title = '{perm}'
+        """)
         op.execute(f"DELETE FROM perms WHERE title = '{perm}'")
 
     # Add new perms
     op.execute("INSERT INTO perms (title, `desc`) VALUES ('image_tag_add', 'Add tags to images')")
     op.execute("INSERT INTO perms (title, `desc`) VALUES ('image_tag_remove', 'Remove tags from images')")
     op.execute("INSERT INTO perms (title, `desc`) VALUES ('privmsg_view', 'View private messages')")
+    op.execute("INSERT INTO perms (title, `desc`) VALUES ('image_delete', 'Delete images')")
+
+    # Grant admins group the IMAGE_DELETE permission
+    op.execute("""
+        INSERT INTO group_perms (group_id, perm_id, permvalue)
+        SELECT g.group_id, p.perm_id, 1
+        FROM groups g, perms p
+        WHERE g.title = 'admins' AND p.title = 'image_delete'
+    """)
 
 
 def downgrade() -> None:
@@ -100,3 +119,4 @@ def downgrade() -> None:
     op.execute("DELETE FROM perms WHERE title = 'image_tag_add'")
     op.execute("DELETE FROM perms WHERE title = 'image_tag_remove'")
     op.execute("DELETE FROM perms WHERE title = 'privmsg_view'")
+    op.execute("DELETE FROM perms WHERE title = 'image_delete'")

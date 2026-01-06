@@ -529,8 +529,9 @@ async def delete_image(
                 "image_file_delete_failed", image_id=image_id, path=str(file_path), error=str(e)
             )
 
-    # Delete database record (CASCADE will remove tag_links, favorites, ratings, etc.)
-    await db.delete(image)
+    # Delete database record using raw SQL to let database handle CASCADE
+    # (ORM delete tries to manage relationships in Python, causing issues with composite PKs)
+    await db.execute(delete(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
     await db.commit()
 
     logger.info(
