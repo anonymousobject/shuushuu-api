@@ -192,13 +192,13 @@ async def list_images(
                 # Logged in: show public statuses OR user's own images (any status)
                 query = query.where(
                     or_(
-                        Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[union-attr]
+                        Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
                         Images.user_id == current_user.user_id,  # type: ignore[arg-type]
                     )
                 )
             else:
                 # Anonymous: only public statuses
-                query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[union-attr]
+                query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
     # Tag filtering
     if tags:
