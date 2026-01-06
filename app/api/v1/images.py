@@ -21,7 +21,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, asc, delete, desc, func, select
+from sqlalchemy import and_, asc, delete, desc, func, or_, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -59,6 +59,7 @@ from app.schemas.image import (
 from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
 from app.schemas.user import UserListResponse, UserResponse
 from app.services.image_processing import get_image_dimensions
+from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
 from app.services.rating import schedule_rating_recalculation
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
@@ -178,8 +179,26 @@ async def list_images(
     if favorited_by_user_id is not None:
         # Join with Favorites table to filter by user who favorited
         query = query.join(Favorites).where(Favorites.user_id == favorited_by_user_id)  # type: ignore[arg-type]
+    # Status filtering: explicit param overrides, otherwise use user's show_all_images setting
     if image_status is not None:
+        # Explicit status filter - always honor it
         query = query.where(Images.status == image_status)  # type: ignore[arg-type]
+    else:
+        # No explicit filter - apply default based on user's show_all_images setting
+        # Anonymous users or users with show_all_images=0 see only public statuses
+        show_all = current_user is not None and current_user.show_all_images == 1
+        if not show_all:
+            if current_user is not None:
+                # Logged in: show public statuses OR user's own images (any status)
+                query = query.where(
+                    or_(
+                        Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                        Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+                    )
+                )
+            else:
+                # Anonymous: only public statuses
+                query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
     # Tag filtering
     if tags:

@@ -1820,3 +1820,261 @@ class TestCommentFilters:
         assert data["total"] == 2
         filenames = {img["filename"] for img in data["images"]}
         assert filenames == {"no_comment", "also_no_comment"}
+
+
+@pytest.mark.api
+class TestShowAllImagesFilter:
+    """Tests for show_all_images user setting affecting image list visibility."""
+
+    async def test_anonymous_sees_only_public_statuses(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Anonymous users should only see images with public statuses (-1, 1, 2)."""
+        from app.config import ImageStatus
+
+        # Create a user to own images
+        user = Users(
+            username="owner",
+            email="owner@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000020",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create images with different statuses (excluding LOW_QUALITY which isn't valid)
+        statuses = [
+            (ImageStatus.REVIEW, "review_img"),  # -4, hidden
+            (ImageStatus.INAPPROPRIATE, "inapp_img"),  # -2, hidden
+            (ImageStatus.REPOST, "repost_img"),  # -1, public
+            (ImageStatus.OTHER, "other_img"),  # 0, hidden
+            (ImageStatus.ACTIVE, "active_img"),  # 1, public
+            (ImageStatus.SPOILER, "spoiler_img"),  # 2, public
+        ]
+
+        for i, (status_val, filename) in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": filename,
+                "md5_hash": f"hash_status_{i:03d}",
+                "status": status_val,
+                "user_id": user.user_id,
+            })
+            db_session.add(Images(**img_data))
+
+        await db_session.commit()
+
+        # Anonymous request
+        response = await client.get("/api/v1/images")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should only see public statuses: REPOST, ACTIVE, SPOILER
+        assert data["total"] == 3
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"repost_img", "active_img", "spoiler_img"}
+
+    async def test_logged_in_show_all_images_0_sees_public_plus_own(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """User with show_all_images=0 sees public statuses + their own images (any status)."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        # Create two users
+        user1 = Users(
+            username="user1",
+            email="user1@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000021",
+            show_all_images=0,  # Explicitly set to 0
+            active=1,
+        )
+        user2 = Users(
+            username="user2",
+            email="user2@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000022",
+            active=1,
+        )
+        db_session.add_all([user1, user2])
+        await db_session.flush()
+
+        # User1's images (various statuses)
+        user1_images = [
+            (ImageStatus.REVIEW, "user1_review"),  # -4, hidden but owned
+            (ImageStatus.ACTIVE, "user1_active"),  # 1, public
+        ]
+        for i, (status_val, filename) in enumerate(user1_images):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": filename,
+                "md5_hash": f"hash_u1_{i:03d}",
+                "status": status_val,
+                "user_id": user1.user_id,
+            })
+            db_session.add(Images(**img_data))
+
+        # User2's images (various statuses)
+        user2_images = [
+            (ImageStatus.REVIEW, "user2_review"),  # -4, hidden (not owned by user1)
+            (ImageStatus.ACTIVE, "user2_active"),  # 1, public
+        ]
+        for i, (status_val, filename) in enumerate(user2_images):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": filename,
+                "md5_hash": f"hash_u2_{i:03d}",
+                "status": status_val,
+                "user_id": user2.user_id,
+            })
+            db_session.add(Images(**img_data))
+
+        await db_session.commit()
+
+        # Authenticate as user1
+        token = create_access_token(user1.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        response = await client.get("/api/v1/images")
+        assert response.status_code == 200
+        data = response.json()
+
+        # User1 should see:
+        # - Their own images (any status): user1_review, user1_active
+        # - Other users' public images: user2_active
+        # NOT: user2_review (hidden, not owned)
+        assert data["total"] == 3
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"user1_review", "user1_active", "user2_active"}
+
+    async def test_logged_in_show_all_images_1_sees_all(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """User with show_all_images=1 sees all images regardless of status."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        # Create user with show_all_images=1
+        user = Users(
+            username="poweruser",
+            email="power@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000023",
+            show_all_images=1,
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create images with ALL statuses (owned by different user to prove it's not ownership)
+        other_user = Users(
+            username="other",
+            email="other@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000024",
+            active=1,
+        )
+        db_session.add(other_user)
+        await db_session.flush()
+
+        # All valid statuses (excluding LOW_QUALITY which isn't in the validator)
+        statuses = [
+            (ImageStatus.REVIEW, "review_img"),
+            (ImageStatus.INAPPROPRIATE, "inapp_img"),
+            (ImageStatus.REPOST, "repost_img"),
+            (ImageStatus.OTHER, "other_img"),
+            (ImageStatus.ACTIVE, "active_img"),
+            (ImageStatus.SPOILER, "spoiler_img"),
+        ]
+
+        for i, (status_val, filename) in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": filename,
+                "md5_hash": f"hash_all_{i:03d}",
+                "status": status_val,
+                "user_id": other_user.user_id,
+            })
+            db_session.add(Images(**img_data))
+
+        await db_session.commit()
+
+        # Authenticate as power user
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        response = await client.get("/api/v1/images")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should see ALL images (6 statuses)
+        assert data["total"] == 6
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {
+            "review_img", "inapp_img", "repost_img",
+            "other_img", "active_img", "spoiler_img"
+        }
+
+    async def test_explicit_status_param_overrides_setting(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Explicit status parameter should override show_all_images setting."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        # Create user with show_all_images=1 (sees all by default)
+        user = Users(
+            username="filteruser",
+            email="filter@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000025",
+            show_all_images=1,
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create images with different statuses
+        statuses = [
+            (ImageStatus.REPOST, "repost1"),
+            (ImageStatus.REPOST, "repost2"),
+            (ImageStatus.ACTIVE, "active1"),
+            (ImageStatus.REVIEW, "review1"),
+        ]
+
+        for i, (status_val, filename) in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": filename,
+                "md5_hash": f"hash_override_{i:03d}",
+                "status": status_val,
+                "user_id": user.user_id,
+            })
+            db_session.add(Images(**img_data))
+
+        await db_session.commit()
+
+        # Authenticate
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        # Without status param, should see all 4
+        response = await client.get("/api/v1/images")
+        assert response.status_code == 200
+        assert response.json()["total"] == 4
+
+        # With explicit status=-1 (REPOST), should see only reposts
+        response = await client.get("/api/v1/images?status=-1")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"repost1", "repost2"}
