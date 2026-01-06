@@ -355,7 +355,7 @@ class TestPermissionEnum:
     def test_permission_has_description(self):
         """Each permission should have a human-readable description."""
         assert Permission.TAG_CREATE.description == "Create new tags"
-        assert Permission.IMAGE_EDIT.description == "Deactivate or delete images"
+        assert Permission.IMAGE_EDIT.description == "Deactivate images (soft delete, reversible)"
         assert Permission.USER_BAN.description == "Ban users and IPs"
 
     def test_all_permissions_have_descriptions(self):
