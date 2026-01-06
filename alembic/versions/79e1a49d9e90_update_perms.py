@@ -115,8 +115,17 @@ def downgrade() -> None:
             f"INSERT INTO perms (title, `desc`) VALUES ('{perm}', 'Deprecated permission {perm}')"
         )
 
-    # Remove newly added perms
-    op.execute("DELETE FROM perms WHERE title = 'image_tag_add'")
-    op.execute("DELETE FROM perms WHERE title = 'image_tag_remove'")
-    op.execute("DELETE FROM perms WHERE title = 'privmsg_view'")
-    op.execute("DELETE FROM perms WHERE title = 'image_delete'")
+    # Remove newly added perms (must delete FK references first)
+    new_perms = ['image_tag_add', 'image_tag_remove', 'privmsg_view', 'image_delete']
+    for perm in new_perms:
+        op.execute(f"""
+            DELETE gp FROM group_perms gp
+            JOIN perms p ON gp.perm_id = p.perm_id
+            WHERE p.title = '{perm}'
+        """)
+        op.execute(f"""
+            DELETE up FROM user_perms up
+            JOIN perms p ON up.perm_id = p.perm_id
+            WHERE p.title = '{perm}'
+        """)
+        op.execute(f"DELETE FROM perms WHERE title = '{perm}'")

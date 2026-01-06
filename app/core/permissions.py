@@ -90,7 +90,7 @@ _PERMISSION_DESCRIPTIONS: dict["Permission", str] = {
     Permission.TAG_DELETE: "Delete tags",
     # Image management
     Permission.IMAGE_EDIT_META: "Edit image metadata",
-    Permission.IMAGE_EDIT: "Deactivate or delete images",
+    Permission.IMAGE_EDIT: "Deactivate images (soft delete, reversible)",
     Permission.IMAGE_DELETE: "Permanently delete images from database and disk",
     Permission.IMAGE_MARK_REPOST: "Mark images as reposts",
     Permission.IMAGE_TAG_ADD: "Add tags to images",

@@ -507,9 +507,10 @@ async def delete_image(
     await db.flush()  # Ensure action is logged before deletion
 
     # Remove from IQDB (non-blocking, failures logged but don't stop deletion)
-    remove_from_iqdb(image_id)
+    if not remove_from_iqdb(image_id):
+        logger.warning("iqdb_remove_failed_for_deleted_image", image_id=image_id)
 
-    # Delete files from disk
+    # Capture file paths before deleting from DB
     storage_path = FilePath(settings.STORAGE_PATH)
     files_to_delete = [
         storage_path / "fullsize" / f"{image.filename}.{image.ext}",
@@ -519,6 +520,12 @@ async def delete_image(
         storage_path / "large" / f"{image.filename}.{image.ext}",
     ]
 
+    # Delete database record using raw SQL to let database handle CASCADE
+    # (ORM delete tries to manage relationships in Python, causing issues with composite PKs)
+    await db.execute(delete(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    await db.commit()
+
+    # Delete files from disk AFTER successful DB commit to avoid inconsistency
     for file_path in files_to_delete:
         try:
             if file_path.exists():
@@ -528,11 +535,6 @@ async def delete_image(
             logger.warning(
                 "image_file_delete_failed", image_id=image_id, path=str(file_path), error=str(e)
             )
-
-    # Delete database record using raw SQL to let database handle CASCADE
-    # (ORM delete tries to manage relationships in Python, causing issues with composite PKs)
-    await db.execute(delete(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
-    await db.commit()
 
     logger.info(
         "image_deleted",
