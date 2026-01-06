@@ -47,6 +47,7 @@ class Permission(str, Enum):
     # Image management
     IMAGE_EDIT_META = "image_edit_meta"
     IMAGE_EDIT = "image_edit"
+    IMAGE_DELETE = "image_delete"
     IMAGE_MARK_REPOST = "image_mark_repost"
     IMAGE_TAG_ADD = "image_tag_add"
     IMAGE_TAG_REMOVE = "image_tag_remove"
@@ -89,7 +90,8 @@ _PERMISSION_DESCRIPTIONS: dict["Permission", str] = {
     Permission.TAG_DELETE: "Delete tags",
     # Image management
     Permission.IMAGE_EDIT_META: "Edit image metadata",
-    Permission.IMAGE_EDIT: "Deactivate or delete images",
+    Permission.IMAGE_EDIT: "Deactivate images (soft delete, reversible)",
+    Permission.IMAGE_DELETE: "Permanently delete images from database and disk",
     Permission.IMAGE_MARK_REPOST: "Mark images as reposts",
     Permission.IMAGE_TAG_ADD: "Add tags to images",
     Permission.IMAGE_TAG_REMOVE: "Remove tags from images",
