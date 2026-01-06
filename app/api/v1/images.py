@@ -28,13 +28,14 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import resolve_tag_alias
-from app.config import ReportCategory, ReportStatus, settings
+from app.config import AdminActionType, ReportCategory, ReportStatus, settings
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import (
+    AdminActions,
     Comments,
     Favorites,
     ImageRatings,
@@ -58,7 +59,7 @@ from app.schemas.image import (
 from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
 from app.schemas.user import UserListResponse, UserResponse
 from app.services.image_processing import get_image_dimensions
-from app.services.iqdb import check_iqdb_similarity
+from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
 from app.services.rating import schedule_rating_recalculation
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
@@ -449,6 +450,94 @@ async def get_image(
         user_rating=user_rating,
         prev_image_id=prev_image_id,
         next_image_id=next_image_id,
+    )
+
+
+@router.delete("/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_image(
+    image_id: Annotated[int, Path(description="Image ID to delete")],
+    reason: Annotated[str, Query(description="Reason for deletion", min_length=1, max_length=500)],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+) -> None:
+    """
+    Permanently delete an image from the database and disk.
+
+    This is a destructive operation that:
+    - Removes the image from the IQDB similarity index
+    - Deletes all image files (fullsize, thumbnail, medium, large variants)
+    - Deletes the database record (CASCADE removes tags, favorites, ratings, etc.)
+    - Logs the action to admin_actions for audit trail
+
+    Requires IMAGE_DELETE permission.
+
+    **Note:** This cannot be undone. For recoverable removal, use status change instead.
+    """
+    assert current_user.user_id is not None
+
+    # Check permission
+    if not await has_permission(db, current_user.user_id, Permission.IMAGE_DELETE, redis_client):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="IMAGE_DELETE permission required",
+        )
+
+    # Get the image
+    result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    # Log the deletion action BEFORE deleting (so we have image_id reference)
+    admin_action = AdminActions(
+        user_id=current_user.user_id,
+        action_type=AdminActionType.IMAGE_DELETE,
+        image_id=image_id,
+        details={
+            "reason": reason,
+            "filename": image.filename,
+            "ext": image.ext,
+            "uploader_id": image.user_id,
+            "status_before": image.status,
+        },
+    )
+    db.add(admin_action)
+    await db.flush()  # Ensure action is logged before deletion
+
+    # Remove from IQDB (non-blocking, failures logged but don't stop deletion)
+    remove_from_iqdb(image_id)
+
+    # Delete files from disk
+    storage_path = FilePath(settings.STORAGE_PATH)
+    files_to_delete = [
+        storage_path / "fullsize" / f"{image.filename}.{image.ext}",
+        storage_path / "thumbs" / f"{image.filename}.webp",
+        storage_path / "thumbs" / f"{image.filename}.jpeg",  # Old format
+        storage_path / "medium" / f"{image.filename}.{image.ext}",
+        storage_path / "large" / f"{image.filename}.{image.ext}",
+    ]
+
+    for file_path in files_to_delete:
+        try:
+            if file_path.exists():
+                file_path.unlink()
+                logger.info("image_file_deleted", image_id=image_id, path=str(file_path))
+        except OSError as e:
+            logger.warning(
+                "image_file_delete_failed", image_id=image_id, path=str(file_path), error=str(e)
+            )
+
+    # Delete database record (CASCADE will remove tag_links, favorites, ratings, etc.)
+    await db.delete(image)
+    await db.commit()
+
+    logger.info(
+        "image_deleted",
+        image_id=image_id,
+        deleted_by=current_user.user_id,
+        reason=reason,
     )
 
 

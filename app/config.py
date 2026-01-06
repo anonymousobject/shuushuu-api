@@ -220,6 +220,7 @@ class AdminActionType:
     REVIEW_EXTEND = 6
     IMAGE_STATUS_CHANGE = 7
     COMMENT_DELETE = 8
+    IMAGE_DELETE = 9
 
 
 class TagType:

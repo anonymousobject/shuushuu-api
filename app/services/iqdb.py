@@ -120,3 +120,40 @@ def add_to_iqdb(image_id: int, thumb_path: FilePath) -> None:
         # Silently fail - IQDB insertion is non-critical
         # Could log error here if logging is configured
         pass
+
+
+def remove_from_iqdb(image_id: int) -> bool:
+    """Remove image from IQDB index using REST API.
+
+    Makes HTTP DELETE request to IQDB images endpoint.
+
+    Args:
+        image_id: Database image ID to remove from IQDB
+
+    Returns:
+        True if successfully removed (or didn't exist), False on error
+
+    Example API call:
+        DELETE http://localhost:5588/images/{image_id}
+    """
+    try:
+        iqdb_url = f"http://{settings.IQDB_HOST}:{settings.IQDB_PORT}/images/{image_id}"
+
+        with httpx.Client(timeout=10.0) as client:
+            response = client.delete(iqdb_url)
+
+        # 200/204 = deleted, 404 = didn't exist (both are success)
+        if response.status_code in (200, 204, 404):
+            logger.info("iqdb_image_removed", image_id=image_id)
+            return True
+
+        logger.warning(
+            "iqdb_remove_failed",
+            image_id=image_id,
+            status_code=response.status_code,
+        )
+        return False
+
+    except Exception as e:
+        logger.error("iqdb_remove_error", image_id=image_id, error=str(e))
+        return False
