@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.api.dependencies import ImageSortParams, PaginationParams
+from app.config import TagType
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
@@ -756,8 +757,6 @@ async def create_character_source_link(
     db: AsyncSession = Depends(get_db),
 ) -> CharacterSourceLinkResponse:
     """Create a character-source link. Requires TAG_CREATE permission."""
-    from app.config import TagType
-
     # Verify character tag exists and is type CHARACTER
     char_result = await db.execute(
         select(Tags).where(Tags.tag_id == link_data.character_tag_id)  # type: ignore[arg-type]
