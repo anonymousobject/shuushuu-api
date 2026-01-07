@@ -11,6 +11,7 @@ Uses TDD approach - these tests are written before the endpoints are implemented
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
@@ -770,3 +771,104 @@ class TestSourceCharactersEndpoint:
         data = response.json()
         assert data["total"] == 0
         assert data["tags"] == []
+
+
+@pytest.mark.api
+class TestCharacterSourceLinkCascade:
+    """Tests for cascade deletion of character-source links."""
+
+    async def test_link_deleted_when_character_tag_deleted(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+        source_tag: Tags,
+        admin_user_with_tag_create: Users,
+        tag_create_permission: Perms,
+    ):
+        """Test that links are deleted when character tag is deleted."""
+        # Grant TAG_DELETE permission to the admin user
+        tag_delete_perm = Perms(title="tag_delete", desc="Delete tags")
+        db_session.add(tag_delete_perm)
+        await db_session.commit()
+        await db_session.refresh(tag_delete_perm)
+
+        user_perm = UserPerms(
+            user_id=admin_user_with_tag_create.user_id,
+            perm_id=tag_delete_perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create link
+        link = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+        link_id = link.id
+
+        # Login and delete character tag
+        access_token = await login_user(client, "cslink_admin", "AdminPassword123!")
+        response = await client.delete(
+            f"/api/v1/tags/{character_tag.tag_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 204
+
+        # Verify link was also deleted (cascade)
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)
+        )
+        assert result.scalar_one_or_none() is None
+
+    async def test_link_deleted_when_source_tag_deleted(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+        source_tag: Tags,
+        admin_user_with_tag_create: Users,
+        tag_create_permission: Perms,
+    ):
+        """Test that links are deleted when source tag is deleted."""
+        # Grant TAG_DELETE permission to the admin user
+        tag_delete_perm = Perms(title="tag_delete", desc="Delete tags")
+        db_session.add(tag_delete_perm)
+        await db_session.commit()
+        await db_session.refresh(tag_delete_perm)
+
+        user_perm = UserPerms(
+            user_id=admin_user_with_tag_create.user_id,
+            perm_id=tag_delete_perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create link
+        link = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+        link_id = link.id
+
+        # Login and delete source tag
+        access_token = await login_user(client, "cslink_admin", "AdminPassword123!")
+        response = await client.delete(
+            f"/api/v1/tags/{source_tag.tag_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 204
+
+        # Verify link was also deleted (cascade)
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)
+        )
+        assert result.scalar_one_or_none() is None

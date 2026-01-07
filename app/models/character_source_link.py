@@ -81,12 +81,14 @@ class CharacterSourceLinks(CharacterSourceLinkBase, table=True):
     # Primary key
     id: int | None = Field(default=None, primary_key=True)
 
-    # Foreign keys (override base class to add FK constraints)
-    character_tag_id: int = Field(foreign_key="tags.tag_id", index=True)
-    source_tag_id: int = Field(foreign_key="tags.tag_id", index=True)
+    # Foreign keys - note: FK constraints with CASCADE are defined in __table_args__
+    # Do NOT add foreign_key= here as it creates duplicate FKs without CASCADE
+    character_tag_id: int = Field(index=True)
+    source_tag_id: int = Field(index=True)
 
     # User who created this link (nullable for SET NULL on delete)
-    created_by_user_id: int | None = Field(default=None, foreign_key="users.user_id", index=True)
+    # FK constraint with SET NULL is defined in __table_args__
+    created_by_user_id: int | None = Field(default=None, index=True)
 
     # Timestamp
     created_at: datetime = Field(
