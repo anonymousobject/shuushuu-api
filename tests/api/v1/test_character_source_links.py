@@ -700,3 +700,73 @@ class TestTagResponseWithLinks:
         assert response.status_code == 200
         data = response.json()
         assert data["characters"] == []
+
+
+@pytest.mark.api
+class TestSourceCharactersEndpoint:
+    """Tests for GET /api/v1/tags/{source_tag_id}/characters endpoint."""
+
+    async def test_get_characters_for_source(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+        source_tag: Tags,
+    ):
+        """Test getting all characters for a source."""
+        # Create second character
+        char2 = Tags(title="Kirisame Marisa", type=TagType.CHARACTER)
+        db_session.add(char2)
+        await db_session.commit()
+        await db_session.refresh(char2)
+
+        # Create links
+        link1 = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        link2 = CharacterSourceLinks(
+            character_tag_id=char2.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        db_session.add_all([link1, link2])
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}/characters")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        titles = {tag["title"] for tag in data["tags"]}
+        assert character_tag.title in titles
+        assert "Kirisame Marisa" in titles
+
+    async def test_get_characters_for_nonexistent_source(
+        self,
+        client: AsyncClient,
+    ):
+        """Test getting characters for non-existent source returns 404."""
+        response = await client.get("/api/v1/tags/999999/characters")
+        assert response.status_code == 404
+
+    async def test_get_characters_for_non_source_tag(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+    ):
+        """Test getting characters for non-source tag returns 400."""
+        response = await client.get(f"/api/v1/tags/{character_tag.tag_id}/characters")
+        assert response.status_code == 400
+
+    async def test_get_characters_for_source_with_no_characters(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        source_tag: Tags,
+    ):
+        """Test getting characters for source with no links returns empty list."""
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}/characters")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["tags"] == []
