@@ -16,8 +16,12 @@ from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
+from app.models.character_source_link import CharacterSourceLinks
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
+    CharacterSourceLinkCreate,
+    CharacterSourceLinkListResponse,
+    CharacterSourceLinkResponse,
     TagCreate,
     TagCreator,
     TagExternalLinkCreate,
@@ -28,6 +32,11 @@ from app.schemas.tag import (
 )
 
 router = APIRouter(prefix="/tags", tags=["tags"])
+
+# Separate router for character-source-links (mounted at /api/v1/character-source-links)
+character_source_links_router = APIRouter(
+    prefix="/character-source-links", tags=["character-source-links"]
+)
 
 # MySQL/MariaDB default fulltext stopwords that cause search failures when used with `+` (required) operator
 # Source: INFORMATION_SCHEMA.INNODB_FT_DEFAULT_STOPWORD
@@ -726,6 +735,131 @@ async def delete_tag_link(
             status_code=404,
             detail="Link not found or does not belong to this tag",
         )
+
+    await db.delete(link)
+    await db.commit()
+
+
+# =============================================================================
+# Character-Source Links Endpoints
+# =============================================================================
+
+
+@character_source_links_router.post(
+    "/", response_model=CharacterSourceLinkResponse, status_code=201, include_in_schema=False
+)
+@character_source_links_router.post("", response_model=CharacterSourceLinkResponse, status_code=201)
+async def create_character_source_link(
+    link_data: CharacterSourceLinkCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> CharacterSourceLinkResponse:
+    """Create a character-source link. Requires TAG_CREATE permission."""
+    from app.config import TagType
+
+    # Verify character tag exists and is type CHARACTER
+    char_result = await db.execute(
+        select(Tags).where(Tags.tag_id == link_data.character_tag_id)  # type: ignore[arg-type]
+    )
+    char_tag = char_result.scalar_one_or_none()
+    if not char_tag:
+        raise HTTPException(status_code=404, detail="Character tag not found")
+    if char_tag.type != TagType.CHARACTER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"character_tag_id must be a Character tag (type={TagType.CHARACTER}), got type={char_tag.type}",
+        )
+
+    # Verify source tag exists and is type SOURCE
+    source_result = await db.execute(
+        select(Tags).where(Tags.tag_id == link_data.source_tag_id)  # type: ignore[arg-type]
+    )
+    source_tag = source_result.scalar_one_or_none()
+    if not source_tag:
+        raise HTTPException(status_code=404, detail="Source tag not found")
+    if source_tag.type != TagType.SOURCE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_tag_id must be a Source tag (type={TagType.SOURCE}), got type={source_tag.type}",
+        )
+
+    # Create link
+    new_link = CharacterSourceLinks(
+        character_tag_id=link_data.character_tag_id,
+        source_tag_id=link_data.source_tag_id,
+        created_by_user_id=current_user.user_id,
+    )
+    db.add(new_link)
+
+    try:
+        await db.commit()
+        await db.refresh(new_link)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Link between this character and source already exists",
+        ) from None
+
+    return CharacterSourceLinkResponse.model_validate(new_link)
+
+
+@character_source_links_router.get(
+    "/", response_model=CharacterSourceLinkListResponse, include_in_schema=False
+)
+@character_source_links_router.get("", response_model=CharacterSourceLinkListResponse)
+async def list_character_source_links(
+    pagination: Annotated[PaginationParams, Depends()],
+    character_tag_id: Annotated[int | None, Query(description="Filter by character tag ID")] = None,
+    source_tag_id: Annotated[int | None, Query(description="Filter by source tag ID")] = None,
+    db: AsyncSession = Depends(get_db),
+) -> CharacterSourceLinkListResponse:
+    """List character-source links with optional filtering."""
+    query = select(CharacterSourceLinks)
+
+    if character_tag_id is not None:
+        query = query.where(CharacterSourceLinks.character_tag_id == character_tag_id)
+    if source_tag_id is not None:
+        query = query.where(CharacterSourceLinks.source_tag_id == source_tag_id)
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Paginate and order
+    query = (
+        query.order_by(desc(CharacterSourceLinks.created_at))
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    links = result.scalars().all()
+
+    return CharacterSourceLinkListResponse(
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        links=[CharacterSourceLinkResponse.model_validate(link) for link in links],
+    )
+
+
+@character_source_links_router.delete("/{link_id}", status_code=204)
+async def delete_character_source_link(
+    link_id: Annotated[int, Path(description="Link ID")],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete a character-source link. Requires TAG_CREATE permission."""
+    result = await db.execute(
+        select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)
+    )
+    link = result.scalar_one_or_none()
+
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
 
     await db.delete(link)
     await db.commit()
