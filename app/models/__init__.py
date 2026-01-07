@@ -15,6 +15,7 @@ from app.models.admin_action import AdminActions
 
 # User-related models
 from app.models.ban import Bans
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.comment import Comments
 
 # Junction/relationship tables
@@ -61,6 +62,7 @@ __all__ = [
     "Favorites",
     "TagLinks",
     "TagExternalLinks",
+    "CharacterSourceLinks",
     "TagHistory",
     "ImageRatings",
     "ImageReports",

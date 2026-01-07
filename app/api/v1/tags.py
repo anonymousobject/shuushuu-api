@@ -2,7 +2,7 @@
 Tags API endpoints
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import case, desc, func, select, text
@@ -11,13 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.api.dependencies import ImageSortParams, PaginationParams
+from app.config import TagType
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
+from app.models.character_source_link import CharacterSourceLinks
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
+    CharacterSourceLinkCreate,
+    CharacterSourceLinkListResponse,
+    CharacterSourceLinkResponse,
     TagCreate,
     TagCreator,
     TagExternalLinkCreate,
@@ -28,6 +33,11 @@ from app.schemas.tag import (
 )
 
 router = APIRouter(prefix="/tags", tags=["tags"])
+
+# Separate router for character-source-links (mounted at /api/v1/character-source-links)
+character_source_links_router = APIRouter(
+    prefix="/character-source-links", tags=["character-source-links"]
+)
 
 # MySQL/MariaDB default fulltext stopwords that cause search failures when used with `+` (required) operator
 # Source: INFORMATION_SCHEMA.INNODB_FT_DEFAULT_STOPWORD
@@ -464,6 +474,62 @@ async def get_images_by_tag(
     )
 
 
+@router.get("/{tag_id}/characters", response_model=TagListResponse)
+async def get_characters_for_source(
+    tag_id: Annotated[int, Path(description="Source tag ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> TagListResponse:
+    """
+    Get all character tags linked to a source tag.
+
+    Returns a paginated list of character tags that are linked to the specified source.
+    Returns 400 if the tag is not a Source type.
+    Returns 404 if the tag doesn't exist.
+    """
+    # Verify tag exists and is a source
+    tag_result = await db.execute(
+        select(Tags).where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+    tag = tag_result.scalar_one_or_none()
+
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.type != TagType.SOURCE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tag must be a Source tag (type={TagType.SOURCE}), got type={tag.type}",
+        )
+
+    # Get linked characters
+    query = (
+        select(Tags)
+        .join(
+            CharacterSourceLinks,
+            Tags.tag_id == CharacterSourceLinks.character_tag_id,  # type: ignore[arg-type]
+        )
+        .where(CharacterSourceLinks.source_tag_id == tag_id)  # type: ignore[arg-type]
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Paginate and order
+    query = query.order_by(Tags.title).offset(pagination.offset).limit(pagination.per_page)
+
+    result = await db.execute(query)
+    tags = result.scalars().all()
+
+    return TagListResponse(
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        tags=[TagResponse.model_validate(t) for t in tags],
+    )
+
+
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
@@ -533,6 +599,36 @@ async def get_tag(
     )
     links = links_result.scalars().all()
 
+    # Fetch linked sources/characters based on tag type
+    sources: list[dict[str, Any]] = []
+    characters: list[dict[str, Any]] = []
+
+    if tag.type == TagType.CHARACTER:
+        # Get all sources linked to this character
+        sources_result = await db.execute(
+            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
+            .join(
+                CharacterSourceLinks,
+                Tags.tag_id == CharacterSourceLinks.source_tag_id,
+            )
+            .where(CharacterSourceLinks.character_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        sources = [{"tag_id": row[0], "title": row[1]} for row in sources_result.all()]
+
+    elif tag.type == TagType.SOURCE:
+        # Get all characters linked to this source
+        characters_result = await db.execute(
+            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
+            .join(
+                CharacterSourceLinks,
+                Tags.tag_id == CharacterSourceLinks.character_tag_id,
+            )
+            .where(CharacterSourceLinks.source_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        characters = [{"tag_id": row[0], "title": row[1]} for row in characters_result.all()]
+
     return TagWithStats(
         tag_id=tag.tag_id or 0,
         title=tag.title,
@@ -546,6 +642,8 @@ async def get_tag(
         created_by=created_by,
         date_added=tag.date_added,
         links=list(links),
+        sources=sources,
+        characters=characters,
     )
 
 
@@ -726,6 +824,135 @@ async def delete_tag_link(
             status_code=404,
             detail="Link not found or does not belong to this tag",
         )
+
+    await db.delete(link)
+    await db.commit()
+
+
+# =============================================================================
+# Character-Source Links Endpoints
+# =============================================================================
+
+
+@character_source_links_router.post(
+    "/", response_model=CharacterSourceLinkResponse, status_code=201, include_in_schema=False
+)
+@character_source_links_router.post("", response_model=CharacterSourceLinkResponse, status_code=201)
+async def create_character_source_link(
+    link_data: CharacterSourceLinkCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> CharacterSourceLinkResponse:
+    """Create a character-source link. Requires TAG_CREATE permission."""
+    # Verify character tag exists and is type CHARACTER
+    char_result = await db.execute(
+        select(Tags).where(Tags.tag_id == link_data.character_tag_id)  # type: ignore[arg-type]
+    )
+    char_tag = char_result.scalar_one_or_none()
+    if not char_tag:
+        raise HTTPException(status_code=404, detail="Character tag not found")
+    if char_tag.type != TagType.CHARACTER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"character_tag_id must be a Character tag (type={TagType.CHARACTER}), got type={char_tag.type}",
+        )
+
+    # Verify source tag exists and is type SOURCE
+    source_result = await db.execute(
+        select(Tags).where(Tags.tag_id == link_data.source_tag_id)  # type: ignore[arg-type]
+    )
+    source_tag = source_result.scalar_one_or_none()
+    if not source_tag:
+        raise HTTPException(status_code=404, detail="Source tag not found")
+    if source_tag.type != TagType.SOURCE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_tag_id must be a Source tag (type={TagType.SOURCE}), got type={source_tag.type}",
+        )
+
+    # Create link
+    new_link = CharacterSourceLinks(
+        character_tag_id=link_data.character_tag_id,
+        source_tag_id=link_data.source_tag_id,
+        created_by_user_id=current_user.user_id,
+    )
+    db.add(new_link)
+
+    try:
+        await db.commit()
+        await db.refresh(new_link)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Link between this character and source already exists",
+        ) from None
+
+    return CharacterSourceLinkResponse.model_validate(new_link)
+
+
+@character_source_links_router.get(
+    "/", response_model=CharacterSourceLinkListResponse, include_in_schema=False
+)
+@character_source_links_router.get("", response_model=CharacterSourceLinkListResponse)
+async def list_character_source_links(
+    pagination: Annotated[PaginationParams, Depends()],
+    character_tag_id: Annotated[int | None, Query(description="Filter by character tag ID")] = None,
+    source_tag_id: Annotated[int | None, Query(description="Filter by source tag ID")] = None,
+    db: AsyncSession = Depends(get_db),
+) -> CharacterSourceLinkListResponse:
+    """List character-source links with optional filtering."""
+    query = select(CharacterSourceLinks)
+
+    if character_tag_id is not None:
+        query = query.where(
+            CharacterSourceLinks.character_tag_id == character_tag_id  # type: ignore[arg-type]
+        )
+    if source_tag_id is not None:
+        query = query.where(
+            CharacterSourceLinks.source_tag_id == source_tag_id  # type: ignore[arg-type]
+        )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Paginate and order
+    query = (
+        query.order_by(desc(CharacterSourceLinks.created_at))  # type: ignore[arg-type]
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    links = result.scalars().all()
+
+    return CharacterSourceLinkListResponse(
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        links=[CharacterSourceLinkResponse.model_validate(link) for link in links],
+    )
+
+
+@character_source_links_router.delete("/{link_id}", status_code=204)
+async def delete_character_source_link(
+    link_id: Annotated[int, Path(description="Link ID")],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete a character-source link. Requires TAG_CREATE permission."""
+    result = await db.execute(
+        select(CharacterSourceLinks).where(
+            CharacterSourceLinks.id == link_id  # type: ignore[arg-type]
+        )
+    )
+    link = result.scalar_one_or_none()
+
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
 
     await db.delete(link)
     await db.commit()

@@ -16,6 +16,7 @@ from app.api.v1 import (
     tags,
     users,
 )
+from app.api.v1.tags import character_source_links_router
 
 router = APIRouter()
 
@@ -24,6 +25,7 @@ router.include_router(admin.router)
 router.include_router(auth.router)
 router.include_router(images.router)
 router.include_router(tags.router)
+router.include_router(character_source_links_router)
 router.include_router(users.router)
 router.include_router(favorites.router)
 router.include_router(comments.router)
