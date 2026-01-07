@@ -132,6 +132,7 @@ async def login_user(client: AsyncClient, username: str, password: str) -> str:
         "/api/v1/auth/login",
         json={"username": username, "password": password},
     )
+    assert response.status_code == 200, f"Login failed: {response.text}"
     return response.json()["access_token"]
 
 
@@ -147,7 +148,6 @@ class TestCreateCharacterSourceLink:
     async def test_create_link_as_admin(
         self,
         client: AsyncClient,
-        db_session: AsyncSession,
         admin_user_with_tag_create: Users,
         character_tag: Tags,
         source_tag: Tags,
@@ -175,7 +175,6 @@ class TestCreateCharacterSourceLink:
     async def test_create_link_rejects_non_character_tag(
         self,
         client: AsyncClient,
-        db_session: AsyncSession,
         admin_user_with_tag_create: Users,
         theme_tag: Tags,
         source_tag: Tags,
@@ -199,7 +198,6 @@ class TestCreateCharacterSourceLink:
     async def test_create_link_rejects_non_source_tag(
         self,
         client: AsyncClient,
-        db_session: AsyncSession,
         admin_user_with_tag_create: Users,
         character_tag: Tags,
         theme_tag: Tags,
@@ -254,7 +252,6 @@ class TestCreateCharacterSourceLink:
     async def test_create_link_without_permission(
         self,
         client: AsyncClient,
-        db_session: AsyncSession,
         regular_user: Users,
         character_tag: Tags,
         source_tag: Tags,
