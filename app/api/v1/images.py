@@ -714,6 +714,115 @@ async def get_bookmark_image(
     return ImageResponse.model_validate(image)
 
 
+@router.get("/bookmark/page")
+async def get_bookmark_page(
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int | None]:
+    """
+    Get the page number where the user's bookmark appears in their image list.
+
+    Uses the user's sorting preferences (sorting_pref, sorting_pref_order)
+    and visibility settings (show_all_images) to calculate which page
+    contains their bookmarked image.
+
+    Returns:
+        {
+            "page": 42,           # Page number (1-indexed)
+            "image_id": 12345,    # The bookmarked image ID
+            "images_per_page": 15 # User's images_per_page setting
+        }
+
+    This allows frontend to redirect to: /images?page=42#i12345
+    """
+    import math
+
+    if not current_user.bookmark:
+        raise HTTPException(status_code=404, detail="No bookmarked image set for user")
+
+    bookmark_id = current_user.bookmark
+
+    # Get the bookmark image to check it exists and get its sort values
+    bookmark_result = await db.execute(
+        select(Images).where(Images.image_id == bookmark_id)  # type: ignore[arg-type]
+    )
+    bookmark_image = bookmark_result.scalar_one_or_none()
+
+    if not bookmark_image:
+        raise HTTPException(status_code=404, detail="Bookmarked image not found")
+
+    # Build the same filter as list_images uses
+    show_all = current_user.show_all_images == 1
+
+    # Get sort column and direction from user preferences
+    sort_field = current_user.sorting_pref or "image_id"
+    sort_order = current_user.sorting_pref_order or "DESC"
+
+    # Map sort field to column name
+    sort_column_name_map = {
+        "image_id": "image_id",
+        "date_added": "image_id",  # image_id is chronological
+        "favorites": "favorites",
+        "rating": "rating",
+        "filesize": "filesize",
+    }
+    sort_column_name = sort_column_name_map.get(sort_field, "image_id")
+
+    # Get the bookmark's sort value
+    bookmark_sort_value = getattr(bookmark_image, sort_column_name)
+
+    # Get the actual column for queries
+    sort_column = getattr(Images, sort_column_name)
+
+    # Count images that come BEFORE the bookmark in the sorted order
+    # For DESC: count images with sort_value > bookmark's value
+    # For ASC: count images with sort_value < bookmark's value
+    # Tie-breaker: image_id (always secondary sort)
+    if sort_order.upper() == "DESC":
+        # Images before bookmark: higher sort value, or same value with higher image_id
+        position_filter = or_(
+            sort_column > bookmark_sort_value,
+            and_(
+                sort_column == bookmark_sort_value,
+                Images.image_id > bookmark_id,  # type: ignore[operator,arg-type]
+            ),
+        )
+    else:
+        # ASC: lower sort value, or same value with lower image_id
+        position_filter = or_(
+            sort_column < bookmark_sort_value,
+            and_(
+                sort_column == bookmark_sort_value,
+                Images.image_id < bookmark_id,  # type: ignore[operator,arg-type]
+            ),
+        )
+
+    # Build count query with visibility filter
+    count_query = select(func.count()).select_from(Images).where(position_filter)
+
+    if not show_all:
+        # Apply same visibility filter as list_images
+        count_query = count_query.where(
+            or_(
+                Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+            )
+        )
+
+    result = await db.execute(count_query)
+    position = result.scalar() or 0
+
+    # Page is 1-indexed: position 0-14 = page 1, 15-29 = page 2, etc.
+    images_per_page = current_user.images_per_page or 15
+    page = math.ceil((position + 1) / images_per_page)
+
+    return {
+        "page": page,
+        "image_id": bookmark_id,
+        "images_per_page": images_per_page,
+    }
+
+
 @router.post("/{image_id}/tags/{tag_id}", status_code=status.HTTP_201_CREATED)
 async def add_tag_to_image(
     image_id: Annotated[int, Path(description="Image ID")],
