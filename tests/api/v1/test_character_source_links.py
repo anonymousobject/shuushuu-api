@@ -585,3 +585,118 @@ class TestDeleteCharacterSourceLink:
         )
 
         assert response.status_code == 401
+
+
+@pytest.mark.api
+class TestTagResponseWithLinks:
+    """Tests for GET /api/v1/tags/{tag_id} including linked sources/characters."""
+
+    async def test_character_tag_includes_sources(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+        source_tag: Tags,
+    ):
+        """Test that character tag response includes linked sources."""
+        # Create link
+        link = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Get character tag
+        response = await client.get(f"/api/v1/tags/{character_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert "sources" in data
+        assert len(data["sources"]) == 1
+        assert data["sources"][0]["tag_id"] == source_tag.tag_id
+        assert data["sources"][0]["title"] == source_tag.title
+
+    async def test_source_tag_includes_characters(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+        source_tag: Tags,
+    ):
+        """Test that source tag response includes linked characters."""
+        # Create link
+        link = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Get source tag
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert "characters" in data
+        assert len(data["characters"]) == 1
+        assert data["characters"][0]["tag_id"] == character_tag.tag_id
+        assert data["characters"][0]["title"] == character_tag.title
+
+    async def test_character_with_multiple_sources(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+        source_tag: Tags,
+    ):
+        """Test character with multiple source links."""
+        # Create second source
+        source2 = Tags(title="Touhou: Lost Word", type=TagType.SOURCE)
+        db_session.add(source2)
+        await db_session.commit()
+        await db_session.refresh(source2)
+
+        # Create links
+        link1 = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        link2 = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source2.tag_id,
+        )
+        db_session.add_all([link1, link2])
+        await db_session.commit()
+
+        # Get character tag
+        response = await client.get(f"/api/v1/tags/{character_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["sources"]) == 2
+
+    async def test_tag_without_links_has_empty_arrays(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        """Test that tags without links have empty sources/characters arrays."""
+        # Create character tag with no links
+        char_tag = Tags(title="Lonely Character", type=TagType.CHARACTER)
+        db_session.add(char_tag)
+        await db_session.commit()
+        await db_session.refresh(char_tag)
+
+        response = await client.get(f"/api/v1/tags/{char_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["sources"] == []
+
+        # Create source tag with no links
+        src_tag = Tags(title="Lonely Source", type=TagType.SOURCE)
+        db_session.add(src_tag)
+        await db_session.commit()
+        await db_session.refresh(src_tag)
+
+        response = await client.get(f"/api/v1/tags/{src_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["characters"] == []
