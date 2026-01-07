@@ -53,6 +53,9 @@ class UserUpdate(BaseModel):
     sorting_pref_order: str | None = None  # ASC or DESC
     images_per_page: int | None = None  # 1-100
 
+    # Navigation
+    bookmark: int | None = None  # Bookmarked image_id
+
     @field_validator("location", "website", "interests", "user_title", "gender")
     @classmethod
     def sanitize_text_fields(cls, v: str | None) -> str | None:
@@ -114,6 +117,14 @@ class UserUpdate(BaseModel):
             return v
         if v < 1 or v > 100:
             raise ValueError("images_per_page must be between 1 and 100")
+        return v
+
+    @field_validator("bookmark")
+    @classmethod
+    def validate_bookmark(cls, v: int | None) -> int | None:
+        """Validate bookmark is a positive integer when set"""
+        if v is not None and v < 1:
+            raise ValueError("bookmark must be a positive integer")
         return v
 
     @field_validator("timezone")
@@ -194,6 +205,9 @@ class UserPrivateResponse(UserResponse):
     sorting_pref: str  # ImageSortBy enum value (e.g., "image_id", "favorites")
     sorting_pref_order: str  # "ASC" or "DESC"
     images_per_page: int  # 1-100
+
+    # Navigation
+    bookmark: int | None  # Bookmarked image_id (for "continue where I left off")
 
     @field_validator("email_verified", mode="before")
     @classmethod
