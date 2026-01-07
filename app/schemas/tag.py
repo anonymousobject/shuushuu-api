@@ -84,6 +84,13 @@ class TagResponse(TagBase):
         return self
 
 
+class LinkedTag(BaseModel):
+    """Minimal tag info for linked sources/characters"""
+
+    tag_id: int
+    title: str | None
+
+
 class TagWithStats(TagResponse):
     """Schema for tag response with usage statistics"""
 
@@ -95,6 +102,9 @@ class TagWithStats(TagResponse):
     created_by: TagCreator | None = None  # User who created the tag
     date_added: datetime  # When the tag was created
     links: list[str] = []  # External URLs associated with this tag
+    # Character-source links
+    sources: list[LinkedTag] = []  # For character tags: linked sources
+    characters: list[LinkedTag] = []  # For source tags: linked characters
 
 
 class TagListResponse(BaseModel):
@@ -134,3 +144,38 @@ class TagExternalLinkResponse(BaseModel):
     date_added: datetime
 
     model_config = {"from_attributes": True}
+
+
+class CharacterSourceLinkCreate(BaseModel):
+    """Schema for creating a character-source link"""
+
+    character_tag_id: int
+    source_tag_id: int
+
+
+class CharacterSourceLinkResponse(BaseModel):
+    """Schema for character-source link response"""
+
+    id: int
+    character_tag_id: int
+    source_tag_id: int
+    created_at: datetime
+    created_by_user_id: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class CharacterSourceLinkListResponse(BaseModel):
+    """Schema for paginated character-source link list"""
+
+    total: int
+    page: int
+    per_page: int
+    links: list[CharacterSourceLinkResponse]
+
+
+class CharacterSourceLinkWithTitles(CharacterSourceLinkResponse):
+    """Link response with tag titles included"""
+
+    character_title: str | None = None
+    source_title: str | None = None
