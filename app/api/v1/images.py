@@ -49,6 +49,7 @@ from app.models import (
 )
 from app.models.image import ImageSortBy
 from app.schemas.image import (
+    TAG_TYPE_SORT_ORDER,
     BookmarkPageResponse,
     ImageDetailedListResponse,
     ImageDetailedResponse,
@@ -588,6 +589,15 @@ async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> I
     )
     tags = result.scalars().all()
 
+    # Sort by type (artist → source → character → theme) then alphabetically
+    sorted_tags = sorted(
+        tags,
+        key=lambda t: (
+            TAG_TYPE_SORT_ORDER.get(t.type, 99),
+            (t.title or "").lower(),
+        ),
+    )
+
     return ImageTagsResponse(
         image_id=image_id,
         tags=[
@@ -596,7 +606,7 @@ async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> I
                 tag=tag.title or "",  # title guaranteed from database
                 type_id=tag.type or 0,  # type guaranteed from database
             )
-            for tag in tags
+            for tag in sorted_tags
         ],
     )
 
