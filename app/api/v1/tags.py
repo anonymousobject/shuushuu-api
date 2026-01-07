@@ -474,6 +474,60 @@ async def get_images_by_tag(
     )
 
 
+@router.get("/{tag_id}/characters", response_model=TagListResponse)
+async def get_characters_for_source(
+    tag_id: Annotated[int, Path(description="Source tag ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> TagListResponse:
+    """
+    Get all character tags linked to a source tag.
+
+    Returns a paginated list of character tags that are linked to the specified source.
+    Returns 400 if the tag is not a Source type.
+    Returns 404 if the tag doesn't exist.
+    """
+    # Verify tag exists and is a source
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))
+    tag = tag_result.scalar_one_or_none()
+
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.type != TagType.SOURCE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tag must be a Source tag (type={TagType.SOURCE}), got type={tag.type}",
+        )
+
+    # Get linked characters
+    query = (
+        select(Tags)
+        .join(
+            CharacterSourceLinks,
+            Tags.tag_id == CharacterSourceLinks.character_tag_id,
+        )
+        .where(CharacterSourceLinks.source_tag_id == tag_id)
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Paginate and order
+    query = query.order_by(Tags.title).offset(pagination.offset).limit(pagination.per_page)
+
+    result = await db.execute(query)
+    tags = result.scalars().all()
+
+    return TagListResponse(
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        tags=[TagResponse.model_validate(t) for t in tags],
+    )
+
+
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
