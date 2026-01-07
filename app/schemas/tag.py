@@ -84,6 +84,13 @@ class TagResponse(TagBase):
         return self
 
 
+class LinkedTag(BaseModel):
+    """Minimal tag info for linked sources/characters"""
+
+    tag_id: int
+    title: str | None
+
+
 class TagWithStats(TagResponse):
     """Schema for tag response with usage statistics"""
 
@@ -95,6 +102,9 @@ class TagWithStats(TagResponse):
     created_by: TagCreator | None = None  # User who created the tag
     date_added: datetime  # When the tag was created
     links: list[str] = []  # External URLs associated with this tag
+    # Character-source links
+    sources: list[LinkedTag] = []  # For character tags: linked sources
+    characters: list[LinkedTag] = []  # For source tags: linked characters
 
 
 class TagListResponse(BaseModel):
@@ -162,13 +172,6 @@ class CharacterSourceLinkListResponse(BaseModel):
     page: int
     per_page: int
     links: list[CharacterSourceLinkResponse]
-
-
-class LinkedTag(BaseModel):
-    """Minimal tag info for linked sources/characters"""
-
-    tag_id: int
-    title: str | None
 
 
 class CharacterSourceLinkWithTitles(CharacterSourceLinkResponse):

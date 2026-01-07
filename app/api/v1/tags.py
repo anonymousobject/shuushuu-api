@@ -543,6 +543,36 @@ async def get_tag(
     )
     links = links_result.scalars().all()
 
+    # Fetch linked sources/characters based on tag type
+    sources: list[dict] = []
+    characters: list[dict] = []
+
+    if tag.type == TagType.CHARACTER:
+        # Get all sources linked to this character
+        sources_result = await db.execute(
+            select(Tags.tag_id, Tags.title)
+            .join(
+                CharacterSourceLinks,
+                Tags.tag_id == CharacterSourceLinks.source_tag_id,
+            )
+            .where(CharacterSourceLinks.character_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        sources = [{"tag_id": row[0], "title": row[1]} for row in sources_result.all()]
+
+    elif tag.type == TagType.SOURCE:
+        # Get all characters linked to this source
+        characters_result = await db.execute(
+            select(Tags.tag_id, Tags.title)
+            .join(
+                CharacterSourceLinks,
+                Tags.tag_id == CharacterSourceLinks.character_tag_id,
+            )
+            .where(CharacterSourceLinks.source_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        characters = [{"tag_id": row[0], "title": row[1]} for row in characters_result.all()]
+
     return TagWithStats(
         tag_id=tag.tag_id or 0,
         title=tag.title,
@@ -556,6 +586,8 @@ async def get_tag(
         created_by=created_by,
         date_added=tag.date_added,
         links=list(links),
+        sources=sources,
+        characters=characters,
     )
 
 
