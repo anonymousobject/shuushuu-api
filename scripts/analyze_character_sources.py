@@ -53,23 +53,25 @@ async def analyze_character_sources(
         print(f"Found {len(character_tags)} character tags with >= {min_images} images")
 
         for char_id, char_title in character_tags:
-            # Get all images with this character
-            images_result = await db.execute(
-                select(TagLinks.image_id)
+            # Get count of images with this character
+            count_result = await db.execute(
+                select(func.count(TagLinks.image_id))
                 .where(TagLinks.tag_id == char_id)
             )
-            image_ids = [row[0] for row in images_result.all()]
-            total_images = len(image_ids)
+            total_images = count_result.scalar() or 0
 
             if total_images < min_images:
                 continue
+
+            # Use subquery for image_ids instead of loading into Python memory
+            image_subquery = select(TagLinks.image_id).where(TagLinks.tag_id == char_id).subquery()
 
             # Count source tags that co-occur
             source_counts_result = await db.execute(
                 select(Tags.tag_id, Tags.title, func.count(TagLinks.image_id).label("count"))
                 .join(TagLinks, Tags.tag_id == TagLinks.tag_id)
                 .where(Tags.type == TagType.SOURCE)
-                .where(TagLinks.image_id.in_(image_ids))
+                .where(TagLinks.image_id.in_(select(image_subquery)))
                 .group_by(Tags.tag_id, Tags.title)
                 .order_by(func.count(TagLinks.image_id).desc())
             )
@@ -135,13 +137,22 @@ def main():
     )
     args = parser.parse_args()
 
-    asyncio.run(
-        analyze_character_sources(
-            threshold=args.threshold,
-            min_images=args.min_images,
-            output_file=args.output,
+    if not 0.0 <= args.threshold <= 1.0:
+        parser.error("--threshold must be between 0.0 and 1.0")
+    if args.min_images < 1:
+        parser.error("--min-images must be at least 1")
+
+    try:
+        asyncio.run(
+            analyze_character_sources(
+                threshold=args.threshold,
+                min_images=args.min_images,
+                output_file=args.output,
+            )
         )
-    )
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
