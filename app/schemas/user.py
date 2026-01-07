@@ -119,6 +119,14 @@ class UserUpdate(BaseModel):
             raise ValueError("images_per_page must be between 1 and 100")
         return v
 
+    @field_validator("bookmark")
+    @classmethod
+    def validate_bookmark(cls, v: int | None) -> int | None:
+        """Validate bookmark is a positive integer when set"""
+        if v is not None and v < 1:
+            raise ValueError("bookmark must be a positive integer")
+        return v
+
     @field_validator("timezone")
     @classmethod
     def validate_timezone(cls, v: str | None) -> str | None:

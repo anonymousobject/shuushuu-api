@@ -47,7 +47,9 @@ from app.models import (
     Tags,
     Users,
 )
+from app.models.image import ImageSortBy
 from app.schemas.image import (
+    BookmarkPageResponse,
     ImageDetailedListResponse,
     ImageDetailedResponse,
     ImageHashSearchResponse,
@@ -715,24 +717,17 @@ async def get_bookmark_image(
     return ImageResponse.model_validate(image)
 
 
-@router.get("/bookmark/page")
+@router.get("/bookmark/page", response_model=BookmarkPageResponse)
 async def get_bookmark_page(
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-) -> dict[str, int | None]:
+) -> BookmarkPageResponse:
     """
     Get the page number where the user's bookmark appears in their image list.
 
     Uses the user's sorting preferences (sorting_pref, sorting_pref_order)
     and visibility settings (show_all_images) to calculate which page
     contains their bookmarked image.
-
-    Returns:
-        {
-            "page": 42,           # Page number (1-indexed), or null if not visible
-            "image_id": 12345,    # The bookmarked image ID
-            "images_per_page": 15 # User's images_per_page setting
-        }
 
     If the bookmark is not visible under user's visibility settings
     (show_all_images=0 and bookmark is not public/owned), returns page: null.
@@ -763,56 +758,64 @@ async def get_bookmark_page(
         is_public = bookmark_image.status in PUBLIC_IMAGE_STATUSES
         is_own_image = bookmark_image.user_id == current_user.user_id
         if not is_public and not is_own_image:
-            return {
-                "page": None,
-                "image_id": bookmark_id,
-                "images_per_page": images_per_page,
-            }
+            return BookmarkPageResponse(
+                page=None,
+                image_id=bookmark_id,
+                images_per_page=images_per_page,
+            )
 
     # Get sort column and direction from user preferences
     sort_field = current_user.sorting_pref or "image_id"
     sort_order = current_user.sorting_pref_order or "DESC"
 
-    # Map sort field to column name (matches ImageSortBy enum)
-    sort_column_name_map = {
-        "image_id": "image_id",
-        "date_added": "image_id",  # image_id is chronological
-        "last_updated": "last_updated",
-        "last_post": "last_post",
-        "total_pixels": "total_pixels",
-        "bayesian_rating": "bayesian_rating",
-        "favorites": "favorites",
-    }
-    sort_column_name = sort_column_name_map.get(sort_field, "image_id")
+    # Convert to ImageSortBy enum, falling back to image_id if invalid
+    try:
+        sort_enum = ImageSortBy(sort_field)
+    except ValueError:
+        sort_enum = ImageSortBy.image_id
+
+    # Use ImageSortBy.get_column() to get the actual column (handles aliasing like date_added -> image_id)
+    sort_column = sort_enum.get_column(Images)
+    sort_column_name = sort_column.key  # Get column name for getattr on bookmark_image
 
     # Get the bookmark's sort value
     bookmark_sort_value = getattr(bookmark_image, sort_column_name)
 
-    # Get the actual column for queries
-    sort_column = getattr(Images, sort_column_name)
-
-    # Count images that come BEFORE the bookmark in the sorted order
-    # Secondary sort is always desc(image_id), so higher image_id wins ties
-    # For DESC: higher sort_value comes first, then higher image_id
-    # For ASC: lower sort_value comes first, then higher image_id (secondary is still DESC)
-    if sort_order.upper() == "DESC":
-        # Images before bookmark: higher sort value, or same value with higher image_id
+    # Handle NULL sort values - treat as "sorts last" (after all non-NULL values)
+    # If bookmark has NULL, it would appear at the end of both ASC and DESC sorts
+    if bookmark_sort_value is None:
+        # Count all non-NULL values as coming before this bookmark
+        # Also count NULL values with higher image_id (secondary sort is DESC)
         position_filter = or_(
-            sort_column > bookmark_sort_value,
+            sort_column.isnot(None),
             and_(
-                sort_column == bookmark_sort_value,
+                sort_column.is_(None),
                 Images.image_id > bookmark_id,  # type: ignore[operator,arg-type]
             ),
         )
     else:
-        # ASC: lower sort value, or same value with higher image_id (secondary is DESC)
-        position_filter = or_(
-            sort_column < bookmark_sort_value,
-            and_(
-                sort_column == bookmark_sort_value,
-                Images.image_id > bookmark_id,  # type: ignore[operator,arg-type]
-            ),
-        )
+        # Count images that come BEFORE the bookmark in the sorted order
+        # Secondary sort is always desc(image_id), so higher image_id wins ties
+        # For DESC: higher sort_value comes first, then higher image_id
+        # For ASC: lower sort_value comes first, then higher image_id (secondary is still DESC)
+        if sort_order.upper() == "DESC":
+            # Images before bookmark: higher sort value, or same value with higher image_id
+            position_filter = or_(
+                sort_column > bookmark_sort_value,
+                and_(
+                    sort_column == bookmark_sort_value,
+                    Images.image_id > bookmark_id,  # type: ignore[operator,arg-type]
+                ),
+            )
+        else:
+            # ASC: lower sort value, or same value with higher image_id (secondary is DESC)
+            position_filter = or_(
+                sort_column < bookmark_sort_value,
+                and_(
+                    sort_column == bookmark_sort_value,
+                    Images.image_id > bookmark_id,  # type: ignore[operator,arg-type]
+                ),
+            )
 
     # Build count query with visibility filter
     count_query = select(func.count()).select_from(Images).where(position_filter)
@@ -832,11 +835,11 @@ async def get_bookmark_page(
     # Page is 1-indexed: position 0-14 = page 1, 15-29 = page 2, etc.
     page = math.ceil((position + 1) / images_per_page)
 
-    return {
-        "page": page,
-        "image_id": bookmark_id,
-        "images_per_page": images_per_page,
-    }
+    return BookmarkPageResponse(
+        page=page,
+        image_id=bookmark_id,
+        images_per_page=images_per_page,
+    )
 
 
 @router.post("/{image_id}/tags/{tag_id}", status_code=status.HTTP_201_CREATED)

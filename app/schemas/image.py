@@ -232,3 +232,18 @@ class ImageStatsResponse(BaseModel):
     total_images: int
     total_favorites: int
     average_rating: float
+
+
+class BookmarkPageResponse(BaseModel):
+    """Schema for bookmark page calculation response.
+
+    Returns the page number where the user's bookmark appears based on
+    their sort preferences and visibility settings.
+    """
+
+    page: int | None = Field(
+        description="Page number (1-indexed) where bookmark appears, "
+        "or null if bookmark is not visible under user's settings"
+    )
+    image_id: int = Field(description="The bookmarked image ID")
+    images_per_page: int = Field(description="User's images_per_page setting")

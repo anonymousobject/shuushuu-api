@@ -2164,9 +2164,10 @@ class TestBookmarkPage:
 
         assert data["image_id"] == images[10].image_id
         assert data["images_per_page"] == 10
-        # images[10] is 15th from end (24,23,22,21,20,19,18,17,16,15,[14],...)
-        # In DESC order: position = 14 (0-indexed)
-        # Page = ceil((14+1)/10) = ceil(1.5) = 2
+        # Array has 25 images: images[0]..images[24], where higher index = higher image_id
+        # When sorted DESC by image_id: images[24] is position 0, images[23] is position 1, etc.
+        # images[10] is at position 14 (because 24 - 10 = 14)
+        # Page = ceil((14 + 1) / 10) = ceil(1.5) = 2
         assert data["page"] == 2
 
     async def test_bookmark_not_visible_returns_null_page(
