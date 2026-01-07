@@ -2,7 +2,7 @@
 Tags API endpoints
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import case, desc, func, select, text
@@ -488,7 +488,9 @@ async def get_characters_for_source(
     Returns 404 if the tag doesn't exist.
     """
     # Verify tag exists and is a source
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))
+    tag_result = await db.execute(
+        select(Tags).where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
+    )
     tag = tag_result.scalar_one_or_none()
 
     if not tag:
@@ -504,9 +506,9 @@ async def get_characters_for_source(
         select(Tags)
         .join(
             CharacterSourceLinks,
-            Tags.tag_id == CharacterSourceLinks.character_tag_id,
+            Tags.tag_id == CharacterSourceLinks.character_tag_id,  # type: ignore[arg-type]
         )
-        .where(CharacterSourceLinks.source_tag_id == tag_id)
+        .where(CharacterSourceLinks.source_tag_id == tag_id)  # type: ignore[arg-type]
     )
 
     # Count total
@@ -598,13 +600,13 @@ async def get_tag(
     links = links_result.scalars().all()
 
     # Fetch linked sources/characters based on tag type
-    sources: list[dict] = []
-    characters: list[dict] = []
+    sources: list[dict[str, Any]] = []
+    characters: list[dict[str, Any]] = []
 
     if tag.type == TagType.CHARACTER:
         # Get all sources linked to this character
         sources_result = await db.execute(
-            select(Tags.tag_id, Tags.title)
+            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.source_tag_id,
@@ -617,7 +619,7 @@ async def get_tag(
     elif tag.type == TagType.SOURCE:
         # Get all characters linked to this source
         characters_result = await db.execute(
-            select(Tags.tag_id, Tags.title)
+            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.character_tag_id,
@@ -904,9 +906,13 @@ async def list_character_source_links(
     query = select(CharacterSourceLinks)
 
     if character_tag_id is not None:
-        query = query.where(CharacterSourceLinks.character_tag_id == character_tag_id)
+        query = query.where(
+            CharacterSourceLinks.character_tag_id == character_tag_id  # type: ignore[arg-type]
+        )
     if source_tag_id is not None:
-        query = query.where(CharacterSourceLinks.source_tag_id == source_tag_id)
+        query = query.where(
+            CharacterSourceLinks.source_tag_id == source_tag_id  # type: ignore[arg-type]
+        )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -915,7 +921,7 @@ async def list_character_source_links(
 
     # Paginate and order
     query = (
-        query.order_by(desc(CharacterSourceLinks.created_at))
+        query.order_by(desc(CharacterSourceLinks.created_at))  # type: ignore[arg-type]
         .offset(pagination.offset)
         .limit(pagination.per_page)
     )
@@ -939,7 +945,9 @@ async def delete_character_source_link(
 ) -> None:
     """Delete a character-source link. Requires TAG_CREATE permission."""
     result = await db.execute(
-        select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)
+        select(CharacterSourceLinks).where(
+            CharacterSourceLinks.id == link_id  # type: ignore[arg-type]
+        )
     )
     link = result.scalar_one_or_none()
 
