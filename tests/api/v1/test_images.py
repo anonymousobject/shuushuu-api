@@ -2078,3 +2078,262 @@ class TestShowAllImagesFilter:
         assert data["total"] == 2
         filenames = {img["filename"] for img in data["images"]}
         assert filenames == {"repost1", "repost2"}
+
+
+class TestBookmarkPage:
+    """Tests for GET /images/bookmark/page endpoint."""
+
+    async def test_no_bookmark_returns_404(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """User with no bookmark should get 404."""
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="nobookmark",
+            email="nobookmark@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt_bkm001",
+            active=1,
+            bookmark=None,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        response = await client.get("/api/v1/images/bookmark/page")
+        assert response.status_code == 404
+        assert "No bookmarked image" in response.json()["detail"]
+
+    # Note: No test for "bookmark pointing to non-existent image" because the FK constraint
+    # (ondelete="SET NULL") ensures bookmark is always NULL or points to a valid image.
+
+    async def test_bookmark_page_calculation(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that bookmark page is calculated correctly."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="bookmarkuser",
+            email="bookmark@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt_bkm003",
+            active=1,
+            images_per_page=10,
+            sorting_pref="image_id",
+            sorting_pref_order="DESC",
+            show_all_images=0,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create 25 active images (will span 3 pages at 10 per page)
+        images = []
+        for i in range(25):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": f"bkm_img_{i:03d}",
+                "md5_hash": f"hash_bkm_{i:03d}",
+                "status": ImageStatus.ACTIVE,
+                "user_id": user.user_id,
+            })
+            img = Images(**img_data)
+            db_session.add(img)
+            images.append(img)
+
+        await db_session.flush()
+
+        # Set bookmark to 15th newest (position 14 in DESC order = page 2)
+        # Images are sorted DESC by image_id, so newest first
+        # Position 0-9 = page 1, position 10-19 = page 2
+        user.bookmark = images[10].image_id  # 15th from end when DESC
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        response = await client.get("/api/v1/images/bookmark/page")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["image_id"] == images[10].image_id
+        assert data["images_per_page"] == 10
+        # images[10] is 15th from end (24,23,22,21,20,19,18,17,16,15,[14],...)
+        # In DESC order: position = 14 (0-indexed)
+        # Page = ceil((14+1)/10) = ceil(1.5) = 2
+        assert data["page"] == 2
+
+    async def test_bookmark_not_visible_returns_null_page(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Bookmark to non-visible image (show_all_images=0) returns page: null."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        # Create image owner
+        owner = Users(
+            username="imgowner",
+            email="imgowner@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt_bkm004",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        # Create a hidden image (status=0, OTHER)
+        img_data = sample_image_data.copy()
+        img_data.update({
+            "filename": "hidden_bkm",
+            "md5_hash": "hash_hidden_bkm",
+            "status": ImageStatus.OTHER,  # Not in PUBLIC_IMAGE_STATUSES
+            "user_id": owner.user_id,
+        })
+        hidden_img = Images(**img_data)
+        db_session.add(hidden_img)
+        await db_session.flush()
+
+        # Create user with bookmark to hidden image (not owned by user)
+        user = Users(
+            username="bkmhidden",
+            email="bkmhidden@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt_bkm005",
+            active=1,
+            show_all_images=0,  # Can't see hidden images
+            bookmark=hidden_img.image_id,
+            images_per_page=15,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        response = await client.get("/api/v1/images/bookmark/page")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["page"] is None
+        assert data["image_id"] == hidden_img.image_id
+        assert data["images_per_page"] == 15
+
+    async def test_bookmark_visible_when_owned(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """User can see bookmark to their own image even if not public."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="ownhidden",
+            email="ownhidden@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt_bkm006",
+            active=1,
+            show_all_images=0,
+            images_per_page=10,
+            sorting_pref="image_id",
+            sorting_pref_order="DESC",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Create user's own hidden image
+        img_data = sample_image_data.copy()
+        img_data.update({
+            "filename": "own_hidden",
+            "md5_hash": "hash_own_hidden",
+            "status": ImageStatus.OTHER,  # Hidden status
+            "user_id": user.user_id,  # Owned by user
+        })
+        own_img = Images(**img_data)
+        db_session.add(own_img)
+        await db_session.flush()
+
+        user.bookmark = own_img.image_id
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        response = await client.get("/api/v1/images/bookmark/page")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return a page number (not null) because user owns the image
+        assert data["page"] == 1
+        assert data["image_id"] == own_img.image_id
+
+    async def test_bookmark_visible_when_show_all_images(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """User with show_all_images=1 can see bookmark to any image."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        # Create image owner
+        owner = Users(
+            username="imgowner2",
+            email="imgowner2@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt_bkm007",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        # Create a hidden image not owned by user
+        img_data = sample_image_data.copy()
+        img_data.update({
+            "filename": "other_hidden",
+            "md5_hash": "hash_other_hidden",
+            "status": ImageStatus.OTHER,
+            "user_id": owner.user_id,
+        })
+        hidden_img = Images(**img_data)
+        db_session.add(hidden_img)
+        await db_session.flush()
+
+        # Create user with show_all_images=1
+        user = Users(
+            username="seeall",
+            email="seeall@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt_bkm008",
+            active=1,
+            show_all_images=1,  # Can see all images
+            bookmark=hidden_img.image_id,
+            images_per_page=10,
+            sorting_pref="image_id",
+            sorting_pref_order="DESC",
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        response = await client.get("/api/v1/images/bookmark/page")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return a page number because user can see all images
+        assert data["page"] == 1
+        assert data["image_id"] == hidden_img.image_id
+
+    async def test_requires_authentication(self, client: AsyncClient):
+        """Bookmark page endpoint requires authentication."""
+        response = await client.get("/api/v1/images/bookmark/page")
+        assert response.status_code == 401

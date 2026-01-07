@@ -2,6 +2,7 @@
 Images API endpoints
 """
 
+import math
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
@@ -728,15 +729,16 @@ async def get_bookmark_page(
 
     Returns:
         {
-            "page": 42,           # Page number (1-indexed)
+            "page": 42,           # Page number (1-indexed), or null if not visible
             "image_id": 12345,    # The bookmarked image ID
             "images_per_page": 15 # User's images_per_page setting
         }
 
+    If the bookmark is not visible under user's visibility settings
+    (show_all_images=0 and bookmark is not public/owned), returns page: null.
+
     This allows frontend to redirect to: /images?page=42#i12345
     """
-    import math
-
     if not current_user.bookmark:
         raise HTTPException(status_code=404, detail="No bookmarked image set for user")
 
@@ -753,18 +755,33 @@ async def get_bookmark_page(
 
     # Build the same filter as list_images uses
     show_all = current_user.show_all_images == 1
+    images_per_page = current_user.images_per_page or 15
+
+    # Check if bookmark is visible under user's settings
+    # If not visible, return page: null (bookmark exists but won't appear in list)
+    if not show_all:
+        is_public = bookmark_image.status in PUBLIC_IMAGE_STATUSES
+        is_own_image = bookmark_image.user_id == current_user.user_id
+        if not is_public and not is_own_image:
+            return {
+                "page": None,
+                "image_id": bookmark_id,
+                "images_per_page": images_per_page,
+            }
 
     # Get sort column and direction from user preferences
     sort_field = current_user.sorting_pref or "image_id"
     sort_order = current_user.sorting_pref_order or "DESC"
 
-    # Map sort field to column name
+    # Map sort field to column name (matches ImageSortBy enum)
     sort_column_name_map = {
         "image_id": "image_id",
         "date_added": "image_id",  # image_id is chronological
+        "last_updated": "last_updated",
+        "last_post": "last_post",
+        "total_pixels": "total_pixels",
+        "bayesian_rating": "bayesian_rating",
         "favorites": "favorites",
-        "rating": "rating",
-        "filesize": "filesize",
     }
     sort_column_name = sort_column_name_map.get(sort_field, "image_id")
 
@@ -775,9 +792,9 @@ async def get_bookmark_page(
     sort_column = getattr(Images, sort_column_name)
 
     # Count images that come BEFORE the bookmark in the sorted order
-    # For DESC: count images with sort_value > bookmark's value
-    # For ASC: count images with sort_value < bookmark's value
-    # Tie-breaker: image_id (always secondary sort)
+    # Secondary sort is always desc(image_id), so higher image_id wins ties
+    # For DESC: higher sort_value comes first, then higher image_id
+    # For ASC: lower sort_value comes first, then higher image_id (secondary is still DESC)
     if sort_order.upper() == "DESC":
         # Images before bookmark: higher sort value, or same value with higher image_id
         position_filter = or_(
@@ -788,12 +805,12 @@ async def get_bookmark_page(
             ),
         )
     else:
-        # ASC: lower sort value, or same value with lower image_id
+        # ASC: lower sort value, or same value with higher image_id (secondary is DESC)
         position_filter = or_(
             sort_column < bookmark_sort_value,
             and_(
                 sort_column == bookmark_sort_value,
-                Images.image_id < bookmark_id,  # type: ignore[operator,arg-type]
+                Images.image_id > bookmark_id,  # type: ignore[operator,arg-type]
             ),
         )
 
@@ -813,7 +830,6 @@ async def get_bookmark_page(
     position = result.scalar() or 0
 
     # Page is 1-indexed: position 0-14 = page 1, 15-29 = page 2, etc.
-    images_per_page = current_user.images_per_page or 15
     page = math.ceil((position + 1) / images_per_page)
 
     return {
