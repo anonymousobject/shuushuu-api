@@ -6,7 +6,14 @@ This script identifies likely character-source relationships by analyzing
 which source tags frequently co-occur with character tags on the same images.
 
 Usage:
-    uv run python scripts/analyze_character_sources.py [--threshold 0.8] [--min-images 5] [--output results.csv]
+    # Analyze only (preview mode)
+    uv run python scripts/analyze_character_sources.py [--threshold 0.8] [--min-images 5]
+
+    # Export to CSV for review
+    uv run python scripts/analyze_character_sources.py --output results.csv
+
+    # Create links in database
+    uv run python scripts/analyze_character_sources.py --create-links [--user-id 1]
 """
 
 import argparse
@@ -19,10 +26,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import TagType, settings
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 
@@ -115,7 +124,43 @@ async def analyze_character_sources(
     return results
 
 
-def main():
+async def create_links_from_results(
+    results: list[dict],
+    user_id: int | None = None,
+) -> tuple[int, int]:
+    """
+    Create character-source links from analysis results.
+
+    Returns (created_count, skipped_count).
+    """
+    engine = create_async_engine(settings.DATABASE_URL, echo=False)
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    created = 0
+    skipped = 0
+
+    async with async_session() as db:
+        for r in results:
+            link = CharacterSourceLinks(
+                character_tag_id=r["character_tag_id"],
+                source_tag_id=r["source_tag_id"],
+                created_by_user_id=user_id,
+            )
+            db.add(link)
+            try:
+                await db.commit()
+                created += 1
+                print(f"  Created: {r['character_title']} -> {r['source_title']}")
+            except IntegrityError:
+                await db.rollback()
+                skipped += 1
+                # Link already exists, skip silently
+
+    await engine.dispose()
+    return created, skipped
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze character-source co-occurrence")
     parser.add_argument(
         "--threshold",
@@ -135,21 +180,45 @@ def main():
         default=None,
         help="Output CSV file path",
     )
+    parser.add_argument(
+        "--create-links",
+        action="store_true",
+        help="Create character-source links in database (default: analyze only)",
+    )
+    parser.add_argument(
+        "--user-id",
+        type=int,
+        default=None,
+        help="User ID to record as link creator (optional, used with --create-links)",
+    )
     args = parser.parse_args()
 
     if not 0.0 <= args.threshold <= 1.0:
         parser.error("--threshold must be between 0.0 and 1.0")
     if args.min_images < 1:
         parser.error("--min-images must be at least 1")
+    if args.user_id is not None and args.user_id < 1:
+        parser.error("--user-id must be a positive integer")
 
     try:
-        asyncio.run(
+        results = asyncio.run(
             analyze_character_sources(
                 threshold=args.threshold,
                 min_images=args.min_images,
                 output_file=args.output,
             )
         )
+
+        if args.create_links:
+            if not results:
+                print("\nNo links to create.")
+            else:
+                print(f"\nCreating {len(results)} character-source links...")
+                created, skipped = asyncio.run(
+                    create_links_from_results(results, user_id=args.user_id)
+                )
+                print(f"\nDone: {created} created, {skipped} already existed")
+
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
