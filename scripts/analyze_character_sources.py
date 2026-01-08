@@ -127,9 +127,13 @@ async def analyze_character_sources(
 async def create_links_from_results(
     results: list[dict],
     user_id: int | None = None,
+    batch_size: int = 100,
 ) -> tuple[int, int]:
     """
     Create character-source links from analysis results.
+
+    Uses batch inserts for performance. If a batch fails due to duplicates,
+    falls back to individual inserts for that batch.
 
     Returns (created_count, skipped_count).
     """
@@ -138,23 +142,51 @@ async def create_links_from_results(
 
     created = 0
     skipped = 0
+    total = len(results)
 
     async with async_session() as db:
-        for r in results:
-            link = CharacterSourceLinks(
-                character_tag_id=r["character_tag_id"],
-                source_tag_id=r["source_tag_id"],
-                created_by_user_id=user_id,
-            )
-            db.add(link)
+        for batch_start in range(0, total, batch_size):
+            batch = results[batch_start : batch_start + batch_size]
+
+            # Try batch insert first
+            for r in batch:
+                link = CharacterSourceLinks(
+                    character_tag_id=r["character_tag_id"],
+                    source_tag_id=r["source_tag_id"],
+                    created_by_user_id=user_id,
+                )
+                db.add(link)
+
             try:
                 await db.commit()
-                created += 1
-                print(f"  Created: {r['character_title']} -> {r['source_title']}")
+                created += len(batch)
+                print(f"  Batch {batch_start // batch_size + 1}: created {len(batch)} links")
             except IntegrityError:
+                # Batch had duplicates - fall back to individual inserts
                 await db.rollback()
-                skipped += 1
-                # Link already exists, skip silently
+                batch_created = 0
+                batch_skipped = 0
+
+                for r in batch:
+                    link = CharacterSourceLinks(
+                        character_tag_id=r["character_tag_id"],
+                        source_tag_id=r["source_tag_id"],
+                        created_by_user_id=user_id,
+                    )
+                    db.add(link)
+                    try:
+                        await db.commit()
+                        batch_created += 1
+                    except IntegrityError:
+                        await db.rollback()
+                        batch_skipped += 1
+
+                created += batch_created
+                skipped += batch_skipped
+                print(
+                    f"  Batch {batch_start // batch_size + 1}: "
+                    f"created {batch_created}, skipped {batch_skipped} duplicates"
+                )
 
     await engine.dispose()
     return created, skipped
