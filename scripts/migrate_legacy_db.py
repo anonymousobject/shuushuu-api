@@ -11,6 +11,8 @@ Migration steps:
 2. convert_bbcode_to_markdown.py    - Convert BBCode formatting to markdown
 3. migrate_quoted_comments.py       - Extract and migrate comment quotes to parent_comment_id
 4. normalize_db_text.py             - Clean up remaining HTML entities and whitespace
+5. backfill_tag_usage_counts.py     - Backfill tag usage counts from tag_links table
+6. analyze_character_sources.py     - Create character-source links from co-occurrence patterns
 
 Usage:
     # Import legacy SQL dump and run full migration
@@ -66,6 +68,18 @@ MIGRATION_STEPS = [
         "name": "backfill_tag_usage_counts",
         "script": "backfill_tag_usage_counts.py",
         "description": "Backfill tag usage counts from tag_links table",
+    },
+    {
+        "number": 5,
+        "name": "analyze_character_sources",
+        "script": "analyze_character_sources.py",
+        "description": "Create character-source links from co-occurrence patterns",
+        # This script has different flags: --create-links instead of --dry-run
+        # In dry-run mode, we run without --create-links (analysis only)
+        # In live mode, we add --create-links to actually create the links
+        "args": ["--threshold", "0.8", "--min-images", "5", "--user-id", "2"],
+        "live_args": ["--create-links"],  # Additional args for live mode only
+        "skip_standard_flags": True,  # Don't add --dry-run/--auto-confirm
     },
 ]
 
@@ -394,10 +408,21 @@ async def run_step(step: dict, dry_run: bool = False, auto_confirm: bool = False
     try:
         # Build command
         cmd = ["uv", "run", "python", str(script_path)]
-        if dry_run:
-            cmd.append("--dry-run")
-        if auto_confirm:
-            cmd.append("--auto-confirm")
+
+        # Add standard flags unless step opts out
+        if not step.get("skip_standard_flags", False):
+            if dry_run:
+                cmd.append("--dry-run")
+            if auto_confirm:
+                cmd.append("--auto-confirm")
+
+        # Add step-specific base args
+        if "args" in step:
+            cmd.extend(step["args"])
+
+        # Add live-mode-only args (e.g., --create-links for analyze_character_sources)
+        if not dry_run and "live_args" in step:
+            cmd.extend(step["live_args"])
 
         print(f"Running: {' '.join(cmd)}\n")
 
@@ -664,7 +689,7 @@ Examples:
     parser.add_argument(
         "--step",
         type=str,
-        help="Run specific step (by number 1-4 or name)",
+        help="Run specific step (by number 1-5 or name)",
     )
 
     parser.add_argument(
