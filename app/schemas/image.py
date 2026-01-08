@@ -11,6 +11,14 @@ from app.config import TagType, settings
 from app.models.image import ImageBase
 from app.schemas.common import UserSummary
 
+# Sort order for tags in image responses: artist → source → character → theme
+TAG_TYPE_SORT_ORDER = {
+    TagType.ARTIST: 0,
+    TagType.SOURCE: 1,
+    TagType.CHARACTER: 2,
+    TagType.THEME: 3,
+}
+
 
 class TagSummary(BaseModel):
     """Minimal tag info for embedding"""
@@ -154,9 +162,16 @@ class ImageDetailedResponse(ImageResponse):
         if hasattr(image, "user") and image.user:
             data["user"] = UserSummary.model_validate(image.user)
 
-        # Add tags if loaded through tag_links
+        # Add tags if loaded through tag_links, sorted by type then alphabetically
         if hasattr(image, "tag_links") and image.tag_links:
-            data["tags"] = [TagSummary.model_validate(tag_link.tag) for tag_link in image.tag_links]
+            sorted_links = sorted(
+                image.tag_links,
+                key=lambda tl: (
+                    TAG_TYPE_SORT_ORDER.get(tl.tag.type, 99),  # Primary: type order
+                    (tl.tag.title or "").lower(),  # Secondary: alphabetical
+                ),
+            )
+            data["tags"] = [TagSummary.model_validate(tl.tag) for tl in sorted_links]
 
         data["is_favorited"] = is_favorited
         data["user_rating"] = user_rating
