@@ -753,18 +753,19 @@ async def get_similar_images(
     images_result = await db.execute(
         select(Images)
         .options(
-            selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                Users.user_id, Users.username, Users.avatar
-            )
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
         )
-        .where(Images.image_id.in_(similar_ids))  # type: ignore[arg-type]
+        .where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
     )
-    images = {img.image_id: img for img in images_result.scalars().all()}
+    images: dict[int, Images] = {
+        img.image_id: img  # type: ignore[misc]
+        for img in images_result.scalars().all()
+    }
 
     # Build response with similarity scores, ordered by score descending
     similar_images = []
     for r in sorted(similar_results, key=lambda x: x["score"], reverse=True):
-        img = images.get(r["image_id"])
+        img = images.get(int(r["image_id"]))
         if img:
             img_data = ImageResponse.model_validate(img).model_dump()
             img_data["similarity_score"] = r["score"]
