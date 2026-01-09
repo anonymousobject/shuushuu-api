@@ -25,7 +25,9 @@ from app.schemas.comment import (
     CommentResponse,
     CommentStatsResponse,
     CommentUpdate,
+    build_comment_response,
 )
+from app.services.user_groups import get_groups_for_users
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -152,11 +154,15 @@ async def list_comments(
     result = await db.execute(query)
     comments = result.scalars().all()
 
+    # Fetch groups for all commenters
+    user_ids = {c.user_id for c in comments if c.user_id}
+    groups_by_user = await get_groups_for_users(db, list(user_ids))
+
     return CommentListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        comments=[CommentResponse.model_validate(comment) for comment in comments],
+        comments=[build_comment_response(comment, groups_by_user) for comment in comments],
     )
 
 
@@ -181,7 +187,12 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
 
-    return CommentResponse.model_validate(comment)
+    # Fetch groups for the commenter
+    groups_by_user = {}
+    if comment.user_id:
+        groups_by_user = await get_groups_for_users(db, [comment.user_id])
+
+    return build_comment_response(comment, groups_by_user)
 
 
 @router.get("/image/{image_id}", response_model=CommentListResponse)
@@ -237,11 +248,15 @@ async def get_image_comments(
     result = await db.execute(query)
     comments = result.scalars().all()
 
+    # Fetch groups for all commenters
+    user_ids = {c.user_id for c in comments if c.user_id}
+    groups_by_user = await get_groups_for_users(db, list(user_ids))
+
     return CommentListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        comments=[CommentResponse.model_validate(comment) for comment in comments],
+        comments=[build_comment_response(comment, groups_by_user) for comment in comments],
     )
 
 
@@ -297,11 +312,15 @@ async def get_user_comments(
     result = await db.execute(query)
     comments = result.scalars().all()
 
+    # Fetch groups for all commenters
+    comment_user_ids = {c.user_id for c in comments if c.user_id}
+    groups_by_user = await get_groups_for_users(db, list(comment_user_ids))
+
     return CommentListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        comments=[CommentResponse.model_validate(comment) for comment in comments],
+        comments=[build_comment_response(comment, groups_by_user) for comment in comments],
     )
 
 
@@ -404,7 +423,12 @@ async def create_comment(
     await db.commit()
     await db.refresh(comment)
 
-    return CommentResponse.model_validate(comment)
+    # Fetch groups for the commenter
+    groups_by_user = {}
+    if current_user.user_id:
+        groups_by_user = await get_groups_for_users(db, [current_user.user_id])
+
+    return build_comment_response(comment, groups_by_user)
 
 
 @router.patch("/{comment_id}", response_model=CommentResponse)
@@ -452,7 +476,12 @@ async def update_comment(
     await db.commit()
     await db.refresh(comment)
 
-    return CommentResponse.model_validate(comment)
+    # Fetch groups for the commenter
+    groups_by_user = {}
+    if comment.user_id:
+        groups_by_user = await get_groups_for_users(db, [comment.user_id])
+
+    return build_comment_response(comment, groups_by_user)
 
 
 @router.delete("/{comment_id}", response_model=CommentResponse)
@@ -531,4 +560,9 @@ async def delete_comment(
     await db.commit()
     await db.refresh(comment)
 
-    return CommentResponse.model_validate(comment)
+    # Fetch groups for the commenter
+    groups_by_user = {}
+    if comment.user_id:
+        groups_by_user = await get_groups_for_users(db, [comment.user_id])
+
+    return build_comment_response(comment, groups_by_user)
