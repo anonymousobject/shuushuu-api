@@ -152,6 +152,7 @@ class UserResponse(UserBase):
     last_login: datetime | None = None
     active: bool
     admin: bool
+    groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
 
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True}
