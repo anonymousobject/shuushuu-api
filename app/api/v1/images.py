@@ -478,12 +478,18 @@ async def get_image(
     )
     next_image_id = next_id_result.scalar_one_or_none()
 
+    # Fetch groups for the image uploader
+    groups_by_user = {}
+    if image.user_id:
+        groups_by_user = await get_groups_for_users(db, [image.user_id])
+
     return ImageDetailedResponse.from_db_model(
         image,
         is_favorited=is_favorited,
         user_rating=user_rating,
         prev_image_id=prev_image_id,
         next_image_id=next_image_id,
+        groups_by_user=groups_by_user,
     )
 
 

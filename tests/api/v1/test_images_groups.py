@@ -81,3 +81,40 @@ async def test_list_images_includes_user_groups(
     )
     assert test_image is not None
     assert test_image["user"]["groups"] == ["mods"]
+
+
+@pytest.mark.asyncio
+async def test_get_image_includes_user_groups(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Single image endpoint returns user's groups."""
+    # Create a group and add user 1 to it
+    group = Groups(title="testers", desc="Testers")
+    db_session.add(group)
+    await db_session.flush()
+
+    user_group = UserGroups(user_id=1, group_id=group.group_id)
+    db_session.add(user_group)
+
+    # Create an image
+    image = Images(
+        filename="test-groups-003",
+        ext="jpg",
+        original_filename="test.jpg",
+        md5_hash="groups003hash",
+        filesize=1000,
+        width=100,
+        height=100,
+        user_id=1,
+        status=1,
+        locked=0,
+    )
+    db_session.add(image)
+    await db_session.commit()
+    await db_session.refresh(image)
+
+    response = await client.get(f"/api/v1/images/{image.image_id}")
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["user"]["groups"] == ["testers"]
