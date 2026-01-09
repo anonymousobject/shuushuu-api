@@ -4,10 +4,10 @@ Pydantic schemas for Tag endpoints
 
 from datetime import datetime
 
-from pydantic import BaseModel, computed_field, field_validator, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
-from app.config import settings
 from app.models.tag import TagBase
+from app.schemas.common import UserSummary
 
 
 class TagCreate(TagBase):
@@ -46,24 +46,6 @@ class TagUpdate(BaseModel):
         return v.strip()
 
 
-class TagCreator(BaseModel):
-    """Schema for tag creator user info"""
-
-    user_id: int
-    username: str
-    avatar: str | None = None
-
-    # Allow reading from SQLAlchemy model attributes (not just dicts)
-    model_config = {"from_attributes": True}
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def avatar_url(self) -> str | None:
-        if self.avatar:
-            return f"{settings.IMAGE_BASE_URL}/images/avatars/{self.avatar}"
-        return None
-
-
 class TagResponse(TagBase):
     """Schema for tag response - what API returns"""
 
@@ -99,7 +81,7 @@ class TagWithStats(TagResponse):
     aliased_tag_id: int | None = None  # The actual tag this aliases (if is_alias=True)
     parent_tag_id: int | None = None  # The parent tag in hierarchy (inheritedfrom_id)
     child_count: int = 0  # Number of child tags that inherit from this tag
-    created_by: TagCreator | None = None  # User who created the tag
+    created_by: UserSummary | None = None  # User who created the tag
     date_added: datetime  # When the tag was created
     links: list[str] = []  # External URLs associated with this tag
     # Character-source links
