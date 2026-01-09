@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.security import get_password_hash
-from app.models.permissions import Perms, UserPerms
+from app.models.permissions import Groups, Perms, UserGroups, UserPerms
 from app.models.privmsg import Privmsgs
 from app.models.user import Users
 from app.config import settings
@@ -650,3 +650,229 @@ class TestGetSentPrivmsgs:
 
         response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
         assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestPrivmsgUserGroups:
+    """Tests for user groups in privmsg responses."""
+
+    async def test_received_messages_include_sender_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that received messages include sender's groups."""
+        # Create a group
+        group = Groups(title="mods", desc="Moderators")
+        db_session.add(group)
+        await db_session.commit()
+        await db_session.refresh(group)
+
+        # Create sender with groups
+        sender = Users(
+            username="groupsender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="groupsender@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        await db_session.commit()
+        await db_session.refresh(sender)
+
+        # Add sender to group
+        user_group = UserGroups(user_id=sender.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Create recipient
+        recipient = Users(
+            username="grouprecipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="grouprecipient@example.com",
+            active=1,
+        )
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(recipient)
+
+        # Create message
+        msg = Privmsgs(
+            from_user_id=sender.user_id,
+            to_user_id=recipient.user_id,
+            text="Message with groups",
+        )
+        db_session.add(msg)
+        await db_session.commit()
+
+        # Login as recipient
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "grouprecipient", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get received messages
+        response = await client.get(
+            "/api/v1/privmsgs/received",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+
+        # Find our message and check sender groups
+        our_msg = next(m for m in data["messages"] if m["from_user_id"] == sender.user_id)
+        assert "from_groups" in our_msg
+        assert "mods" in our_msg["from_groups"]
+
+    async def test_sent_messages_include_recipient_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that sent messages include recipient's groups."""
+        # Create a group
+        group = Groups(title="admins", desc="Administrators")
+        db_session.add(group)
+        await db_session.commit()
+        await db_session.refresh(group)
+
+        # Create sender
+        sender = Users(
+            username="sentgroupsender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="sentgroupsender@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        await db_session.commit()
+        await db_session.refresh(sender)
+
+        # Create recipient with groups
+        recipient = Users(
+            username="sentgrouprecipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="sentgrouprecipient@example.com",
+            active=1,
+        )
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(recipient)
+
+        # Add recipient to group
+        user_group = UserGroups(user_id=recipient.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Create message
+        msg = Privmsgs(
+            from_user_id=sender.user_id,
+            to_user_id=recipient.user_id,
+            text="Message to admin",
+        )
+        db_session.add(msg)
+        await db_session.commit()
+
+        # Login as sender
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "sentgroupsender", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get sent messages
+        response = await client.get(
+            "/api/v1/privmsgs/sent",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+
+        # Find our message and check recipient groups
+        our_msg = next(m for m in data["messages"] if m["to_user_id"] == recipient.user_id)
+        assert "to_groups" in our_msg
+        assert "admins" in our_msg["to_groups"]
+
+    async def test_single_message_includes_both_user_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that single message endpoint includes both sender and recipient groups."""
+        # Create groups
+        mods_group = Groups(title="singlemods", desc="Single Moderators")
+        admins_group = Groups(title="singleadmins", desc="Single Administrators")
+        db_session.add(mods_group)
+        db_session.add(admins_group)
+        await db_session.commit()
+        await db_session.refresh(mods_group)
+        await db_session.refresh(admins_group)
+
+        # Create sender with groups
+        sender = Users(
+            username="singlesender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="singlesender@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        await db_session.commit()
+        await db_session.refresh(sender)
+
+        # Add sender to mods group
+        sender_group = UserGroups(user_id=sender.user_id, group_id=mods_group.group_id)
+        db_session.add(sender_group)
+
+        # Create recipient with groups
+        recipient = Users(
+            username="singlerecipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="singlerecipient@example.com",
+            active=1,
+        )
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(recipient)
+
+        # Add recipient to admins group
+        recipient_group = UserGroups(user_id=recipient.user_id, group_id=admins_group.group_id)
+        db_session.add(recipient_group)
+        await db_session.commit()
+
+        # Create message
+        msg = Privmsgs(
+            from_user_id=sender.user_id,
+            to_user_id=recipient.user_id,
+            text="Both users have groups",
+        )
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        # Login as recipient to view message
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "singlerecipient", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get single message
+        response = await client.get(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Both groups should be present
+        assert "from_groups" in data
+        assert "singlemods" in data["from_groups"]
+        assert "to_groups" in data
+        assert "singleadmins" in data["to_groups"]

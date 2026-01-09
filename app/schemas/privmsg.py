@@ -48,6 +48,9 @@ class PrivmsgMessage(PrivmsgBase):
     # Optional avatar URLs for display in clients
     from_avatar_url: str | None = None
     to_avatar_url: str | None = None
+    # User groups for username coloring
+    from_groups: list[str] = []
+    to_groups: list[str] = []
 
     @field_validator("subject", "text", mode="before")
     @classmethod
