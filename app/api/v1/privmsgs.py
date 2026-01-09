@@ -33,9 +33,9 @@ async def get_user_groups_map(db: AsyncSession, user_ids: list[int]) -> dict[int
         return {}
 
     result = await db.execute(
-        select(UserGroups.user_id, Groups.title)
+        select(UserGroups.user_id, Groups.title)  # type: ignore[call-overload]
         .join(Groups, UserGroups.group_id == Groups.group_id)
-        .where(UserGroups.user_id.in_(user_ids))  # type: ignore[union-attr]
+        .where(UserGroups.user_id.in_(user_ids))  # type: ignore[attr-defined]
     )
     rows = result.all()
 

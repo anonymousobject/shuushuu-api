@@ -70,7 +70,9 @@ async def list_users(
     """
     List users with pagination and optional username search.
     """
-    query = select(Users).options(selectinload(Users.user_groups).selectinload(UserGroups.group))
+    query = select(Users).options(
+        selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+    )
 
     # Apply search filter
     if search:
@@ -142,7 +144,9 @@ async def get_current_user_profile(
     """
     user_result = await db.execute(
         select(Users)
-        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
         .where(Users.user_id == current_user_id)  # type: ignore[arg-type]
     )
     user = user_result.scalar_one_or_none()
@@ -244,7 +248,9 @@ async def _upload_avatar(
     # Get user
     user_result = await db.execute(
         select(Users)
-        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
         .where(Users.user_id == user_id)  # type: ignore[arg-type]
     )
     user = user_result.scalar_one_or_none()
@@ -346,7 +352,9 @@ async def _delete_avatar(
     # Get user
     user_result = await db.execute(
         select(Users)
-        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
         .where(Users.user_id == user_id)  # type: ignore[arg-type]
     )
     user = user_result.scalar_one_or_none()
@@ -424,7 +432,9 @@ async def _update_user_profile(
     """
     user_result = await db.execute(
         select(Users)
-        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
         .where(Users.user_id == user_id)  # type: ignore[arg-type]
     )
     user = user_result.scalar_one_or_none()
@@ -541,7 +551,9 @@ async def get_user(
     """
     user_result = await db.execute(
         select(Users)
-        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
         .where(Users.user_id == user_id)  # type: ignore[arg-type]
     )
     user = user_result.scalar_one_or_none()

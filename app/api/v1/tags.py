@@ -552,7 +552,9 @@ async def get_tag(
     tag_result = await db.execute(
         select(Tags, Users)
         .outerjoin(Users, Tags.user_id == Users.user_id)  # type: ignore[arg-type]
-        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
         .where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
     )
     row = tag_result.first()

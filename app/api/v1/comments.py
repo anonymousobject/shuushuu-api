@@ -146,7 +146,9 @@ async def list_comments(
 
     # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).selectinload(Users.user_groups).selectinload(UserGroups.group)
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
     )
 
     # Execute query
@@ -172,9 +174,9 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     result = await db.execute(
         select(Comments)
         .options(
-            selectinload(Comments.user)
-            .selectinload(Users.user_groups)
-            .selectinload(UserGroups.group)
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
         )
         .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
         .where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
@@ -233,7 +235,9 @@ async def get_image_comments(
 
     # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).selectinload(Users.user_groups).selectinload(UserGroups.group)
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
     )
 
     # Execute
@@ -293,7 +297,9 @@ async def get_user_comments(
 
     # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).selectinload(Users.user_groups).selectinload(UserGroups.group)
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
     )
 
     # Execute
@@ -410,9 +416,9 @@ async def create_comment(
     result = await db.execute(
         select(Comments)
         .options(
-            selectinload(Comments.user)
-            .selectinload(Users.user_groups)
-            .selectinload(UserGroups.group)
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
         )
         .where(Comments.post_id == comment.post_id)  # type: ignore[arg-type]
     )
@@ -469,9 +475,9 @@ async def update_comment(
     result = await db.execute(
         select(Comments)
         .options(
-            selectinload(Comments.user)
-            .selectinload(Users.user_groups)
-            .selectinload(UserGroups.group)
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
         )
         .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
     )
@@ -559,9 +565,9 @@ async def delete_comment(
     result = await db.execute(
         select(Comments)
         .options(
-            selectinload(Comments.user)
-            .selectinload(Users.user_groups)
-            .selectinload(UserGroups.group)
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
         )
         .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
     )

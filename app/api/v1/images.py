@@ -354,8 +354,8 @@ async def list_images(
     final_query = (
         select(Images)
         .options(
-            selectinload(Images.user)
-            .selectinload(Users.user_groups)
+            selectinload(Images.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
             .selectinload(UserGroups.group),  # type: ignore[arg-type]
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
@@ -411,8 +411,8 @@ async def get_image(
         # - selectinload for user: Simple 1:1, additional query is fine
         # - joinedload for tags: Fetches everything in one query (faster for single image)
         .options(
-            selectinload(Images.user)
-            .selectinload(Users.user_groups)
+            selectinload(Images.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
             .selectinload(UserGroups.group),  # type: ignore[arg-type]
             joinedload(Images.tag_links).joinedload(TagLinks.tag),  # type: ignore[arg-type]
         )

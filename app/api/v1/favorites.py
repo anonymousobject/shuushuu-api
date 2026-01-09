@@ -100,7 +100,9 @@ async def get_image_favorites(
     # Get users who favorited the image
     query = (
         select(Users)
-        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
         .join(Favorites)
         .where(Favorites.image_id == image_id)  # type: ignore[arg-type]
     )
