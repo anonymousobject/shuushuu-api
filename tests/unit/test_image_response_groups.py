@@ -1,14 +1,21 @@
 """Tests for ImageDetailedResponse groups support."""
 
-import pytest
 from unittest.mock import MagicMock
 from datetime import datetime
 
 from app.schemas.image import ImageDetailedResponse
 
 
-def _create_mock_image(user_id: int = 1, username: str = "testuser"):
-    """Create a mock image object for testing."""
+def _create_mock_image(
+    user_id: int = 1, username: str = "testuser", user_groups: list[str] | None = None
+):
+    """Create a mock image object for testing.
+
+    Args:
+        user_id: User ID for the mock user
+        username: Username for the mock user
+        user_groups: List of group names (simulates eager-loaded groups property)
+    """
     mock_image = MagicMock()
     mock_image.image_id = 1
     mock_image.filename = "test"
@@ -32,11 +39,12 @@ def _create_mock_image(user_id: int = 1, username: str = "testuser"):
     mock_image.large = 0
     mock_image.replacement_id = None
 
-    # Mock user relationship
+    # Mock user relationship with groups property (simulates eager-loaded relationship)
     mock_user = MagicMock()
     mock_user.user_id = user_id
     mock_user.username = username
     mock_user.avatar = None
+    mock_user.groups = user_groups if user_groups is not None else []
     mock_image.user = mock_user
 
     # No tags
@@ -46,7 +54,7 @@ def _create_mock_image(user_id: int = 1, username: str = "testuser"):
 
 
 def test_from_db_model_without_groups():
-    """from_db_model without groups_by_user uses empty groups."""
+    """from_db_model with user having empty groups."""
     mock_image = _create_mock_image()
     response = ImageDetailedResponse.from_db_model(mock_image)
     assert response.user is not None
@@ -54,18 +62,8 @@ def test_from_db_model_without_groups():
 
 
 def test_from_db_model_with_groups():
-    """from_db_model with groups_by_user populates user groups."""
-    mock_image = _create_mock_image(user_id=1)
-    groups_by_user = {1: ["mods", "admins"]}
-    response = ImageDetailedResponse.from_db_model(mock_image, groups_by_user=groups_by_user)
+    """from_db_model with eager-loaded user groups."""
+    mock_image = _create_mock_image(user_id=1, user_groups=["mods", "admins"])
+    response = ImageDetailedResponse.from_db_model(mock_image)
     assert response.user is not None
     assert response.user.groups == ["mods", "admins"]
-
-
-def test_from_db_model_user_not_in_groups_dict():
-    """from_db_model with groups_by_user but user not in dict gets empty groups."""
-    mock_image = _create_mock_image(user_id=99)
-    groups_by_user = {1: ["mods"]}  # User 99 not in dict
-    response = ImageDetailedResponse.from_db_model(mock_image, groups_by_user=groups_by_user)
-    assert response.user is not None
-    assert response.user.groups == []
