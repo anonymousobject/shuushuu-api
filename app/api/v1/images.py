@@ -48,6 +48,7 @@ from app.models import (
     Users,
 )
 from app.models.image import ImageSortBy
+from app.models.permissions import UserGroups
 from app.schemas.image import (
     TAG_TYPE_SORT_ORDER,
     BookmarkPageResponse,
@@ -69,7 +70,6 @@ from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
 from app.services.rating import schedule_rating_recalculation
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
-from app.services.user_groups import get_groups_for_users
 from app.tasks.queue import enqueue_job
 
 logger = get_logger(__name__)
@@ -354,7 +354,9 @@ async def list_images(
     final_query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
+            selectinload(Images.user)
+            .selectinload(Users.user_groups)
+            .selectinload(UserGroups.group),  # type: ignore[arg-type]
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
         .join(imageset, Images.image_id == imageset.c.image_id)  # type: ignore[arg-type]
@@ -364,10 +366,6 @@ async def list_images(
     # Execute query
     result = await db.execute(final_query)
     images = result.scalars().all()
-
-    # Fetch groups for all users in the result set
-    user_ids = {img.user_id for img in images if img.user_id}
-    groups_by_user = await get_groups_for_users(db, list(user_ids))
 
     # Get favorite status for authenticated users (separate query for clean separation)
     favorited_ids: set[int] = set()
@@ -389,7 +387,6 @@ async def list_images(
             ImageDetailedResponse.from_db_model(
                 img,
                 is_favorited=img.image_id in favorited_ids,
-                groups_by_user=groups_by_user,
             )
             for img in images
         ],
@@ -414,7 +411,9 @@ async def get_image(
         # - selectinload for user: Simple 1:1, additional query is fine
         # - joinedload for tags: Fetches everything in one query (faster for single image)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
+            selectinload(Images.user)
+            .selectinload(Users.user_groups)
+            .selectinload(UserGroups.group),  # type: ignore[arg-type]
             joinedload(Images.tag_links).joinedload(TagLinks.tag),  # type: ignore[arg-type]
         )
         .where(Images.image_id == image_id)  # type: ignore[arg-type]
@@ -478,18 +477,12 @@ async def get_image(
     )
     next_image_id = next_id_result.scalar_one_or_none()
 
-    # Fetch groups for the image uploader
-    groups_by_user = {}
-    if image.user_id:
-        groups_by_user = await get_groups_for_users(db, [image.user_id])
-
     return ImageDetailedResponse.from_db_model(
         image,
         is_favorited=is_favorited,
         user_rating=user_rating,
         prev_image_id=prev_image_id,
         next_image_id=next_image_id,
-        groups_by_user=groups_by_user,
     )
 
 

@@ -154,22 +154,13 @@ class ImageDetailedResponse(ImageResponse):
         user_rating: int | None = None,
         prev_image_id: int | None = None,
         next_image_id: int | None = None,
-        groups_by_user: dict[int, list[str]] | None = None,
     ) -> "ImageDetailedResponse":
         """Create response from database model with relationships"""
         data = ImageResponse.model_validate(image).model_dump()
 
-        # Add user if loaded
+        # Add user if loaded (groups come from User.groups property via eager-loaded user_groups)
         if hasattr(image, "user") and image.user:
-            user_groups: list[str] = []
-            if groups_by_user:
-                user_groups = groups_by_user.get(image.user.user_id, [])
-            data["user"] = UserSummary(
-                user_id=image.user.user_id,
-                username=image.user.username,
-                avatar=image.user.avatar,
-                groups=user_groups,
-            )
+            data["user"] = UserSummary.model_validate(image.user)
 
         # Add tags if loaded through tag_links, sorted by type then alphabetically
         if hasattr(image, "tag_links") and image.tag_links:
