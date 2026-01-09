@@ -3,7 +3,7 @@
 from datetime import datetime
 from unittest.mock import MagicMock
 
-from app.schemas.comment import CommentResponse, build_comment_response
+from app.schemas.comment import CommentResponse
 
 
 def _create_mock_comment(
@@ -37,22 +37,22 @@ def _create_mock_comment(
     return mock_comment
 
 
-def test_build_comment_response_without_groups():
-    """build_comment_response without groups uses empty list."""
+def test_comment_response_without_groups():
+    """CommentResponse.model_validate without groups uses empty list."""
     mock_comment = _create_mock_comment(groups=[])
-    response = build_comment_response(mock_comment)
+    response = CommentResponse.model_validate(mock_comment)
     assert response.user.groups == []
 
 
-def test_build_comment_response_with_groups():
-    """build_comment_response with groups populates user groups from User.groups property."""
+def test_comment_response_with_groups():
+    """CommentResponse.model_validate populates user groups from User.groups property."""
     mock_comment = _create_mock_comment(user_id=1, groups=["mods"])
-    response = build_comment_response(mock_comment)
+    response = CommentResponse.model_validate(mock_comment)
     assert response.user.groups == ["mods"]
 
 
-def test_build_comment_response_multiple_groups():
-    """build_comment_response handles users with multiple groups."""
+def test_comment_response_multiple_groups():
+    """CommentResponse.model_validate handles users with multiple groups."""
     mock_comment = _create_mock_comment(user_id=1, groups=["mods", "admins"])
-    response = build_comment_response(mock_comment)
+    response = CommentResponse.model_validate(mock_comment)
     assert response.user.groups == ["mods", "admins"]

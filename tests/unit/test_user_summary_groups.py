@@ -1,6 +1,5 @@
 """Tests for UserSummary groups field."""
 
-import pytest
 from app.schemas.common import UserSummary
 
 
