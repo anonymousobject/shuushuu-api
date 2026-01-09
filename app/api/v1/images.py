@@ -59,6 +59,8 @@ from app.schemas.image import (
     ImageTagItem,
     ImageTagsResponse,
     ImageUploadResponse,
+    SimilarImageResult,
+    SimilarImagesResponse,
 )
 from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
 from app.schemas.user import UserListResponse, UserResponse
@@ -700,6 +702,76 @@ async def get_image_favorites(
         per_page=pagination.per_page,
         users=[UserResponse.model_validate(user) for user in users],
     )
+
+
+@router.get("/{image_id}/similar", response_model=SimilarImagesResponse)
+async def get_similar_images(
+    image_id: int,
+    threshold: Annotated[
+        float | None, Query(description="Minimum similarity score (0-100)", ge=0, le=100)
+    ] = None,
+    db: AsyncSession = Depends(get_db),
+) -> SimilarImagesResponse:
+    """
+    Find images similar to the specified image using IQDB.
+
+    Queries the IQDB similarity index using the image's thumbnail and returns
+    matching images ordered by similarity score (highest first).
+
+    The query image itself is excluded from results.
+    """
+    # Get the image to find its thumbnail path
+    result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Construct thumbnail path
+    thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{image.filename}.webp"
+
+    if not thumb_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Image thumbnail not found - cannot perform similarity search",
+        )
+
+    # Query IQDB for similar images (threshold is 0-100 scale)
+    similar_results = await check_iqdb_similarity(thumb_path, db, threshold=threshold)
+
+    # Filter out the query image itself
+    similar_results = [r for r in similar_results if r["image_id"] != image_id]
+
+    if not similar_results:
+        return SimilarImagesResponse(query_image_id=image_id, similar_images=[])
+
+    # Get full image details for similar images
+    similar_ids = [r["image_id"] for r in similar_results]
+
+    images_result = await db.execute(
+        select(Images)
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        )
+        .where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
+    )
+    images: dict[int, Images] = {
+        img.image_id: img  # type: ignore[misc]
+        for img in images_result.scalars().all()
+    }
+
+    # Build response with similarity scores, ordered by score descending
+    similar_images = []
+    for r in sorted(similar_results, key=lambda x: x["score"], reverse=True):
+        img = images.get(int(r["image_id"]))
+        if img:
+            img_data = ImageResponse.model_validate(img).model_dump()
+            img_data["similarity_score"] = r["score"]
+            similar_images.append(SimilarImageResult(**img_data))
+
+    return SimilarImagesResponse(query_image_id=image_id, similar_images=similar_images)
 
 
 @router.get("/bookmark/me", response_model=ImageResponse)
