@@ -3,6 +3,7 @@ Pydantic schemas for Comment endpoints
 """
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -129,3 +130,35 @@ class CommentStatsResponse(BaseModel):
     total_comments: int
     total_images_with_comments: int
     average_comments_per_image: float
+
+
+def build_comment_response(
+    comment: Any,
+    groups_by_user: dict[int, list[str]] | None = None,
+) -> CommentResponse:
+    """
+    Build CommentResponse from database model with optional groups.
+
+    Args:
+        comment: Comment database model with user relationship loaded
+        groups_by_user: Optional dict mapping user_id to list of group names
+
+    Returns:
+        CommentResponse with user groups populated
+    """
+    # Build base response using model_validate
+    response = CommentResponse.model_validate(comment)
+
+    # Override user with groups if available
+    if comment.user:
+        user_groups = []
+        if groups_by_user:
+            user_groups = groups_by_user.get(comment.user.user_id, [])
+        response.user = UserSummary(
+            user_id=comment.user.user_id,
+            username=comment.user.username,
+            avatar=comment.user.avatar,
+            groups=user_groups,
+        )
+
+    return response
