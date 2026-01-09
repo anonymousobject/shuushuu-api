@@ -262,3 +262,21 @@ class BookmarkPageResponse(BaseModel):
     )
     image_id: int = Field(description="The bookmarked image ID")
     images_per_page: int = Field(description="User's images_per_page setting")
+
+
+class SimilarImageResult(ImageResponse):
+    """Schema for a similar image result from IQDB.
+
+    Extends ImageResponse with similarity score.
+    """
+
+    similarity_score: float = Field(description="Similarity score from IQDB (0-100)")
+
+
+class SimilarImagesResponse(BaseModel):
+    """Schema for similar images search response."""
+
+    query_image_id: int = Field(description="The image ID that was searched")
+    similar_images: list[SimilarImageResult] = Field(
+        description="List of similar images ordered by similarity score (highest first)"
+    )

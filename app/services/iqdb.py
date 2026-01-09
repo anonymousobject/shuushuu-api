@@ -59,8 +59,9 @@ async def check_iqdb_similarity(
         results = response.json()
 
         # Filter by threshold and return
+        # Note: IQDB uses "post_id" as the key for image IDs
         similar_images = [
-            {"image_id": result["image_id"], "score": result["score"]}
+            {"image_id": result["post_id"], "score": result["score"]}
             for result in results
             if result.get("score", 0) >= threshold
         ]
