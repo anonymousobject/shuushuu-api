@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import case, desc, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams
 from app.config import TagType
@@ -18,13 +18,14 @@ from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
+from app.models.permissions import UserGroups
+from app.schemas.common import UserSummary
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
     CharacterSourceLinkCreate,
     CharacterSourceLinkListResponse,
     CharacterSourceLinkResponse,
     TagCreate,
-    TagCreator,
     TagExternalLinkCreate,
     TagExternalLinkResponse,
     TagListResponse,
@@ -547,9 +548,13 @@ async def get_tag(
     - External links (URLs associated with the tag)
     """
     # First resolve any alias (synonym) - join with Users to get creator info
+    # Eager load user groups for UserSummary
     tag_result = await db.execute(
         select(Tags, Users)
         .outerjoin(Users, Tags.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
         .where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
     )
     row = tag_result.first()
@@ -587,8 +592,11 @@ async def get_tag(
     # Build creator info if user exists
     created_by = None
     if user:
-        created_by = TagCreator(
-            user_id=user.user_id or 0, username=user.username, avatar=user.avatar or None
+        created_by = UserSummary(
+            user_id=user.user_id or 0,
+            username=user.username,
+            avatar=user.avatar or None,
+            groups=user.groups,  # Uses the eager-loaded groups property
         )
 
     # Fetch external links for this tag

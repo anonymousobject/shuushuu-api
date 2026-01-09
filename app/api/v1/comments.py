@@ -19,6 +19,7 @@ from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Comments, Images, Users
 from app.models.admin_action import AdminActions
+from app.models.permissions import UserGroups
 from app.schemas.comment import (
     CommentCreate,
     CommentListResponse,
@@ -143,9 +144,11 @@ async def list_comments(
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
-    # Eager load user to avoid N+1 queries
+    # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
     )
 
     # Execute query
@@ -171,7 +174,9 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     result = await db.execute(
         select(Comments)
         .options(
-            selectinload(Comments.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
         )
         .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
         .where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
@@ -228,9 +233,11 @@ async def get_image_comments(
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
-    # Eager load user to avoid N+1 queries
+    # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
     )
 
     # Execute
@@ -288,9 +295,11 @@ async def get_user_comments(
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
-    # Eager load user to avoid N+1 queries
+    # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
     )
 
     # Execute
@@ -402,7 +411,18 @@ async def create_comment(
 
     db.add(comment)
     await db.commit()
-    await db.refresh(comment)
+
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Comments.post_id == comment.post_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
 
     return CommentResponse.model_validate(comment)
 
@@ -450,7 +470,18 @@ async def update_comment(
     comment.last_updated_user_id = current_user.user_id
 
     await db.commit()
-    await db.refresh(comment)
+
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
 
     return CommentResponse.model_validate(comment)
 
@@ -529,6 +560,17 @@ async def delete_comment(
     )
 
     await db.commit()
-    await db.refresh(comment)
+
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
 
     return CommentResponse.model_validate(comment)

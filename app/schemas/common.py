@@ -18,6 +18,7 @@ class UserSummary(BaseModel):
     user_id: int
     username: str
     avatar: str | None = None  # Avatar filename from database
+    groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
 
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True}

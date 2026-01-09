@@ -34,6 +34,7 @@ from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.core.security import get_password_hash, validate_password_strength
 from app.models import Favorites, Images, TagLinks, Users
+from app.models.permissions import UserGroups
 from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
 from app.schemas.user import (
     UserCreate,
@@ -69,7 +70,9 @@ async def list_users(
     """
     List users with pagination and optional username search.
     """
-    query = select(Users)
+    query = select(Users).options(
+        selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+    )
 
     # Apply search filter
     if search:
@@ -139,7 +142,13 @@ async def get_current_user_profile(
     This includes private settings like email, email_verified, email_pm_pref,
     and the user's permissions (cached for performance).
     """
-    user_result = await db.execute(select(Users).where(Users.user_id == current_user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == current_user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
@@ -237,7 +246,13 @@ async def _upload_avatar(
         Updated user response
     """
     # Get user
-    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
@@ -335,7 +350,13 @@ async def _delete_avatar(
         Updated user response
     """
     # Get user
-    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
@@ -409,7 +430,13 @@ async def _update_user_profile(
     Returns:
         Updated user response (as UserResponse; caller may wrap as UserPrivateResponse)
     """
-    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
@@ -522,7 +549,13 @@ async def get_user(
     """
     Get user profile information.
     """
-    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:

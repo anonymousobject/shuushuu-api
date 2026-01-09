@@ -13,9 +13,13 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
+
+if TYPE_CHECKING:
+    from app.models.permissions import UserGroups
 
 
 class UserBase(SQLModel):
@@ -161,9 +165,28 @@ class Users(UserBase, table=True):
     forum_id: int | None = Field(default=None)
     bookmark: int | None = Field(default=None, foreign_key="images.image_id")
 
-    # Note: Relationships are intentionally omitted.
-    # Foreign keys are sufficient for queries, and omitting relationships avoids:
-    # - Circular import issues
-    # - Accidental eager loading
-    # - Unwanted auto-serialization in API responses
-    # If needed, relationships can be added selectively with proper lazy loading.
+    # Relationship to UserGroups for eager loading groups
+    user_groups: list["UserGroups"] = Relationship(
+        sa_relationship_kwargs={
+            "primaryjoin": "Users.user_id == UserGroups.user_id",
+            "foreign_keys": "[UserGroups.user_id]",
+            "lazy": "raise",  # Prevent accidental lazy loading in async
+        }
+    )
+
+    @property
+    def groups(self) -> list[str]:
+        """
+        Get list of group names for this user.
+
+        Requires user_groups relationship to be eager loaded:
+            selectinload(Users.user_groups).selectinload(UserGroups.group)
+
+        Returns empty list if user_groups not loaded or user has no groups.
+        """
+        if not hasattr(self, "_sa_instance_state"):
+            return []
+        # Check if relationship is loaded to avoid lazy load error
+        if "user_groups" not in self.__dict__:
+            return []
+        return [ug.group.title for ug in self.user_groups if ug.group and ug.group.title]

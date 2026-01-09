@@ -16,10 +16,35 @@ from app.core.database import get_db
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Privmsgs, Users
+from app.models.permissions import Groups, UserGroups
 from app.schemas.privmsg import PrivmsgCreate, PrivmsgMessage, PrivmsgMessages
 from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/privmsgs", tags=["privmsgs"])
+
+
+async def get_user_groups_map(db: AsyncSession, user_ids: list[int]) -> dict[int, list[str]]:
+    """
+    Fetch groups for multiple user IDs in a single query.
+
+    Returns a dict mapping user_id -> list of group names.
+    """
+    if not user_ids:
+        return {}
+
+    result = await db.execute(
+        select(UserGroups.user_id, Groups.title)  # type: ignore[call-overload]
+        .join(Groups, UserGroups.group_id == Groups.group_id)
+        .where(UserGroups.user_id.in_(user_ids))  # type: ignore[attr-defined]
+    )
+    rows = result.all()
+
+    groups_map: dict[int, list[str]] = {uid: [] for uid in user_ids}
+    for user_id, group_title in rows:
+        if group_title:
+            groups_map[user_id].append(group_title)
+
+    return groups_map
 
 
 @router.post(
@@ -106,6 +131,10 @@ async def get_received_privmsgs(
     result = await db.execute(query)
     rows = result.all()
 
+    # Collect sender user IDs to fetch groups in a single query
+    sender_user_ids = [row[0].from_user_id for row in rows if row[0].from_user_id]
+    groups_map = await get_user_groups_map(db, sender_user_ids)
+
     messages: list[PrivmsgMessage] = []
 
     for row in rows:
@@ -126,6 +155,7 @@ async def get_received_privmsgs(
             "viewed": msg.viewed,
             "from_username": sender_username,
             "from_avatar_url": from_avatar_url,
+            "from_groups": groups_map.get(msg.from_user_id, []),
         }
         messages.append(PrivmsgMessage.model_validate(data))
 
@@ -191,6 +221,10 @@ async def get_sent_privmsgs(
     result = await db.execute(query)
     rows = result.all()
 
+    # Collect recipient user IDs to fetch groups in a single query
+    recipient_user_ids = [row[0].to_user_id for row in rows if row[0].to_user_id]
+    groups_map = await get_user_groups_map(db, recipient_user_ids)
+
     messages: list[PrivmsgMessage] = []
 
     for row in rows:
@@ -211,6 +245,7 @@ async def get_sent_privmsgs(
             "viewed": msg.viewed,
             "to_username": recipient_username,
             "to_avatar_url": to_avatar_url,
+            "to_groups": groups_map.get(msg.to_user_id, []),
         }
         messages.append(PrivmsgMessage.model_validate(data))
 
@@ -276,6 +311,10 @@ async def get_privmsg(
     if recipient_avatar:
         to_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{recipient_avatar}"
 
+    # Fetch groups for both sender and recipient
+    user_ids = [uid for uid in [msg.from_user_id, msg.to_user_id] if uid]
+    groups_map = await get_user_groups_map(db, user_ids)
+
     data = {
         "privmsg_id": msg.privmsg_id,
         "subject": msg.subject,
@@ -288,6 +327,8 @@ async def get_privmsg(
         "to_username": recipient_username,
         "from_avatar_url": from_avatar_url,
         "to_avatar_url": to_avatar_url,
+        "from_groups": groups_map.get(msg.from_user_id, []),
+        "to_groups": groups_map.get(msg.to_user_id, []),
     }
 
     return PrivmsgMessage.model_validate(data)

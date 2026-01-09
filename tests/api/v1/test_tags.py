@@ -1011,6 +1011,64 @@ class TestGetTag:
         assert data["created_by"]["avatar"] == "avatar.png"
         assert data["created_by"]["avatar_url"] == f"{settings.IMAGE_BASE_URL}/images/avatars/avatar.png"
 
+    async def test_get_tag_includes_creator_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that getting a tag includes the creator's groups for username coloring."""
+        from app.models.permissions import Groups, UserGroups
+
+        # Create user who will create the tag
+        user = Users(
+            username="groupedcreator",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="groupedcreator@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create groups
+        mod_group = Groups(title="mods", desc="Moderators")
+        artist_group = Groups(title="artists", desc="Verified artists")
+        db_session.add_all([mod_group, artist_group])
+        await db_session.commit()
+        await db_session.refresh(mod_group)
+        await db_session.refresh(artist_group)
+
+        # Add user to groups
+        user_mod = UserGroups(user_id=user.user_id, group_id=mod_group.group_id)
+        user_artist = UserGroups(user_id=user.user_id, group_id=artist_group.group_id)
+        db_session.add_all([user_mod, user_artist])
+        await db_session.commit()
+
+        # Create tag with user_id
+        tag = Tags(
+            title="Grouped Creator Tag",
+            desc="Tag created by user with groups",
+            type=TagType.THEME,
+            user_id=user.user_id,
+        )
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Get tag
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify creator includes groups
+        assert "created_by" in data
+        assert data["created_by"] is not None
+        assert data["created_by"]["user_id"] == user.user_id
+        assert data["created_by"]["username"] == "groupedcreator"
+        assert "groups" in data["created_by"]
+        assert set(data["created_by"]["groups"]) == {"mods", "artists"}
+
 
 @pytest.mark.api
 class TestGetImagesByTag:

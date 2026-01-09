@@ -158,7 +158,7 @@ class ImageDetailedResponse(ImageResponse):
         """Create response from database model with relationships"""
         data = ImageResponse.model_validate(image).model_dump()
 
-        # Add user if loaded
+        # Add user if loaded (groups come from User.groups property via eager-loaded user_groups)
         if hasattr(image, "user") and image.user:
             data["user"] = UserSummary.model_validate(image.user)
 

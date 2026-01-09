@@ -2155,3 +2155,111 @@ class TestGenderField:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 422
+
+
+@pytest.mark.api
+class TestUserGroups:
+    """Tests for groups field in user responses."""
+
+    async def test_get_user_includes_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that GET /users/{id} returns user's groups."""
+        # Create user
+        user = Users(
+            username="groupeduser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="groupeduser@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create group and add user to it
+        group = Groups(title="Moderators", desc="Site moderators")
+        db_session.add(group)
+        await db_session.commit()
+        await db_session.refresh(group)
+
+        user_group = UserGroups(user_id=user.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Get user
+        response = await client.get(f"/api/v1/users/{user.user_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify groups are included
+        assert "groups" in data
+        assert isinstance(data["groups"], list)
+        assert "Moderators" in data["groups"]
+
+    async def test_list_users_includes_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that GET /users returns groups for each user."""
+        # Create user with a group
+        user = Users(
+            username="listedgroupuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="listedgroupuser@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create group and add user to it
+        group = Groups(title="Taggers", desc="Users who tag images")
+        db_session.add(group)
+        await db_session.commit()
+        await db_session.refresh(group)
+
+        user_group = UserGroups(user_id=user.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # List users and find our test user
+        response = await client.get("/api/v1/users?search=listedgroupuser")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] >= 1
+        test_user = next(u for u in data["users"] if u["username"] == "listedgroupuser")
+
+        # Verify groups are included
+        assert "groups" in test_user
+        assert isinstance(test_user["groups"], list)
+        assert "Taggers" in test_user["groups"]
+
+    async def test_user_without_groups_returns_empty_list(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users without groups have empty groups list."""
+        # Create user without groups
+        user = Users(
+            username="nogroupuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="nogroupuser@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Get user
+        response = await client.get(f"/api/v1/users/{user.user_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify groups is empty list, not missing
+        assert "groups" in data
+        assert data["groups"] == []
