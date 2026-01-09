@@ -528,6 +528,61 @@ async def test_image(db_session: AsyncSession, test_user):
 
 
 @pytest.fixture
+async def another_test_image(db_session: AsyncSession, test_user):
+    """Create a second test image for tests that need multiple images."""
+    from app.models.image import Images
+
+    image = Images(
+        filename="test-image-002",
+        ext="jpg",
+        original_filename="test2.jpg",
+        md5_hash="e41d8cd98f00b204e9800998ecf8427f",
+        filesize=234567,
+        width=1280,
+        height=720,
+        caption="Second test image from fixture",
+        rating=0.0,
+        user_id=test_user.user_id,
+        status=1,
+        locked=False,
+    )
+    db_session.add(image)
+    await db_session.commit()
+    await db_session.refresh(image)
+    return image
+
+
+@pytest.fixture
+async def test_images_batch(db_session: AsyncSession, test_user):
+    """Create a batch of test images for tests that need multiple images."""
+    from app.models.image import Images
+
+    images = []
+    for i in range(5):
+        image = Images(
+            filename=f"test-batch-image-{i:03d}",
+            ext="jpg",
+            original_filename=f"batch{i}.jpg",
+            md5_hash=f"{i:032x}",  # 32-char hex string
+            filesize=100000 + i * 1000,
+            width=800,
+            height=600,
+            caption=f"Batch test image {i}",
+            rating=0.0,
+            user_id=test_user.user_id,
+            status=1,
+            locked=False,
+        )
+        db_session.add(image)
+        images.append(image)
+
+    await db_session.commit()
+    for img in images:
+        await db_session.refresh(img)
+    return images
+
+
+@pytest.fixture
 async def test_tag(db_session: AsyncSession):
     """
     Create a test tag in the database.
