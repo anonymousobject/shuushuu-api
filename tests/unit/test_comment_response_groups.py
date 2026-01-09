@@ -1,14 +1,19 @@
 """Tests for CommentResponse groups support."""
 
-import pytest
 from datetime import datetime
 from unittest.mock import MagicMock
 
 from app.schemas.comment import CommentResponse, build_comment_response
 
 
-def _create_mock_comment(user_id: int = 1, username: str = "testuser"):
-    """Create a mock comment object for testing."""
+def _create_mock_comment(
+    user_id: int = 1, username: str = "testuser", groups: list[str] | None = None
+):
+    """Create a mock comment object for testing.
+
+    The mock simulates a comment with user relationship eager loaded,
+    including the User.groups property that returns group names.
+    """
     mock_comment = MagicMock()
     mock_comment.post_id = 1
     mock_comment.image_id = 1
@@ -21,11 +26,12 @@ def _create_mock_comment(user_id: int = 1, username: str = "testuser"):
     mock_comment.parent_comment_id = None
     mock_comment.deleted = False
 
-    # Mock user relationship
+    # Mock user relationship with groups property
     mock_user = MagicMock()
     mock_user.user_id = user_id
     mock_user.username = username
     mock_user.avatar = None
+    mock_user.groups = groups if groups is not None else []
     mock_comment.user = mock_user
 
     return mock_comment
@@ -33,22 +39,20 @@ def _create_mock_comment(user_id: int = 1, username: str = "testuser"):
 
 def test_build_comment_response_without_groups():
     """build_comment_response without groups uses empty list."""
-    mock_comment = _create_mock_comment()
+    mock_comment = _create_mock_comment(groups=[])
     response = build_comment_response(mock_comment)
     assert response.user.groups == []
 
 
 def test_build_comment_response_with_groups():
-    """build_comment_response with groups populates user groups."""
-    mock_comment = _create_mock_comment(user_id=1)
-    groups_by_user = {1: ["mods"]}
-    response = build_comment_response(mock_comment, groups_by_user=groups_by_user)
+    """build_comment_response with groups populates user groups from User.groups property."""
+    mock_comment = _create_mock_comment(user_id=1, groups=["mods"])
+    response = build_comment_response(mock_comment)
     assert response.user.groups == ["mods"]
 
 
-def test_build_comment_response_user_not_in_groups_dict():
-    """build_comment_response with groups_by_user but user not in dict gets empty groups."""
-    mock_comment = _create_mock_comment(user_id=99)
-    groups_by_user = {1: ["mods"]}  # User 99 not in dict
-    response = build_comment_response(mock_comment, groups_by_user=groups_by_user)
-    assert response.user.groups == []
+def test_build_comment_response_multiple_groups():
+    """build_comment_response handles users with multiple groups."""
+    mock_comment = _create_mock_comment(user_id=1, groups=["mods", "admins"])
+    response = build_comment_response(mock_comment)
+    assert response.user.groups == ["mods", "admins"]

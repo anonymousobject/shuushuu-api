@@ -19,15 +19,14 @@ from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Comments, Images, Users
 from app.models.admin_action import AdminActions
+from app.models.permissions import UserGroups
 from app.schemas.comment import (
     CommentCreate,
     CommentListResponse,
     CommentResponse,
     CommentStatsResponse,
     CommentUpdate,
-    build_comment_response,
 )
-from app.services.user_groups import get_groups_for_users
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -145,24 +144,20 @@ async def list_comments(
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
-    # Eager load user to avoid N+1 queries
+    # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        selectinload(Comments.user).selectinload(Users.user_groups).selectinload(UserGroups.group)
     )
 
     # Execute query
     result = await db.execute(query)
     comments = result.scalars().all()
 
-    # Fetch groups for all commenters
-    user_ids = {c.user_id for c in comments if c.user_id}
-    groups_by_user = await get_groups_for_users(db, list(user_ids))
-
     return CommentListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        comments=[build_comment_response(comment, groups_by_user) for comment in comments],
+        comments=[CommentResponse.model_validate(comment) for comment in comments],
     )
 
 
@@ -177,7 +172,9 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     result = await db.execute(
         select(Comments)
         .options(
-            selectinload(Comments.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+            selectinload(Comments.user)
+            .selectinload(Users.user_groups)
+            .selectinload(UserGroups.group)
         )
         .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
         .where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
@@ -187,12 +184,7 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
 
-    # Fetch groups for the commenter
-    groups_by_user = {}
-    if comment.user_id:
-        groups_by_user = await get_groups_for_users(db, [comment.user_id])
-
-    return build_comment_response(comment, groups_by_user)
+    return CommentResponse.model_validate(comment)
 
 
 @router.get("/image/{image_id}", response_model=CommentListResponse)
@@ -239,24 +231,20 @@ async def get_image_comments(
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
-    # Eager load user to avoid N+1 queries
+    # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        selectinload(Comments.user).selectinload(Users.user_groups).selectinload(UserGroups.group)
     )
 
     # Execute
     result = await db.execute(query)
     comments = result.scalars().all()
 
-    # Fetch groups for all commenters
-    user_ids = {c.user_id for c in comments if c.user_id}
-    groups_by_user = await get_groups_for_users(db, list(user_ids))
-
     return CommentListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        comments=[build_comment_response(comment, groups_by_user) for comment in comments],
+        comments=[CommentResponse.model_validate(comment) for comment in comments],
     )
 
 
@@ -303,24 +291,20 @@ async def get_user_comments(
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
-    # Eager load user to avoid N+1 queries
+    # Eager load user and groups to avoid N+1 queries
     query = query.options(
-        selectinload(Comments.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        selectinload(Comments.user).selectinload(Users.user_groups).selectinload(UserGroups.group)
     )
 
     # Execute
     result = await db.execute(query)
     comments = result.scalars().all()
 
-    # Fetch groups for all commenters
-    comment_user_ids = {c.user_id for c in comments if c.user_id}
-    groups_by_user = await get_groups_for_users(db, list(comment_user_ids))
-
     return CommentListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        comments=[build_comment_response(comment, groups_by_user) for comment in comments],
+        comments=[CommentResponse.model_validate(comment) for comment in comments],
     )
 
 
@@ -421,14 +405,20 @@ async def create_comment(
 
     db.add(comment)
     await db.commit()
-    await db.refresh(comment)
 
-    # Fetch groups for the commenter
-    groups_by_user = {}
-    if current_user.user_id:
-        groups_by_user = await get_groups_for_users(db, [current_user.user_id])
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)
+            .selectinload(Users.user_groups)
+            .selectinload(UserGroups.group)
+        )
+        .where(Comments.post_id == comment.post_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
 
-    return build_comment_response(comment, groups_by_user)
+    return CommentResponse.model_validate(comment)
 
 
 @router.patch("/{comment_id}", response_model=CommentResponse)
@@ -474,14 +464,20 @@ async def update_comment(
     comment.last_updated_user_id = current_user.user_id
 
     await db.commit()
-    await db.refresh(comment)
 
-    # Fetch groups for the commenter
-    groups_by_user = {}
-    if comment.user_id:
-        groups_by_user = await get_groups_for_users(db, [comment.user_id])
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)
+            .selectinload(Users.user_groups)
+            .selectinload(UserGroups.group)
+        )
+        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
 
-    return build_comment_response(comment, groups_by_user)
+    return CommentResponse.model_validate(comment)
 
 
 @router.delete("/{comment_id}", response_model=CommentResponse)
@@ -558,11 +554,17 @@ async def delete_comment(
     )
 
     await db.commit()
-    await db.refresh(comment)
 
-    # Fetch groups for the commenter
-    groups_by_user = {}
-    if comment.user_id:
-        groups_by_user = await get_groups_for_users(db, [comment.user_id])
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)
+            .selectinload(Users.user_groups)
+            .selectinload(UserGroups.group)
+        )
+        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
 
-    return build_comment_response(comment, groups_by_user)
+    return CommentResponse.model_validate(comment)

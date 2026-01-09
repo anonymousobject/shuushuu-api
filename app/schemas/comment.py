@@ -132,33 +132,15 @@ class CommentStatsResponse(BaseModel):
     average_comments_per_image: float
 
 
-def build_comment_response(
-    comment: Any,
-    groups_by_user: dict[int, list[str]] | None = None,
-) -> CommentResponse:
+def build_comment_response(comment: Any) -> CommentResponse:
     """
-    Build CommentResponse from database model with optional groups.
+    Build CommentResponse from database model.
 
     Args:
-        comment: Comment database model with user relationship loaded
-        groups_by_user: Optional dict mapping user_id to list of group names
+        comment: Comment database model with user relationship eager loaded
+                (including user.user_groups.group for groups)
 
     Returns:
-        CommentResponse with user groups populated
+        CommentResponse with user info and groups populated via User.groups property
     """
-    # Build base response using model_validate
-    response = CommentResponse.model_validate(comment)
-
-    # Override user with groups if available
-    if comment.user:
-        user_groups = []
-        if groups_by_user:
-            user_groups = groups_by_user.get(comment.user.user_id, [])
-        response.user = UserSummary(
-            user_id=comment.user.user_id,
-            username=comment.user.username,
-            avatar=comment.user.avatar,
-            groups=user_groups,
-        )
-
-    return response
+    return CommentResponse.model_validate(comment)
