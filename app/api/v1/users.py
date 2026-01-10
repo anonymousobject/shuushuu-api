@@ -355,7 +355,7 @@ async def acknowledge_warnings(
     )
     suspensions = result.scalars().all()
 
-    now = datetime.now(UTC)
+    now = datetime.now(UTC).replace(tzinfo=None)
     for suspension in suspensions:
         suspension.acknowledged_at = now
 

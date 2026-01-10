@@ -357,6 +357,7 @@ class TestSuspendUser:
         assert warning.actioned_by == admin.user_id
         assert warning.reason == "This is a formal warning"
         assert warning.suspended_until is None
+        assert warning.acknowledged_at is None
 
     async def test_warn_user_suspended_until_ignored(
         self, client: AsyncClient, db_session: AsyncSession
@@ -767,6 +768,39 @@ class TestUserWarningAcknowledgement:
         assert response.status_code == 200
         data = response.json()
         assert data["count"] == 0
+
+    async def test_get_warnings_includes_suspensions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that unacknowledged suspensions also appear in warnings endpoint."""
+        user = await create_regular_user(db_session, username="suspendeduser")
+        admin, _ = await create_admin_user(db_session)
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Create an unacknowledged suspension
+        suspension = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.SUSPENDED,
+            actioned_by=admin.user_id,
+            reason="You have been suspended",
+            suspended_until=now + timedelta(days=7),
+        )
+        db_session.add(suspension)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, "TestPassword123!")
+
+        response = await client.get(
+            "/api/v1/users/me/warnings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["items"][0]["action"] == "suspended"
+        assert data["items"][0]["reason"] == "You have been suspended"
 
     async def test_acknowledge_warnings(
         self, client: AsyncClient, db_session: AsyncSession
