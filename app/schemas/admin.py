@@ -11,6 +11,7 @@ These schemas handle:
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -188,11 +189,15 @@ class MessageResponse(BaseModel):
 
 
 class SuspendUserRequest(BaseModel):
-    """Request schema for suspending a user."""
+    """Request schema for suspending or warning a user."""
 
+    action: Literal["suspended", "warning"] = Field(
+        "suspended",
+        description="Action type: 'suspended' to suspend the account, 'warning' for verbal warning only",
+    )
     suspended_until: datetime | None = Field(
         None,
-        description="When the suspension expires (None = indefinite/permanent suspension). Provide datetime in UTC.",
+        description="When the suspension expires (None = permanent). Ignored for warnings.",
     )
     reason: str = Field(
         ...,
@@ -205,7 +210,7 @@ class SuspendUserRequest(BaseModel):
     @classmethod
     def sanitize_reason(cls, v: str) -> str:
         """
-        Sanitize suspension reason.
+        Sanitize reason text.
 
         Just trims whitespace - HTML escaping is handled by Svelte's
         safe template interpolation on the frontend.
@@ -223,6 +228,7 @@ class SuspensionResponse(BaseModel):
     actioned_at: datetime
     suspended_until: datetime | None
     reason: str | None
+    acknowledged_at: datetime | None
 
     model_config = {"from_attributes": True}
 

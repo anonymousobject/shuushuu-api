@@ -1590,20 +1590,24 @@ async def extend_review(
 
 @router.post("/users/{user_id}/suspend", response_model=MessageResponse)
 async def suspend_user(
-    user_id: Annotated[int, Path(description="User ID to suspend")],
+    user_id: Annotated[int, Path(description="User ID to suspend or warn")],
     suspend_data: SuspendUserRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
-    Suspend a user account.
+    Suspend or warn a user account.
 
-    This will:
+    For suspensions (action="suspended"):
     - Set user.active = 0
     - Set suspension details (reason, expiry)
     - Revoke all refresh tokens (logout from all devices)
-    - Log suspension to user_suspensions audit table
+    - Log to user_suspensions audit table
+
+    For warnings (action="warning"):
+    - Log warning to user_suspensions audit table only
+    - User account remains active
 
     Requires USER_BAN permission.
     """
@@ -1614,55 +1618,62 @@ async def suspend_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Prevent self-suspension
+    is_warning = suspend_data.action == SuspensionAction.WARNING
+
+    # Prevent self-suspension (but allow self-warning for testing? No, block both)
     if user_id == current_user.user_id:
         raise HTTPException(
             status_code=400,
-            detail="Cannot suspend yourself.",
+            detail="Cannot suspend or warn yourself.",
         )
 
-    # Check if user is already suspended (check user_suspensions table)
-    suspension_result = await db.execute(
-        select(UserSuspensions)
-        .where(UserSuspensions.user_id == user_id)  # type: ignore[arg-type]
-        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
-    )
-    suspension_records = suspension_result.scalars().all()
-
-    # Find the latest "suspended" record
-    latest_suspended = next(
-        (r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None
-    )
-    if latest_suspended:
-        # Check if there is a "reactivated" record after it
-        reactivated_after = any(
-            r.action == SuspensionAction.REACTIVATED
-            and r.actioned_at > latest_suspended.actioned_at
-            for r in suspension_records
+    # For suspensions, check if user is already suspended
+    if not is_warning:
+        suspension_result = await db.execute(
+            select(UserSuspensions)
+            .where(UserSuspensions.user_id == user_id)  # type: ignore[arg-type]
+            .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
         )
-        # Only block if still suspended (no reactivation after, or suspension still active)
-        if not reactivated_after and (
-            latest_suspended.suspended_until is None
-            or latest_suspended.suspended_until > datetime.now(UTC).replace(tzinfo=None)
-        ):
-            raise HTTPException(status_code=400, detail="User is already suspended")
-    # Suspend the user
-    user.active = 0
+        suspension_records = suspension_result.scalars().all()
 
-    # Revoke all refresh tokens (logout from all devices)
-    await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == user_id))  # type: ignore[arg-type]
+        # Find the latest "suspended" record
+        latest_suspended = next(
+            (r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None
+        )
+        if latest_suspended:
+            # Check if there is a "reactivated" record after it
+            reactivated_after = any(
+                r.action == SuspensionAction.REACTIVATED
+                and r.actioned_at > latest_suspended.actioned_at
+                for r in suspension_records
+            )
+            # Only block if still suspended (no reactivation after, or suspension still active)
+            if not reactivated_after and (
+                latest_suspended.suspended_until is None
+                or latest_suspended.suspended_until > datetime.now(UTC).replace(tzinfo=None)
+            ):
+                raise HTTPException(status_code=400, detail="User is already suspended")
+
+        # Suspend the user
+        user.active = 0
+
+        # Revoke all refresh tokens (logout from all devices)
+        await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == user_id))  # type: ignore[arg-type]
 
     # Log to audit trail
     suspension_record = UserSuspensions(
         user_id=user_id,
-        action=SuspensionAction.SUSPENDED,
+        action=suspend_data.action,
         actioned_by=current_user.user_id,
-        suspended_until=suspend_data.suspended_until,
+        suspended_until=None if is_warning else suspend_data.suspended_until,
         reason=suspend_data.reason,
     )
     db.add(suspension_record)
 
     await db.commit()
+
+    if is_warning:
+        return MessageResponse(message="Warning issued to user")
 
     suspension_type = (
         "indefinitely"
