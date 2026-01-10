@@ -45,6 +45,7 @@ def upgrade() -> None:
         ),
         sa.Column("suspended_until", sa.DateTime(), nullable=True),
         sa.Column("reason", sa.String(length=500), nullable=True),
+        sa.Column("acknowledged_at", sa.DateTime(), nullable=True),
         sa.PrimaryKeyConstraint("suspension_id"),
         sa.ForeignKeyConstraint(
             ["user_id"],
@@ -79,22 +80,21 @@ def upgrade() -> None:
     inspector = sa.inspect(connection)
     if "bans" in inspector.get_table_names():
         # Migrate all ban records to user_suspensions
+        # Legacy 'action' enum values like 'One Week Ban' are redundant with date/expires timestamps
+        # Legacy 'None' action means warning (no suspension)
+        # Set acknowledged_at = date so users aren't prompted to acknowledge old warnings
         connection.execute(
             sa.text("""
                 INSERT INTO user_suspensions
-                    (user_id, action, actioned_by, actioned_at, suspended_until, reason)
+                    (user_id, action, actioned_by, actioned_at, suspended_until, reason, acknowledged_at)
                 SELECT
                     user_id,
-                    'suspended' as action,
+                    CASE WHEN action = 'None' THEN 'warning' ELSE 'suspended' END as action,
                     banned_by as actioned_by,
                     date as actioned_at,
-                    expires as suspended_until,
-                    LEFT(CONCAT_WS(
-                        ' | ',
-                        NULLIF(CONCAT('Type: ', action), 'Type: '),
-                        NULLIF(CONCAT('Reason: ', reason), 'Reason: '),
-                        NULLIF(CONCAT('Message: ', message), 'Message: ')
-                    ), 500) as reason
+                    CASE WHEN action = 'None' THEN NULL ELSE expires END as suspended_until,
+                    NULLIF(LEFT(CONCAT_WS(' | ', NULLIF(reason, ''), NULLIF(message, '')), 500), '') as reason,
+                    date as acknowledged_at
                 FROM bans
                 ORDER BY ban_id
             """)

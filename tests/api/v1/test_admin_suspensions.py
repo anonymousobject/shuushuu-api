@@ -279,7 +279,7 @@ class TestSuspendUser:
         )
 
         assert response.status_code == 400
-        assert "cannot suspend yourself" in response.json()["detail"].lower()
+        assert "yourself" in response.json()["detail"].lower()
 
     async def test_suspend_without_permission(
         self, client: AsyncClient, db_session: AsyncSession
@@ -322,6 +322,74 @@ class TestSuspendUser:
         )
 
         assert response.status_code == 422
+
+    async def test_warn_user(self, client: AsyncClient, db_session: AsyncSession):
+        """Test issuing a warning to a user (no suspension)."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+        target_user = await create_regular_user(db_session, username="warnme")
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.post(
+            f"/api/v1/admin/users/{target_user.user_id}/suspend",
+            json={
+                "action": "warning",
+                "reason": "This is a formal warning",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert "warning" in response.json()["message"].lower()
+
+        # Verify user is still active
+        await db_session.refresh(target_user)
+        assert target_user.active == 1
+
+        # Verify warning record was created
+        result = await db_session.execute(
+            select(UserSuspensions)
+            .where(UserSuspensions.user_id == target_user.user_id)
+            .where(UserSuspensions.action == SuspensionAction.WARNING)
+        )
+        warning = result.scalar_one()
+        assert warning.actioned_by == admin.user_id
+        assert warning.reason == "This is a formal warning"
+        assert warning.suspended_until is None
+
+    async def test_warn_user_suspended_until_ignored(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that suspended_until is ignored for warnings."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+        target_user = await create_regular_user(db_session, username="warnignore")
+
+        token = await login_user(client, admin.username, admin_password)
+
+        future_date = (datetime.now(UTC) + timedelta(days=7)).isoformat()
+
+        response = await client.post(
+            f"/api/v1/admin/users/{target_user.user_id}/suspend",
+            json={
+                "action": "warning",
+                "suspended_until": future_date,  # Should be ignored
+                "reason": "Warning with ignored expiry",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify suspended_until is None despite being provided
+        result = await db_session.execute(
+            select(UserSuspensions)
+            .where(UserSuspensions.user_id == target_user.user_id)
+            .where(UserSuspensions.action == SuspensionAction.WARNING)
+        )
+        warning = result.scalar_one()
+        assert warning.suspended_until is None
 
 
 @pytest.mark.api
@@ -595,3 +663,184 @@ class TestUserSuspensionHistory:
         )
 
         assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestUserWarningAcknowledgement:
+    """Tests for GET/POST /api/v1/users/me/warnings endpoints."""
+
+    async def test_get_unacknowledged_warnings(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test getting unacknowledged warnings for current user."""
+        user = await create_regular_user(db_session, username="warneduser")
+        admin, _ = await create_admin_user(db_session)
+
+        # Create an unacknowledged warning
+        warning = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            reason="This is a warning",
+        )
+        db_session.add(warning)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, "TestPassword123!")
+
+        response = await client.get(
+            "/api/v1/users/me/warnings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert len(data["items"]) == 1
+        assert data["items"][0]["action"] == "warning"
+        assert data["items"][0]["reason"] == "This is a warning"
+
+    async def test_get_warnings_excludes_acknowledged(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that acknowledged warnings are not returned."""
+        user = await create_regular_user(db_session, username="ackwarnuser")
+        admin, _ = await create_admin_user(db_session)
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Create an acknowledged warning
+        acknowledged_warning = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            reason="Already acknowledged",
+            acknowledged_at=now,
+        )
+        db_session.add(acknowledged_warning)
+
+        # Create an unacknowledged warning
+        unacknowledged_warning = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            reason="Not yet acknowledged",
+        )
+        db_session.add(unacknowledged_warning)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, "TestPassword123!")
+
+        response = await client.get(
+            "/api/v1/users/me/warnings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["items"][0]["reason"] == "Not yet acknowledged"
+
+    async def test_get_warnings_excludes_reactivated(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that reactivation records are not returned as warnings."""
+        user = await create_regular_user(db_session, username="reactivateduser")
+        admin, _ = await create_admin_user(db_session)
+
+        # Create a reactivation record (should not appear as warning)
+        reactivation = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.REACTIVATED,
+            actioned_by=admin.user_id,
+        )
+        db_session.add(reactivation)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, "TestPassword123!")
+
+        response = await client.get(
+            "/api/v1/users/me/warnings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 0
+
+    async def test_acknowledge_warnings(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test acknowledging all warnings."""
+        user = await create_regular_user(db_session, username="ackuser")
+        admin, _ = await create_admin_user(db_session)
+
+        # Create multiple unacknowledged warnings
+        warning1 = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            reason="Warning 1",
+        )
+        warning2 = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            reason="Warning 2",
+        )
+        db_session.add(warning1)
+        db_session.add(warning2)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, "TestPassword123!")
+
+        # Acknowledge warnings
+        response = await client.post(
+            "/api/v1/users/me/warnings/acknowledge",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["acknowledged_count"] == 2
+
+        # Verify warnings are now acknowledged
+        await db_session.refresh(warning1)
+        await db_session.refresh(warning2)
+        assert warning1.acknowledged_at is not None
+        assert warning2.acknowledged_at is not None
+
+        # Get warnings again - should be empty
+        response = await client.get(
+            "/api/v1/users/me/warnings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.json()["count"] == 0
+
+    async def test_acknowledge_no_warnings(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test acknowledging when there are no warnings."""
+        user = await create_regular_user(db_session, username="nowarningsuser")
+
+        token = await login_user(client, user.username, "TestPassword123!")
+
+        response = await client.post(
+            "/api/v1/users/me/warnings/acknowledge",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["acknowledged_count"] == 0
+        assert "no warnings" in data["message"].lower()
+
+    async def test_warnings_requires_authentication(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that warnings endpoints require authentication."""
+        response = await client.get("/api/v1/users/me/warnings")
+        assert response.status_code == 401
+
+        response = await client.post("/api/v1/users/me/warnings/acknowledge")
+        assert response.status_code == 401

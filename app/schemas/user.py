@@ -240,3 +240,32 @@ class UserListResponse(BaseModel):
     page: int
     per_page: int
     users: list[UserResponse]
+
+
+# ===== User Warnings Schemas =====
+
+
+class UserWarningResponse(BaseModel):
+    """Response schema for a warning/suspension shown to the user."""
+
+    suspension_id: int
+    action: str  # "warning" or "suspended"
+    actioned_at: datetime
+    suspended_until: datetime | None
+    reason: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class UserWarningsResponse(BaseModel):
+    """Response schema for listing unacknowledged warnings/suspensions."""
+
+    items: list[UserWarningResponse]
+    count: int
+
+
+class AcknowledgeWarningsResponse(BaseModel):
+    """Response schema for acknowledging warnings."""
+
+    acknowledged_count: int
+    message: str

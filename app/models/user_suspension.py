@@ -79,6 +79,9 @@ class UserSuspensions(SQLModel, table=True):
     suspended_until: datetime | None = Field(default=None)
     reason: str | None = Field(default=None, max_length=500)
 
+    # Acknowledgement tracking (for warnings and post-suspension notices)
+    acknowledged_at: datetime | None = Field(default=None)
+
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
     # - Circular import issues

@@ -268,3 +268,4 @@ class SuspensionAction:
 
     SUSPENDED = "suspended"
     REACTIVATED = "reactivated"
+    WARNING = "warning"

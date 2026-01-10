@@ -35,14 +35,18 @@ from app.core.redis import get_redis
 from app.core.security import get_password_hash, validate_password_strength
 from app.models import Favorites, Images, TagLinks, Users
 from app.models.permissions import UserGroups
+from app.models.user_suspension import UserSuspensions
 from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
 from app.schemas.user import (
+    AcknowledgeWarningsResponse,
     UserCreate,
     UserCreateResponse,
     UserListResponse,
     UserPrivateResponse,
     UserResponse,
     UserUpdate,
+    UserWarningResponse,
+    UserWarningsResponse,
 )
 from app.services.avatar import (
     delete_avatar_if_orphaned,
@@ -302,6 +306,67 @@ async def delete_current_user_avatar(
     Remove avatar for the currently authenticated user.
     """
     return await _delete_avatar(current_user_id, db)
+
+
+@router.get("/me/warnings", response_model=UserWarningsResponse)
+async def get_current_user_warnings(
+    current_user_id: Annotated[int, Depends(get_current_user_id)],
+    db: AsyncSession = Depends(get_db),
+) -> UserWarningsResponse:
+    """
+    Get unacknowledged warnings and suspension notices for the current user.
+
+    Returns warnings and suspension notices that have not been acknowledged.
+    The frontend should display these to the user and call the acknowledge
+    endpoint once they've been viewed.
+    """
+    result = await db.execute(
+        select(UserSuspensions)
+        .where(UserSuspensions.user_id == current_user_id)  # type: ignore[arg-type]
+        .where(UserSuspensions.acknowledged_at.is_(None))  # type: ignore[union-attr]
+        .where(UserSuspensions.action != "reactivated")  # type: ignore[arg-type]
+        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
+    )
+    suspensions = result.scalars().all()
+
+    return UserWarningsResponse(
+        items=[UserWarningResponse.model_validate(s) for s in suspensions],
+        count=len(suspensions),
+    )
+
+
+@router.post("/me/warnings/acknowledge", response_model=AcknowledgeWarningsResponse)
+async def acknowledge_warnings(
+    current_user_id: Annotated[int, Depends(get_current_user_id)],
+    db: AsyncSession = Depends(get_db),
+) -> AcknowledgeWarningsResponse:
+    """
+    Acknowledge all unacknowledged warnings and suspension notices.
+
+    Sets acknowledged_at to the current timestamp for all unacknowledged
+    warnings/suspensions belonging to the current user.
+    """
+    result = await db.execute(
+        select(UserSuspensions)
+        .where(UserSuspensions.user_id == current_user_id)  # type: ignore[arg-type]
+        .where(UserSuspensions.acknowledged_at.is_(None))  # type: ignore[union-attr]
+        .where(UserSuspensions.action != "reactivated")  # type: ignore[arg-type]
+    )
+    suspensions = result.scalars().all()
+
+    now = datetime.now(UTC)
+    for suspension in suspensions:
+        suspension.acknowledged_at = now
+
+    await db.commit()
+
+    count = len(suspensions)
+    message = f"Acknowledged {count} warning(s)" if count > 0 else "No warnings to acknowledge"
+
+    return AcknowledgeWarningsResponse(
+        acknowledged_count=count,
+        message=message,
+    )
 
 
 @router.delete("/{user_id}/avatar", response_model=UserResponse)
