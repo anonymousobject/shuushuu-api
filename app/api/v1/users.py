@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
+from app.config import SuspensionAction
 from app.core.auth import get_client_ip, get_current_user, get_current_user_id
 from app.core.database import get_db
 from app.core.permission_cache import get_cached_user_permissions
@@ -324,7 +325,7 @@ async def get_current_user_warnings(
         select(UserSuspensions)
         .where(UserSuspensions.user_id == current_user_id)  # type: ignore[arg-type]
         .where(UserSuspensions.acknowledged_at.is_(None))  # type: ignore[union-attr]
-        .where(UserSuspensions.action != "reactivated")  # type: ignore[arg-type]
+        .where(UserSuspensions.action != SuspensionAction.REACTIVATED)  # type: ignore[arg-type]
         .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
     )
     suspensions = result.scalars().all()
@@ -350,7 +351,7 @@ async def acknowledge_warnings(
         select(UserSuspensions)
         .where(UserSuspensions.user_id == current_user_id)  # type: ignore[arg-type]
         .where(UserSuspensions.acknowledged_at.is_(None))  # type: ignore[union-attr]
-        .where(UserSuspensions.action != "reactivated")  # type: ignore[arg-type]
+        .where(UserSuspensions.action != SuspensionAction.REACTIVATED)  # type: ignore[arg-type]
     )
     suspensions = result.scalars().all()
 

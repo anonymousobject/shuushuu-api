@@ -100,8 +100,9 @@ def upgrade() -> None:
             """)
         )
 
-        # Set users.active=0 for currently active bans
+        # Set users.active=0 for currently active bans (not warnings)
         # Active ban = expires IS NULL (permanent) OR expires > NOW()
+        # Exclude action='None' which are warnings, not suspensions
         # Use EXISTS to properly handle users with multiple ban records
         connection.execute(
             sa.text("""
@@ -110,6 +111,7 @@ def upgrade() -> None:
                 WHERE EXISTS (
                     SELECT 1 FROM bans b
                     WHERE b.user_id = u.user_id
+                    AND b.action != 'None'
                     AND (b.expires IS NULL OR b.expires > NOW())
                 )
             """)
