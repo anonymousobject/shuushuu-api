@@ -370,6 +370,7 @@ async def create_comment(
     **Errors:**
     - 400: Empty comment text or invalid parent_comment_id
     - 401: Not authenticated
+    - 403: Comments are locked on the image
     - 404: Image or parent comment not found
     """
     # Validate image exists
@@ -379,6 +380,13 @@ async def create_comment(
     image = image_result.scalar_one_or_none()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
+
+    # Check if image is locked
+    if image.locked:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Comments are locked on this image",
+        )
 
     # Validate parent_comment_id if provided
     if body.parent_comment_id is not None:
