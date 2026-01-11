@@ -678,9 +678,10 @@ async def change_image_status(
     db: AsyncSession = Depends(get_db),
 ) -> ImageStatusResponse:
     """
-    Change an image's status directly.
+    Change an image's status and/or locked state.
 
     Use this for quick moderation actions without creating a report.
+    Can update status, locked, or both in a single request.
 
     Requires IMAGE_EDIT permission.
     """
@@ -694,37 +695,44 @@ async def change_image_status(
         raise HTTPException(status_code=404, detail="Image not found")
 
     previous_status = image.status
+    previous_locked = image.locked
 
-    # Handle repost status
-    if status_data.status == ImageStatus.REPOST:
-        if status_data.replacement_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail="replacement_id is required when marking as repost",
+    # Handle status change if provided
+    if status_data.status is not None:
+        # Handle repost status
+        if status_data.status == ImageStatus.REPOST:
+            if status_data.replacement_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="replacement_id is required when marking as repost",
+                )
+            if status_data.replacement_id == image_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="An image cannot be a repost of itself",
+                )
+            # Verify original image exists
+            original_result = await db.execute(
+                select(Images).where(Images.image_id == status_data.replacement_id)  # type: ignore[arg-type]
             )
-        if status_data.replacement_id == image_id:
-            raise HTTPException(
-                status_code=400,
-                detail="An image cannot be a repost of itself",
-            )
-        # Verify original image exists
-        original_result = await db.execute(
-            select(Images).where(Images.image_id == status_data.replacement_id)  # type: ignore[arg-type]
-        )
-        if not original_result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=404,
-                detail="Original image not found",
-            )
-        image.replacement_id = status_data.replacement_id
-    else:
-        # Clear replacement_id when not a repost
-        image.replacement_id = None
+            if not original_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=404,
+                    detail="Original image not found",
+                )
+            image.replacement_id = status_data.replacement_id
+        else:
+            # Clear replacement_id when not a repost
+            image.replacement_id = None
 
-    # Update image status
-    image.status = status_data.status
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
+        # Update image status
+        image.status = status_data.status
+        image.status_user_id = current_user.user_id
+        image.status_updated = datetime.now(UTC)
+
+    # Handle locked change if provided
+    if status_data.locked is not None:
+        image.locked = 1 if status_data.locked else 0
 
     # Log admin action
     action = AdminActions(
@@ -733,8 +741,10 @@ async def change_image_status(
         image_id=image_id,
         details={
             "previous_status": previous_status,
-            "new_status": status_data.status,
-            "replacement_id": status_data.replacement_id,
+            "new_status": image.status,
+            "previous_locked": previous_locked,
+            "new_locked": image.locked,
+            "replacement_id": image.replacement_id,
         },
     )
     db.add(action)

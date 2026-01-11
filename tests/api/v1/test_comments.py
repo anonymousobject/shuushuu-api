@@ -504,6 +504,31 @@ class TestCreateComment:
         # Validation error from pydantic
         assert response.status_code == 422
 
+    async def test_create_comment_on_locked_image(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        """Test that creating a comment on a locked image is rejected."""
+        # Create locked image
+        image = Images(**sample_image_data)
+        image.locked = 1  # Lock comments
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        response = await authenticated_client.post(
+            "/api/v1/comments",
+            json={
+                "image_id": image.image_id,
+                "post_text": "Trying to comment on locked image",
+                "parent_comment_id": None,
+            },
+        )
+        assert response.status_code == 403
+        assert "locked" in response.json()["detail"].lower()
+
 
 @pytest.mark.api
 class TestUpdateComment:
