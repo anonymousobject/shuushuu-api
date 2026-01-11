@@ -741,10 +741,10 @@ async def change_image_status(
         image_id=image_id,
         details={
             "previous_status": previous_status,
-            "new_status": status_data.status,
+            "new_status": image.status,
             "previous_locked": previous_locked,
             "new_locked": image.locked,
-            "replacement_id": status_data.replacement_id,
+            "replacement_id": image.replacement_id,
         },
     )
     db.add(action)

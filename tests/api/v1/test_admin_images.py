@@ -573,6 +573,10 @@ class TestImageLocked:
         assert action.details is not None
         assert action.details.get("previous_locked") == 0
         assert action.details.get("new_locked") == 1
+        # Verify status fields are recorded even when only locked changes
+        assert action.details.get("previous_status") == ImageStatus.ACTIVE
+        assert action.details.get("new_status") == ImageStatus.ACTIVE
+        assert action.details.get("replacement_id") is None
 
     async def test_must_provide_status_or_locked(
         self, client: AsyncClient, db_session: AsyncSession
