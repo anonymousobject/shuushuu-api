@@ -1,5 +1,7 @@
 # Timezone Handling Design
 
+**Status:** Implemented
+
 ## Problem
 
 Timestamps need consistent handling across the stack:
@@ -13,13 +15,13 @@ Legacy approach stored a `timezone` decimal offset per user for server-side conv
 
 Store and transmit all timestamps as UTC. Let the frontend handle conversion to user's local timezone using the browser's built-in `Intl.DateTimeFormat` API.
 
-## Changes
+## Implementation
 
 ### 1. Database Connection - Enforce UTC
 
 **File:** `app/core/database.py`
 
-Add `init_command` to set session timezone on every connection:
+Added `init_command` to set session timezone on every connection:
 
 ```python
 engine = create_async_engine(
@@ -35,49 +37,59 @@ engine = create_async_engine(
 
 This ensures any SQL `NOW()` or `CURRENT_TIMESTAMP` calls also use UTC.
 
-### 2. API Responses - Append Z Suffix
+### 2. API Responses - UTC Type Annotations
 
-**File:** `app/core/serialization.py` (new)
+**File:** `app/schemas/base.py`
 
-Create a datetime serializer that appends `Z` to indicate UTC:
+Created type annotations using Pydantic's `PlainSerializer` to append `Z` suffix:
 
 ```python
 from datetime import datetime
+from typing import Annotated
 
-def serialize_datetime_utc(dt: datetime | None) -> str | None:
-    """Serialize datetime to ISO 8601 with Z suffix indicating UTC."""
-    if dt is None:
-        return None
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+from pydantic import PlainSerializer
+
+UTCDatetime = Annotated[
+    datetime,
+    PlainSerializer(
+        lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None,
+        return_type=str,
+    ),
+]
+
+UTCDatetimeOptional = Annotated[
+    datetime | None,
+    PlainSerializer(
+        lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None,
+        return_type=str | None,
+    ),
+]
 ```
 
-**File:** `app/schemas/base.py` (new or existing)
+**Why type annotations instead of json_encoders?**
 
-Create a base schema class with the datetime serializer configured:
+Pydantic v2 serializes datetime fields to ISO strings *before* the JSON encoder runs, so `json_encoders` in `model_config` never sees datetime objects. Using `PlainSerializer` in a type annotation intercepts serialization at the right stage.
 
-```python
-from pydantic import BaseModel, ConfigDict
+**Updated schemas:**
+- `app/schemas/comment.py` - `CommentResponse.date`
+- `app/schemas/user.py` - `UserResponse.date_added`, `last_login`, etc.
+- `app/schemas/admin.py` - Audit log datetime fields
+- `app/schemas/image.py` - `ImageResponse.date_added`
+- `app/schemas/report.py` - Report and review datetime fields
+- `app/schemas/tag.py` - `TagWithStats.date_added`, link timestamps
 
-class BaseSchema(BaseModel):
-    model_config = ConfigDict(
-        from_attributes=True,
-        json_encoders={datetime: serialize_datetime_utc},
-    )
-```
+### 3. Legacy Field Cleanup
 
-Then have all response schemas inherit from `BaseSchema`.
+**Migration:** `alembic/versions/8619a9fc7189_drop_unused_columns.py`
 
-### 3. Optional: Legacy Field Cleanup
-
-The `users.timezone` decimal field can be:
-- Left in place for backward compatibility (no harm)
-- Removed in a future migration if desired
-
-No action required for this design.
+Removed the `users.timezone` field along with other unused columns:
+- `users`: timezone, aim, rating_ratio, infected, infected_by, date_infected, last_login_new
+- `images`: artist, characters, change_id
+- `privmsgs`: type, card, cardpath
 
 ## Frontend Expectations
 
-All API datetime fields will be ISO 8601 with `Z` suffix:
+All API datetime fields are ISO 8601 with `Z` suffix:
 ```json
 {
   "date_added": "2026-01-11T16:30:00Z",
@@ -93,6 +105,6 @@ const formatted = date.toLocaleString(); // Uses browser's timezone
 
 ## Testing
 
-1. Verify database connection sets timezone to UTC
-2. Verify all API datetime responses include `Z` suffix
-3. Verify existing tests still pass (datetime format change may require test updates)
+1. Database connection sets timezone to UTC via `init_command`
+2. All API datetime responses include `Z` suffix (verified manually via curl)
+3. Existing tests pass with datetime format changes

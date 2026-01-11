@@ -4,9 +4,12 @@ Unit tests for Pydantic schemas.
 These tests verify schema validation and serialization.
 """
 
-import pytest
-from pydantic import ValidationError
+from datetime import datetime
 
+import pytest
+from pydantic import BaseModel, ValidationError
+
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.image import ImageBase, ImageResponse
 from app.schemas.user import UserResponse
 
@@ -192,3 +195,63 @@ class TestUserSchemas:
         user = UserResponse(**data)
         assert user.active is False
         assert user.admin is True
+
+
+@pytest.mark.unit
+class TestUTCDatetimeSerialization:
+    """Tests for UTC datetime serialization with Z suffix."""
+
+    def test_utc_datetime_serializes_with_z_suffix(self):
+        """Test UTCDatetime serializes to ISO format with Z suffix."""
+
+        class TestModel(BaseModel):
+            timestamp: UTCDatetime
+
+        dt = datetime(2026, 1, 11, 16, 30, 0)
+        model = TestModel(timestamp=dt)
+        json_data = model.model_dump_json()
+
+        assert '"2026-01-11T16:30:00Z"' in json_data
+
+    def test_utc_datetime_optional_with_value(self):
+        """Test UTCDatetimeOptional serializes datetime with Z suffix."""
+
+        class TestModel(BaseModel):
+            timestamp: UTCDatetimeOptional = None
+
+        dt = datetime(2026, 1, 11, 8, 15, 30)
+        model = TestModel(timestamp=dt)
+        json_data = model.model_dump_json()
+
+        assert '"2026-01-11T08:15:30Z"' in json_data
+
+    def test_utc_datetime_optional_with_none(self):
+        """Test UTCDatetimeOptional serializes None as null."""
+
+        class TestModel(BaseModel):
+            timestamp: UTCDatetimeOptional = None
+
+        model = TestModel(timestamp=None)
+        data = model.model_dump()
+
+        assert data["timestamp"] is None
+
+    def test_utc_datetime_in_real_schema(self):
+        """Test UTCDatetime works in actual schema (UserResponse)."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "date_joined": datetime(2026, 1, 11, 12, 0, 0),
+            "last_login": datetime(2026, 1, 11, 16, 30, 0),
+        }
+        user = UserResponse(**data)
+        json_data = user.model_dump_json()
+
+        # Both datetime fields should have Z suffix
+        assert '"2026-01-11T12:00:00Z"' in json_data
+        assert '"2026-01-11T16:30:00Z"' in json_data
