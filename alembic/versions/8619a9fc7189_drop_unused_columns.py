@@ -40,8 +40,8 @@ def upgrade() -> None:
                nullable=False)
 
     # Drop unused images columns
-    op.drop_column('images', 'artist') # Tags now handle artist info
-    op.drop_column('images', 'characters') # Tags now handle character info
+    op.drop_column('images', 'artist')  # Tags now handle artist info
+    op.drop_column('images', 'characters')  # Tags now handle character info
     op.drop_column('images', 'change_id')
 
 
