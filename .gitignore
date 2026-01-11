@@ -109,3 +109,7 @@ dump.rdb
 # PHP codebase
 shuu-php/
 .worktrees/
+
+# Local project instructions (not shared)
+CLAUDE.md
+.github/copilot-instructions.md
