@@ -14,6 +14,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.json_response import UTCJSONResponse
 from app.core.logging import (
     clear_request_context,
     configure_logging,
@@ -80,6 +81,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
+    default_response_class=UTCJSONResponse,  # Serialize all datetimes with Z suffix
 )
 
 # Add proxy headers middleware (must be first to properly handle X-Forwarded-* headers)

@@ -20,6 +20,8 @@ engine = create_async_engine(
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_pre_ping=True,  # Verify connections before using
     pool_recycle=3600,  # Recycle connections every hour (MariaDB wait_timeout is 8 hours)
+    # Ensure all connections use UTC timezone for consistent datetime handling
+    connect_args={"init_command": "SET time_zone = '+00:00'"},
 )
 
 # Create async session factory

@@ -68,7 +68,6 @@ class Users(UserBase, table=True):
     - admin, active: Moderation/access control
     - failed_login_attempts, lockout_until: Security tracking
     - All preference fields: User-private settings
-    - infected_by, date_infected: Internal tracking
     - bookmark: User-private reference
     """
 
@@ -152,11 +151,6 @@ class Users(UserBase, table=True):
 
     # Rate limiting
     maximgperday: int = Field(default=15)
-
-    # Internal tracking
-    infected_by: int = Field(default=0)
-    date_infected: int = Field(default=0)
-    infected: int | None = Field(default=0)
 
     # References
     forum_id: int | None = Field(default=None)
