@@ -2,12 +2,11 @@
 Pydantic schemas for User endpoints
 """
 
-from datetime import datetime
-
 from pydantic import BaseModel, EmailStr, computed_field, field_validator
 
 from app.config import settings
 from app.models.user import UserBase
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 
 
 class UserCreate(BaseModel):
@@ -131,8 +130,8 @@ class UserResponse(UserBase):
     """Schema for user response - what API returns"""
 
     user_id: int
-    date_joined: datetime | None = None
-    last_login: datetime | None = None
+    date_joined: UTCDatetimeOptional = None
+    last_login: UTCDatetimeOptional = None
     active: bool
     admin: bool
     groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
@@ -226,8 +225,8 @@ class UserWarningResponse(BaseModel):
 
     suspension_id: int
     action: str  # "warning" or "suspended"
-    actioned_at: datetime
-    suspended_until: datetime | None
+    actioned_at: UTCDatetime
+    suspended_until: UTCDatetimeOptional = None
     reason: str | None
 
     model_config = {"from_attributes": True}
