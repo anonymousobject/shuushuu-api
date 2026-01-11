@@ -143,7 +143,7 @@ class Images(ImageBase, table=True):
     Internal fields (should NOT be exposed via public API):
     - useragent, ip: Privacy-sensitive tracking
     - status_user_id, status_updated, last_updated, last_post: Internal moderation
-    - medium, large, reviewed, change_id: Internal flags
+    - medium, large: image variant booleans
     - total_pixels, miscmeta: Internal metadata
     - replacement_id: Internal reference
     """
@@ -178,7 +178,6 @@ class Images(ImageBase, table=True):
             onupdate="CASCADE",
             name="fk_images_user_id",
         ),
-        Index("change_id", "change_id"),
         Index("fk_images_replacement_id", "replacement_id"),
         Index("fk_images_status_user_id", "status_user_id"),
         Index("fk_images_user_id", "user_id"),
@@ -218,7 +217,6 @@ class Images(ImageBase, table=True):
     medium: int = Field(default=0)
     large: int = Field(default=0)
     reviewed: int = Field(default=0)
-    change_id: int = Field(default=0)
 
     # Internal moderation fields
     status_user_id: int | None = Field(default=None, foreign_key="users.user_id")

@@ -15,6 +15,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+
 # ===== Group Schemas =====
 
 
@@ -225,10 +227,10 @@ class SuspensionResponse(BaseModel):
     user_id: int
     action: str
     actioned_by: int | None
-    actioned_at: datetime
-    suspended_until: datetime | None
+    actioned_at: UTCDatetime
+    suspended_until: UTCDatetimeOptional = None
     reason: str | None
-    acknowledged_at: datetime | None
+    acknowledged_at: UTCDatetimeOptional = None
 
     model_config = {"from_attributes": True}
 
@@ -301,6 +303,6 @@ class ImageStatusResponse(BaseModel):
     locked: int
     replacement_id: int | None
     status_user_id: int | None
-    status_updated: datetime | None
+    status_updated: UTCDatetimeOptional = None
 
     model_config = {"from_attributes": True}

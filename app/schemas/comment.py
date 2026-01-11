@@ -2,11 +2,10 @@
 Pydantic schemas for Comment endpoints
 """
 
-from datetime import datetime
-
 from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.comment import CommentBase
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.common import UserSummary
 from app.utils.markdown import normalize_legacy_entities, parse_markdown
 
@@ -60,9 +59,9 @@ class CommentResponse(CommentBase):
 
     post_id: int
     user_id: int
-    date: datetime
+    date: UTCDatetime
     update_count: int
-    last_updated: datetime | None = None
+    last_updated: UTCDatetimeOptional = None
     last_updated_user_id: int | None = None
     user: UserSummary  # Embedded user data to avoid N+1 queries
 

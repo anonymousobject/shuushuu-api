@@ -2,11 +2,10 @@
 Pydantic schemas for Tag endpoints
 """
 
-from datetime import datetime
-
 from pydantic import BaseModel, field_validator, model_validator
 
 from app.models.tag import TagBase
+from app.schemas.base import UTCDatetime
 from app.schemas.common import UserSummary
 
 
@@ -82,7 +81,7 @@ class TagWithStats(TagResponse):
     parent_tag_id: int | None = None  # The parent tag in hierarchy (inheritedfrom_id)
     child_count: int = 0  # Number of child tags that inherit from this tag
     created_by: UserSummary | None = None  # User who created the tag
-    date_added: datetime  # When the tag was created
+    date_added: UTCDatetime  # When the tag was created
     links: list[str] = []  # External URLs associated with this tag
     # Character-source links
     sources: list[LinkedTag] = []  # For character tags: linked sources
@@ -123,7 +122,7 @@ class TagExternalLinkResponse(BaseModel):
 
     link_id: int
     url: str
-    date_added: datetime
+    date_added: UTCDatetime
 
     model_config = {"from_attributes": True}
 
@@ -141,7 +140,7 @@ class CharacterSourceLinkResponse(BaseModel):
     id: int
     character_tag_id: int
     source_tag_id: int
-    created_at: datetime
+    created_at: UTCDatetime
     created_by_user_id: int | None = None
 
     model_config = {"from_attributes": True}

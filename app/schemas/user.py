@@ -2,12 +2,11 @@
 Pydantic schemas for User endpoints
 """
 
-from datetime import datetime
-
 from pydantic import BaseModel, EmailStr, computed_field, field_validator
 
 from app.config import settings
 from app.models.user import UserBase
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 
 
 class UserCreate(BaseModel):
@@ -45,7 +44,6 @@ class UserUpdate(BaseModel):
     # User settings
     show_all_images: int | None = None
     spoiler_warning_pref: int | None = None
-    timezone: str | None = None  # Accepts string, converted to Decimal
 
     # Display preferences
     thumb_layout: int | None = None  # 0=list view, 1=grid view
@@ -127,29 +125,13 @@ class UserUpdate(BaseModel):
             raise ValueError("bookmark must be a positive integer")
         return v
 
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, v: str | None) -> str | None:
-        """Validate timezone is a valid UTC offset between -12 and +14"""
-        if v is None:
-            return v
-        from decimal import Decimal, InvalidOperation
-
-        try:
-            tz = Decimal(v)
-        except InvalidOperation as err:
-            raise ValueError("Timezone must be a valid decimal number") from err
-        if tz < Decimal("-12") or tz > Decimal("14"):
-            raise ValueError("Timezone must be between -12 and +14")
-        return v
-
 
 class UserResponse(UserBase):
     """Schema for user response - what API returns"""
 
     user_id: int
-    date_joined: datetime | None = None
-    last_login: datetime | None = None
+    date_joined: UTCDatetimeOptional = None
+    last_login: UTCDatetimeOptional = None
     active: bool
     admin: bool
     groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
@@ -199,7 +181,6 @@ class UserPrivateResponse(UserResponse):
     # User settings
     show_all_images: int  # Show disabled/pending images (0=no, 1=yes)
     spoiler_warning_pref: int  # Show spoiler warnings (0=disabled, 1=enabled)
-    timezone: str  # UTC offset as string (e.g., "-5.00", "0.00", "5.50")
 
     # Display preferences
     thumb_layout: int  # 0=list view, 1=grid view
@@ -217,12 +198,6 @@ class UserPrivateResponse(UserResponse):
         if isinstance(v, bool):
             return v
         return bool(v)
-
-    @field_validator("timezone", mode="before")
-    @classmethod
-    def convert_timezone_to_str(cls, v: str | int | float | object) -> str:
-        """Convert Decimal timezone to string"""
-        return str(v)
 
 
 class UserCreateResponse(UserBase):
@@ -250,8 +225,8 @@ class UserWarningResponse(BaseModel):
 
     suspension_id: int
     action: str  # "warning" or "suspended"
-    actioned_at: datetime
-    suspended_until: datetime | None
+    actioned_at: UTCDatetime
+    suspended_until: UTCDatetimeOptional = None
     reason: str | None
 
     model_config = {"from_attributes": True}
