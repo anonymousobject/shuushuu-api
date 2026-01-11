@@ -431,3 +431,163 @@ class TestImageStatusChangeAuditLog:
         assert action.details is not None
         assert action.details.get("new_status") == ImageStatus.REPOST
         assert action.details.get("replacement_id") == original_image_id
+
+
+@pytest.mark.api
+class TestImageLocked:
+    """Tests for locking/unlocking image comments."""
+
+    async def test_lock_image_comments(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test locking comments on an image."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+
+        assert image.locked == 0
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"locked": True},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["locked"] == 1
+
+        # Verify in database
+        db_session.expire_all()
+        await db_session.refresh(image)
+        assert image.locked == 1
+
+    async def test_unlock_image_comments(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test unlocking comments on an image."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+
+        # Start with locked image
+        image.locked = 1
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"locked": False},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["locked"] == 0
+
+        # Verify in database
+        db_session.expire_all()
+        await db_session.refresh(image)
+        assert image.locked == 0
+
+    async def test_change_status_and_locked_together(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test changing both status and locked in one request."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.SPOILER, "locked": True},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == ImageStatus.SPOILER
+        assert data["locked"] == 1
+
+    async def test_locked_only_without_status(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that locked can be changed without providing status."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+
+        original_status = image.status
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"locked": True},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["locked"] == 1
+        assert data["status"] == original_status  # Status unchanged
+
+    async def test_locked_audit_log(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that locking an image creates an audit log entry."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+
+        image_id = image.image_id
+        admin_user_id = admin.user_id
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image_id}",
+            json={"locked": True},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        db_session.expire_all()
+
+        # Verify audit log entry
+        stmt = select(AdminActions).where(
+            AdminActions.image_id == image_id,
+            AdminActions.action_type == AdminActionType.IMAGE_STATUS_CHANGE,
+        )
+        result = await db_session.execute(stmt)
+        action = result.scalar_one_or_none()
+
+        assert action is not None
+        assert action.user_id == admin_user_id
+        assert action.details is not None
+        assert action.details.get("previous_locked") == 0
+        assert action.details.get("new_locked") == 1
+
+    async def test_must_provide_status_or_locked(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that at least one of status or locked must be provided."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 422  # Validation error

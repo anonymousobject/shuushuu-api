@@ -13,7 +13,7 @@ These schemas handle:
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ===== Group Schemas =====
 
@@ -246,21 +246,28 @@ class SuspensionListResponse(BaseModel):
 
 
 class ImageStatusUpdate(BaseModel):
-    """Request schema for changing image status directly."""
+    """Request schema for changing image status and/or locked state."""
 
-    status: int = Field(
-        ...,
+    status: int | None = Field(
+        None,
         description="New status: -4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler",
     )
     replacement_id: int | None = Field(
         None,
         description="Original image ID when marking as repost (required when status=-1)",
     )
+    locked: bool | None = Field(
+        None,
+        description="Lock comments on the image (True=locked, False=unlocked)",
+    )
 
     @field_validator("status")
     @classmethod
-    def validate_status(cls, v: int) -> int:
+    def validate_status(cls, v: int | None) -> int | None:
         """Validate status is one of the allowed ImageStatus constants."""
+        if v is None:
+            return v
+
         from app.config import ImageStatus
 
         valid_statuses = {
@@ -278,12 +285,20 @@ class ImageStatusUpdate(BaseModel):
             )
         return v
 
+    @model_validator(mode="after")
+    def require_at_least_one_field(self) -> "ImageStatusUpdate":
+        """Require at least one of status or locked to be provided."""
+        if self.status is None and self.locked is None:
+            raise ValueError("At least one of 'status' or 'locked' must be provided")
+        return self
+
 
 class ImageStatusResponse(BaseModel):
     """Response schema for image status change."""
 
     image_id: int
     status: int
+    locked: int
     replacement_id: int | None
     status_user_id: int | None
     status_updated: datetime | None
