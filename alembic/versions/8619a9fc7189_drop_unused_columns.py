@@ -64,3 +64,4 @@ def downgrade() -> None:
     op.add_column('images', sa.Column('artist', sa.String(255), nullable=True))
     op.add_column('images', sa.Column('characters', sa.String(255), nullable=True))
     op.add_column('images', sa.Column('change_id', sa.Integer(), nullable=False, server_default='0'))
+    op.create_index('ix_images_change_id', 'images', ['change_id'])
