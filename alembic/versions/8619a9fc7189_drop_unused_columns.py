@@ -1,4 +1,4 @@
-"""drop unused columns from privmsgs, set date non-nullable
+"""drop unused columns from privmsgs and users, set date non-nullable
 
 
 Revision ID: 8619a9fc7189
@@ -22,6 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
     op.drop_column('users', 'last_login_new')
+    op.drop_column('users', 'timezone')  # No longer needed - frontend handles timezone conversion
+    op.drop_column('users', 'aim')  # Deprecated field
+    op.drop_column('users', 'rating_ratio')
     op.drop_column('privmsgs', 'type')
     op.drop_column('privmsgs', 'card')
     op.drop_column('privmsgs', 'cardpath')
@@ -34,6 +37,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
     op.add_column('users', sa.Column('last_login_new', sa.DATETIME(), nullable=True))
+    op.add_column('users', sa.Column('timezone', sa.DECIMAL(5, 2), nullable=False, server_default='0.00'))
+    op.add_column('users', sa.Column('aim', sa.String(50), nullable=True))
+    op.add_column('users', sa.Column('rating_ratio', sa.Float(), nullable=False, server_default='0'))
     op.add_column('privmsgs', sa.Column('type', sa.Integer(), nullable=True))
     op.add_column('privmsgs', sa.Column('card', sa.Integer(), nullable=True))
     op.add_column('privmsgs', sa.Column('cardpath', sa.String(255), nullable=True))

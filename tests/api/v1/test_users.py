@@ -656,8 +656,6 @@ class TestUpdateUserProfile:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Test that PATCH /api/v1/users/me accepts and returns user settings."""
-        from decimal import Decimal
-
         # Create user with default settings
         user = Users(
             username="settingstest",
@@ -668,7 +666,6 @@ class TestUpdateUserProfile:
             active=1,
             show_all_images=0,
             spoiler_warning_pref=1,
-            timezone=Decimal("0.00"),
         )
         db_session.add(user)
         await db_session.commit()
@@ -687,7 +684,6 @@ class TestUpdateUserProfile:
             json={
                 "show_all_images": 1,
                 "spoiler_warning_pref": 0,
-                "timezone": "-5.00",
             },
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -697,13 +693,11 @@ class TestUpdateUserProfile:
         # Verify response includes updated settings
         assert data.get("show_all_images") == 1
         assert data.get("spoiler_warning_pref") == 0
-        assert Decimal(data.get("timezone")) == Decimal("-5")
 
         # Verify persisted in DB
         await db_session.refresh(user)
         assert user.show_all_images == 1
         assert user.spoiler_warning_pref == 0
-        assert user.timezone == Decimal("-5")
 
     async def test_update_user_settings_validation(
         self, client: AsyncClient, db_session: AsyncSession
@@ -741,21 +735,6 @@ class TestUpdateUserProfile:
         response = await client.patch(
             "/api/v1/users/me",
             json={"spoiler_warning_pref": -1},
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        assert response.status_code == 422
-
-        # Test invalid timezone (must be between -12 and 14)
-        response = await client.patch(
-            "/api/v1/users/me",
-            json={"timezone": "15.00"},
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        assert response.status_code == 422
-
-        response = await client.patch(
-            "/api/v1/users/me",
-            json={"timezone": "-13.00"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 422

@@ -12,7 +12,6 @@ This approach eliminates field duplication while maintaining security boundaries
 """
 
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
@@ -143,7 +142,6 @@ class Users(UserBase, table=True):
     email_verification_expires_at: datetime | None = Field(default=None)
 
     # User preferences (private)
-    timezone: Decimal = Field(default=Decimal("0.00"))
     email_pm_pref: int = Field(default=1)
     spoiler_warning_pref: int = Field(default=1)
     thumb_layout: int = Field(default=0)
@@ -154,7 +152,6 @@ class Users(UserBase, table=True):
 
     # Rate limiting
     maximgperday: int = Field(default=15)
-    rating_ratio: float = Field(default=0.0)
 
     # Internal tracking
     infected_by: int = Field(default=0)

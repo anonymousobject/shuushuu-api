@@ -45,7 +45,6 @@ class UserUpdate(BaseModel):
     # User settings
     show_all_images: int | None = None
     spoiler_warning_pref: int | None = None
-    timezone: str | None = None  # Accepts string, converted to Decimal
 
     # Display preferences
     thumb_layout: int | None = None  # 0=list view, 1=grid view
@@ -127,22 +126,6 @@ class UserUpdate(BaseModel):
             raise ValueError("bookmark must be a positive integer")
         return v
 
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, v: str | None) -> str | None:
-        """Validate timezone is a valid UTC offset between -12 and +14"""
-        if v is None:
-            return v
-        from decimal import Decimal, InvalidOperation
-
-        try:
-            tz = Decimal(v)
-        except InvalidOperation as err:
-            raise ValueError("Timezone must be a valid decimal number") from err
-        if tz < Decimal("-12") or tz > Decimal("14"):
-            raise ValueError("Timezone must be between -12 and +14")
-        return v
-
 
 class UserResponse(UserBase):
     """Schema for user response - what API returns"""
@@ -199,7 +182,6 @@ class UserPrivateResponse(UserResponse):
     # User settings
     show_all_images: int  # Show disabled/pending images (0=no, 1=yes)
     spoiler_warning_pref: int  # Show spoiler warnings (0=disabled, 1=enabled)
-    timezone: str  # UTC offset as string (e.g., "-5.00", "0.00", "5.50")
 
     # Display preferences
     thumb_layout: int  # 0=list view, 1=grid view
@@ -217,12 +199,6 @@ class UserPrivateResponse(UserResponse):
         if isinstance(v, bool):
             return v
         return bool(v)
-
-    @field_validator("timezone", mode="before")
-    @classmethod
-    def convert_timezone_to_str(cls, v: str | int | float | object) -> str:
-        """Convert Decimal timezone to string"""
-        return str(v)
 
 
 class UserCreateResponse(UserBase):
