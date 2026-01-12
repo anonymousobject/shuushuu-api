@@ -1,6 +1,7 @@
 """Image processing background jobs for arq worker."""
 
 from pathlib import Path as FilePath
+from typing import Any
 
 from arq import Retry
 
@@ -11,7 +12,7 @@ logger = get_logger(__name__)
 
 
 async def create_thumbnail_job(
-    ctx: dict,
+    ctx: dict[str, Any],
     image_id: int,
     source_path: str,
     ext: str,
@@ -47,7 +48,9 @@ async def create_thumbnail_job(
             storage_path=storage_path,
         )
 
-        thumb_path = f"{storage_path}/thumbs/{image_id}.{ext}"
+        # Derive thumb filename from source file stem (preserves date prefix)
+        src_stem = FilePath(source_path).stem
+        thumb_path = f"{storage_path}/thumbs/{src_stem}.jpeg"
         logger.info("thumbnail_job_completed", image_id=image_id, path=thumb_path)
 
         return {"success": True, "thumbnail_path": thumb_path}
@@ -64,7 +67,7 @@ async def create_thumbnail_job(
 
 
 async def create_variant_job(
-    ctx: dict,
+    ctx: dict[str, Any],
     image_id: int,
     source_path: str,
     ext: str,
@@ -72,7 +75,7 @@ async def create_variant_job(
     width: int,
     height: int,
     variant_type: str,
-) -> dict[str, bool]:
+) -> dict[str, bool | str]:
     """
     Create image variant (medium or large).
 
@@ -125,10 +128,10 @@ async def create_variant_job(
 
 
 async def add_to_iqdb_job(
-    ctx: dict,
+    ctx: dict[str, Any],
     image_id: int,
     thumb_path: str,
-) -> dict[str, bool]:
+) -> dict[str, bool | str]:
     """
     Add image thumbnail to IQDB index.
 

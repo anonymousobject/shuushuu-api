@@ -12,7 +12,7 @@ This approach eliminates field duplication while maintaining security boundaries
 """
 
 from sqlalchemy import ForeignKeyConstraint, Index
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
 
 # ===== Groups =====
 
@@ -143,7 +143,7 @@ class UserGroupBase(SQLModel):
     """
 
     user_id: int = Field(primary_key=True)
-    group_id: int = Field(primary_key=True)
+    group_id: int = Field(primary_key=True, foreign_key="groups.group_id")
 
 
 class UserGroups(UserGroupBase, table=True):
@@ -155,13 +155,13 @@ class UserGroups(UserGroupBase, table=True):
 
     __tablename__ = "user_groups"
 
-    # Note: No foreign key constraints in schema, but logically references users and groups
-    # Note: Relationships are intentionally omitted.
-    # Foreign keys are sufficient for queries, and omitting relationships avoids:
-    # - Circular import issues
-    # - Accidental eager loading
-    # - Unwanted auto-serialization in API responses
-    # If needed, relationships can be added selectively with proper lazy loading.
+    # Relationship to Groups (requires explicit eager loading via selectinload/joinedload)
+    group: "Groups" = Relationship(
+        sa_relationship_kwargs={
+            "foreign_keys": "[UserGroups.group_id]",
+            "lazy": "raise",
+        }
+    )
 
 
 # ===== UserPerms (Junction Table) =====

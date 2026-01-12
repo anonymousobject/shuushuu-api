@@ -1,5 +1,7 @@
 """Rating calculation background jobs for arq worker."""
 
+from typing import Any
+
 from arq import Retry
 
 from app.core.database import get_async_session
@@ -9,7 +11,7 @@ logger = get_logger(__name__)
 
 
 async def recalculate_rating_job(
-    ctx: dict,
+    ctx: dict[str, Any],
     image_id: int,
 ) -> dict[str, bool]:
     """

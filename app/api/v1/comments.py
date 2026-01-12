@@ -2,30 +2,45 @@
 Comments API endpoints
 """
 
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import asc, desc, func, select
+import redis.asyncio as redis
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import asc, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import CommentSortParams, PaginationParams
+from app.config import AdminActionType
+from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.permissions import Permission, has_permission
+from app.core.redis import get_redis
 from app.models import Comments, Images, Users
+from app.models.admin_action import AdminActions
+from app.models.permissions import UserGroups
 from app.schemas.comment import (
+    CommentCreate,
     CommentListResponse,
     CommentResponse,
     CommentStatsResponse,
+    CommentUpdate,
 )
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
 
-@router.get("/", response_model=CommentListResponse)
+@router.get("/", response_model=CommentListResponse, include_in_schema=False)
+@router.get("", response_model=CommentListResponse)
 async def list_comments(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[CommentSortParams, Depends()],
     # Filters
     image_id: Annotated[int | None, Query(description="Filter by image ID")] = None,
+    image_ids: Annotated[
+        str | None, Query(description="Filter by multiple image IDs (comma-separated)")
+    ] = None,
     user_id: Annotated[int | None, Query(description="Filter by user ID")] = None,
     search_text: Annotated[str | None, Query(description="Search in comment text")] = None,
     search_mode: Annotated[
@@ -63,6 +78,7 @@ async def list_comments(
 
     **Examples:**
     - `/comments?image_id=123` - All comments on image 123
+    - `/comments?image_ids=123,456,789` - All comments on multiple images (efficient for N images)
     - `/comments?user_id=5` - All comments by user 5
     - `/comments?search_text=awesome` - Fast fulltext search
     - `/comments?search_text=awesome&search_mode=like` - Simple search using LIKE
@@ -72,12 +88,20 @@ async def list_comments(
     """
     from sqlalchemy import text as sql_text
 
-    # Build base query
-    query = select(Comments)
+    # Build base query - exclude deleted comments
+    query = select(Comments).where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
 
     # Apply filters
     if image_id is not None:
         query = query.where(Comments.image_id == image_id)  # type: ignore[arg-type]
+    elif image_ids is not None:
+        # Parse comma-separated image IDs
+        try:
+            image_id_list = [int(x.strip()) for x in image_ids.split(",") if x.strip()]
+            if image_id_list:
+                query = query.where(Comments.image_id.in_(image_id_list))  # type: ignore[union-attr]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid image_ids format") from None
     if user_id is not None:
         query = query.where(Comments.user_id == user_id)  # type: ignore[arg-type]
 
@@ -120,6 +144,13 @@ async def list_comments(
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
+    # Eager load user and groups to avoid N+1 queries
+    query = query.options(
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
+    )
+
     # Execute query
     result = await db.execute(query)
     comments = result.scalars().all()
@@ -141,7 +172,14 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     and update history.
     """
     result = await db.execute(
-        select(Comments).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+        select(Comments)
+        .options(
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+        .where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
     )
     comment = result.scalar_one_or_none()
 
@@ -174,8 +212,11 @@ async def get_image_comments(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Query comments for this image
-    query = select(Comments).where(Comments.image_id == image_id)  # type: ignore[arg-type]
+    # Query comments for this image - exclude deleted comments
+    query = select(Comments).where(
+        Comments.image_id == image_id,  # type: ignore[arg-type]
+        Comments.deleted == False,  # type: ignore[arg-type]  # noqa: E712
+    )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -191,6 +232,13 @@ async def get_image_comments(
 
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
+
+    # Eager load user and groups to avoid N+1 queries
+    query = query.options(
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
+    )
 
     # Execute
     result = await db.execute(query)
@@ -226,8 +274,11 @@ async def get_user_comments(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Query comments by this user
-    query = select(Comments).where(Comments.user_id == user_id)  # type: ignore[arg-type]
+    # Query comments by this user - exclude deleted comments
+    query = select(Comments).where(
+        Comments.user_id == user_id,  # type: ignore[arg-type]
+        Comments.deleted == False,  # type: ignore[arg-type]  # noqa: E712
+    )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -243,6 +294,13 @@ async def get_user_comments(
 
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
+
+    # Eager load user and groups to avoid N+1 queries
+    query = query.options(
+        selectinload(Comments.user)  # type: ignore[arg-type]
+        .selectinload(Users.user_groups)  # type: ignore[arg-type]
+        .selectinload(UserGroups.group)  # type: ignore[arg-type]
+    )
 
     # Execute
     result = await db.execute(query)
@@ -285,3 +343,242 @@ async def get_comment_stats(db: AsyncSession = Depends(get_db)) -> CommentStatsR
         total_images_with_comments=total_images_with_comments,
         average_comments_per_image=round(average_comments, 2),
     )
+
+
+@router.post(
+    "/",
+    response_model=CommentResponse,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
+@router.post("", response_model=CommentResponse, status_code=status.HTTP_201_CREATED)
+async def create_comment(
+    body: CommentCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> CommentResponse:
+    """
+    Create a new comment or reply.
+
+    **Request Body:**
+    - `image_id` (required): Image to comment on
+    - `post_text` (required): Comment text (supports markdown)
+    - `parent_comment_id` (optional): Post ID of parent comment for replies
+
+    **Returns:** 201 Created with full comment details
+
+    **Errors:**
+    - 400: Empty comment text or invalid parent_comment_id
+    - 401: Not authenticated
+    - 403: Comments are locked on the image
+    - 404: Image or parent comment not found
+    """
+    # Validate image exists
+    image_result = await db.execute(
+        select(Images).where(Images.image_id == body.image_id)  # type: ignore[arg-type]
+    )
+    image = image_result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Check if image is locked
+    if image.locked:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Comments are locked on this image",
+        )
+
+    # Validate parent_comment_id if provided
+    if body.parent_comment_id is not None:
+        parent_result = await db.execute(
+            select(Comments).where(
+                Comments.post_id == body.parent_comment_id,  # type: ignore[arg-type]
+                Comments.deleted == False,  # type: ignore[arg-type]  # noqa: E712
+            )
+        )
+        parent = parent_result.scalar_one_or_none()
+        if not parent:
+            raise HTTPException(status_code=404, detail="Parent comment not found")
+
+        # Ensure parent comment is on the same image
+        if parent.image_id != body.image_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Parent comment must be on the same image",
+            )
+
+    # Create comment
+    comment = Comments(
+        image_id=body.image_id,
+        post_text=body.post_text,
+        parent_comment_id=body.parent_comment_id,
+        user_id=current_user.user_id,  # Use authenticated user's ID
+        date=datetime.now(UTC),
+        update_count=0,
+    )
+
+    db.add(comment)
+    await db.commit()
+
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Comments.post_id == comment.post_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
+
+    return CommentResponse.model_validate(comment)
+
+
+@router.patch("/{comment_id}", response_model=CommentResponse)
+async def update_comment(
+    comment_id: int,
+    body: CommentUpdate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> CommentResponse:
+    """
+    Edit an existing comment.
+
+    **Request Body:**
+    - `post_text` (required): Updated comment text
+
+    **Returns:** 200 OK with updated comment details
+
+    **Errors:**
+    - 401: Not authenticated
+    - 403: User doesn't own the comment
+    - 404: Comment not found
+    """
+    # Load comment
+    result = await db.execute(
+        select(Comments).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one_or_none()
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    # Verify ownership
+    if comment.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only edit your own comments",
+        )
+
+    # Update comment
+    comment.post_text = body.post_text
+    comment.update_count += 1
+    comment.last_updated = datetime.now(UTC)
+    comment.last_updated_user_id = current_user.user_id
+
+    await db.commit()
+
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
+
+    return CommentResponse.model_validate(comment)
+
+
+@router.delete("/{comment_id}", response_model=CommentResponse)
+async def delete_comment(
+    comment_id: int,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+) -> CommentResponse:
+    """
+    Delete a comment (soft-delete).
+
+    - Comment owners can delete their own comments
+    - Users with POST_EDIT permission can delete any comment
+
+    **Returns:** 200 OK with updated comment (deleted flag set to True)
+
+    **Errors:**
+    - 401: Not authenticated
+    - 403: User doesn't own the comment and lacks POST_EDIT permission
+    - 404: Comment not found
+    """
+    # Load comment
+    result = await db.execute(
+        select(Comments).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one_or_none()
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
+    # Check authorization: owner or has POST_EDIT permission
+    is_owner = comment.user_id == current_user.user_id
+    has_mod_permission = await has_permission(
+        db, current_user.user_id, Permission.POST_EDIT, redis_client
+    )
+
+    if not is_owner and not has_mod_permission:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only delete your own comments",
+        )
+
+    # Log admin action if moderator deleting someone else's comment
+    if not is_owner and has_mod_permission:
+        action = AdminActions(
+            user_id=current_user.user_id,
+            action_type=AdminActionType.COMMENT_DELETE,
+            image_id=comment.image_id,
+            details={
+                "comment_id": comment_id,
+                "original_user_id": comment.user_id,
+                "post_text_preview": comment.post_text[:100] if comment.post_text else None,
+            },
+        )
+        db.add(action)
+
+    # Soft delete: Set deleted flag to True
+    # This preserves conversation flow and reply threading
+    # Database trigger will automatically decrement post counts
+    comment.deleted = True
+    comment.post_text = "[deleted]"  # Also update text for backwards compatibility
+
+    # Detach child comments (SET NULL for replies)
+    # Since we're soft-deleting instead of hard-deleting, the database's
+    # ON DELETE SET NULL constraint won't fire, so we manually detach children
+    await db.execute(
+        update(Comments)
+        .where(Comments.parent_comment_id == comment_id)  # type: ignore[arg-type]
+        .values(parent_comment_id=None)
+    )
+
+    await db.commit()
+
+    # Re-fetch with eager loading for groups
+    result = await db.execute(
+        select(Comments)
+        .options(
+            selectinload(Comments.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one()
+
+    return CommentResponse.model_validate(comment)

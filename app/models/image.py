@@ -16,7 +16,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from pydantic import field_validator
+from pydantic import ConfigDict, field_validator
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -89,7 +89,7 @@ class ImageBase(SQLModel):
     # File information
     filename: str | None = Field(default=None, max_length=120)
     ext: str = Field(max_length=10)
-    original_filename: str | None = Field(default=None, max_length=120)
+    original_filename: str | None = Field(default=None, max_length=255)
     md5_hash: str = Field(default="", max_length=32)
 
     # Dimensions and file info
@@ -143,11 +143,12 @@ class Images(ImageBase, table=True):
     Internal fields (should NOT be exposed via public API):
     - useragent, ip: Privacy-sensitive tracking
     - status_user_id, status_updated, last_updated, last_post: Internal moderation
-    - medium, large, reviewed, change_id: Internal flags
+    - medium, large: image variant booleans
     - total_pixels, miscmeta: Internal metadata
     - replacement_id: Internal reference
     """
 
+    model_config = ConfigDict(validate_assignment=True)  # type: ignore
     __tablename__ = "images"
 
     # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
@@ -177,7 +178,6 @@ class Images(ImageBase, table=True):
             onupdate="CASCADE",
             name="fk_images_user_id",
         ),
-        Index("change_id", "change_id"),
         Index("fk_images_replacement_id", "replacement_id"),
         Index("fk_images_status_user_id", "status_user_id"),
         Index("fk_images_user_id", "user_id"),
@@ -185,6 +185,7 @@ class Images(ImageBase, table=True):
         Index("idx_favorites", "favorites"),
         Index("idx_filename", "filename"),
         Index("idx_last_post", "last_post"),
+        Index("idx_posts", "posts"),
         Index("idx_status", "status"),
         Index("idx_top_images", "num_ratings"),
         Index("idx_total_pixels", "total_pixels"),
@@ -216,7 +217,6 @@ class Images(ImageBase, table=True):
     medium: int = Field(default=0)
     large: int = Field(default=0)
     reviewed: int = Field(default=0)
-    change_id: int = Field(default=0)
 
     # Internal moderation fields
     status_user_id: int | None = Field(default=None, foreign_key="users.user_id")

@@ -25,10 +25,10 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     # Security
-    SECRET_KEY: str
+    SECRET_KEY: str = "YOU MUST CHANGE THIS TO A SECURE RANDOM VALUE"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     # CORS
     # Allow str because it can be a comma-separated string in .env
@@ -38,9 +38,9 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: str | list[str] = Field(default=["*"])
 
     # MariaDB Database - UPDATED!
-    DATABASE_URL: str
+    DATABASE_URL: str = "YOU MUST SET A VALID MARIADB DATABASE URL"
     # Sync URL for Alembic migrations
-    DATABASE_URL_SYNC: str
+    DATABASE_URL_SYNC: str = "YOU MUST SET A VALID MARIADB SYNC DATABASE URL"
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_ECHO: bool = False
@@ -76,12 +76,12 @@ class Settings(BaseSettings):
     S3_REGION: str = "us-east-1"
 
     # Image Processing
-    MAX_IMAGE_SIZE: int = 16 * 1024 * 1024  # 16MB
-    MAX_THUMB_WIDTH: int = 250
-    MAX_THUMB_HEIGHT: int = 200
+    MAX_IMAGE_SIZE: int = 32 * 1024 * 1024  # 32MB
+    MAX_THUMB_WIDTH: int = 500  # Thumbnail longest edge (WebP format)
+    MAX_THUMB_HEIGHT: int = 500
     MEDIUM_EDGE: int = 1280
     LARGE_EDGE: int = 2048
-    THUMBNAIL_QUALITY: int = 80
+    THUMBNAIL_QUALITY: int = 75  # WebP quality (75 is sweet spot for thumbnails)
     LARGE_QUALITY: int = 90
 
     # Avatar Settings
@@ -98,17 +98,32 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
     UPLOAD_DELAY_SECONDS: int = 30
     SEARCH_DELAY_SECONDS: int = 2
+    MAX_SEARCH_TAGS: int = 5
+    REGISTRATION_RATE_LIMIT: int = Field(
+        default=5, description="Max registrations per IP per window"
+    )
+    REGISTRATION_RATE_WINDOW_HOURS: int = Field(default=1, description="Rate limit window in hours")
 
     # Pagination
     DEFAULT_PAGE_SIZE: int = 15
     MAX_PAGE_SIZE: int = 100
 
     # Email (for notifications)
-    SMTP_HOST: str | None = None
-    SMTP_PORT: int = 587
-    SMTP_USER: str | None = None
-    SMTP_PASSWORD: str | None = None
-    SMTP_FROM_EMAIL: str = "noreply@e-shuushuu.net"
+    SMTP_HOST: str = Field(default="localhost", description="SMTP server hostname")
+    SMTP_PORT: int = Field(default=587, description="SMTP server port")
+    SMTP_USER: str = Field(default="user", description="SMTP username")
+    SMTP_PASSWORD: str = Field(default="password", description="SMTP password")
+    SMTP_TLS: bool = Field(default=True, description="Use TLS for SMTP")
+    SMTP_FROM_EMAIL: str = Field(default="noreply@e-shuushuu.net", description="From email address")
+    SMTP_FROM_NAME: str = Field(default="Shuushuu", description="From name")
+
+    # Cloudflare Turnstile
+    TURNSTILE_SITE_KEY: str = Field(
+        default="1x00000000000000000000AA", description="Turnstile site key (public)"
+    )
+    TURNSTILE_SECRET_KEY: str = Field(
+        default="1x0000000000000000000000000000000AA", description="Turnstile secret key (private)"
+    )
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -119,12 +134,15 @@ class Settings(BaseSettings):
     REVIEW_EXTENSION_DAYS: int = 3  # Extension period when deadline expires without quorum
     REVIEW_QUORUM: int = 3  # Minimum votes required for a decision
 
-    # Frontend URL (for email links, etc.)
-    FRONTEND_URL: str = "http://localhost:3000"
+    # Frontend URL (for email links, verification links, etc.)
+    # Development: http://localhost:5173 (Vite dev server) or http://localhost:3000 (via nginx)
+    # Production: https://e-shuushuu.net (your domain)
+    FRONTEND_URL: str = "http://localhost:5173"
 
-    # Image Base URL (where images are served from - typically nginx in production)
-    # In development with FastAPI serving: http://localhost:8000
-    # In production with nginx: http://localhost:3000 (or your domain)
+    # Image Base URL (where images are served from - must be your public domain)
+    # Development: http://localhost:3000 (via nginx) or http://localhost:8000 (direct FastAPI)
+    # Production: https://e-shuushuu.net (HTTPS required for internet-exposed domain)
+    # CRITICAL: Must match the URL users see in their browser, or image URLs will be broken
     IMAGE_BASE_URL: str = "http://localhost:3000"
 
     @field_validator("CORS_ORIGINS", mode="before")
@@ -145,6 +163,7 @@ class Settings(BaseSettings):
 
 
 # Create global settings instance
+
 settings = Settings()
 
 
@@ -199,6 +218,9 @@ class AdminActionType:
     REVIEW_VOTE = 4
     REVIEW_CLOSE = 5
     REVIEW_EXTEND = 6
+    IMAGE_STATUS_CHANGE = 7
+    COMMENT_DELETE = 8
+    IMAGE_DELETE = 9
 
 
 class TagType:
@@ -218,6 +240,7 @@ class ReportCategory:
     INAPPROPRIATE = 2
     SPAM = 3
     MISSING_TAGS = 4
+    SPOILER = 5
     OTHER = 127
 
     LABELS = {
@@ -225,6 +248,7 @@ class ReportCategory:
         INAPPROPRIATE: "Inappropriate Image",
         SPAM: "Spam",
         MISSING_TAGS: "Missing Tag Info",
+        SPOILER: "Spoiler",
         OTHER: "Other",
     }
 
@@ -244,3 +268,4 @@ class SuspensionAction:
 
     SUSPENDED = "suspended"
     REACTIVATED = "reactivated"
+    WARNING = "warning"

@@ -109,7 +109,7 @@ async def save_uploaded_image(
 async def link_tags_to_image(
     image_id: int, tag_ids: list[int], user_id: int, db: AsyncSession
 ) -> None:
-    """Link tags to an image."""
+    """Link tags to an image (usage_count is maintained by database trigger)."""
     for tag_id in tag_ids:
         # Verify tag exists
         tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -119,7 +119,7 @@ async def link_tags_to_image(
             # Skip invalid tags silently (or raise error if preferred)
             continue
 
-        # Create tag link
+        # Create tag link (database trigger automatically updates tags.usage_count)
         tag_link = TagLinks(
             tag_id=tag_id,
             image_id=image_id,

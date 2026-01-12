@@ -2,46 +2,138 @@
 Tags API endpoints
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams
+from app.config import TagType
+from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
-from app.models import Images, TagLinks, Tags
-from app.schemas.image import ImageListResponse
-from app.schemas.tag import TagCreate, TagListResponse, TagResponse, TagWithStats
+from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
+from app.models.character_source_link import CharacterSourceLinks
+from app.models.permissions import UserGroups
+from app.schemas.common import UserSummary
+from app.schemas.image import ImageListResponse, ImageResponse
+from app.schemas.tag import (
+    CharacterSourceLinkCreate,
+    CharacterSourceLinkListResponse,
+    CharacterSourceLinkResponse,
+    TagCreate,
+    TagExternalLinkCreate,
+    TagExternalLinkResponse,
+    TagListResponse,
+    TagResponse,
+    TagWithStats,
+)
 
 router = APIRouter(prefix="/tags", tags=["tags"])
+
+# Separate router for character-source-links (mounted at /api/v1/character-source-links)
+character_source_links_router = APIRouter(
+    prefix="/character-source-links", tags=["character-source-links"]
+)
+
+# MySQL/MariaDB default fulltext stopwords that cause search failures when used with `+` (required) operator
+# Source: INFORMATION_SCHEMA.INNODB_FT_DEFAULT_STOPWORD
+FULLTEXT_STOPWORDS = frozenset(
+    {
+        "a",
+        "about",
+        "an",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "com",
+        "de",
+        "en",
+        "for",
+        "from",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "la",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "was",
+        "what",
+        "when",
+        "where",
+        "who",
+        "will",
+        "with",
+        "und",
+        "www",
+    }
+)
+
+# Minimum token size for InnoDB fulltext (innodb_ft_min_token_size default is 3)
+FULLTEXT_MIN_TOKEN_SIZE = 3
+
+# MySQL fulltext boolean operators that need to be stripped from search terms
+# These characters have special meaning in BOOLEAN MODE and could cause unexpected behavior
+# e.g., "C++" would create "+C++*" which interprets the extra + as operators
+FULLTEXT_SPECIAL_CHARS = frozenset('+-~*"()><@')
+
+
+def _escape_like_pattern(value: str) -> str:
+    """Escape special LIKE pattern characters (% and _) in a search value."""
+    return value.replace("%", r"\%").replace("_", r"\_")
+
+
+def _sanitize_fulltext_term(term: str) -> str:
+    """Remove MySQL fulltext boolean operators from a search term."""
+    return "".join(char for char in term if char not in FULLTEXT_SPECIAL_CHARS)
+
 
 # TODO: Create tag proposal/review system. Let users petition for new tags, and allow admins to review and approve them.
 
 
-async def resolve_tag_alias(db: AsyncSession, tag_id: int) -> tuple[Tags | None, int]:
+async def resolve_tag_alias(
+    db: AsyncSession, tag_id: int, tag: Tags | None = None
+) -> tuple[Tags | None, int]:
     """
     Resolve a tag alias to its actual tag.
 
     Aliases are synonyms - if a tag has an 'alias' field pointing to another tag,
     it means they're the same concept (e.g., "collar" -> "choker").
 
+    Args:
+        db: Database session
+        tag_id: ID of the tag to resolve
+        tag: Optional pre-fetched tag object to avoid duplicate queries
+
     Returns:
         tuple: (tag_object, resolved_tag_id)
             - tag_object: The original tag object (or None if not found)
             - resolved_tag_id: The actual tag ID if this is an alias, otherwise the original tag_id
     """
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    tag = tag_result.scalar_one_or_none()
+    # Use provided tag object if available, otherwise fetch it
+    if tag is None:
+        tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+        tag = tag_result.scalar_one_or_none()
 
     if not tag:
         return None, tag_id
 
     # If this tag is an alias, use the actual tag for queries
-    if tag.alias:
-        return tag, tag.alias
+    if tag.alias_of:
+        return tag, tag.alias_of
 
     return tag, tag_id
 
@@ -78,56 +170,211 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int) -> list[int]:
     return tag_ids
 
 
-@router.get("/", response_model=TagListResponse)
+@router.get("/", response_model=TagListResponse, include_in_schema=False)
+@router.get("", response_model=TagListResponse)
 async def list_tags(
     pagination: Annotated[PaginationParams, Depends()],
     search: Annotated[str | None, Query(description="Search tags by name")] = None,
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
+    ids: Annotated[str | None, Query(description="Comma-separated tag IDs to fetch")] = None,
+    parent_tag_id: Annotated[int | None, Query(description="Filter by parent tag ID")] = None,
+    exclude_aliases: Annotated[
+        bool, Query(description="Exclude alias tags (tags that redirect to others)")
+    ] = False,
     db: AsyncSession = Depends(get_db),
 ) -> TagListResponse:
     """
-    List and search tags.
+    List and search tags with intelligent hybrid search.
 
     Supports:
-    - Searching by tag name (partial match)
+    - Intelligent tag search (word-order independent for multi-word queries)
     - Filtering by tag type
+    - Filtering by specific IDs (comma-separated)
+    - Filtering by parent tag ID (get child tags)
+    - Excluding alias tags
     - Pagination
+
+    ## Search Strategy
+
+    Uses a hybrid approach for optimal UX:
+    - **Short queries (< 3 chars)**: Prefix matching (e.g., "sa" finds "sakura kinomoto")
+    - **Long queries (≥ 3 chars)**: Full-text search (word-order independent)
+
+    The full-text search solves the Japanese character name problem:
+    Searching "sakura kinomoto" will find tags with "kinomoto sakura" in any word order.
+
+    When filtering by IDs, invalid (non-numeric) IDs are reported in the response
+    via the `invalid_ids` field, while valid tags are still returned.
 
     **Examples:**
     - Get all tags: `/tags`
-    - Search tags with "cat": `/tags?search=cat`
-    - Filter by type (e.g., type_id=1 for general tags): `/tags?type_id=1`
+    - Search tags with "cat" (uses prefix if < 3 chars): `/tags?search=cat`
+    - Search Japanese name (word-order independent): `/tags?search=sakura%20kinomoto`
+    - Filter by type: `/tags?type_id=1`
+    - Get specific tags by ID: `/tags?ids=1,2,3`
+    - Get child tags of a parent: `/tags?parent_tag_id=10`
+    - Exclude alias tags: `/tags?search=sakura&exclude_aliases=true`
     """
-    query = select(Tags)
+    # Create table alias to retrieve the title of the tag that this tag is aliased to
+    AliasedTag = aliased(Tags)
+
+    query = select(Tags, AliasedTag.title.label("alias_of_name")).outerjoin(  # type: ignore[union-attr]
+        AliasedTag,
+        Tags.alias_of == AliasedTag.tag_id,  # type: ignore[arg-type]
+    )
 
     # Apply filters
+    invalid_ids: list[str] = []
+    if ids:
+        # Filter by specific IDs (takes precedence over other filters)
+        # Track invalid IDs for better user feedback
+        tag_ids = []
+        for id_str in ids.split(","):
+            id_str = id_str.strip()
+            if not id_str:
+                continue  # Skip empty strings
+            if id_str.isdigit():
+                tag_ids.append(int(id_str))
+            else:
+                invalid_ids.append(id_str)
+        # Deduplicate tag IDs to prevent duplicate results
+        tag_ids = list(dict.fromkeys(tag_ids))
+        if tag_ids:  # Only apply filter if we have valid IDs
+            query = query.where(Tags.tag_id.in_(tag_ids))  # type: ignore[union-attr]
+        else:
+            # All IDs were invalid - return empty result
+            query = query.where(False)  # type: ignore[arg-type]
+    # Track whether we're using fulltext search and what query string
+    fulltext_query_str: str | None = None
+
     if search:
-        query = query.where(Tags.title.like(f"%{search}%"))  # type: ignore[union-attr]
+        # Hybrid search strategy:
+        # - Queries < 3 chars: Use LIKE (autocomplete, prefix matching)
+        # - Queries >= 3 chars: Use FULLTEXT MATCH with wildcard expansion (word-order independent + partial words)
+        #
+        # This handles both:
+        # 1. Japanese name problem: "sakura kinomoto" finds "kinomoto sakura" (word-order independence)
+        # 2. Partial word matching: "thig" finds "thighs" (wildcard expansion)
+        if len(search) < 3:
+            # Short query: prefix match with LIKE (e.g., "sa" -> "sakura")
+            # Escape LIKE special characters to prevent unintended wildcard matching
+            escaped_search = _escape_like_pattern(search)
+            query = query.where(Tags.title.like(f"{escaped_search}%"))  # type: ignore[union-attr]
+        else:
+            # Long query: word-order independent full-text search with wildcard expansion
+            # Split search into words and add wildcard to each word to match partial terms
+            # e.g., "sakura kinomoto" -> "+sakura* +kinomoto*"
+            #
+            # IMPORTANT: Filter out stopwords and short terms to prevent search failures.
+            # MySQL/MariaDB fulltext treats words like "the", "a", "of" as stopwords.
+            # When combined with `+` (required), the entire query fails if a stopword is required.
+            # Also, terms shorter than innodb_ft_min_token_size (default 3) are ignored.
+            # Additionally, strip special fulltext boolean operators from terms to prevent
+            # unexpected behavior (e.g., "C++" becoming "+C++*" with extra operators).
+            search_terms = search.split()
+            # Sanitize terms first, then filter by stopwords and length.
+            # Order matters: we need to check stopwords and length AFTER sanitization.
+            # e.g., "+the+" becomes "the" (a stopword), and "C++" becomes "C" (too short).
+            valid_terms = []
+            for term in search_terms:
+                sanitized = _sanitize_fulltext_term(term)
+                if not sanitized:
+                    continue
+                if sanitized.lower() in FULLTEXT_STOPWORDS:
+                    continue
+                if len(sanitized) >= FULLTEXT_MIN_TOKEN_SIZE:
+                    valid_terms.append(sanitized)
+
+            if valid_terms:
+                # Build fulltext query with valid terms only
+                fulltext_query_str = " ".join(f"+{term}*" for term in valid_terms)
+                query = query.where(
+                    text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
+                        search=fulltext_query_str
+                    )
+                )
+            else:
+                # All terms were stopwords or too short - fall back to LIKE prefix search
+                # This handles edge cases like searching for "The" or "A" or "The A"
+                # Escape LIKE special characters to prevent unintended wildcard matching
+                escaped_search = _escape_like_pattern(search)
+                query = query.where(Tags.title.like(f"{escaped_search}%"))  # type: ignore[union-attr]
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
+    if parent_tag_id is not None:
+        query = query.where(Tags.inheritedfrom_id == parent_tag_id)  # type: ignore[arg-type]
+    if exclude_aliases:
+        query = query.where(Tags.alias_of.is_(None))  # type: ignore[union-attr]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Sort by tag date added
-    from sqlalchemy import desc as sql_desc
-
-    query = query.order_by(sql_desc(Tags.date_added))  # type: ignore[arg-type]
+    # Sort: For search queries, use smart ranking
+    # For general listing, sort by date added
+    if search:
+        if len(search) < 3 or not fulltext_query_str:
+            # Short query or fallback to LIKE (prefix match): prioritize exact and starts-with
+            # 1. Exact matches first
+            # 2. Starts-with matches second
+            # 3. Contains matches last (alphabetical within each group)
+            query = query.order_by(
+                case(
+                    (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
+                    (
+                        func.lower(Tags.title).like(f"{search.lower()}%"),
+                        1,
+                    ),  # Starts with (case-insensitive)
+                    else_=2,  # Contains (middle/end)
+                ),
+                func.lower(Tags.title),  # Alphabetical within each priority group
+            )
+        else:
+            # Long query (full-text): prioritize exact matches, then sort by relevance
+            # 1. Exact matches first (e.g., searching "maid" finds "maid" tag first)
+            # 2. Then by relevance score from FULLTEXT search
+            # 3. Then by popularity (usage_count)
+            # 4. Finally alphabetical for consistent ordering
+            # Must use the same fulltext_query_str as the WHERE clause
+            query = query.order_by(
+                case(
+                    (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
+                    else_=1,  # Non-exact matches
+                ),
+                text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE) DESC"),
+                desc(Tags.usage_count),  # type: ignore[arg-type]  # Most popular tags first
+                func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
+            ).params(search=fulltext_query_str)
+    else:
+        # No search - sort by usage count (most popular first), then by date added
+        query = query.order_by(
+            desc(Tags.usage_count),  # type: ignore[arg-type]
+            desc(Tags.date_added),  # type: ignore[arg-type]
+        )
 
     # Paginate
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Execute
     result = await db.execute(query)
-    tags = result.scalars().all()
+    rows = result.all()
+
+    tags_list = []
+    for row in rows:
+        tag = row[0]
+        alias_name = row[1]
+
+        tag_resp = TagResponse.model_validate(tag)
+        tag_resp.alias_of_name = alias_name
+        tags_list.append(tag_resp)
 
     return TagListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        tags=[TagResponse.model_validate(tag) for tag in tags],
+        tags=tags_list,
+        invalid_ids=invalid_ids if invalid_ids else None,
     )
 
 
@@ -221,7 +468,66 @@ async def get_images_by_tag(
     images = result.scalars().all()
 
     return ImageListResponse(
-        total=total or 0, page=pagination.page, per_page=pagination.per_page, images=images
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        images=[ImageResponse.model_validate(img) for img in images],
+    )
+
+
+@router.get("/{tag_id}/characters", response_model=TagListResponse)
+async def get_characters_for_source(
+    tag_id: Annotated[int, Path(description="Source tag ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> TagListResponse:
+    """
+    Get all character tags linked to a source tag.
+
+    Returns a paginated list of character tags that are linked to the specified source.
+    Returns 400 if the tag is not a Source type.
+    Returns 404 if the tag doesn't exist.
+    """
+    # Verify tag exists and is a source
+    tag_result = await db.execute(
+        select(Tags).where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+    tag = tag_result.scalar_one_or_none()
+
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.type != TagType.SOURCE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tag must be a Source tag (type={TagType.SOURCE}), got type={tag.type}",
+        )
+
+    # Get linked characters
+    query = (
+        select(Tags)
+        .join(
+            CharacterSourceLinks,
+            Tags.tag_id == CharacterSourceLinks.character_tag_id,  # type: ignore[arg-type]
+        )
+        .where(CharacterSourceLinks.source_tag_id == tag_id)  # type: ignore[arg-type]
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Paginate and order
+    query = query.order_by(Tags.title).offset(pagination.offset).limit(pagination.per_page)
+
+    result = await db.execute(query)
+    tags = result.scalars().all()
+
+    return TagListResponse(
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        tags=[TagResponse.model_validate(t) for t in tags],
     )
 
 
@@ -237,12 +543,29 @@ async def get_tag(
     - Alias information (if this tag is a synonym of another)
     - Inheritance information (parent tag and child count)
     - Image count (includes images tagged with child tags in the hierarchy)
+    - Creator user information (who created the tag)
+    - Creation date (when the tag was created)
+    - External links (URLs associated with the tag)
     """
-    # First resolve any alias (synonym)
-    tag, resolved_tag_id = await resolve_tag_alias(db, tag_id)
+    # First resolve any alias (synonym) - join with Users to get creator info
+    # Eager load user groups for UserSummary
+    tag_result = await db.execute(
+        select(Tags, Users)
+        .outerjoin(Users, Tags.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+    row = tag_result.first()
 
-    if not tag:
+    if not row:
         raise HTTPException(status_code=404, detail="Tag not found")
+
+    tag, user = row
+
+    # Resolve alias if needed
+    resolved_tag_id = tag.alias_of if tag.alias_of else tag_id
 
     # Get the full tag hierarchy (includes all descendant tags)
     tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id)
@@ -260,14 +583,62 @@ async def get_tag(
     child_count = children_result.scalar()
 
     # Determine if this is an alias tag (synonym)
-    is_alias = tag.alias is not None
-    aliased_tag_id = tag.alias if is_alias else None
+    is_alias = tag.alias_of is not None
+    aliased_tag_id = tag.alias_of if is_alias else None
 
     # Get parent tag in hierarchy (inheritance, not alias)
     parent_tag_id = tag.inheritedfrom_id
 
+    # Build creator info if user exists
+    created_by = None
+    if user:
+        created_by = UserSummary(
+            user_id=user.user_id or 0,
+            username=user.username,
+            avatar=user.avatar or None,
+            groups=user.groups,  # Uses the eager-loaded groups property
+        )
+
+    # Fetch external links for this tag
+    links_result = await db.execute(
+        select(TagExternalLinks.url)  # type: ignore[call-overload]
+        .where(TagExternalLinks.tag_id == tag_id)
+        .order_by(TagExternalLinks.date_added)
+    )
+    links = links_result.scalars().all()
+
+    # Fetch linked sources/characters based on tag type
+    sources: list[dict[str, Any]] = []
+    characters: list[dict[str, Any]] = []
+
+    if tag.type == TagType.CHARACTER:
+        # Get all sources linked to this character
+        sources_result = await db.execute(
+            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
+            .join(
+                CharacterSourceLinks,
+                Tags.tag_id == CharacterSourceLinks.source_tag_id,
+            )
+            .where(CharacterSourceLinks.character_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        sources = [{"tag_id": row[0], "title": row[1]} for row in sources_result.all()]
+
+    elif tag.type == TagType.SOURCE:
+        # Get all characters linked to this source
+        characters_result = await db.execute(
+            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
+            .join(
+                CharacterSourceLinks,
+                Tags.tag_id == CharacterSourceLinks.character_tag_id,
+            )
+            .where(CharacterSourceLinks.source_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        characters = [{"tag_id": row[0], "title": row[1]} for row in characters_result.all()]
+
     return TagWithStats(
-        tag_id=tag.tag_id,
+        tag_id=tag.tag_id or 0,
         title=tag.title,
         desc=tag.desc,
         type=tag.type,
@@ -276,12 +647,19 @@ async def get_tag(
         aliased_tag_id=aliased_tag_id,
         parent_tag_id=parent_tag_id,
         child_count=child_count or 0,
+        created_by=created_by,
+        date_added=tag.date_added,
+        links=list(links),
+        sources=sources,
+        characters=characters,
     )
 
 
-@router.post("/", response_model=TagResponse)
+@router.post("/", response_model=TagResponse, include_in_schema=False)
+@router.post("", response_model=TagResponse)
 async def create_tag(
     tag_data: TagCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagResponse:
@@ -305,9 +683,9 @@ async def create_tag(
             raise HTTPException(status_code=400, detail="Parent tag does not exist")
 
     # if alias is set, ensure that tag exists
-    if tag_data.alias:
+    if tag_data.alias_of:
         alias_tag_result = await db.execute(
-            select(Tags).where(Tags.tag_id == tag_data.alias)  # type: ignore[arg-type]
+            select(Tags).where(Tags.tag_id == tag_data.alias_of)  # type: ignore[arg-type]
         )
         if not alias_tag_result.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Alias tag does not exist")
@@ -317,7 +695,8 @@ async def create_tag(
         type=tag_data.type,
         desc=tag_data.desc,
         inheritedfrom_id=tag_data.inheritedfrom_id,
-        alias=tag_data.alias,
+        alias_of=tag_data.alias_of,
+        user_id=current_user.user_id,
     )
     db.add(new_tag)
     await db.commit()
@@ -355,13 +734,13 @@ async def update_tag(
                 status_code=400, detail=f"Parent tag with id {inheritedfrom_id} does not exist"
             )
 
-    alias_id = update_data.get("alias")
+    alias_id = update_data.get("alias_of")
     if alias_id is not None:
         alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_id))
         alias_tag = alias_result.scalar_one_or_none()
         if not alias_tag:
             raise HTTPException(
-                status_code=400, detail=f"Alias tag with id {alias_id} does not exist"
+                status_code=400, detail=f"Alias of tag with id {alias_id} does not exist"
             )
     # Update fields
     for key, value in update_data.items():
@@ -391,4 +770,197 @@ async def delete_tag(
         raise HTTPException(status_code=404, detail="Tag not found")
 
     await db.delete(tag)
+    await db.commit()
+
+
+@router.post("/{tag_id}/links", response_model=TagExternalLinkResponse, status_code=201)
+async def add_tag_link(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    link_data: TagExternalLinkCreate,
+    _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
+    db: AsyncSession = Depends(get_db),
+) -> TagExternalLinkResponse:
+    """
+    Add an external link to a tag.
+
+    Requires TAG_UPDATE permission.
+    Returns 404 if tag doesn't exist.
+    Returns 409 if URL already exists for this tag.
+    """
+    # Verify tag exists
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    if not tag_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Create new link
+    new_link = TagExternalLinks(tag_id=tag_id, url=link_data.url)
+    db.add(new_link)
+
+    try:
+        await db.commit()
+        await db.refresh(new_link)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="URL already exists for this tag") from None
+
+    return TagExternalLinkResponse.model_validate(new_link)
+
+
+@router.delete("/{tag_id}/links/{link_id}", status_code=204)
+async def delete_tag_link(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    link_id: Annotated[int, Path(description="Link ID")],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Remove an external link from a tag.
+
+    Requires TAG_UPDATE permission.
+    Returns 404 if link doesn't exist or doesn't belong to the specified tag.
+    """
+    # Fetch and verify link belongs to this tag
+    link_result = await db.execute(
+        select(TagExternalLinks)
+        .where(TagExternalLinks.link_id == link_id)  # type: ignore[arg-type]
+        .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+    link = link_result.scalar_one_or_none()
+
+    if not link:
+        raise HTTPException(
+            status_code=404,
+            detail="Link not found or does not belong to this tag",
+        )
+
+    await db.delete(link)
+    await db.commit()
+
+
+# =============================================================================
+# Character-Source Links Endpoints
+# =============================================================================
+
+
+@character_source_links_router.post(
+    "/", response_model=CharacterSourceLinkResponse, status_code=201, include_in_schema=False
+)
+@character_source_links_router.post("", response_model=CharacterSourceLinkResponse, status_code=201)
+async def create_character_source_link(
+    link_data: CharacterSourceLinkCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> CharacterSourceLinkResponse:
+    """Create a character-source link. Requires TAG_CREATE permission."""
+    # Verify character tag exists and is type CHARACTER
+    char_result = await db.execute(
+        select(Tags).where(Tags.tag_id == link_data.character_tag_id)  # type: ignore[arg-type]
+    )
+    char_tag = char_result.scalar_one_or_none()
+    if not char_tag:
+        raise HTTPException(status_code=404, detail="Character tag not found")
+    if char_tag.type != TagType.CHARACTER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"character_tag_id must be a Character tag (type={TagType.CHARACTER}), got type={char_tag.type}",
+        )
+
+    # Verify source tag exists and is type SOURCE
+    source_result = await db.execute(
+        select(Tags).where(Tags.tag_id == link_data.source_tag_id)  # type: ignore[arg-type]
+    )
+    source_tag = source_result.scalar_one_or_none()
+    if not source_tag:
+        raise HTTPException(status_code=404, detail="Source tag not found")
+    if source_tag.type != TagType.SOURCE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_tag_id must be a Source tag (type={TagType.SOURCE}), got type={source_tag.type}",
+        )
+
+    # Create link
+    new_link = CharacterSourceLinks(
+        character_tag_id=link_data.character_tag_id,
+        source_tag_id=link_data.source_tag_id,
+        created_by_user_id=current_user.user_id,
+    )
+    db.add(new_link)
+
+    try:
+        await db.commit()
+        await db.refresh(new_link)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Link between this character and source already exists",
+        ) from None
+
+    return CharacterSourceLinkResponse.model_validate(new_link)
+
+
+@character_source_links_router.get(
+    "/", response_model=CharacterSourceLinkListResponse, include_in_schema=False
+)
+@character_source_links_router.get("", response_model=CharacterSourceLinkListResponse)
+async def list_character_source_links(
+    pagination: Annotated[PaginationParams, Depends()],
+    character_tag_id: Annotated[int | None, Query(description="Filter by character tag ID")] = None,
+    source_tag_id: Annotated[int | None, Query(description="Filter by source tag ID")] = None,
+    db: AsyncSession = Depends(get_db),
+) -> CharacterSourceLinkListResponse:
+    """List character-source links with optional filtering."""
+    query = select(CharacterSourceLinks)
+
+    if character_tag_id is not None:
+        query = query.where(
+            CharacterSourceLinks.character_tag_id == character_tag_id  # type: ignore[arg-type]
+        )
+    if source_tag_id is not None:
+        query = query.where(
+            CharacterSourceLinks.source_tag_id == source_tag_id  # type: ignore[arg-type]
+        )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Paginate and order
+    query = (
+        query.order_by(desc(CharacterSourceLinks.created_at))  # type: ignore[arg-type]
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    links = result.scalars().all()
+
+    return CharacterSourceLinkListResponse(
+        total=total or 0,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        links=[CharacterSourceLinkResponse.model_validate(link) for link in links],
+    )
+
+
+@character_source_links_router.delete("/{link_id}", status_code=204)
+async def delete_character_source_link(
+    link_id: Annotated[int, Path(description="Link ID")],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete a character-source link. Requires TAG_CREATE permission."""
+    result = await db.execute(
+        select(CharacterSourceLinks).where(
+            CharacterSourceLinks.id == link_id  # type: ignore[arg-type]
+        )
+    )
+    link = result.scalar_one_or_none()
+
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    await db.delete(link)
     await db.commit()

@@ -11,11 +11,14 @@ UserBase (shared public fields)
 This approach eliminates field duplication while maintaining security boundaries.
 """
 
-from datetime import datetime
-from decimal import Decimal
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
+
+if TYPE_CHECKING:
+    from app.models.permissions import UserGroups
 
 
 class UserBase(SQLModel):
@@ -39,7 +42,7 @@ class UserBase(SQLModel):
 
     # Avatar
     avatar: str = Field(default="", max_length=255)
-    gender: str = Field(default="", max_length=1)
+    gender: str = Field(default="", max_length=50)
 
     # Public stats
     posts: int = Field(default=0)
@@ -65,7 +68,6 @@ class Users(UserBase, table=True):
     - admin, active: Moderation/access control
     - failed_login_attempts, lockout_until: Security tracking
     - All preference fields: User-private settings
-    - infected_by, date_infected: Internal tracking
     - bookmark: User-private reference
     """
 
@@ -86,17 +88,35 @@ class Users(UserBase, table=True):
         ),
         Index("fk_bookmark", "bookmark"),
         Index("username", "username", unique=True),
+        Index("idx_email_verification_token", "email_verification_token"),
+        Index("idx_user_posts", "posts"),
+        Index("idx_user_image_posts", "image_posts"),
+        Index("idx_user_favorites", "favorites"),
     )
 
     # Primary key
-    user_id: int = Field(primary_key=True)
+    user_id: int | None = Field(default=None, primary_key=True)
+
+    @property
+    def id(self) -> int:
+        """
+        Get user_id as non-optional int.
+
+        Guaranteed to be non-None after database fetch.
+        Raises ValueError if accessed before the user is saved to the database.
+        """
+        if self.user_id is None:
+            raise ValueError("User ID not yet assigned (not saved to database)")
+        return self.user_id
 
     # Public timestamps
-    date_joined: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    date_joined: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column_kwargs={"server_default": text("current_timestamp()")},
+    )
     last_login: datetime | None = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
     )
-    last_login_new: datetime | None = Field(default=None)
 
     # Internal status fields
     active: int = Field(default=0)
@@ -108,7 +128,6 @@ class Users(UserBase, table=True):
     salt: str = Field(max_length=16)
     newpassword: str | None = Field(default=None, max_length=40)
     newsalt: str | None = Field(default=None, max_length=16)
-    actkey: str = Field(default="", max_length=32)
 
     # Account lockout (security)
     failed_login_attempts: int = Field(default=0)
@@ -116,9 +135,12 @@ class Users(UserBase, table=True):
 
     # Contact info (privacy-sensitive)
     email: str = Field(max_length=120)
+    email_verified: bool = Field(default=False)
+    email_verification_token: str | None = Field(default=None, max_length=64)
+    email_verification_sent_at: datetime | None = Field(default=None)
+    email_verification_expires_at: datetime | None = Field(default=None)
 
     # User preferences (private)
-    timezone: Decimal = Field(default=Decimal("0.00"))
     email_pm_pref: int = Field(default=1)
     spoiler_warning_pref: int = Field(default=1)
     thumb_layout: int = Field(default=0)
@@ -129,20 +151,33 @@ class Users(UserBase, table=True):
 
     # Rate limiting
     maximgperday: int = Field(default=15)
-    rating_ratio: float = Field(default=0.0)
-
-    # Internal tracking
-    infected_by: int = Field(default=0)
-    date_infected: int = Field(default=0)
-    infected: int | None = Field(default=0)
 
     # References
     forum_id: int | None = Field(default=None)
     bookmark: int | None = Field(default=None, foreign_key="images.image_id")
 
-    # Note: Relationships are intentionally omitted.
-    # Foreign keys are sufficient for queries, and omitting relationships avoids:
-    # - Circular import issues
-    # - Accidental eager loading
-    # - Unwanted auto-serialization in API responses
-    # If needed, relationships can be added selectively with proper lazy loading.
+    # Relationship to UserGroups for eager loading groups
+    user_groups: list["UserGroups"] = Relationship(
+        sa_relationship_kwargs={
+            "primaryjoin": "Users.user_id == UserGroups.user_id",
+            "foreign_keys": "[UserGroups.user_id]",
+            "lazy": "raise",  # Prevent accidental lazy loading in async
+        }
+    )
+
+    @property
+    def groups(self) -> list[str]:
+        """
+        Get list of group names for this user.
+
+        Requires user_groups relationship to be eager loaded:
+            selectinload(Users.user_groups).selectinload(UserGroups.group)
+
+        Returns empty list if user_groups not loaded or user has no groups.
+        """
+        if not hasattr(self, "_sa_instance_state"):
+            return []
+        # Check if relationship is loaded to avoid lazy load error
+        if "user_groups" not in self.__dict__:
+            return []
+        return [ug.group.title for ug in self.user_groups if ug.group and ug.group.title]

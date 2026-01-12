@@ -29,6 +29,7 @@ env/
 
 # IDEs
 .vscode/
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo
@@ -42,6 +43,7 @@ env/
 *.pem
 *.key
 *.crt
+.htpasswd
 
 # Database
 *.db
@@ -94,8 +96,20 @@ Thumbs.db
 /docker/data/
 /docker/volumes/
 
+# Certbot - Let's Encrypt certificates and keys (DO NOT COMMIT!)
+/docker/certbot/conf/
+/docker/certbot/www/
+# Keep directory structure
+!/docker/certbot/conf/.gitkeep
+!/docker/certbot/www/.gitkeep
+
 # Redis dumps
 dump.rdb
 
 # PHP codebase
 shuu-php/
+.worktrees/
+
+# Local project instructions (not shared)
+CLAUDE.md
+.github/copilot-instructions.md

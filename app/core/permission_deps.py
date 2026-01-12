@@ -21,24 +21,26 @@ Usage:
 from collections.abc import Callable, Coroutine
 from typing import Annotated, Any
 
+import redis.asyncio as redis
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.permissions import Permission, has_any_permission, has_permission
+from app.core.redis import get_redis
 from app.models.user import Users
 
 
 def require_permission(
     permission: str | Permission,
-) -> Callable[[Users, AsyncSession], Coroutine[Any, Any, None]]:
+) -> Callable[[Users, AsyncSession, redis.Redis], Coroutine[Any, Any, None]]:  # type: ignore[type-arg]
     """
     Create a FastAPI dependency that requires a specific permission.
 
     Returns a dependency function that:
     1. Gets the current authenticated user
-    2. Checks if they have the required permission
+    2. Checks if they have the required permission (using Redis cache for performance)
     3. Raises 403 if permission is missing
     4. Returns None if permission is present (use with _ to discard)
 
@@ -64,12 +66,14 @@ def require_permission(
     async def permission_checker(
         user: Annotated[Users, Depends(get_current_user)],
         db: Annotated[AsyncSession, Depends(get_db)],
+        redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
     ) -> None:
         # Convert enum to string for error message
         perm_name = permission.value if isinstance(permission, Permission) else permission
 
-        # Check permission
-        if not await has_permission(db, user.user_id, permission):
+        # Check permission (user_id is guaranteed non-None from get_current_user)
+        # Use Redis cache for better performance
+        if not await has_permission(db, user.id, permission, redis_client):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Insufficient permissions. Requires permission: {perm_name}",
@@ -80,7 +84,7 @@ def require_permission(
 
 def require_any_permission(
     permissions: list[str | Permission],
-) -> Callable[[Users, AsyncSession], Coroutine[Any, Any, None]]:
+) -> Callable[[Users, AsyncSession, redis.Redis], Coroutine[Any, Any, None]]:  # type: ignore[type-arg]
     """
     Create a FastAPI dependency that requires ANY of the specified permissions.
 
@@ -112,9 +116,10 @@ def require_any_permission(
     async def permission_checker(
         user: Annotated[Users, Depends(get_current_user)],
         db: Annotated[AsyncSession, Depends(get_db)],
+        redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
     ) -> None:
-        # Check permissions
-        if not await has_any_permission(db, user.user_id, permissions):
+        # Check permissions (using Redis cache for better performance)
+        if not await has_any_permission(db, user.id, permissions, redis_client):
             # Convert enums to strings for error message
             perm_names = [p.value if isinstance(p, Permission) else p for p in permissions]
             raise HTTPException(
@@ -127,7 +132,7 @@ def require_any_permission(
 
 def require_all_permissions(
     permissions: list[str | Permission],
-) -> Callable[[Users, AsyncSession], Coroutine[Any, Any, None]]:
+) -> Callable[[Users, AsyncSession, redis.Redis], Coroutine[Any, Any, None]]:  # type: ignore[type-arg]
     """
     Create a FastAPI dependency that requires ALL of the specified permissions.
 
@@ -158,11 +163,13 @@ def require_all_permissions(
     async def permission_checker(
         user: Annotated[Users, Depends(get_current_user)],
         db: Annotated[AsyncSession, Depends(get_db)],
+        redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
     ) -> None:
-        # Get user's permissions
-        from app.core.permissions import get_user_permissions
+        # Get user's permissions (using Redis cache for better performance)
+        from app.core.permission_cache import get_cached_user_permissions
 
-        user_perms = await get_user_permissions(db, user.user_id)
+        assert user.user_id is not None
+        user_perms = await get_cached_user_permissions(db, redis_client, user.user_id)
         required_set = {p.value if isinstance(p, Permission) else p for p in permissions}
 
         # Check if user has all required permissions

@@ -15,8 +15,10 @@ services:
     command: >
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
-      --max_connections=200
-      --innodb_buffer_pool_size=256M
+      --max_connections=400
+      --innodb_buffer_pool_size=512M
+      --innodb_write_io_threads=8
+      --innodb_read_io_threads=8
     ports:
       - "3306:3306"
     volumes:
@@ -28,6 +30,14 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 2G
+        reservations:
+          cpus: '2'
+          memory: 1G
 
   # Redis (for caching + optional Arq)
   redis:
@@ -51,27 +61,26 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: shuushuu-api
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    user: "${UID:-1000}:${GID:-1000}"
+    command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude 'tests/*' --reload-exclude '*.pyc' --reload-exclude '__pycache__/*'
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      - ENVIRONMENT=${ENVIRONMENT:-development}
+      # Container-specific overrides (hostnames differ from host machine)
       - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - SECRET_KEY=${SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
-      - IQDB_PORT=${IQDB_PORT:-5588}
-      - TASK_QUEUE_TYPE=${TASK_QUEUE_TYPE:-background}
-      - DEBUG=${DEBUG:-True}
       # Prevent Python from writing pyc files and __pycache__ dirs
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
-      - .:/app
+      # Mount only necessary directories, excluding .venv to prevent conflicts
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
-      # Anonymous volumes to isolate container artifacts from host
-      - /app/.venv
-      - /app/.pytest_cache
-      - /app/.ruff_cache
     depends_on:
       mariadb:
         condition: service_healthy
@@ -105,9 +114,21 @@ services:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}:ro
       # Mount nginx configs
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/nginx/frontend.conf.template:/etc/nginx/conf.d/frontend.conf.template:ro
+      # Note: frontend.conf is provided by environment-specific compose files:
+      #   - docker-compose.override.yml (dev) -> frontend.conf.dev
+      #   - docker-compose.test.yml (test) -> frontend.conf.test
+      # Basic auth credentials
+      # By default we mount a sample file that should be tracked in git:
+      #   ./docker/nginx/.htpasswd.example  ->  /etc/nginx/.htpasswd
+      # To use custom credentials, either edit that file or replace it with:
+      #   cp docker/nginx/.htpasswd.example docker/nginx/.htpasswd
+      #   htpasswd docker/nginx/.htpasswd <username>
+      # and update this mount path if needed.
+      - ./docker/nginx/.htpasswd.example:/etc/nginx/.htpasswd:ro
+      # Note: Let's Encrypt certificate volumes are in docker-compose.test.yml (test mode only)
     ports:
-      - "3000:80"
+      - "80:80"
+      - "443:443"
     extra_hosts:
       - "host.docker.internal:host-gateway"  # Enable accessing host from Docker
     depends_on:
@@ -120,25 +141,24 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: shuushuu-arq-worker
-    command: uv run arq app.tasks.worker.WorkerSettings
+    user: "${UID:-1000}:${GID:-1000}"
+    command: uv run --no-project arq app.tasks.worker.WorkerSettings
+    env_file: .env
     environment:
-      - ENVIRONMENT=${ENVIRONMENT:-development}
+      # Container-specific overrides (hostnames differ from host machine)
       - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - ARQ_REDIS_URL=${ARQ_REDIS_URL:-redis://redis:6379/1}
-      - SECRET_KEY=${SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
-      - IQDB_PORT=${IQDB_PORT:-5588}
-      - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
       # Prevent Python from writing pyc files
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
-      - .:/app
-      - ${STORAGE_PATH:-./storage}:${STORAGE_PATH:-/shuushuu/images}
-      # Anonymous volumes to isolate container artifacts
-      - /app/.venv
-      - /app/.pytest_cache
-      - /app/.ruff_cache
+      # Mount only necessary directories, excluding .venv to prevent conflicts
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
     depends_on:
       redis:
         condition: service_healthy

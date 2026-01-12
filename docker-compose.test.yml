@@ -1,0 +1,107 @@
+# Test override - HTTPS with Let's Encrypt
+services:
+  mariadb:
+    container_name: shuushuu-mariadb-test
+
+  redis:
+    container_name: shuushuu-redis-test
+
+  frontend:
+    build:
+      context: ../shuushuu-frontend
+      dockerfile: Dockerfile
+      args:
+        - PUBLIC_ENVIRONMENT=test
+        - PUBLIC_API_URL=http://nginx:8080
+        - PUBLIC_DEBUG=false
+    container_name: shuushuu-frontend-test
+    environment:
+      - PUBLIC_ENVIRONMENT=test
+      - PUBLIC_API_URL=http://nginx:8080
+      - STORAGE_PATH=${STORAGE_PATH}
+      - NODE_OPTIONS=--max-old-space-size=4096
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    # No ports exposed - accessed via nginx proxy
+    networks:
+      - default
+
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/frontend.conf.test:/etc/nginx/conf.d/frontend.conf.template:ro
+      - ./docker/certbot/conf:/etc/letsencrypt:ro
+      - ./docker/certbot/www:/var/www/certbot:ro
+    environment:
+      - NGINX_HOST=${DOMAIN}
+      - NGINX_PORT=443
+    depends_on:
+      frontend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    # Don't expose directly in production, go through nginx
+    ports: []
+    env_file: .env.test
+    restart: always
+
+  arq-worker:
+    env_file: .env.test
+    restart: always
+
+  iqdb:
+    container_name: shuushuu-iqdb-test
+
+  adminer:
+    container_name: shuushuu-adminer-test
+
+  redis-commander:
+    container_name: shuushuu-redis-commander-test
+
+  # Certbot for Let's Encrypt SSL certificates (test mode only)
+  certbot:
+    image: certbot/certbot:latest
+    container_name: shuushuu-certbot-test
+    volumes:
+      - ./docker/certbot/conf:/etc/letsencrypt
+      - ./docker/certbot/www:/var/www/certbot
+    command: >
+      sh -c "
+      if [ -d /etc/letsencrypt/live ]; then
+        echo 'Certificates found. Starting renewal loop...'
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet || echo 'Renewal check completed'
+          sleep 12h
+        done
+      else
+        echo 'No certificates found in /etc/letsencrypt/live'
+        echo 'To generate certificates, run:'
+        echo '  docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm certbot certonly --webroot -w /var/www/certbot -d your-domain.com'
+        echo 'Then restart the services.'
+        sleep infinity
+      fi
+      "
+    depends_on:
+      - nginx
+
+volumes:
+  # Override generic volume names with test-specific names for data isolation
+  mariadb_data:
+    name: mariadb_data_test
+    driver: local
+  redis_data:
+    name: redis_data_test
+    driver: local
+  iqdb_data:
+    name: iqdb_data_test
+    driver: local

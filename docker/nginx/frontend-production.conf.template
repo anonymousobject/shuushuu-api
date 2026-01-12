@@ -1,0 +1,196 @@
+# Production nginx configuration
+# Requires SSL certificates to be mounted into the container
+#
+# HTTP server - Allow ACME challenges and redirect to HTTPS
+server {
+    listen 80;
+    server_name ${NGINX_HOST};
+
+    # Allow Let's Encrypt ACME challenges
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Redirect all other HTTP traffic to HTTPS
+    location / {
+        return 301 https://$server_name$request_uri;
+    }
+}
+
+# =============================================================================
+# Internal HTTP server for SSR requests (Docker container-to-container ONLY)
+# =============================================================================
+# Listens on port 8080 which is NOT exposed to the Internet (only 80/443 are
+# mapped in docker-compose). This ensures external clients cannot reach this
+# endpoint even by spoofing the Host header.
+#
+# Purpose: SvelteKit SSR runs inside the frontend container and needs to fetch
+# data from the API. It uses http://nginx:8080/api/... for these requests.
+# Since this is internal Docker network traffic, HTTPS is unnecessary.
+# =============================================================================
+server {
+    listen 8080;
+    server_name nginx;  # Only matches Docker-internal requests
+
+    client_max_body_size 100M;
+
+    # API proxy - the only endpoint SSR needs
+    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto http;
+        proxy_http_version 1.1;
+    }
+
+    # Health check
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+}
+
+# HTTPS server
+server {
+    listen 443 ssl;
+    server_name ${NGINX_HOST};
+    http2 on;
+
+    # SSL Configuration - Let's Encrypt certificates
+    ssl_certificate /etc/letsencrypt/live/${NGINX_HOST}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${NGINX_HOST}/privkey.pem;
+
+    # Modern SSL configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers off;
+
+    # SSL session cache
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    # OCSP stapling
+    # Note: For full OCSP stapling in production, you may need to:
+    # - Add ssl_trusted_certificate directive pointing to your CA bundle
+    # - Configure resolver directive (e.g., resolver 8.8.8.8 8.8.4.4 valid=300s;)
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    client_max_body_size 100M;
+
+    # API proxy to FastAPI backend
+    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Protected image routes - proxy to FastAPI for permission checks
+    location ~ "^/images/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ "^/thumbs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ "^/medium/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ "^/large/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Internal locations - only accessible via X-Accel-Redirect from FastAPI
+    location /internal/fullsize/ {
+        internal;
+        alias ${STORAGE_PATH}/fullsize/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /internal/thumbs/ {
+        internal;
+        alias ${STORAGE_PATH}/thumbs/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /internal/medium/ {
+        internal;
+        alias ${STORAGE_PATH}/medium/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /internal/large/ {
+        internal;
+        alias ${STORAGE_PATH}/large/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Avatars - no protection needed, serve directly
+    location /images/avatars/ {
+        alias ${STORAGE_PATH}/avatars/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Frontend - proxy to SvelteKit SSR server (production build in Docker)
+    location / {
+        proxy_pass http://frontend:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Increase buffer sizes for large SvelteKit modulepreload headers
+        proxy_buffer_size 16k;
+        proxy_buffers 4 16k;
+        proxy_busy_buffers_size 32k;
+    }
+
+    # Health check
+    location /health {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "healthy\n";
+    }
+}

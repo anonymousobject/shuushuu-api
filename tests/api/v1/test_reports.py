@@ -14,8 +14,11 @@ from app.config import ImageStatus, ReportStatus, ReviewStatus
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.image_report import ImageReports
+from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
+from app.models.tag import Tags
+from app.models.tag_link import TagLinks
 from app.models.user import Users
 
 
@@ -114,6 +117,29 @@ async def grant_permission(db_session: AsyncSession, user_id: int, perm_title: s
         user_group = UserGroups(user_id=user_id, group_id=group.group_id)
         db_session.add(user_group)
 
+    await db_session.commit()
+
+
+async def create_test_tags(db_session: AsyncSession, count: int = 3) -> list[Tags]:
+    """Create test tags and return them."""
+    tags = []
+    for i in range(count):
+        tag = Tags(
+            title=f"test_tag_{i}",
+            type=1,  # Theme
+        )
+        db_session.add(tag)
+        tags.append(tag)
+    await db_session.commit()
+    for tag in tags:
+        await db_session.refresh(tag)
+    return tags
+
+
+async def add_tag_to_image(db_session: AsyncSession, image_id: int, tag_id: int) -> None:
+    """Add a tag to an image."""
+    tag_link = TagLinks(image_id=image_id, tag_id=tag_id)
+    db_session.add(tag_link)
     await db_session.commit()
 
 
@@ -280,6 +306,41 @@ class TestAdminReportsList:
         assert response.status_code == 200
         assert response.json()["total"] == 1
 
+    async def test_list_reports_default_shows_pending(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Default listing (no status param) should show only pending reports."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        # One pending and one dismissed
+        pending = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            status=ReportStatus.PENDING,
+        )
+        dismissed = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            status=ReportStatus.DISMISSED,
+        )
+        db_session.add(pending)
+        db_session.add(dismissed)
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/admin/reports",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+
     async def test_list_reports_without_permission(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -293,6 +354,43 @@ class TestAdminReportsList:
         )
 
         assert response.status_code == 403
+
+    async def test_list_reports_includes_tag_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that list reports includes tag suggestions for MISSING_TAGS reports."""
+        admin, password = await create_auth_user(db_session, username="listtest", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, admin.username, password)
+
+        # Create report with suggestions
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # MISSING_TAGS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/admin/reports",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        report_item = data["items"][0]
+        assert report_item["suggested_tags"] is not None
+        assert len(report_item["suggested_tags"]) == 2
 
 
 @pytest.mark.api
@@ -351,6 +449,77 @@ class TestAdminReportDismiss:
         )
 
         assert response.status_code == 400
+
+    async def test_dismiss_report_with_tag_suggestions_marks_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test dismissing report with tag suggestions marks all as rejected."""
+        admin, password = await create_auth_user(db_session, username="dismisstest", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # MISSING_TAGS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/dismiss",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify all suggestions marked as rejected
+        for s in suggestions:
+            await db_session.refresh(s)
+            assert s.accepted is False
+
+    async def test_dismiss_report_with_admin_notes(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test dismissing report with admin notes."""
+        admin, password = await create_auth_user(db_session, username="dismissnotes", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/dismiss",
+            json={"admin_notes": "Not a valid report, user misunderstood."},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify admin notes saved
+        await db_session.refresh(report)
+        assert report.admin_notes == "Not a valid report, user misunderstood."
 
 
 @pytest.mark.api
@@ -620,3 +789,448 @@ class TestReportValidation:
         To enforce valid values, add a validator to ReportActionRequest schema.
         """
         pass
+
+
+@pytest.mark.api
+class TestReportWithTagSuggestions:
+    """Tests for MISSING_TAGS reports with tag suggestions."""
+
+    async def test_report_with_valid_tag_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating MISSING_TAGS report with valid tag suggestions."""
+        user, password = await create_auth_user(db_session, username="taguser1")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,  # MISSING_TAGS
+                "reason_text": "Missing character tags",
+                "suggested_tag_ids": [t.tag_id for t in tags],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["category"] == 4
+        assert data["suggested_tags"] is not None
+        assert len(data["suggested_tags"]) == 3
+
+    async def test_report_skips_invalid_tag_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that invalid tag IDs are skipped and reported."""
+        user, password = await create_auth_user(db_session, username="taguser2")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "suggested_tag_ids": [tags[0].tag_id, 999999, tags[1].tag_id],  # 999999 is invalid
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["suggested_tags"]) == 2
+        assert data["skipped_tags"]["invalid_tag_ids"] == [999999]
+
+    async def test_report_skips_tags_already_on_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tags already on image are skipped and reported."""
+        user, password = await create_auth_user(db_session, username="taguser3")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        # Add first tag to image
+        await add_tag_to_image(db_session, image.image_id, tags[0].tag_id)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "suggested_tag_ids": [t.tag_id for t in tags],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["suggested_tags"]) == 2
+        assert tags[0].tag_id in data["skipped_tags"]["already_on_image"]
+
+    async def test_report_rejects_tag_suggestions_for_non_missing_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag suggestions are rejected for non-MISSING_TAGS categories."""
+        user, password = await create_auth_user(db_session, username="taguser4")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 1,  # REPOST, not MISSING_TAGS
+                "suggested_tag_ids": [t.tag_id for t in tags],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_report_with_duplicate_tag_ids_dedupes(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that duplicate tag IDs are deduplicated."""
+        user, password = await create_auth_user(db_session, username="taguser5")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "suggested_tag_ids": [tags[0].tag_id, tags[0].tag_id, tags[1].tag_id],  # Duplicate
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["suggested_tags"]) == 2
+
+    async def test_report_missing_tags_without_suggestions_still_works(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test MISSING_TAGS report without suggestions (just reason_text) still works."""
+        user, password = await create_auth_user(db_session, username="taguser6")
+        image = await create_test_image(db_session, user.user_id)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "reason_text": "Missing some tags but I don't know which ones",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["suggested_tags"] is None or len(data["suggested_tags"]) == 0
+
+
+@pytest.mark.api
+class TestAdminApplyTagSuggestions:
+    """Tests for POST /api/v1/admin/reports/{report_id}/apply-tag-suggestions endpoint."""
+
+    async def test_apply_all_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test applying all tag suggestions to an image."""
+        admin, password = await create_auth_user(db_session, username="applytest1", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        token = await login_user(client, admin.username, password)
+
+        # Create report with suggestions
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": [s.suggestion_id for s in suggestions]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["applied_tags"]) == 3
+
+        # Verify tags were added to image
+        from sqlalchemy import select as sql_select
+
+        tag_links = await db_session.execute(
+            sql_select(TagLinks).where(TagLinks.image_id == image.image_id)
+        )
+        assert len(tag_links.scalars().all()) == 3
+
+    async def test_apply_partial_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test applying only some tag suggestions."""
+        admin, password = await create_auth_user(db_session, username="applytest2", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        # Only approve first 2 suggestions
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={
+                "approved_suggestion_ids": [
+                    suggestions[0].suggestion_id,
+                    suggestions[1].suggestion_id,
+                ]
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["applied_tags"]) == 2
+
+        # Verify suggestions were marked correctly
+        await db_session.refresh(suggestions[0])
+        await db_session.refresh(suggestions[1])
+        await db_session.refresh(suggestions[2])
+        assert suggestions[0].accepted is True
+        assert suggestions[1].accepted is True
+        assert suggestions[2].accepted is False
+
+    async def test_apply_empty_list_rejects_all(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test applying empty list rejects all suggestions."""
+        admin, password = await create_auth_user(db_session, username="applytest3", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": []},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify all suggestions rejected
+        await db_session.refresh(suggestions[0])
+        await db_session.refresh(suggestions[1])
+        assert suggestions[0].accepted is False
+        assert suggestions[1].accepted is False
+
+    async def test_apply_with_admin_notes(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test applying suggestions with admin notes."""
+        admin, password = await create_auth_user(db_session, username="applytest4", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=1)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tags[0].tag_id)
+        db_session.add(s)
+        await db_session.commit()
+        await db_session.refresh(s)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={
+                "approved_suggestion_ids": [s.suggestion_id],
+                "admin_notes": "Good suggestions, approved all.",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify admin notes saved
+        await db_session.refresh(report)
+        assert report.admin_notes == "Good suggestions, approved all."
+
+    async def test_apply_to_nonexistent_report_fails(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test applying to nonexistent report returns 404."""
+        admin, password = await create_auth_user(db_session, username="applytest5", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        token = await login_user(client, admin.username, password)
+
+        response = await client.post(
+            "/api/v1/admin/reports/999999/apply-tag-suggestions",
+            json={"approved_suggestion_ids": []},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 404
+
+    async def test_apply_without_permission_fails(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test applying without REPORT_MANAGE permission fails."""
+        user, password = await create_auth_user(db_session, username="noperm5")
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            "/api/v1/admin/reports/1/apply-tag-suggestions",
+            json={"approved_suggestion_ids": []},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+
+    async def test_apply_to_non_missing_tags_report_fails(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test applying tag suggestions to non-MISSING_TAGS report fails."""
+        admin, password = await create_auth_user(db_session, username="applytest6", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, password)
+
+        # Create a REPOST report (category 1), not MISSING_TAGS (category 4)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,  # REPOST
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": []},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 400
+        assert "MISSING_TAGS" in response.json()["detail"]
+
+    async def test_tag_already_added_between_report_and_review(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test handling when a suggested tag is already on the image at review time."""
+        admin, password = await create_auth_user(db_session, username="applytest7", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        token = await login_user(client, admin.username, password)
+
+        # Create MISSING_TAGS report with suggestions
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # MISSING_TAGS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        # Add suggestions for all three tags
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        # Simulate someone already adding the first tag to the image
+        # (this happens between report creation and admin review)
+        await add_tag_to_image(db_session, image.image_id, tags[0].tag_id)
+
+        # Try to approve all suggestions
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": [s.suggestion_id for s in suggestions]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should have 2 applied tags (tags[1] and tags[2])
+        # and 1 already present (tags[0])
+        assert len(data["applied_tags"]) == 2
+        assert len(data["already_present"]) == 1
+        assert tags[0].tag_id in data["already_present"]
+
+        # Verify only 2 new tags were actually added
+        from sqlalchemy import select as sql_select
+
+        tag_links = await db_session.execute(
+            sql_select(TagLinks).where(TagLinks.image_id == image.image_id)
+        )
+        all_tag_links = tag_links.scalars().all()
+        assert len(all_tag_links) == 3  # 1 already present + 2 newly added

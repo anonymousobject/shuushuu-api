@@ -7,15 +7,18 @@ This file provides common fixtures for all tests.
 import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.database import get_db
+from app.core.redis import get_redis
 from app.main import app as main_app
 
 # =============================================================================
@@ -28,7 +31,7 @@ DEFAULT_TEST_DB_USER = "shuushuu"
 DEFAULT_TEST_DB_PASSWORD = "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
 DEFAULT_TEST_DB_HOST = "localhost"
 DEFAULT_TEST_DB_PORT = "3306"
-DEFAULT_TEST_DB_NAME = "shuushuu_test"
+DEFAULT_TEST_DB_NAME = "shuushuu_pytest"  # Separate from staging environment (shuushuu_test in .env.test)
 DEFAULT_ROOT_PASSWORD = "root_password"
 
 
@@ -109,6 +112,62 @@ def _get_test_database_url() -> tuple[str, str]:
 TEST_DATABASE_URL, TEST_DATABASE_URL_SYNC = _get_test_database_url()
 
 
+def _create_tag_search_and_popularity_features(sync_engine):
+    """
+    Create FULLTEXT index and triggers for tag search and popularity tracking.
+
+    This mirrors the schema created by alembic/versions/tag_search_and_popularity.py
+    so that test database matches production exactly. These features must be created
+    after SQLModel.metadata.create_all() since they depend on tables existing.
+
+    Args:
+        sync_engine: SQLAlchemy sync engine connected to test database
+    """
+    from sqlalchemy import text
+
+    with sync_engine.connect() as conn:
+        # Create FULLTEXT index for tag search
+        try:
+            conn.execute(text("ALTER TABLE tags ADD FULLTEXT INDEX ft_tags_title (title)"))
+        except Exception:
+            # Index may already exist; silently continue
+            pass
+
+        # Create trigger for INSERT on tag_links (increment usage_count)
+        try:
+            conn.execute(
+                text("""
+                    CREATE TRIGGER trig_tag_links_insert AFTER INSERT ON tag_links
+                    FOR EACH ROW
+                    BEGIN
+                        UPDATE tags SET usage_count = usage_count + 1
+                        WHERE tag_id = NEW.tag_id;
+                    END
+                """)
+            )
+        except Exception:
+            # Trigger may already exist; silently continue
+            pass
+
+        # Create trigger for DELETE on tag_links (decrement usage_count)
+        try:
+            conn.execute(
+                text("""
+                    CREATE TRIGGER trig_tag_links_delete AFTER DELETE ON tag_links
+                    FOR EACH ROW
+                    BEGIN
+                        UPDATE tags SET usage_count = GREATEST(0, usage_count - 1)
+                        WHERE tag_id = OLD.tag_id;
+                    END
+                """)
+            )
+        except Exception:
+            # Trigger may already exist; silently continue
+            pass
+
+        conn.commit()
+
+
 @pytest.fixture(scope="session")
 def anyio_backend():
     """Use asyncio backend for async tests."""
@@ -124,14 +183,20 @@ def setup_test_database():
     1. Test database is dropped and recreated (clean slate)
     2. Latest Alembic migrations are applied
     3. Schema matches production exactly
+    4. Test user is created with proper permissions
 
-    Note: Uses root credentials to create database, then runs migrations
-    with the shuushuu user credentials.
+    Note: Uses root credentials to create database and user, then runs migrations
+    with the test user credentials.
     """
     import os
 
     # Get MySQL root password from environment or use default
-    root_password = os.getenv("MYSQL_ROOT_PASSWORD", "root_password")
+    # First try MARIADB_ROOT_PASSWORD (from .env files), then fall back to MYSQL_ROOT_PASSWORD
+    root_password = os.getenv("MARIADB_ROOT_PASSWORD") or os.getenv("MYSQL_ROOT_PASSWORD", DEFAULT_ROOT_PASSWORD)
+
+    # Get test user credentials (these can be overridden via environment)
+    test_user = os.getenv("TEST_DB_USER", DEFAULT_TEST_DB_USER)
+    test_password = os.getenv("TEST_DB_PASSWORD", DEFAULT_TEST_DB_PASSWORD)
 
     # Use root user to drop/create database (needs elevated privileges)
     admin_engine = create_engine(
@@ -139,28 +204,38 @@ def setup_test_database():
         isolation_level="AUTOCOMMIT",
     )
 
+    # Extract database name from test URL for operations
+    test_db_name = os.getenv("TEST_DB_NAME", DEFAULT_TEST_DB_NAME)
+
     with admin_engine.connect() as conn:
         # Drop and recreate test database
-        conn.execute(text("DROP DATABASE IF EXISTS shuushuu_test"))
+        conn.execute(text(f"DROP DATABASE IF EXISTS {test_db_name}"))
         conn.execute(
-            text("CREATE DATABASE shuushuu_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+            text(f"CREATE DATABASE {test_db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
         )
 
-        # Grant permissions to shuushuu user on test database
-        conn.execute(text("GRANT ALL PRIVILEGES ON shuushuu_test.* TO 'shuushuu'@'%'"))
+        # Create test user if it doesn't exist
+        conn.execute(
+            text("CREATE USER IF NOT EXISTS :username@'%' IDENTIFIED BY :password"),
+            {"username": test_user, "password": test_password},
+        )
+
+        # Grant permissions to test user on test database
+        conn.execute(
+            text(f"GRANT ALL PRIVILEGES ON {test_db_name}.* TO :username@'%'"),
+            {"username": test_user},
+        )
         conn.execute(text("FLUSH PRIVILEGES"))
 
     admin_engine.dispose()
 
     # Create tables using SQLAlchemy metadata (sync engine)
-    # Note: Alembic migrations are incomplete (initial migration is empty),
-    # so we use the ORM models as source of truth for the schema
+    # Note: SQLModel doesn't support database triggers natively, so we create tables first,
+    # then manually create triggers to match the production Alembic migration.
+    # This ensures test schema matches production exactly.
     from sqlmodel import SQLModel
 
     from app.models.admin_action import AdminActions  # noqa: F401
-
-    # Import ALL SQLModel-based models to register them with SQLModel.metadata
-    # This ensures all tables are created in the test database
     from app.models.ban import Bans  # noqa: F401
     from app.models.comment import Comments  # noqa: F401
     from app.models.favorite import Favorites  # noqa: F401
@@ -196,9 +271,13 @@ def setup_test_database():
 
     sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 
-    # Create tables from SQLModel metadata ONLY
-    # (We skip Base.metadata to avoid conflicts with deprecated generated.py models)
+    # Create base tables from SQLModel metadata
     SQLModel.metadata.create_all(sync_engine)
+
+    # Create database enhancements (FULLTEXT index and triggers) that match production
+    # These are defined in alembic/versions/tag_search_and_popularity.py
+    # We create them here so tests use identical schema to production
+    _create_tag_search_and_popularity_features(sync_engine)
 
     sync_engine.dispose()
 
@@ -217,7 +296,7 @@ def setup_test_database():
     #     isolation_level="AUTOCOMMIT",
     # )
     # with admin_engine.connect() as conn:
-    #     conn.execute(text("DROP DATABASE IF EXISTS shuushuu_test"))
+    #     conn.execute(text(f"DROP DATABASE IF EXISTS {test_db_name}"))
     # admin_engine.dispose()
 
 
@@ -247,11 +326,15 @@ async def engine():
         # Disable foreign key checks temporarily
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
 
+        # Get database name from the connection URL
+        db_url = make_url(TEST_DATABASE_URL)
+        db_name = db_url.database
+
         # Get all tables
         result = await conn.execute(
             text(
                 "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'shuushuu_test' AND table_type = 'BASE TABLE'"
+                f"WHERE table_schema = '{db_name}' AND table_type = 'BASE TABLE'"
             )
         )
         tables = [row[0] for row in result]
@@ -319,8 +402,28 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
         await session.rollback()
 
 
+@pytest.fixture
+async def mock_redis():
+    """Mock Redis client for permission caching and other features."""
+    mock = MagicMock()
+    mock.get = AsyncMock(return_value=None)  # Cache miss by default
+    mock.set = AsyncMock()
+    mock.setex = AsyncMock()  # For permission cache with TTL
+    mock.delete = AsyncMock()  # For cache invalidation
+    mock.incr = AsyncMock()
+    mock.expire = AsyncMock()
+    mock.close = AsyncMock()
+
+    # Setup pipeline mock
+    pipeline_mock = MagicMock()
+    pipeline_mock.execute = AsyncMock()
+    mock.pipeline.return_value = pipeline_mock
+
+    return mock
+
+
 @pytest.fixture(scope="function")
-def app(db_session: AsyncSession) -> FastAPI:
+def app(db_session: AsyncSession, mock_redis) -> FastAPI:
     """
     Create FastAPI app with test database session.
 
@@ -330,7 +433,11 @@ def app(db_session: AsyncSession) -> FastAPI:
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
+    async def override_get_redis():
+        yield mock_redis
+
     main_app.dependency_overrides[get_db] = override_get_db
+    main_app.dependency_overrides[get_redis] = override_get_redis
 
     yield main_app
 
@@ -422,6 +529,61 @@ async def test_image(db_session: AsyncSession, test_user):
 
 
 @pytest.fixture
+async def another_test_image(db_session: AsyncSession, test_user):
+    """Create a second test image for tests that need multiple images."""
+    from app.models.image import Images
+
+    image = Images(
+        filename="test-image-002",
+        ext="jpg",
+        original_filename="test2.jpg",
+        md5_hash="e41d8cd98f00b204e9800998ecf8427f",
+        filesize=234567,
+        width=1280,
+        height=720,
+        caption="Second test image from fixture",
+        rating=0.0,
+        user_id=test_user.user_id,
+        status=1,
+        locked=False,
+    )
+    db_session.add(image)
+    await db_session.commit()
+    await db_session.refresh(image)
+    return image
+
+
+@pytest.fixture
+async def test_images_batch(db_session: AsyncSession, test_user):
+    """Create a batch of test images for tests that need multiple images."""
+    from app.models.image import Images
+
+    images = []
+    for i in range(5):
+        image = Images(
+            filename=f"test-batch-image-{i:03d}",
+            ext="jpg",
+            original_filename=f"batch{i}.jpg",
+            md5_hash=f"{i:032x}",  # 32-char hex string
+            filesize=100000 + i * 1000,
+            width=800,
+            height=600,
+            caption=f"Batch test image {i}",
+            rating=0.0,
+            user_id=test_user.user_id,
+            status=1,
+            locked=False,
+        )
+        db_session.add(image)
+        images.append(image)
+
+    await db_session.commit()
+    for img in images:
+        await db_session.refresh(img)
+    return images
+
+
+@pytest.fixture
 async def test_tag(db_session: AsyncSession):
     """
     Create a test tag in the database.
@@ -486,3 +648,50 @@ def sample_user_data() -> dict:
         "email": "newuser@example.com",
         "password": "SecurePassword123!",
     }
+
+
+@pytest.fixture
+async def sample_user(db_session: AsyncSession):
+    """
+    Create a sample user in the database for testing.
+
+    This is an alias for test_user but with a different name for semantic clarity
+    in tests that need a user to perform actions (like favoriting images).
+    """
+    from app.models.user import Users
+
+    user = Users(
+        username="sampleuser",
+        password="hashed_password_here",
+        password_type="bcrypt",
+        salt="saltsalt12345678",
+        email="sample@example.com",
+        active=1,  # User must be active to authenticate
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+async def authenticated_client(client: AsyncClient, sample_user) -> AsyncClient:
+    """
+    Create an HTTP client with authentication headers for the sample user.
+
+    Uses the existing client fixture and just adds authentication headers.
+
+    Usage:
+        async def test_protected_endpoint(authenticated_client, sample_user):
+            response = await authenticated_client.get("/api/v1/protected")
+            assert response.status_code == 200
+    """
+    from app.core.security import create_access_token
+
+    # Create access token for the sample user
+    access_token = create_access_token(sample_user.id)
+
+    # Add auth header to existing client
+    client.headers.update({"Authorization": f"Bearer {access_token}"})
+
+    return client

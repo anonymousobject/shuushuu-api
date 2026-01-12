@@ -158,7 +158,7 @@ async def _get_vote_counts(db: AsyncSession, review_id: int) -> dict[int, int]:
         .group_by(ReviewVotes.vote)
     )
     result = await db.execute(stmt)
-    return dict(result.all())
+    return dict(result.all())  # type: ignore[arg-type]
 
 
 async def _close_review(
@@ -280,7 +280,7 @@ async def prune_admin_actions(
     result = await db.execute(stmt)
     await db.commit()
 
-    deleted_count = result.rowcount or 0
+    deleted_count = result.rowcount or 0  # type: ignore[attr-defined]
 
     logger.info(
         f"Pruned {deleted_count} admin_actions older than "

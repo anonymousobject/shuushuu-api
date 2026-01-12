@@ -10,14 +10,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import settings
+from app.core.database import AsyncSessionLocal
 from app.core.logging import (
     clear_request_context,
     configure_logging,
     get_logger,
     set_request_context,
 )
+from app.core.permission_sync import sync_permissions
 from app.tasks.queue import close_queue
 
 # Configure logging on module import
@@ -58,6 +61,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         environment=settings.ENVIRONMENT,
         version="2.0.0",
     )
+
+    # Sync permissions: ensure database matches Permission enum
+    async with AsyncSessionLocal() as db:
+        await sync_permissions(db)
+
     yield
     # Shutdown
     logger.info("application_shutting_down")
@@ -73,6 +81,10 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Add proxy headers middleware (must be first to properly handle X-Forwarded-* headers)
+# Trust only the Docker bridge network to prevent header spoofing
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["172.16.0.0/12"])
 
 # Add request logging middleware (before CORS)
 app.add_middleware(RequestLoggingMiddleware)
@@ -119,6 +131,12 @@ async def health() -> dict[str, str]:
 from app.api.v1 import router as api_v1_router  # noqa: E402
 
 app.include_router(api_v1_router, prefix="/api/v1")
+
+from app.api.v1.media import router as media_router  # noqa: E402
+
+# Mount media routes at root level (not under /api/v1)
+# These serve image files with permission checks via X-Accel-Redirect
+app.include_router(media_router)
 
 # Note: Static images are served directly by nginx for better performance
 # See docker/nginx/frontend.conf.template for configuration

@@ -276,61 +276,61 @@ class TestPermissionDependencies:
     """Test FastAPI permission dependencies."""
 
     async def test_require_permission_allowed(
-        self, db_session: AsyncSession, test_user_with_group: Users
+        self, db_session: AsyncSession, test_user_with_group: Users, mock_redis
     ):
         """Dependency should allow user with permission."""
         dep = require_permission(Permission.IMAGE_EDIT)
         # Should not raise
-        await dep(user=test_user_with_group, db=db_session)
+        await dep(user=test_user_with_group, db=db_session, redis_client=mock_redis)
 
     async def test_require_permission_denied(
-        self, db_session: AsyncSession, test_user_with_group: Users
+        self, db_session: AsyncSession, test_user_with_group: Users, mock_redis
     ):
         """Dependency should deny user without permission."""
         dep = require_permission(Permission.TAG_CREATE)
 
         with pytest.raises(HTTPException) as exc_info:
-            await dep(user=test_user_with_group, db=db_session)
+            await dep(user=test_user_with_group, db=db_session, redis_client=mock_redis)
 
         assert exc_info.value.status_code == 403
         assert "tag_create" in exc_info.value.detail
 
     async def test_require_any_permission_allowed(
-        self, db_session: AsyncSession, test_user_with_group: Users
+        self, db_session: AsyncSession, test_user_with_group: Users, mock_redis
     ):
         """Dependency should allow user with at least one permission."""
         dep = require_any_permission([Permission.TAG_CREATE, Permission.IMAGE_EDIT])
         # Should not raise
-        await dep(user=test_user_with_group, db=db_session)
+        await dep(user=test_user_with_group, db=db_session, redis_client=mock_redis)
 
     async def test_require_any_permission_denied(
-        self, db_session: AsyncSession, test_user_with_group: Users
+        self, db_session: AsyncSession, test_user_with_group: Users, mock_redis
     ):
         """Dependency should deny user without any permission."""
         dep = require_any_permission([Permission.TAG_CREATE, Permission.IMAGE_TAG_ADD])
 
         with pytest.raises(HTTPException) as exc_info:
-            await dep(user=test_user_with_group, db=db_session)
+            await dep(user=test_user_with_group, db=db_session, redis_client=mock_redis)
 
         assert exc_info.value.status_code == 403
         assert "Requires one of" in exc_info.value.detail
 
     async def test_require_all_permissions_allowed(
-        self, db_session: AsyncSession, test_user_with_group: Users
+        self, db_session: AsyncSession, test_user_with_group: Users, mock_redis
     ):
         """Dependency should allow user with all permissions."""
         dep = require_all_permissions([Permission.IMAGE_EDIT, Permission.USER_BAN])
         # Should not raise
-        await dep(user=test_user_with_group, db=db_session)
+        await dep(user=test_user_with_group, db=db_session, redis_client=mock_redis)
 
     async def test_require_all_permissions_denied(
-        self, db_session: AsyncSession, test_user_with_group: Users
+        self, db_session: AsyncSession, test_user_with_group: Users, mock_redis
     ):
         """Dependency should deny user missing any permission."""
         dep = require_all_permissions([Permission.IMAGE_EDIT, Permission.TAG_CREATE])
 
         with pytest.raises(HTTPException) as exc_info:
-            await dep(user=test_user_with_group, db=db_session)
+            await dep(user=test_user_with_group, db=db_session, redis_client=mock_redis)
 
         assert exc_info.value.status_code == 403
         assert "Missing:" in exc_info.value.detail
@@ -351,3 +351,15 @@ class TestPermissionEnum:
         perm = Permission.IMAGE_EDIT
         assert isinstance(perm.value, str)
         assert perm == Permission.IMAGE_EDIT
+
+    def test_permission_has_description(self):
+        """Each permission should have a human-readable description."""
+        assert Permission.TAG_CREATE.description == "Create new tags"
+        assert Permission.IMAGE_EDIT.description == "Deactivate images (soft delete, reversible)"
+        assert Permission.USER_BAN.description == "Ban users and IPs"
+
+    def test_all_permissions_have_descriptions(self):
+        """Every permission in the enum should have a non-empty description."""
+        for perm in Permission:
+            assert perm.description, f"{perm.name} has no description"
+            assert isinstance(perm.description, str)

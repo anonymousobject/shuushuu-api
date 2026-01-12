@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.core.database import get_db
 from app.models import Favorites, Images, Users
+from app.models.permissions import UserGroups
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.user import UserListResponse, UserResponse
 
@@ -45,7 +46,7 @@ async def get_favorite_images(
     # Get user's favorite images
     query = (
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))  # type: ignore[arg-type]
         .join(Favorites)
         .where(Favorites.user_id == user_id)  # type: ignore[arg-type]
     )
@@ -97,7 +98,14 @@ async def get_image_favorites(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Get users who favorited the image
-    query = select(Users).join(Favorites).where(Favorites.image_id == image_id)  # type: ignore[arg-type]
+    query = (
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .join(Favorites)
+        .where(Favorites.image_id == image_id)  # type: ignore[arg-type]
+    )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())

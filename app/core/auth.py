@@ -97,6 +97,9 @@ async def get_current_user(
             detail="User not found",
         )
 
+    # Ensure user_id is not None (database-loaded users always have IDs)
+    assert user.user_id is not None
+
     # Check if user is active
     if not user.active:
         raise HTTPException(
@@ -108,28 +111,37 @@ async def get_current_user(
 
 
 async def get_optional_current_user(
+    access_token: Annotated[str | None, Cookie()] = None,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))
     ] = None,
-    db: Annotated[AsyncSession, Depends(get_db)] | None = None,
+    db: AsyncSession = Depends(get_db),
 ) -> Users | None:
     """
     Get current user if authenticated, otherwise return None.
 
     Useful for endpoints that have different behavior for authenticated vs anonymous users.
+    Checks both Authorization header (Bearer token) and access_token cookie.
 
     Args:
+        access_token: Access token from cookie
         credentials: Optional HTTP Bearer credentials
         db: Database session
 
     Returns:
         User object if authenticated, None otherwise
     """
-    if not credentials or not db:
+    # Get token from either header or cookie (prefer header)
+    token = None
+    if credentials:
+        token = credentials.credentials
+    elif access_token:
+        token = access_token
+
+    if not token:
         return None
 
     try:
-        token = credentials.credentials
         user_id = verify_access_token(token)
         if user_id is None:
             return None
@@ -219,7 +231,27 @@ async def get_refresh_token_from_cookie(
     return refresh_token
 
 
+async def get_verified_user(
+    current_user: Annotated[Users, Depends(get_current_user)],
+) -> Users:
+    """
+    Require authenticated user with verified email.
+
+    Use this dependency for endpoints that require email verification:
+    - Image uploads
+    - Comments
+    - Posts/submissions
+    """
+    if not current_user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email verification required. Check your inbox for verification link or request a new one at /api/v1/auth/resend-verification",
+        )
+    return current_user
+
+
 # Type aliases for dependency injection
 CurrentUser = Annotated[Users, Depends(get_current_user)]
+VerifiedUser = Annotated[Users, Depends(get_verified_user)]
 OptionalCurrentUser = Annotated[Users | None, Depends(get_optional_current_user)]
 AdminUser = Annotated[Users, Depends(require_admin)]

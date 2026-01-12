@@ -13,11 +13,13 @@ from datetime import UTC, datetime
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.security import get_password_hash
-from app.models.permissions import Perms, UserPerms
+from app.models.permissions import Groups, Perms, UserGroups, UserPerms
 from app.models.privmsg import Privmsgs
 from app.models.user import Users
+from app.config import settings
 
 
 @pytest.mark.api
@@ -41,10 +43,23 @@ class TestGetReceivedPrivmsgs:
         await db_session.commit()
         await db_session.refresh(user)
 
-        # Create messages sent to user (received)
+        # Create a sender user with an avatar and messages sent to user (received)
+        sender = Users(
+            username="sendr",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="sender@example.com",
+            active=1,
+            avatar="sender.png",
+        )
+        db_session.add(sender)
+        await db_session.commit()
+        await db_session.refresh(sender)
+
         for i in range(3):
             msg = Privmsgs(
-                from_user_id=2,
+                from_user_id=sender.user_id,
                 to_user_id=user.user_id,
                 text=f"Message {i} to user",
                 date=datetime.now(UTC),
@@ -81,6 +96,8 @@ class TestGetReceivedPrivmsgs:
         assert data["total"] == 3
         for msg in data["messages"]:
             assert msg["to_user_id"] == user.user_id
+            # Avatar URL should be present and correctly generated
+            assert msg.get("from_avatar_url") == f"{settings.IMAGE_BASE_URL}/images/avatars/sender.png"
 
     async def test_get_received_messages_unauthenticated(self, client: AsyncClient):
         """Test getting received messages without authentication."""
@@ -178,6 +195,95 @@ class TestGetReceivedPrivmsgs:
         )
         assert response.status_code == 403
 
+    async def test_delete_privmsg_marks_to_del_for_recipient(self, client: AsyncClient, db_session: AsyncSession):
+        """Test recipient deleting a message marks to_del and preserves row if sender hasn't deleted."""
+        # Create recipient
+        recipient = Users(
+            username="delrecipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="delrecipient@example.com",
+            active=1,
+        )
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(recipient)
+
+        # Create message to recipient
+        msg = Privmsgs(from_user_id=2, to_user_id=recipient.user_id, text="Please delete me")
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        # Login as recipient
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "delrecipient", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Delete message
+        response = await client.delete(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        assert response.status_code == 204
+
+        # Refresh from DB
+        await db_session.refresh(msg)
+        assert msg.to_del == 1
+
+    async def test_delete_privmsg_deleted_when_both_deleted(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that message row is removed when both parties have deleted it."""
+        # Create sender and recipient
+        sender = Users(
+            username="delsender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="delsender@example.com",
+            active=1,
+        )
+        recipient = Users(
+            username="delrecipient2",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="delrecipient2@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(sender)
+        await db_session.refresh(recipient)
+
+        # Create message
+        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Temp message")
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        # Sender deletes
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "delsender", "password": "TestPassword123!"},
+        )
+        access_token_sender = login_response.json()["access_token"]
+        response = await client.delete(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token_sender}"})
+        assert response.status_code == 204
+
+        # Recipient deletes, should remove row
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "delrecipient2", "password": "TestPassword123!"},
+        )
+        access_token_recipient = login_response.json()["access_token"]
+        response = await client.delete(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token_recipient}"})
+        assert response.status_code == 204
+
+        # Check that message no longer exists
+        result = await db_session.execute(select(Privmsgs).where(Privmsgs.privmsg_id == msg.privmsg_id))
+        assert result.scalar_one_or_none() is None
+
 
 @pytest.mark.api
 class TestGetSentPrivmsgs:
@@ -201,10 +307,24 @@ class TestGetSentPrivmsgs:
         await db_session.refresh(user)
 
         # Create messages sent by user
+        # Create a recipient with an avatar and messages sent by user
+        recipient = Users(
+            username="recv",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="recv@example.com",
+            active=1,
+            avatar="recv.png",
+        )
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(recipient)
+
         for i in range(3):
             msg = Privmsgs(
                 from_user_id=user.user_id,
-                to_user_id=2,
+                to_user_id=recipient.user_id,
                 text=f"Message {i} from user",
                 date=datetime.now(UTC),
             )
@@ -240,6 +360,8 @@ class TestGetSentPrivmsgs:
         assert data["total"] == 3
         for msg in data["messages"]:
             assert msg["from_user_id"] == user.user_id
+            # Avatar URL for recipient should be present
+            assert msg.get("to_avatar_url") == f"{settings.IMAGE_BASE_URL}/images/avatars/recv.png"
 
     async def test_get_sent_messages_unauthenticated(self, client: AsyncClient):
         """Test getting sent messages without authentication."""
@@ -336,3 +458,421 @@ class TestGetSentPrivmsgs:
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 403
+
+    async def test_get_privmsg_details_and_mark_viewed(self, client: AsyncClient, db_session: AsyncSession):
+        """Recipient should be able to fetch a single privmsg and it should be marked viewed."""
+        # Create sender and recipient
+        sender = Users(
+            username="pm_sender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pm_sender@example.com",
+            active=1,
+        )
+        recipient = Users(
+            username="pm_recipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pm_recipient@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(sender)
+        await db_session.refresh(recipient)
+
+        # Create message from sender to recipient (unviewed)
+        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Hello there", viewed=0)
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        # Login as recipient
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "pm_recipient", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Fetch single message
+        response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["privmsg_id"] == msg.privmsg_id
+        assert data["from_username"] == sender.username
+
+        # Check DB was updated (viewed=1)
+        await db_session.refresh(msg)
+        assert msg.viewed == 1
+
+    async def test_privmsg_handles_html_entities_in_text(self, client: AsyncClient, db_session: AsyncSession):
+        """Ensure messages stored with HTML entities don't double-encode when rendered."""
+        sender = Users(
+            username="entity_sender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="entity_sender@example.com",
+            active=1,
+        )
+        recipient = Users(
+            username="entity_recipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="entity_recipient@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(sender)
+        await db_session.refresh(recipient)
+
+        problematic = 'So I want my title to be &quot;Alpha &amp; Omega&quot; or Alpha N&#039; Omega" if the &amp; character is illegal'
+        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, subject='i&#039;m sad', text=problematic, viewed=0)
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        # Login as recipient
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "entity_recipient", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        assert response.status_code == 200
+        data = response.json()
+
+        # The rendered HTML should not contain double-encoded &amp;quot; sequences
+        assert "&amp;quot;" not in data["text_html"]
+        # It should contain a properly encoded quote entity for HTML output
+        assert "&quot;Alpha" in data["text_html"] or 'Alpha' in data["text_html"]
+
+        # Subject should be normalized and should not contain HTML entity for apostrophe
+        assert "&#039;" not in data["subject"]
+        assert "'" in data["subject"]
+
+    async def test_get_privmsg_details_sender_can_view_without_marking_viewed(self, client: AsyncClient, db_session: AsyncSession):
+        """Sender should be able to fetch their sent message and it should not mark viewed."""
+        sender = Users(
+            username="pm_sender2",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pm_sender2@example.com",
+            active=1,
+        )
+        recipient = Users(
+            username="pm_recipient2",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pm_recipient2@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(sender)
+        await db_session.refresh(recipient)
+
+        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Hi there", viewed=0)
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        # Login as sender
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "pm_sender2", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["privmsg_id"] == msg.privmsg_id
+
+        # Ensure viewed is still 0 in DB
+        await db_session.refresh(msg)
+        assert msg.viewed == 0
+
+    async def test_get_privmsg_details_unauthorized(self, client: AsyncClient, db_session: AsyncSession):
+        """A random third party should not be able to view someone else's message."""
+        sender = Users(
+            username="pm_sender3",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pm_sender3@example.com",
+            active=1,
+        )
+        recipient = Users(
+            username="pm_recipient3",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pm_recipient3@example.com",
+            active=1,
+        )
+        outsider = Users(
+            username="outsider",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="outsider@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        db_session.add(recipient)
+        db_session.add(outsider)
+        await db_session.commit()
+        await db_session.refresh(sender)
+        await db_session.refresh(recipient)
+        await db_session.refresh(outsider)
+
+        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Secret", viewed=0)
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "outsider", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestPrivmsgUserGroups:
+    """Tests for user groups in privmsg responses."""
+
+    async def test_received_messages_include_sender_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that received messages include sender's groups."""
+        # Create a group
+        group = Groups(title="mods", desc="Moderators")
+        db_session.add(group)
+        await db_session.commit()
+        await db_session.refresh(group)
+
+        # Create sender with groups
+        sender = Users(
+            username="groupsender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="groupsender@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        await db_session.commit()
+        await db_session.refresh(sender)
+
+        # Add sender to group
+        user_group = UserGroups(user_id=sender.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Create recipient
+        recipient = Users(
+            username="grouprecipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="grouprecipient@example.com",
+            active=1,
+        )
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(recipient)
+
+        # Create message
+        msg = Privmsgs(
+            from_user_id=sender.user_id,
+            to_user_id=recipient.user_id,
+            text="Message with groups",
+        )
+        db_session.add(msg)
+        await db_session.commit()
+
+        # Login as recipient
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "grouprecipient", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get received messages
+        response = await client.get(
+            "/api/v1/privmsgs/received",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+
+        # Find our message and check sender groups
+        our_msg = next(m for m in data["messages"] if m["from_user_id"] == sender.user_id)
+        assert "from_groups" in our_msg
+        assert "mods" in our_msg["from_groups"]
+
+    async def test_sent_messages_include_recipient_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that sent messages include recipient's groups."""
+        # Create a group
+        group = Groups(title="admins", desc="Administrators")
+        db_session.add(group)
+        await db_session.commit()
+        await db_session.refresh(group)
+
+        # Create sender
+        sender = Users(
+            username="sentgroupsender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="sentgroupsender@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        await db_session.commit()
+        await db_session.refresh(sender)
+
+        # Create recipient with groups
+        recipient = Users(
+            username="sentgrouprecipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="sentgrouprecipient@example.com",
+            active=1,
+        )
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(recipient)
+
+        # Add recipient to group
+        user_group = UserGroups(user_id=recipient.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Create message
+        msg = Privmsgs(
+            from_user_id=sender.user_id,
+            to_user_id=recipient.user_id,
+            text="Message to admin",
+        )
+        db_session.add(msg)
+        await db_session.commit()
+
+        # Login as sender
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "sentgroupsender", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get sent messages
+        response = await client.get(
+            "/api/v1/privmsgs/sent",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+
+        # Find our message and check recipient groups
+        our_msg = next(m for m in data["messages"] if m["to_user_id"] == recipient.user_id)
+        assert "to_groups" in our_msg
+        assert "admins" in our_msg["to_groups"]
+
+    async def test_single_message_includes_both_user_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that single message endpoint includes both sender and recipient groups."""
+        # Create groups
+        mods_group = Groups(title="singlemods", desc="Single Moderators")
+        admins_group = Groups(title="singleadmins", desc="Single Administrators")
+        db_session.add(mods_group)
+        db_session.add(admins_group)
+        await db_session.commit()
+        await db_session.refresh(mods_group)
+        await db_session.refresh(admins_group)
+
+        # Create sender with groups
+        sender = Users(
+            username="singlesender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="singlesender@example.com",
+            active=1,
+        )
+        db_session.add(sender)
+        await db_session.commit()
+        await db_session.refresh(sender)
+
+        # Add sender to mods group
+        sender_group = UserGroups(user_id=sender.user_id, group_id=mods_group.group_id)
+        db_session.add(sender_group)
+
+        # Create recipient with groups
+        recipient = Users(
+            username="singlerecipient",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="singlerecipient@example.com",
+            active=1,
+        )
+        db_session.add(recipient)
+        await db_session.commit()
+        await db_session.refresh(recipient)
+
+        # Add recipient to admins group
+        recipient_group = UserGroups(user_id=recipient.user_id, group_id=admins_group.group_id)
+        db_session.add(recipient_group)
+        await db_session.commit()
+
+        # Create message
+        msg = Privmsgs(
+            from_user_id=sender.user_id,
+            to_user_id=recipient.user_id,
+            text="Both users have groups",
+        )
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        # Login as recipient to view message
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "singlerecipient", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Get single message
+        response = await client.get(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Both groups should be present
+        assert "from_groups" in data
+        assert "singlemods" in data["from_groups"]
+        assert "to_groups" in data
+        assert "singleadmins" in data["to_groups"]

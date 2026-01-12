@@ -12,6 +12,7 @@ These tests cover the /api/v1/tags endpoints including:
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
@@ -19,13 +20,14 @@ from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 
 
 @pytest.mark.api
 class TestListTags:
-    """Tests for GET /api/v1/tags/ endpoint."""
+    """Tests for GET /api/v1/tags endpoint."""
 
     async def test_list_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Test listing tags."""
@@ -39,7 +41,7 @@ class TestListTags:
             db_session.add(tag)
         await db_session.commit()
 
-        response = await client.get("/api/v1/tags/")
+        response = await client.get("/api/v1/tags")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] >= 5
@@ -55,7 +57,7 @@ class TestListTags:
         await db_session.commit()
 
         # Search for "school"
-        response = await client.get("/api/v1/tags/?search=school")
+        response = await client.get("/api/v1/tags?search=school")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -73,12 +75,838 @@ class TestListTags:
         await db_session.commit()
 
         # Filter by THEME type
-        response = await client.get(f"/api/v1/tags/?type={TagType.THEME}")
+        response = await client.get(f"/api/v1/tags?type={TagType.THEME}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
         for tag in data["tags"]:
             assert tag["type"] == TagType.THEME
+
+    async def test_filter_tags_by_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags by specific IDs."""
+        # Create test tags
+        tag1 = Tags(title="tag1", type=TagType.THEME)
+        tag2 = Tags(title="tag2", type=TagType.CHARACTER)
+        tag3 = Tags(title="tag3", type=TagType.ARTIST)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+        await db_session.refresh(tag3)
+
+        # Filter by specific IDs
+        response = await client.get(f"/api/v1/tags?ids={tag1.tag_id},{tag3.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert returned_ids == {tag1.tag_id, tag3.tag_id}
+        # No invalid IDs
+        assert data.get("invalid_ids") is None
+
+    async def test_filter_tags_with_invalid_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags with mix of valid and invalid IDs."""
+        # Create test tags
+        tag1 = Tags(title="tag1", type=TagType.THEME)
+        tag2 = Tags(title="tag2", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+
+        # Mix valid IDs with invalid ones (non-numeric)
+        response = await client.get(f"/api/v1/tags?ids={tag1.tag_id},abc,{tag2.tag_id},xyz")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return valid tags
+        assert data["total"] == 2
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert returned_ids == {tag1.tag_id, tag2.tag_id}
+
+        # Should report invalid IDs
+        assert data["invalid_ids"] is not None
+        assert set(data["invalid_ids"]) == {"abc", "xyz"}
+
+    async def test_filter_tags_with_only_invalid_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags with only invalid IDs."""
+        # Create some tags
+        tag = Tags(title="tag1", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+
+        # Only invalid IDs
+        response = await client.get("/api/v1/tags?ids=abc,xyz,foo")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return no tags
+        assert data["total"] == 0
+        assert len(data["tags"]) == 0
+
+        # Should report all invalid IDs
+        assert data["invalid_ids"] is not None
+        assert set(data["invalid_ids"]) == {"abc", "xyz", "foo"}
+
+    async def test_filter_tags_with_empty_id_strings(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags handles empty strings in ID list gracefully."""
+        # Create test tags
+        tag1 = Tags(title="tag1", type=TagType.THEME)
+        db_session.add(tag1)
+        await db_session.commit()
+        await db_session.refresh(tag1)
+
+        # IDs with empty strings (trailing commas, double commas)
+        response = await client.get(f"/api/v1/tags?ids={tag1.tag_id},,")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return valid tag
+        assert data["total"] == 1
+        assert data["tags"][0]["tag_id"] == tag1.tag_id
+
+        # Empty strings should not be reported as invalid
+        assert data.get("invalid_ids") is None
+
+    async def test_filter_tags_with_duplicate_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags deduplicates duplicate IDs."""
+        # Create test tags
+        tag1 = Tags(title="tag1", type=TagType.THEME)
+        tag2 = Tags(title="tag2", type=TagType.CHARACTER)
+        tag3 = Tags(title="tag3", type=TagType.ARTIST)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+        await db_session.refresh(tag3)
+
+        # Request with duplicate IDs (e.g., ids=1,1,1,2,2,3)
+        response = await client.get(
+            f"/api/v1/tags?ids={tag1.tag_id},{tag1.tag_id},{tag1.tag_id},"
+            f"{tag2.tag_id},{tag2.tag_id},{tag3.tag_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return only unique tags (total = 3, not 6)
+        assert data["total"] == 3
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert returned_ids == {tag1.tag_id, tag2.tag_id, tag3.tag_id}
+
+        # No invalid IDs
+        assert data.get("invalid_ids") is None
+
+    async def test_filter_tags_by_parent_tag_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags by parent tag ID (get child tags)."""
+        # Create parent tag
+        parent_tag = Tags(title="swimsuit", desc="Parent tag for swimsuit types", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tags that inherit from parent
+        child1 = Tags(
+            title="bikini",
+            desc="Two-piece swimsuit",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        child2 = Tags(
+            title="school swimsuit",
+            desc="School-style swimsuit",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        # Create a tag that is NOT a child
+        other_tag = Tags(title="evening dress", desc="Not related to swimsuit", type=TagType.THEME)
+        db_session.add_all([child1, child2, other_tag])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        # Filter by parent tag ID
+        response = await client.get(f"/api/v1/tags?parent_tag_id={parent_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return only the child tags
+        assert data["total"] == 2
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert returned_ids == {child1.tag_id, child2.tag_id}
+        # Verify parent is not included
+        assert parent_tag.tag_id not in returned_ids
+        # Verify other unrelated tag is not included
+        assert other_tag.tag_id not in returned_ids
+
+    async def test_filter_tags_by_parent_with_no_children(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering by parent tag ID when parent has no children."""
+        # Create parent tag with no children
+        parent_tag = Tags(title="lonely parent", desc="Has no children", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Filter by this parent tag ID
+        response = await client.get(f"/api/v1/tags?parent_tag_id={parent_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return empty result
+        assert data["total"] == 0
+        assert len(data["tags"]) == 0
+
+    async def test_filter_tags_by_parent_with_nested_hierarchy(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering by parent tag ID only returns direct children, not grandchildren."""
+        # Create parent tag
+        parent_tag = Tags(title="clothing", desc="Top level category", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tag
+        child_tag = Tags(
+            title="dress",
+            desc="Child of clothing",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add(child_tag)
+        await db_session.commit()
+        await db_session.refresh(child_tag)
+
+        # Create grandchild tag (child of child)
+        grandchild_tag = Tags(
+            title="sundress",
+            desc="Grandchild of clothing",
+            type=TagType.THEME,
+            inheritedfrom_id=child_tag.tag_id,
+        )
+        db_session.add(grandchild_tag)
+        await db_session.commit()
+        await db_session.refresh(grandchild_tag)
+
+        # Filter by parent tag ID
+        response = await client.get(f"/api/v1/tags?parent_tag_id={parent_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return only direct children, not grandchildren
+        assert data["total"] == 1
+        assert data["tags"][0]["tag_id"] == child_tag.tag_id
+        # Grandchild should not be included
+        returned_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert grandchild_tag.tag_id not in returned_ids
+
+    async def test_filter_tags_by_parent_combined_with_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering tags by parent tag ID combined with type filter."""
+        # Create parent tag
+        parent_tag = Tags(title="character trait", desc="Parent tag", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tags with different types
+        child1 = Tags(
+            title="blue eyes",
+            desc="Eye color",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        child2 = Tags(
+            title="red hair",
+            desc="Hair color",
+            type=TagType.CHARACTER,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add_all([child1, child2])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        # Filter by parent tag ID and type
+        response = await client.get(
+            f"/api/v1/tags?parent_tag_id={parent_tag.tag_id}&type={TagType.THEME}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should return only child tags with matching type
+        assert data["total"] == 1
+        assert data["tags"][0]["tag_id"] == child1.tag_id
+        assert data["tags"][0]["type"] == TagType.THEME
+
+
+@pytest.mark.api
+class TestAliasOfName:
+    """Tests for alias_of_name field in tag list responses.
+
+    This feature was added to include the title of the tag being aliased
+    in the tag list response, requiring a self-join on the Tags table.
+    """
+
+    async def test_alias_of_name_when_tag_has_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias_of_name is populated when a tag has an alias_of value."""
+        # Create the original tag
+        original_tag = Tags(
+            title="maid outfit",
+            desc="Maid clothing",
+            type=TagType.THEME,
+        )
+        db_session.add(original_tag)
+        await db_session.commit()
+        await db_session.refresh(original_tag)
+
+        # Create an alias tag that points to the original
+        alias_tag = Tags(
+            title="maid dress",
+            desc="Alternative name for maid outfit",
+            type=TagType.THEME,
+            alias_of=original_tag.tag_id,
+        )
+        db_session.add(alias_tag)
+        await db_session.commit()
+        await db_session.refresh(alias_tag)
+
+        # Get the tag list
+        response = await client.get("/api/v1/tags")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Find the alias tag in the response
+        alias_tag_response = None
+        original_tag_response = None
+        for tag in data["tags"]:
+            if tag["tag_id"] == alias_tag.tag_id:
+                alias_tag_response = tag
+            if tag["tag_id"] == original_tag.tag_id:
+                original_tag_response = tag
+
+        # Verify alias_of_name is populated for the alias tag
+        assert alias_tag_response is not None
+        assert alias_tag_response["alias_of"] == original_tag.tag_id
+        assert alias_tag_response["alias_of_name"] == "maid outfit"
+        assert alias_tag_response["is_alias"] is True
+
+        # Verify original tag has no alias_of_name
+        assert original_tag_response is not None
+        assert original_tag_response["alias_of"] is None
+        assert original_tag_response["alias_of_name"] is None
+        assert original_tag_response["is_alias"] is False
+
+    async def test_alias_of_name_when_tag_has_no_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias_of_name is None when a tag doesn't have an alias_of value."""
+        # Create a regular tag with no alias
+        regular_tag = Tags(
+            title="summer dress",
+            desc="Summer clothing",
+            type=TagType.THEME,
+        )
+        db_session.add(regular_tag)
+        await db_session.commit()
+        await db_session.refresh(regular_tag)
+
+        # Get the tag list
+        response = await client.get("/api/v1/tags")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Find the tag in the response
+        tag_response = None
+        for tag in data["tags"]:
+            if tag["tag_id"] == regular_tag.tag_id:
+                tag_response = tag
+                break
+
+        # Verify alias_of_name is None
+        assert tag_response is not None
+        assert tag_response["alias_of"] is None
+        assert tag_response["alias_of_name"] is None
+        assert tag_response["is_alias"] is False
+
+    async def test_alias_of_name_with_filtering(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias_of_name works correctly with type filtering."""
+        # Create original tags of different types
+        character_tag = Tags(
+            title="sakura kinomoto",
+            desc="Character from Cardcaptor Sakura",
+            type=TagType.CHARACTER,
+        )
+        theme_tag = Tags(
+            title="school uniform",
+            desc="School clothing",
+            type=TagType.THEME,
+        )
+        db_session.add_all([character_tag, theme_tag])
+        await db_session.commit()
+        await db_session.refresh(character_tag)
+        await db_session.refresh(theme_tag)
+
+        # Create alias tags
+        character_alias = Tags(
+            title="kinomoto sakura",
+            desc="Alternative name order",
+            type=TagType.CHARACTER,
+            alias_of=character_tag.tag_id,
+        )
+        theme_alias = Tags(
+            title="school outfit",
+            desc="Alternative name",
+            type=TagType.THEME,
+            alias_of=theme_tag.tag_id,
+        )
+        db_session.add_all([character_alias, theme_alias])
+        await db_session.commit()
+        await db_session.refresh(character_alias)
+        await db_session.refresh(theme_alias)
+
+        # Filter by CHARACTER type
+        response = await client.get(f"/api/v1/tags?type={TagType.CHARACTER}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should only get CHARACTER tags, and only the expected ones
+        character_ids = {character_tag.tag_id, character_alias.tag_id}
+        assert {tag["tag_id"] for tag in data["tags"]} == character_ids
+        for tag in data["tags"]:
+            assert tag["type"] == TagType.CHARACTER
+            # If it's an alias, verify alias_of_name is populated
+            if tag["tag_id"] == character_alias.tag_id:
+                assert tag["alias_of_name"] == "sakura kinomoto"
+                assert tag["is_alias"] is True
+
+    async def test_alias_of_name_with_search(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias_of_name works correctly with full-text search."""
+        # Create original tag
+        original_tag = Tags(
+            title="cat ears",
+            desc="Feline ears",
+            type=TagType.THEME,
+        )
+        db_session.add(original_tag)
+        await db_session.commit()
+        await db_session.refresh(original_tag)
+
+        # Create alias tag
+        alias_tag = Tags(
+            title="neko ears",
+            desc="Japanese for cat ears",
+            type=TagType.THEME,
+            alias_of=original_tag.tag_id,
+        )
+        db_session.add(alias_tag)
+        await db_session.commit()
+        await db_session.refresh(alias_tag)
+
+        # Search for "neko" (should find the alias)
+        response = await client.get("/api/v1/tags?search=neko")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find the alias tag
+        assert data["total"] >= 1
+        neko_tag = None
+        for tag in data["tags"]:
+            if tag["tag_id"] == alias_tag.tag_id:
+                neko_tag = tag
+                break
+
+        # Verify alias_of_name is populated
+        assert neko_tag is not None
+        assert neko_tag["alias_of_name"] == "cat ears"
+        assert neko_tag["is_alias"] is True
+
+    async def test_alias_of_name_with_exclude_aliases_filter(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias tags are excluded when exclude_aliases=true."""
+        # Create original tag
+        original_tag = Tags(
+            title="blue eyes",
+            desc="Blue colored eyes",
+            type=TagType.THEME,
+        )
+        db_session.add(original_tag)
+        await db_session.commit()
+        await db_session.refresh(original_tag)
+
+        # Create alias tag
+        alias_tag = Tags(
+            title="blue colored eyes",
+            desc="Alternative name",
+            type=TagType.THEME,
+            alias_of=original_tag.tag_id,
+        )
+        db_session.add(alias_tag)
+        await db_session.commit()
+        await db_session.refresh(alias_tag)
+
+        # Get tags excluding aliases
+        response = await client.get("/api/v1/tags?exclude_aliases=true")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should not include the alias tag
+        tag_ids = {tag["tag_id"] for tag in data["tags"]}
+        assert alias_tag.tag_id not in tag_ids
+        assert original_tag.tag_id in tag_ids
+
+
+@pytest.mark.api
+class TestFuzzyTagSearch:
+    """Tests for fuzzy/full-text search on tags.
+
+    Tests the hybrid search strategy:
+    - Short queries (< 3 chars): LIKE prefix matching
+    - Long queries (>= 3 chars): FULLTEXT word-order independent matching
+
+    This solves the Japanese character name problem:
+    Searching "sakura kinomoto" should find "kinomoto sakura".
+    """
+
+    async def test_short_query_prefix_match(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that short queries (< 3 chars) use prefix matching."""
+        # Create test tags
+        tag1 = Tags(title="sakura kinomoto", type=TagType.CHARACTER)
+        tag2 = Tags(title="sakura card", type=TagType.CHARACTER)
+        tag3 = Tags(title="cardcaptor sakura", type=TagType.CHARACTER)
+        tag4 = Tags(title="kinomoto sakura", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2, tag3, tag4])
+        await db_session.commit()
+
+        # Search for "sa" (2 chars) - should match prefix only
+        response = await client.get("/api/v1/tags?search=sa")
+        assert response.status_code == 200
+        data = response.json()
+        # Should find tags starting with "sa" (sakura kinomoto, sakura card)
+        # But NOT "cardcaptor sakura" (doesn't start with "sa")
+        # And NOT "kinomoto sakura" (doesn't start with "sa")
+        assert data["total"] == 2
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "sakura kinomoto" in titles
+        assert "sakura card" in titles
+        assert "cardcaptor sakura" not in titles
+        assert "kinomoto sakura" not in titles
+
+    async def test_long_query_word_order_independent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that long queries (>= 3 chars) use word-order independent full-text search.
+
+        This is the key feature for Japanese character names!
+
+        With multiple words in the search query (e.g., "sakura kinomoto"), the search
+        uses AND logic - all words must be present in the tag title, but in any order.
+        This solves the Japanese character naming problem where different sources
+        list the name in different word orders.
+        """
+        # Create tags with same words but different order
+        tag1 = Tags(title="kinomoto sakura", type=TagType.CHARACTER)
+        tag2 = Tags(title="sakura kinomoto", type=TagType.CHARACTER)
+        tag3 = Tags(title="sakura mitsuki", type=TagType.CHARACTER)  # Different person (not kinomoto)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for "sakura kinomoto" (3+ chars, multiple words)
+        # Uses FULLTEXT with +sakura* +kinomoto* (AND logic - both words required)
+        # So it matches tags with BOTH "sakura" AND "kinomoto", regardless of order
+        # But NOT "sakura mitsuki" since it lacks "kinomoto"
+        response = await client.get("/api/v1/tags?search=sakura%20kinomoto")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find both orderings of "sakura kinomoto", but NOT "sakura mitsuki"
+        # (sakura mitsuki doesn't have "kinomoto", so it doesn't match +sakura* +kinomoto*)
+        assert data["total"] == 2
+        titles = {tag["title"] for tag in data["tags"]}
+        # Both orderings should be found
+        assert "sakura kinomoto" in titles
+        assert "kinomoto sakura" in titles
+        # But NOT sakura mitsuki
+        assert "sakura mitsuki" not in titles
+
+    async def test_long_query_partial_word_match(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that full-text search requires whole words (not partial word matches).
+
+        Note: MariaDB/MySQL FULLTEXT has minimum word length (usually 3-4 chars) and
+        only matches complete words, not arbitrary substrings.
+        """
+        # Create test tags with full words
+        tag1 = Tags(title="school uniform", type=TagType.THEME)
+        tag2 = Tags(title="schoolgirl", type=TagType.CHARACTER)
+        tag3 = Tags(title="scholar", type=TagType.THEME)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for "school" (6 chars, full word)
+        response = await client.get("/api/v1/tags?search=school")
+        assert response.status_code == 200
+        data = response.json()
+        # FULLTEXT matches complete words, so "school" should find:
+        # - "school uniform" (contains word "school")
+        # - "schoolgirl" (contains word "schoolgirl", not "school")
+        # - "scholar" (may or may not match depending on word stemming)
+        # In BOOLEAN mode, it's more strict - just ensure we get some results
+        assert data["total"] >= 1  # At least "school uniform"
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "school uniform" in titles
+
+    async def test_full_text_relevance_sorting(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that full-text search results include relevant matches."""
+        # Create tags with varying relevance
+        tag1 = Tags(title="cat ears", type=TagType.THEME)  # Exact word match
+        tag2 = Tags(title="feline ears", type=TagType.THEME)  # Contains "ears" but not "cat"
+        tag3 = Tags(title="category tags", type=TagType.THEME)  # "category" contains "cat" but is different word
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for "cat" (3 chars) - should use full-text
+        response = await client.get("/api/v1/tags?search=cat")
+        assert response.status_code == 200
+        data = response.json()
+
+        # FULLTEXT should find "cat ears" (exact word "cat")
+        # May or may not find "category" depending on word stemming in BOOLEAN mode
+        assert data["total"] >= 1
+        assert data["tags"][0]["title"] == "cat ears"  # Exact match should be first
+
+    async def test_long_query_exact_match_prioritized(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that exact matches are prioritized in long query full-text search.
+
+        This addresses the issue where searching for "maid" should return the "maid" tag
+        first, even if there are other tags like "maid outfit" or "head maid" that also
+        match the full-text search.
+        """
+        # Create tags with various "maid" matches
+        maid_tag = Tags(title="maid", type=TagType.THEME)
+        maid_outfit = Tags(title="maid outfit", type=TagType.THEME)
+        head_maid = Tags(title="head maid", type=TagType.THEME)
+        db_session.add_all([maid_tag, maid_outfit, head_maid])
+        await db_session.commit()
+
+        # Search for "maid" (4 chars) - should use full-text with exact match prioritization
+        response = await client.get("/api/v1/tags?search=maid")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 3
+        # The exact match "maid" should be first
+        assert data["tags"][0]["title"] == "maid"
+        # Other matches should follow
+        assert data["tags"][1]["title"] in ["maid outfit", "head maid"]
+        assert data["tags"][2]["title"] in ["maid outfit", "head maid"]
+
+    async def test_short_query_case_insensitive(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that short prefix queries are case-insensitive."""
+        # Create test tags with mixed case
+        tag1 = Tags(title="Sakura Kinomoto", type=TagType.CHARACTER)
+        tag2 = Tags(title="sakura card", type=TagType.CHARACTER)
+        tag3 = Tags(title="SAKURA", type=TagType.THEME)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for lowercase "sa"
+        response = await client.get("/api/v1/tags?search=sa")
+        assert response.status_code == 200
+        data = response.json()
+        # Should find all tags starting with "sa" (case-insensitive)
+        assert data["total"] == 3
+
+    async def test_search_with_stopwords(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search works correctly when query contains stopwords like 'The'.
+
+        This addresses a bug where searching for "The Forgotten" would fail because
+        "the" is a MySQL/MariaDB fulltext stopword. When combined with the `+` required
+        operator, the entire query would fail.
+
+        The fix filters out stopwords and short terms before building the fulltext query.
+        """
+        # Create tags with "The" in the title
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        tag2 = Tags(title="The 8th son? Are you kidding me?", type=TagType.CHARACTER)
+        tag3 = Tags(title="Forgotten Dreams", type=TagType.CHARACTER)  # No "The"
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for "The Forgotten" - should find "The Forgotten Field"
+        response = await client.get("/api/v1/tags?search=The%20Forgotten")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find at least one result
+        assert data["total"] >= 1, "Search for 'The Forgotten' should return results"
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "The Forgotten Field" in titles, "Should find 'The Forgotten Field'"
+        # Should NOT include "Forgotten Dreams" (lacks "The" if we're being strict about matching)
+        # Actually after fix, we filter out "The" as a stopword, so "Forgotten" is what's searched
+        # This means "Forgotten Dreams" might also be returned - that's acceptable
+
+    async def test_search_with_short_terms(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search works when query contains very short terms (< 3 chars).
+
+        MySQL/MariaDB fulltext has a minimum token size (default 3). Terms shorter
+        than this are ignored in fulltext search, which can cause issues when combined
+        with the `+` required operator.
+
+        Example: Searching "The F" would fail because "F" is below min token size.
+        """
+        # Create tags
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        tag2 = Tags(title="The Five Star Stories", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "The F" - should still work by filtering out short terms
+        response = await client.get("/api/v1/tags?search=The%20F")
+        assert response.status_code == 200
+        data = response.json()
+
+        # With stopword and short term filtering, this becomes empty or just searches
+        # based on valid terms. The important thing is it doesn't crash or return 0
+        # when there are valid tags starting with "The F".
+        # After fix: "The" is stopword, "F" is too short, so we might need fallback
+        # For now, just ensure we get some results that match "The F" prefix
+        assert data["total"] >= 1, "Search for 'The F' should return results"
+
+    async def test_search_with_special_like_characters(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that LIKE special characters (% and _) are escaped in search.
+
+        Without escaping, a search containing '%' or '_' would be interpreted
+        as wildcards, potentially matching unintended results.
+        """
+        # Create tags with special characters in title
+        tag1 = Tags(title="100% Orange Juice", type=TagType.CHARACTER)
+        tag2 = Tags(title="Orange Soda", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "100%" - should only find exact prefix match, not wildcard
+        # The % should be escaped so it doesn't match everything
+        response = await client.get("/api/v1/tags?search=100%25")  # URL encoded %
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find "100% Orange Juice" but not "Orange Soda"
+        assert data["total"] == 1
+        assert data["tags"][0]["title"] == "100% Orange Juice"
+
+    async def test_search_with_fulltext_special_characters(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that fulltext boolean operators are stripped from search terms.
+
+        MySQL fulltext BOOLEAN MODE uses characters like +, -, *, ~, ", (), <, >, @
+        as operators. Without sanitization, searching for "C++" would create
+        "+C++*" which interprets the extra + as operators.
+        """
+        # Create tags with special characters
+        tag1 = Tags(title="C++ Programming", type=TagType.CHARACTER)
+        tag2 = Tags(title="C Sharp Programming", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "C++" - the ++ should be stripped, searching for just "C"
+        # which is too short (< 3 chars), so it falls back to LIKE
+        response = await client.get("/api/v1/tags?search=C%2B%2B")  # URL encoded C++
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should not crash and should return some results
+        # After stripping ++, "C" is too short, falls back to LIKE "C++%"
+        assert data["total"] >= 1
+
+    async def test_search_with_obfuscated_stopwords(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that stopwords are detected after sanitization.
+
+        A term like "+the+" should be recognized as stopword "the" after
+        stripping the special characters, not pass through as a non-stopword.
+        """
+        # Create tag
+        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
+        db_session.add_all([tag1])
+        await db_session.commit()
+
+        # Search for "+the+ Forgotten" - "+the+" should become "the" (stopword)
+        # and be filtered out, leaving just "Forgotten" for fulltext search
+        response = await client.get("/api/v1/tags?search=%2Bthe%2B%20Forgotten")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find results since "Forgotten" is a valid search term
+        assert data["total"] >= 1
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "The Forgotten Field" in titles
+
+    async def test_hybrid_search_with_filters(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that fuzzy search works with other filters (type, exclude_aliases, etc)."""
+        # Create test tags with different types
+        tag1 = Tags(title="kinomoto sakura", type=TagType.CHARACTER)
+        tag2 = Tags(title="sakura kinomoto", type=TagType.THEME)
+        tag3 = Tags(title="sakura leaf", type=TagType.CHARACTER, alias_of=1)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for "sakura" with type filter (CHARACTER only)
+        response = await client.get("/api/v1/tags?search=sakura&type=4")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2  # Both CHARACTER tags
+        for tag in data["tags"]:
+            assert tag["type"] == TagType.CHARACTER
+
+        # Search for "sakura" excluding aliases
+        response = await client.get("/api/v1/tags?search=sakura&exclude_aliases=true")
+        assert response.status_code == 200
+        data = response.json()
+        # Should not include alias tags
+        for tag in data["tags"]:
+            assert tag.get("is_alias") is False or tag.get("is_alias") is None
+
 
 
 @pytest.mark.api
@@ -103,6 +931,143 @@ class TestGetTag:
         """Test getting a tag that doesn't exist."""
         response = await client.get("/api/v1/tags/999999")
         assert response.status_code == 404
+
+    async def test_get_tag_includes_creator_and_date(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that getting a tag includes the creator user and creation date."""
+        # Create user who will create the tag
+        user = Users(
+            username="tagcreator",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagcreator@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create tag with user_id
+        tag = Tags(
+            title="User Tag",
+            desc="Tag with creator",
+            type=TagType.THEME,
+            user_id=user.user_id,
+        )
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Get tag
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify creator information is included
+        assert "created_by" in data
+        assert data["created_by"] is not None
+        assert data["created_by"]["user_id"] == user.user_id
+        assert data["created_by"]["username"] == "tagcreator"
+
+        # Verify creation date is included
+        assert "date_added" in data
+        assert data["date_added"] is not None
+
+    async def test_get_tag_includes_creator_avatar_url(self, client: AsyncClient, db_session: AsyncSession):
+        """Ensure created_by includes avatar_url when user has an avatar"""
+        from app.config import settings
+
+        user = Users(
+            username="avataruser",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="avataruser@example.com",
+            active=1,
+            admin=0,
+            avatar="avatar.png",
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        tag = Tags(
+            title="Avatar Tag",
+            desc="Tag with avatar creator",
+            type=TagType.THEME,
+            user_id=user.user_id,
+        )
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["created_by"]["avatar"] == "avatar.png"
+        assert data["created_by"]["avatar_url"] == f"{settings.IMAGE_BASE_URL}/images/avatars/avatar.png"
+
+    async def test_get_tag_includes_creator_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that getting a tag includes the creator's groups for username coloring."""
+        from app.models.permissions import Groups, UserGroups
+
+        # Create user who will create the tag
+        user = Users(
+            username="groupedcreator",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="groupedcreator@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create groups
+        mod_group = Groups(title="mods", desc="Moderators")
+        artist_group = Groups(title="artists", desc="Verified artists")
+        db_session.add_all([mod_group, artist_group])
+        await db_session.commit()
+        await db_session.refresh(mod_group)
+        await db_session.refresh(artist_group)
+
+        # Add user to groups
+        user_mod = UserGroups(user_id=user.user_id, group_id=mod_group.group_id)
+        user_artist = UserGroups(user_id=user.user_id, group_id=artist_group.group_id)
+        db_session.add_all([user_mod, user_artist])
+        await db_session.commit()
+
+        # Create tag with user_id
+        tag = Tags(
+            title="Grouped Creator Tag",
+            desc="Tag created by user with groups",
+            type=TagType.THEME,
+            user_id=user.user_id,
+        )
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Get tag
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify creator includes groups
+        assert "created_by" in data
+        assert data["created_by"] is not None
+        assert data["created_by"]["user_id"] == user.user_id
+        assert data["created_by"]["username"] == "groupedcreator"
+        assert "groups" in data["created_by"]
+        assert set(data["created_by"]["groups"]) == {"mods", "artists"}
 
 
 @pytest.mark.api
@@ -150,7 +1115,7 @@ class TestGetImagesByTag:
 
 @pytest.mark.api
 class TestCreateTag:
-    """Tests for POST /api/v1/tags/ endpoint (admin only)."""
+    """Tests for POST /api/v1/tags endpoint (admin only)."""
 
     async def test_create_tag_as_admin(
         self, client: AsyncClient, db_session: AsyncSession
@@ -199,7 +1164,7 @@ class TestCreateTag:
             "type": TagType.THEME,
         }
         response = await client.post(
-            "/api/v1/tags/",
+            "/api/v1/tags",
             json=tag_data,
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -207,6 +1172,13 @@ class TestCreateTag:
         data = response.json()
         assert data["title"] == "new tag"
         assert data["type"] == TagType.THEME
+
+        # Verify user_id is stored in database
+        tag_result = await db_session.execute(
+            select(Tags).where(Tags.tag_id == data["tag_id"])
+        )
+        created_tag = tag_result.scalar_one()
+        assert created_tag.user_id == admin.user_id
 
     async def test_create_tag_as_non_admin(
         self, client: AsyncClient, db_session: AsyncSession
@@ -239,7 +1211,7 @@ class TestCreateTag:
             "type": TagType.THEME,
         }
         response = await client.post(
-            "/api/v1/tags/",
+            "/api/v1/tags",
             json=tag_data,
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -252,7 +1224,7 @@ class TestCreateTag:
             "desc": "Should not be created",
             "type": TagType.THEME,
         }
-        response = await client.post("/api/v1/tags/", json=tag_data)
+        response = await client.post("/api/v1/tags", json=tag_data)
         assert response.status_code == 401
 
     async def test_create_duplicate_tag(
@@ -306,7 +1278,7 @@ class TestCreateTag:
             "type": TagType.THEME,
         }
         response = await client.post(
-            "/api/v1/tags/",
+            "/api/v1/tags",
             json=tag_data,
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -516,3 +1488,590 @@ class TestDeleteTag:
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestAddTagLink:
+    """Tests for POST /api/v1/tags/{tag_id}/links endpoint."""
+
+    async def test_add_link_to_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test adding an external link to a tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminlinks",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminlinks@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminlinks", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Add link to tag
+        link_data = {"url": "https://twitter.com/artist_name"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["url"] == "https://twitter.com/artist_name"
+        assert "link_id" in data
+        assert "date_added" in data
+
+    async def test_add_link_without_protocol(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that URLs without http/https are rejected."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminproto",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminproto@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminproto", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add link without protocol
+        link_data = {"url": "twitter.com/artist"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422  # Validation error
+
+    async def test_add_empty_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that empty URLs (whitespace only) are rejected."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminempty",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminempty@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminempty", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add empty/whitespace URL
+        link_data = {"url": "   "}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422  # Validation error
+
+    async def test_add_duplicate_link(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that adding duplicate URL to same tag returns 409."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindup",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindup@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag with existing link
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com")
+        db_session.add(link)
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindup", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add same URL again
+        link_data = {"url": "https://example.com"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 409
+
+    async def test_add_link_to_nonexistent_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test adding link to non-existent tag returns 404."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admin404",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin404@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin404", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add link to non-existent tag
+        link_data = {"url": "https://example.com"}
+        response = await client.post(
+            "/api/v1/tags/999999/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_add_link_without_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users without TAG_UPDATE permission cannot add links."""
+        # Create regular user without permission
+        user = Users(
+            username="regularlinkuser",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="regularlink@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "regularlinkuser", "password": "Password123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to add link
+        link_data = {"url": "https://example.com"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestDeleteTagLink:
+    """Tests for DELETE /api/v1/tags/{tag_id}/links/{link_id} endpoint."""
+
+    async def test_delete_link_from_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test deleting an external link from a tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindellink",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindellink@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag with link
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindellink", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Delete link
+        response = await client.delete(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 204
+
+    async def test_delete_nonexistent_link(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test deleting non-existent link returns 404."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindel404",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindel404@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag (without link)
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindel404", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to delete non-existent link
+        response = await client.delete(
+            f"/api/v1/tags/{tag.tag_id}/links/999999",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_delete_link_from_wrong_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test deleting link using wrong tag_id returns 404."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindelwrong",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindelwrong@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create two tags
+        tag1 = Tags(title="tag1", desc="Test", type=TagType.ARTIST)
+        tag2 = Tags(title="tag2", desc="Test", type=TagType.ARTIST)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+
+        # Add link to tag1
+        link = TagExternalLinks(tag_id=tag1.tag_id, url="https://example.com")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindelwrong", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to delete link from wrong tag
+        response = await client.delete(
+            f"/api/v1/tags/{tag2.tag_id}/links/{link.link_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_delete_link_without_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users without TAG_UPDATE permission cannot delete links."""
+        # Create regular user without permission
+        user = Users(
+            username="regulardellinkuser",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="regulardellink@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Create tag with link
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "regulardellinkuser", "password": "Password123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to delete link
+        response = await client.delete(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestGetTagWithLinks:
+    """Tests for GET /api/v1/tags/{tag_id} endpoint with links."""
+
+    async def test_get_tag_with_links(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag details include external links."""
+        # Create tag with links
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Add multiple links
+        link1 = TagExternalLinks(tag_id=tag.tag_id, url="https://twitter.com/artist")
+        link2 = TagExternalLinks(tag_id=tag.tag_id, url="https://pixiv.net/users/123")
+        db_session.add_all([link1, link2])
+        await db_session.commit()
+
+        # Get tag details
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert "links" in data
+        assert len(data["links"]) == 2
+        assert "https://twitter.com/artist" in data["links"]
+        assert "https://pixiv.net/users/123" in data["links"]
+
+    async def test_get_tag_without_links(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tags without links have empty links array."""
+        # Create tag without links
+        tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Get tag details
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert "links" in data
+        assert data["links"] == []

@@ -2,28 +2,52 @@
 Users API endpoints
 """
 
+import hashlib
 import re
+import secrets
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Path, UploadFile, status
-from sqlalchemy import asc, desc, func, or_, select
+import redis.asyncio as redis
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from sqlalchemy import asc, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
-from app.core.auth import get_current_user, get_current_user_id
+from app.config import SuspensionAction
+from app.core.auth import get_client_ip, get_current_user, get_current_user_id
 from app.core.database import get_db
+from app.core.permission_cache import get_cached_user_permissions
+from app.core.permissions import Permission, has_permission
+from app.core.redis import get_redis
 from app.core.security import get_password_hash, validate_password_strength
-from app.models import Favorites, Images, Users
-from app.schemas.image import ImageListResponse, ImageResponse
+from app.models import Favorites, Images, TagLinks, Users
+from app.models.permissions import UserGroups
+from app.models.user_suspension import UserSuspensions
+from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
 from app.schemas.user import (
+    AcknowledgeWarningsResponse,
     UserCreate,
     UserCreateResponse,
     UserListResponse,
+    UserPrivateResponse,
     UserResponse,
     UserUpdate,
+    UserWarningResponse,
+    UserWarningsResponse,
 )
 from app.services.avatar import (
     delete_avatar_if_orphaned,
@@ -31,28 +55,70 @@ from app.services.avatar import (
     save_avatar,
     validate_avatar_upload,
 )
+from app.services.rate_limit import check_registration_rate_limit
+from app.services.turnstile import verify_turnstile_token
+from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("/", response_model=UserListResponse)
+@router.get("/", response_model=UserListResponse, include_in_schema=False)
+@router.get("", response_model=UserListResponse)
 async def list_users(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[UserSortParams, Depends()],
+    search: Annotated[
+        str | None, Query(description="Search users by username (partial, case-insensitive match)")
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
-    List users with pagination.
+    List users with pagination and optional username search.
     """
-    query = select(Users)
+    query = select(Users).options(
+        selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+    )
+
+    # Apply search filter
+    if search:
+        # Case-insensitive match - include substring matches
+        query = query.where(func.lower(Users.username).like(f"%{search.lower()}%"))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Sort by user ID
-    query = query.order_by(asc(Users.user_id))  # type: ignore[arg-type]
+    # Map sort_by to database column
+    sort_column_map = {
+        "user_id": Users.user_id,
+        "username": Users.username,
+        "date_joined": Users.date_joined,
+        "last_login": Users.last_login,
+        "image_posts": Users.image_posts,
+        "posts": Users.posts,
+        "favorites": Users.favorites,
+    }
+    sort_column = sort_column_map.get(sorting.sort_by, Users.user_id)
+    sort_func = desc if sorting.sort_order == "DESC" else asc
+
+    # Apply sorting. If a search is present, order by relevance first
+    if search:
+        s_lower = search.lower()
+        relevance = case(
+            (
+                func.lower(Users.username) == s_lower,
+                0,
+            ),
+            (
+                func.lower(Users.username).like(f"{s_lower}%"),
+                1,
+            ),
+            else_=2,
+        )
+        query = query.order_by(asc(relevance), sort_func(sort_column))  # type: ignore[arg-type]
+    else:
+        query = query.order_by(sort_func(sort_column))  # type: ignore[arg-type]
 
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)
@@ -69,35 +135,53 @@ async def list_users(
     )
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserPrivateResponse)
 async def get_current_user_profile(
     current_user_id: Annotated[int, Depends(get_current_user_id)],
     db: AsyncSession = Depends(get_db),
-) -> UserResponse:
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+) -> UserPrivateResponse:
     """
     Get the profile of the currently authenticated user.
+
+    This includes private settings like email, email_verified, email_pm_pref,
+    and the user's permissions (cached for performance).
     """
-    user_result = await db.execute(select(Users).where(Users.user_id == current_user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == current_user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return UserResponse.model_validate(user)
+    # Fetch user permissions (cached)
+    permissions = await get_cached_user_permissions(db, redis_client, current_user_id)
+
+    # Convert to response model and add permissions
+    response = UserPrivateResponse.model_validate(user)
+    response.permissions = sorted(permissions)
+    return response
 
 
-@router.patch("/me", response_model=UserResponse)
+@router.patch("/me", response_model=UserPrivateResponse)
 async def update_current_user_profile(
     user_data: UserUpdate,
     current_user_id: Annotated[int, Depends(get_current_user_id)],
     db: AsyncSession = Depends(get_db),
-) -> UserResponse:
+) -> UserPrivateResponse:
     """
     Update the profile of the currently authenticated user.
 
     All fields are optional. Only provided fields will be updated.
+    Returns the updated profile including private settings.
     """
-    return await _update_user_profile(current_user_id, user_data, current_user_id, db)
+    user = await _update_user_profile(current_user_id, user_data, current_user_id, db)
+    return UserPrivateResponse.model_validate(user)
 
 
 @router.post("/me/avatar", response_model=UserResponse)
@@ -121,18 +205,27 @@ async def upload_user_avatar(
     avatar: Annotated[UploadFile, File(description="Avatar image file")],
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserResponse:
     """
     Upload avatar for a specified user.
 
     - Regular users can only upload their own avatar (user_id must match their ID)
-    - Admins can upload avatars for any user
+    - Users with USER_EDIT_PROFILE permission can upload avatars for any user
 
     Accepts JPG, PNG, or GIF (animated supported). Images are resized to fit
     within 200x200 pixels while preserving aspect ratio. Maximum file size is 1MB.
     """
-    # Check permission: user can update themselves, or must be admin
-    if current_user.user_id != user_id and not current_user.admin:
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
+    # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
+    is_self = current_user.user_id == user_id
+    has_edit_permission = await has_permission(
+        db, current_user.user_id, Permission.USER_EDIT_PROFILE, redis_client
+    )
+
+    if not is_self and not has_edit_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this user's avatar",
@@ -158,7 +251,13 @@ async def _upload_avatar(
         Updated user response
     """
     # Get user
-    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
@@ -210,20 +309,90 @@ async def delete_current_user_avatar(
     return await _delete_avatar(current_user_id, db)
 
 
+@router.get("/me/warnings", response_model=UserWarningsResponse)
+async def get_current_user_warnings(
+    current_user_id: Annotated[int, Depends(get_current_user_id)],
+    db: AsyncSession = Depends(get_db),
+) -> UserWarningsResponse:
+    """
+    Get unacknowledged warnings and suspension notices for the current user.
+
+    Returns warnings and suspension notices that have not been acknowledged.
+    The frontend should display these to the user and call the acknowledge
+    endpoint once they've been viewed.
+    """
+    result = await db.execute(
+        select(UserSuspensions)
+        .where(UserSuspensions.user_id == current_user_id)  # type: ignore[arg-type]
+        .where(UserSuspensions.acknowledged_at.is_(None))  # type: ignore[union-attr]
+        .where(UserSuspensions.action != SuspensionAction.REACTIVATED)  # type: ignore[arg-type]
+        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
+    )
+    suspensions = result.scalars().all()
+
+    return UserWarningsResponse(
+        items=[UserWarningResponse.model_validate(s) for s in suspensions],
+        count=len(suspensions),
+    )
+
+
+@router.post("/me/warnings/acknowledge", response_model=AcknowledgeWarningsResponse)
+async def acknowledge_warnings(
+    current_user_id: Annotated[int, Depends(get_current_user_id)],
+    db: AsyncSession = Depends(get_db),
+) -> AcknowledgeWarningsResponse:
+    """
+    Acknowledge all unacknowledged warnings and suspension notices.
+
+    Sets acknowledged_at to the current timestamp for all unacknowledged
+    warnings/suspensions belonging to the current user.
+    """
+    result = await db.execute(
+        select(UserSuspensions)
+        .where(UserSuspensions.user_id == current_user_id)  # type: ignore[arg-type]
+        .where(UserSuspensions.acknowledged_at.is_(None))  # type: ignore[union-attr]
+        .where(UserSuspensions.action != SuspensionAction.REACTIVATED)  # type: ignore[arg-type]
+    )
+    suspensions = result.scalars().all()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    for suspension in suspensions:
+        suspension.acknowledged_at = now
+
+    await db.commit()
+
+    count = len(suspensions)
+    message = f"Acknowledged {count} warning(s)" if count > 0 else "No warnings to acknowledge"
+
+    return AcknowledgeWarningsResponse(
+        acknowledged_count=count,
+        message=message,
+    )
+
+
 @router.delete("/{user_id}/avatar", response_model=UserResponse)
 async def delete_user_avatar(
     user_id: Annotated[int, Path(description="User ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserResponse:
     """
     Remove avatar for a specified user.
 
     - Regular users can only delete their own avatar (user_id must match their ID)
-    - Admins can delete avatars for any user
+    - Users with USER_EDIT_PROFILE permission can delete avatars for any user
     """
-    # Check permission: user can update themselves, or must be admin
-    if current_user.user_id != user_id and not current_user.admin:
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
+    # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
+    is_self = current_user.user_id == user_id
+    has_edit_permission = await has_permission(
+        db, current_user.user_id, Permission.USER_EDIT_PROFILE, redis_client
+    )
+
+    if not is_self and not has_edit_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this user's avatar",
@@ -247,7 +416,13 @@ async def _delete_avatar(
         Updated user response
     """
     # Get user
-    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
@@ -274,23 +449,33 @@ async def update_user_profile(
     user_data: UserUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserResponse:
     """
     Update a user's profile.
 
     - Regular users can only update their own profile (user_id must match their ID)
-    - Admins can update any user's profile
+    - Users with USER_EDIT_PROFILE permission can update any user's profile
 
     All fields are optional. Only provided fields will be updated.
     """
-    # Check permission: user can update themselves, or must be admin
-    if current_user.user_id != user_id and not current_user.admin:
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
+    # Check permission: user can update themselves, or must have USER_EDIT_PROFILE permission
+    is_self = current_user.user_id == user_id
+    has_edit_permission = await has_permission(
+        db, current_user.user_id, Permission.USER_EDIT_PROFILE, redis_client
+    )
+
+    if not is_self and not has_edit_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this user",
         )
 
-    return await _update_user_profile(user_id, user_data, current_user.user_id, db)
+    user = await _update_user_profile(user_id, user_data, current_user.user_id, db)
+    return UserResponse.model_validate(user)
 
 
 async def _update_user_profile(
@@ -298,7 +483,7 @@ async def _update_user_profile(
     user_data: UserUpdate,
     current_user_id: int,
     db: AsyncSession,
-) -> UserResponse:
+) -> Users:
     """
     Internal function to handle user profile updates.
 
@@ -309,9 +494,15 @@ async def _update_user_profile(
         db: Database session
 
     Returns:
-        Updated user response
+        Updated user response (as UserResponse; caller may wrap as UserPrivateResponse)
     """
-    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
@@ -339,23 +530,27 @@ async def _update_user_profile(
         if existing_email.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Email already in use")
 
-    # Update remaining fields
+    # Update user fields
+    # NOTE: Input sanitization is now handled by schema validators (UserUpdate)
+    # which escape HTML to prevent XSS attacks. We no longer normalize here.
     for field, value in update_data.items():
         setattr(user, field, value)
 
     await db.commit()
     await db.refresh(user)
 
-    return UserResponse.model_validate(user)
+    # Return the DB model instance so callers can serialize to either
+    # public or private response schemas depending on the endpoint.
+    return user
 
 
-@router.get("/{user_id}/images", response_model=ImageListResponse)
+@router.get("/{user_id}/images", response_model=ImageDetailedListResponse)
 async def get_user_images(
     user_id: Annotated[int, Path(description="User ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
-) -> ImageListResponse:
+) -> ImageDetailedListResponse:
     """
     Get all images uploaded by a specific user.
 
@@ -372,7 +567,10 @@ async def get_user_images(
     # Get user's images
     query = (
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
+        )
         .where(Images.user_id == user_id)  # type: ignore[arg-type]
     )
 
@@ -395,11 +593,11 @@ async def get_user_images(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return ImageListResponse(
+    return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        images=[ImageResponse.model_validate(img) for img in images],
+        images=[ImageDetailedResponse.model_validate(img) for img in images],
     )
 
 
@@ -411,7 +609,13 @@ async def get_user(
     """
     Get user profile information.
     """
-    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == user_id)  # type: ignore[arg-type]
+    )
     user = user_result.scalar_one_or_none()
 
     if not user:
@@ -420,13 +624,13 @@ async def get_user(
     return UserResponse.model_validate(user)
 
 
-@router.get("/{user_id}/favorites", response_model=ImageListResponse)
+@router.get("/{user_id}/favorites", response_model=ImageDetailedListResponse)
 async def get_user_favorites(
     user_id: Annotated[int, Path(description="User ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
-) -> ImageListResponse:
+) -> ImageDetailedListResponse:
     """
     Get all images favorited by a specific user.
     """
@@ -440,7 +644,10 @@ async def get_user_favorites(
     # Get user's favorite images
     query = (
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar),  # type: ignore[arg-type]
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
+        )
         .join(Favorites)
         .where(Favorites.user_id == user_id)  # type: ignore[arg-type]
     )
@@ -464,22 +671,39 @@ async def get_user_favorites(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return ImageListResponse(
+    return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        images=[ImageResponse.model_validate(img) for img in images],
+        images=[ImageDetailedResponse.model_validate(img) for img in images],
     )
 
 
-@router.post("/", response_model=UserCreateResponse)
+@router.post("/", response_model=UserCreateResponse, include_in_schema=False)
+@router.post("", response_model=UserCreateResponse)
 async def create_user(
     user_data: UserCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserCreateResponse:
     """
-    Create a new user.
+    Create a new user with bot protection.
     """
+    # 1. Honeypot check (fail fast)
+    if user_data.website_url:
+        # Bot detected! Silently reject without revealing honeypot
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid registration request.",
+        )
+
+    # 2. Rate limiting
+    ip_address = get_client_ip(request)
+    await check_registration_rate_limit(ip_address, redis_client)
+
+    # 3. Turnstile verification
+    await verify_turnstile_token(user_data.turnstile_token, ip_address)
 
     # TODO: extract these checks into reusable functions
 
@@ -504,18 +728,29 @@ async def create_user(
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_message)
 
+    # Generate email verification token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
     new_user = Users(
         username=user_data.username,
         password=get_password_hash(user_data.password),
         password_type="bcrypt",  # Mark as bcrypt password
         salt="",  # Legacy field - empty for bcrypt users
         email=user_data.email,
-        active=1,  # New users are active by default
+        active=1,  # New users are active by default (can login)
         admin=0,  # New users are not admin
+        email_verified=False,  # Not verified yet
+        email_verification_token=token_hash,
+        email_verification_sent_at=datetime.now(UTC),
+        email_verification_expires_at=datetime.now(UTC) + timedelta(hours=24),
         # Other fields use model defaults
     )
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
+
+    # Queue verification email via ARQ (reliable, retries on failure)
+    await enqueue_job("send_verification_email_job", user_id=new_user.user_id, token=raw_token)
 
     return UserCreateResponse.model_validate(new_user)

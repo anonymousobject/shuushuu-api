@@ -16,6 +16,7 @@ These endpoints require admin-level permissions and provide:
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import (
     AdminActionType,
     ImageStatus,
+    ReportCategory,
     ReportStatus,
     ReviewOutcome,
     ReviewStatus,
@@ -32,15 +34,20 @@ from app.config import (
 )
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.permission_cache import invalidate_group_permissions, invalidate_user_permissions
 from app.core.permission_deps import require_all_permissions, require_permission
 from app.core.permissions import Permission
+from app.core.redis import get_redis
 from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_report import ImageReports
+from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
+from app.models.tag import Tags
+from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.models.user_suspension import UserSuspensions
 from app.schemas.admin import (
@@ -52,6 +59,8 @@ from app.schemas.admin import (
     GroupPermsResponse,
     GroupResponse,
     GroupUpdate,
+    ImageStatusResponse,
+    ImageStatusUpdate,
     MessageResponse,
     PermListResponse,
     PermResponse,
@@ -64,7 +73,10 @@ from app.schemas.admin import (
     UserPermsResponse,
 )
 from app.schemas.report import (
+    ApplyTagSuggestionsRequest,
+    ApplyTagSuggestionsResponse,
     ReportActionRequest,
+    ReportDismissRequest,
     ReportEscalateRequest,
     ReportListResponse,
     ReportResponse,
@@ -75,6 +87,7 @@ from app.schemas.report import (
     ReviewListResponse,
     ReviewResponse,
     ReviewVoteRequest,
+    TagSuggestion,
     VoteResponse,
 )
 
@@ -380,6 +393,7 @@ async def add_permission_to_group(
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
     permvalue: Annotated[int, Query(description="Permission value (1=enabled, 0=disabled)")] = 1,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> MessageResponse:
     """
     Add a permission to a group.
@@ -411,6 +425,9 @@ async def add_permission_to_group(
     db.add(group_perm)
     await db.commit()
 
+    # Invalidate permission cache for all users in this group
+    await invalidate_group_permissions(redis_client, db, group_id)
+
     return MessageResponse(message="Permission added to group successfully")
 
 
@@ -423,6 +440,7 @@ async def remove_permission_from_group(
     perm_id: Annotated[int, Path(description="Permission ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> None:
     """
     Remove a permission from a group.
@@ -443,6 +461,9 @@ async def remove_permission_from_group(
 
     await db.delete(group_perm)
     await db.commit()
+
+    # Invalidate permission cache for all users in this group
+    await invalidate_group_permissions(redis_client, db, group_id)
 
 
 # ===== Direct User Permissions =====
@@ -501,6 +522,7 @@ async def add_permission_to_user(
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
     permvalue: Annotated[int, Query(description="Permission value (1=enabled, 0=disabled)")] = 1,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> MessageResponse:
     """
     Add a direct permission to a user.
@@ -532,6 +554,9 @@ async def add_permission_to_user(
     db.add(user_perm)
     await db.commit()
 
+    # Invalidate permission cache for this user
+    await invalidate_user_permissions(redis_client, user_id)
+
     return MessageResponse(message="Permission added to user successfully")
 
 
@@ -544,6 +569,7 @@ async def remove_permission_from_user(
     perm_id: Annotated[int, Path(description="Permission ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> None:
     """
     Remove a direct permission from a user.
@@ -564,6 +590,9 @@ async def remove_permission_from_user(
 
     await db.delete(user_perm)
     await db.commit()
+
+    # Invalidate permission cache for this user
+    await invalidate_user_permissions(redis_client, user_id)
 
 
 # ===== Permission Listing =====
@@ -637,6 +666,95 @@ async def list_user_groups(
     )
 
 
+# ===== Direct Image Moderation =====
+
+
+@router.patch("/images/{image_id}", response_model=ImageStatusResponse)
+async def change_image_status(
+    image_id: Annotated[int, Path(description="Image ID")],
+    status_data: ImageStatusUpdate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.IMAGE_EDIT))],
+    db: AsyncSession = Depends(get_db),
+) -> ImageStatusResponse:
+    """
+    Change an image's status and/or locked state.
+
+    Use this for quick moderation actions without creating a report.
+    Can update status, locked, or both in a single request.
+
+    Requires IMAGE_EDIT permission.
+    """
+    # Get the image
+    result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    previous_status = image.status
+    previous_locked = image.locked
+
+    # Handle status change if provided
+    if status_data.status is not None:
+        # Handle repost status
+        if status_data.status == ImageStatus.REPOST:
+            if status_data.replacement_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="replacement_id is required when marking as repost",
+                )
+            if status_data.replacement_id == image_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="An image cannot be a repost of itself",
+                )
+            # Verify original image exists
+            original_result = await db.execute(
+                select(Images).where(Images.image_id == status_data.replacement_id)  # type: ignore[arg-type]
+            )
+            if not original_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=404,
+                    detail="Original image not found",
+                )
+            image.replacement_id = status_data.replacement_id
+        else:
+            # Clear replacement_id when not a repost
+            image.replacement_id = None
+
+        # Update image status
+        image.status = status_data.status
+        image.status_user_id = current_user.user_id
+        image.status_updated = datetime.now(UTC)
+
+    # Handle locked change if provided
+    if status_data.locked is not None:
+        image.locked = 1 if status_data.locked else 0
+
+    # Log admin action
+    action = AdminActions(
+        user_id=current_user.user_id,
+        action_type=AdminActionType.IMAGE_STATUS_CHANGE,
+        image_id=image_id,
+        details={
+            "previous_status": previous_status,
+            "new_status": image.status,
+            "previous_locked": previous_locked,
+            "new_locked": image.locked,
+            "replacement_id": image.replacement_id,
+        },
+    )
+    db.add(action)
+
+    await db.commit()
+    await db.refresh(image)
+
+    return ImageStatusResponse.model_validate(image)
+
+
 # ===== Report Triage =====
 
 
@@ -646,7 +764,7 @@ async def list_reports(
     status_filter: Annotated[
         int | None,
         Query(alias="status", description="Filter by status (0=pending, 1=reviewed, 2=dismissed)"),
-    ] = None,
+    ] = ReportStatus.PENDING,
     page: Annotated[int, Query(ge=1, description="Page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
     db: AsyncSession = Depends(get_db),
@@ -656,28 +774,69 @@ async def list_reports(
 
     Requires REPORT_VIEW permission.
     """
-    query = select(ImageReports)
-
+    # Build a filtered base query against ImageReports (used for counting)
+    base_query = select(ImageReports)
     if status_filter is not None:
-        query = query.where(ImageReports.status == status_filter)  # type: ignore[arg-type]
+        # SQLModel/SQLAlchemy equality comparisons sometimes confuse mypy; ignore arg-type here
+        base_query = base_query.where(ImageReports.status == status_filter)  # type: ignore[arg-type]
 
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
+    # Count total rows efficiently using ImageReports only
+    count_query = select(func.count()).select_from(base_query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
+    # Now select ImageReports rows plus the reporting user's username, joining on user_id
+    query = select(ImageReports, Users.username)  # type: ignore[call-overload]
+    query = query.join(Users, Users.user_id == ImageReports.user_id)
+    if status_filter is not None:
+        query = query.where(ImageReports.status == status_filter)
+
     # Apply pagination and ordering (newest first)
     offset = (page - 1) * per_page
-    query = query.order_by(desc(ImageReports.created_at)).offset(offset).limit(per_page)  # type: ignore[arg-type]
+    query = query.order_by(desc(ImageReports.created_at))  # type: ignore[arg-type]
+    query = query.offset(offset).limit(per_page)
 
     result = await db.execute(query)
-    reports = result.scalars().all()
+    rows = result.all()
+
+    # Collect report IDs to fetch tag suggestions
+    report_ids = [report.report_id for report, _ in rows]
+
+    # Fetch tag suggestions for all reports in one query
+    suggestions_by_report: dict[int, list[TagSuggestion]] = {}
+    if report_ids:
+        suggestions_result = await db.execute(
+            select(ImageReportTagSuggestions, Tags)
+            .join(Tags, Tags.tag_id == ImageReportTagSuggestions.tag_id)  # type: ignore[arg-type]
+            .where(ImageReportTagSuggestions.report_id.in_(report_ids))  # type: ignore[attr-defined]
+        )
+        for suggestion, tag in suggestions_result.all():
+            if suggestion.report_id not in suggestions_by_report:
+                suggestions_by_report[suggestion.report_id] = []
+            suggestions_by_report[suggestion.report_id].append(
+                TagSuggestion(
+                    suggestion_id=suggestion.suggestion_id or 0,
+                    tag_id=suggestion.tag_id,
+                    tag_name=tag.title or "",
+                    tag_type=tag.type,
+                    accepted=suggestion.accepted,
+                )
+            )
+
+    items: list[ReportResponse] = []
+    for report, username in rows:
+        response = ReportResponse.model_validate(report)
+        response.username = username
+        # Add tag suggestions if present
+        if report.report_id in suggestions_by_report:
+            response.suggested_tags = suggestions_by_report[report.report_id]
+        items.append(response)
 
     return ReportListResponse(
         total=total,
         page=page,
         per_page=per_page,
-        items=[ReportResponse.model_validate(r) for r in reports],
+        items=items,
     )
 
 
@@ -686,10 +845,13 @@ async def dismiss_report(
     report_id: Annotated[int, Path(description="Report ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
+    request_data: ReportDismissRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
     Dismiss a report without taking action on the image.
+
+    Optionally include admin_notes to document why the report was dismissed.
 
     Requires REPORT_MANAGE permission.
     """
@@ -704,24 +866,147 @@ async def dismiss_report(
     if report.status != ReportStatus.PENDING:
         raise HTTPException(status_code=400, detail="Report has already been processed")
 
+    # Mark all tag suggestions as rejected
+    suggestions_result = await db.execute(
+        select(ImageReportTagSuggestions).where(
+            ImageReportTagSuggestions.report_id == report_id  # type: ignore[arg-type]
+        )
+    )
+    for suggestion in suggestions_result.scalars().all():
+        suggestion.accepted = False
+
     # Update report
     report.status = ReportStatus.DISMISSED
     report.reviewed_by = current_user.user_id
     report.reviewed_at = datetime.now(UTC)
+    if request_data and request_data.admin_notes:
+        report.admin_notes = request_data.admin_notes
 
     # Log action
+    details = {}
+    if request_data and request_data.admin_notes:
+        details["admin_notes"] = request_data.admin_notes
     action = AdminActions(
         user_id=current_user.user_id,
         action_type=AdminActionType.REPORT_DISMISS,
         report_id=report_id,
         image_id=report.image_id,
-        details={},
+        details=details,
     )
     db.add(action)
 
     await db.commit()
 
     return MessageResponse(message="Report dismissed successfully")
+
+
+@router.post(
+    "/reports/{report_id}/apply-tag-suggestions",
+    response_model=ApplyTagSuggestionsResponse,
+)
+async def apply_tag_suggestions(
+    report_id: Annotated[int, Path(description="Report ID")],
+    request_data: ApplyTagSuggestionsRequest,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
+    db: AsyncSession = Depends(get_db),
+) -> ApplyTagSuggestionsResponse:
+    """
+    Apply tag suggestions from a MISSING_TAGS report.
+
+    Approves specified suggestions, rejects others, adds approved tags
+    to the image, and marks the report as reviewed.
+
+    Requires REPORT_MANAGE permission.
+    """
+    # Get the report
+    result = await db.execute(
+        select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
+    )
+    report = result.scalar_one_or_none()
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    if report.status != ReportStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Report has already been processed")
+
+    # Validate this is a MISSING_TAGS report
+    if report.category != ReportCategory.MISSING_TAGS:
+        raise HTTPException(
+            status_code=400, detail="Tag suggestions can only be applied to MISSING_TAGS reports"
+        )
+
+    # Get all suggestions for this report
+    suggestions_result = await db.execute(
+        select(ImageReportTagSuggestions).where(
+            ImageReportTagSuggestions.report_id == report_id  # type: ignore[arg-type]
+        )
+    )
+    suggestions = list(suggestions_result.scalars().all())
+
+    if not suggestions:
+        raise HTTPException(status_code=400, detail="This report has no tag suggestions")
+
+    # Validate approved_suggestion_ids belong to this report
+    suggestion_ids = {s.suggestion_id for s in suggestions}
+    for sid in request_data.approved_suggestion_ids:
+        if sid not in suggestion_ids:
+            raise HTTPException(status_code=400, detail=f"Invalid suggestion ID: {sid}")
+
+    # Get existing tags on image
+    existing_tags_result = await db.execute(
+        select(TagLinks.tag_id).where(TagLinks.image_id == report.image_id)  # type: ignore[call-overload]
+    )
+    existing_tag_ids = set(existing_tags_result.scalars().all())
+
+    approved_ids = set(request_data.approved_suggestion_ids)
+    applied_tags: list[int] = []
+    already_present: list[int] = []
+
+    for suggestion in suggestions:
+        if suggestion.suggestion_id in approved_ids:
+            suggestion.accepted = True
+            # Add tag to image if not already present
+            if suggestion.tag_id not in existing_tag_ids:
+                tag_link = TagLinks(image_id=report.image_id, tag_id=suggestion.tag_id)
+                db.add(tag_link)
+                applied_tags.append(suggestion.tag_id)
+                existing_tag_ids.add(suggestion.tag_id)  # Track to avoid duplicates
+            else:
+                already_present.append(suggestion.tag_id)
+        else:
+            suggestion.accepted = False
+
+    # Update report
+    report.status = ReportStatus.REVIEWED
+    report.reviewed_by = current_user.user_id
+    report.reviewed_at = datetime.now(UTC)
+    if request_data.admin_notes:
+        report.admin_notes = request_data.admin_notes
+
+    # Log action
+    action = AdminActions(
+        user_id=current_user.user_id,
+        action_type=AdminActionType.REPORT_ACTION,
+        report_id=report_id,
+        image_id=report.image_id,
+        details={
+            "action": "apply_tag_suggestions",
+            "approved_count": len(approved_ids),
+            "rejected_count": len(suggestions) - len(approved_ids),
+            "applied_tags": applied_tags,
+        },
+    )
+    db.add(action)
+
+    await db.commit()
+
+    return ApplyTagSuggestionsResponse(
+        message=f"Applied {len(applied_tags)} tags to image",
+        applied_tags=applied_tags,
+        already_present=already_present,
+    )
 
 
 @router.post("/reports/{report_id}/action", response_model=MessageResponse)
@@ -897,10 +1182,19 @@ async def list_reviews(
 
     Requires REVIEW_VIEW permission.
     """
-    query = select(ImageReviews)
+    query = (
+        select(  # type: ignore[call-overload]
+            ImageReviews,
+            Users.username,
+            ImageReports.category,
+            ImageReports.reason_text,
+        )
+        .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
+        .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
+    )
 
     if status_filter is not None:
-        query = query.where(ImageReviews.status == status_filter)  # type: ignore[arg-type]
+        query = query.where(ImageReviews.status == status_filter)
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -912,17 +1206,17 @@ async def list_reviews(
     query = query.order_by(desc(ImageReviews.created_at)).offset(offset).limit(per_page)  # type: ignore[arg-type]
 
     result = await db.execute(query)
-    reviews = result.scalars().all()
+    rows = result.all()
 
     # Build responses with vote counts
     items = []
-    for review in reviews:
+    for review, initiated_by_username, report_category, report_reason in rows:
         # Get vote counts
         vote_result = await db.execute(
             select(
                 func.count().label("total"),
                 func.sum(ReviewVotes.vote).label("keep_votes"),  # vote=1 is keep
-            ).where(ReviewVotes.review_id == review.review_id)  # type: ignore[arg-type]
+            ).where(ReviewVotes.review_id == review.review_id)
         )
         vote_row = vote_result.one()
         vote_count = vote_row.total or 0
@@ -930,6 +1224,13 @@ async def list_reviews(
         remove_votes = vote_count - keep_votes
 
         response = ReviewResponse.model_validate(review)
+        response.initiated_by_username = initiated_by_username
+        response.source_report_category = report_category
+        if report_category is not None:
+            response.source_report_category_label = ReportCategory.LABELS.get(
+                report_category, "Unknown"
+            )
+        response.source_report_reason = report_reason
         response.vote_count = vote_count
         response.keep_votes = keep_votes
         response.remove_votes = remove_votes
@@ -955,12 +1256,22 @@ async def get_review(
     Requires REVIEW_VIEW permission.
     """
     result = await db.execute(
-        select(ImageReviews).where(ImageReviews.review_id == review_id)  # type: ignore[arg-type]
+        select(  # type: ignore[call-overload]
+            ImageReviews,
+            Users.username,
+            ImageReports.category,
+            ImageReports.reason_text,
+        )
+        .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
+        .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
+        .where(ImageReviews.review_id == review_id)
     )
-    review = result.scalar_one_or_none()
+    row = result.one_or_none()
 
-    if not review:
+    if not row:
         raise HTTPException(status_code=404, detail="Review not found")
+
+    review, initiated_by_username, report_category, report_reason = row
 
     # Get votes with usernames
     votes_result = await db.execute(
@@ -984,6 +1295,13 @@ async def get_review(
             remove_votes += 1
 
     response = ReviewDetailResponse.model_validate(review)
+    response.initiated_by_username = initiated_by_username
+    response.source_report_category = report_category
+    if report_category is not None:
+        response.source_report_category_label = ReportCategory.LABELS.get(
+            report_category, "Unknown"
+        )
+    response.source_report_reason = report_reason
     response.votes = votes
     response.vote_count = len(votes)
     response.keep_votes = keep_votes
@@ -1282,20 +1600,24 @@ async def extend_review(
 
 @router.post("/users/{user_id}/suspend", response_model=MessageResponse)
 async def suspend_user(
-    user_id: Annotated[int, Path(description="User ID to suspend")],
+    user_id: Annotated[int, Path(description="User ID to suspend or warn")],
     suspend_data: SuspendUserRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
-    Suspend a user account.
+    Suspend or warn a user account.
 
-    This will:
+    For suspensions (action="suspended"):
     - Set user.active = 0
     - Set suspension details (reason, expiry)
     - Revoke all refresh tokens (logout from all devices)
-    - Log suspension to user_suspensions audit table
+    - Log to user_suspensions audit table
+
+    For warnings (action="warning"):
+    - Log warning to user_suspensions audit table only
+    - User account remains active
 
     Requires USER_BAN permission.
     """
@@ -1306,55 +1628,62 @@ async def suspend_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Prevent self-suspension
+    is_warning = suspend_data.action == SuspensionAction.WARNING
+
+    # Prevent self-suspension (but allow self-warning for testing? No, block both)
     if user_id == current_user.user_id:
         raise HTTPException(
             status_code=400,
-            detail="Cannot suspend yourself.",
+            detail="Cannot suspend or warn yourself.",
         )
 
-    # Check if user is already suspended (check user_suspensions table)
-    suspension_result = await db.execute(
-        select(UserSuspensions)
-        .where(UserSuspensions.user_id == user_id)
-        .order_by(desc(UserSuspensions.actioned_at))
-    )
-    suspension_records = suspension_result.scalars().all()
-
-    # Find the latest "suspended" record
-    latest_suspended = next(
-        (r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None
-    )
-    if latest_suspended:
-        # Check if there is a "reactivated" record after it
-        reactivated_after = any(
-            r.action == SuspensionAction.REACTIVATED
-            and r.actioned_at > latest_suspended.actioned_at
-            for r in suspension_records
+    # For suspensions, check if user is already suspended
+    if not is_warning:
+        suspension_result = await db.execute(
+            select(UserSuspensions)
+            .where(UserSuspensions.user_id == user_id)  # type: ignore[arg-type]
+            .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
         )
-        # Only block if still suspended (no reactivation after, or suspension still active)
-        if not reactivated_after and (
-            latest_suspended.suspended_until is None
-            or latest_suspended.suspended_until > datetime.now(UTC).replace(tzinfo=None)
-        ):
-            raise HTTPException(status_code=400, detail="User is already suspended")
-    # Suspend the user
-    user.active = 0
+        suspension_records = suspension_result.scalars().all()
 
-    # Revoke all refresh tokens (logout from all devices)
-    await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == user_id))  # type: ignore[arg-type]
+        # Find the latest "suspended" record
+        latest_suspended = next(
+            (r for r in suspension_records if r.action == SuspensionAction.SUSPENDED), None
+        )
+        if latest_suspended:
+            # Check if there is a "reactivated" record after it
+            reactivated_after = any(
+                r.action == SuspensionAction.REACTIVATED
+                and r.actioned_at > latest_suspended.actioned_at
+                for r in suspension_records
+            )
+            # Only block if still suspended (no reactivation after, or suspension still active)
+            if not reactivated_after and (
+                latest_suspended.suspended_until is None
+                or latest_suspended.suspended_until > datetime.now(UTC).replace(tzinfo=None)
+            ):
+                raise HTTPException(status_code=400, detail="User is already suspended")
+
+        # Suspend the user
+        user.active = 0
+
+        # Revoke all refresh tokens (logout from all devices)
+        await db.execute(delete(RefreshTokens).where(RefreshTokens.user_id == user_id))  # type: ignore[arg-type]
 
     # Log to audit trail
     suspension_record = UserSuspensions(
         user_id=user_id,
-        action=SuspensionAction.SUSPENDED,
+        action=suspend_data.action,
         actioned_by=current_user.user_id,
-        suspended_until=suspend_data.suspended_until,
+        suspended_until=None if is_warning else suspend_data.suspended_until,
         reason=suspend_data.reason,
     )
     db.add(suspension_record)
 
     await db.commit()
+
+    if is_warning:
+        return MessageResponse(message="Warning issued to user")
 
     suspension_type = (
         "indefinitely"

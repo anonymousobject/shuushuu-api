@@ -4,7 +4,6 @@ on:
   push:
     branches: [main, dev]
   pull_request:
-    branches: [main, dev]
 
 jobs:
   lint:
@@ -37,7 +36,6 @@ jobs:
 
       - name: mypy - Type check
         run: uv run mypy app/
-        continue-on-error: true
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -60,6 +58,16 @@ jobs:
           - 3306:3306
         options: >-
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
@@ -93,6 +101,17 @@ jobs:
             sleep 2
           done
 
+      - name: Wait for Redis to be ready
+        run: |
+          for i in {1..30}; do
+            if docker exec $(docker ps -q --filter ancestor=redis:7-alpine) redis-cli ping 2>/dev/null | grep -q PONG; then
+              echo "Redis is ready!"
+              break
+            fi
+            echo "Waiting for Redis... ($i/30)"
+            sleep 1
+          done
+
       - name: Run tests
         env:
           # Required application settings
@@ -102,7 +121,9 @@ jobs:
           # Test database URLs (used by conftest.py)
           TEST_DATABASE_URL: mysql+aiomysql://shuushuu:shuushuu_ci_password@127.0.0.1:3306/shuushuu_test?charset=utf8mb4
           TEST_DATABASE_URL_SYNC: mysql+pymysql://shuushuu:shuushuu_ci_password@127.0.0.1:3306/shuushuu_test?charset=utf8mb4
-          # Individual credentials for test_schema_sync.py (creates ephemeral DBs)
+          # Test database credentials (conftest.py auto-creates user and grants permissions)
+          MARIADB_ROOT_PASSWORD: root_password
+          TEST_DB_USER: shuushuu
           TEST_DB_PASSWORD: shuushuu_ci_password
           # Optional settings with defaults
           ENVIRONMENT: development

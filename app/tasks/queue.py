@@ -54,7 +54,7 @@ async def enqueue_job(
         Job ID if enqueued successfully, None otherwise
 
     Example:
-        await enqueue_job("create_thumbnail", image_id=123, source_path="/path/to/image.jpg")
+        await enqueue_job("create_thumbnail_job", image_id=123, source_path="/path/to/image.jpg")
     """
     try:
         pool = await get_queue()

@@ -2,24 +2,51 @@
 Pydantic schemas for Comment endpoints
 """
 
-from datetime import datetime
-
-from pydantic import BaseModel, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.comment import CommentBase
-from app.utils.markdown import parse_markdown
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+from app.schemas.common import UserSummary
+from app.utils.markdown import normalize_legacy_entities, parse_markdown
 
 
-class CommentCreate(CommentBase):
+class CommentCreate(BaseModel):
     """Schema for creating a new comment"""
 
-    user_id: int
+    image_id: int = Field(description="ID of image to comment on")
+    post_text: str = Field(min_length=1, description="Comment text (markdown supported)")
+    parent_comment_id: int | None = Field(
+        default=None,
+        description="Parent comment ID for replies (null = top-level comment)",
+    )
+
+    @field_validator("post_text")
+    @classmethod
+    def sanitize_post_text(cls, v: str) -> str:
+        """
+        Sanitize markdown post text.
+
+        For markdown fields, we store raw user input and let parse_markdown()
+        handle HTML escaping at render time. We only trim whitespace here.
+        """
+        return v.strip()
 
 
 class CommentUpdate(BaseModel):
-    """Schema for updating a comment - all fields optional"""
+    """Schema for updating a comment"""
 
-    post_text: str | None = None
+    post_text: str = Field(min_length=1, description="Comment text (markdown supported)")
+
+    @field_validator("post_text")
+    @classmethod
+    def sanitize_post_text(cls, v: str) -> str:
+        """
+        Sanitize markdown post text.
+
+        For markdown fields, we store raw user input and let parse_markdown()
+        handle HTML escaping at render time. We only trim whitespace here.
+        """
+        return v.strip()
 
 
 class CommentResponse(CommentBase):
@@ -32,10 +59,22 @@ class CommentResponse(CommentBase):
 
     post_id: int
     user_id: int
-    date: datetime
+    date: UTCDatetime
     update_count: int
-    last_updated: datetime | None = None
+    last_updated: UTCDatetimeOptional = None
     last_updated_user_id: int | None = None
+    user: UserSummary  # Embedded user data to avoid N+1 queries
+
+    @field_validator("post_text", mode="before")
+    @classmethod
+    def normalize_db_post_text(cls, v: str | None) -> str | None:
+        """
+        Normalize post text from database for legacy PHP data.
+
+        Handles comments created in the old PHP codebase which stored data
+        as HTML-encoded entities. New comments store raw text.
+        """
+        return normalize_legacy_entities(v)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

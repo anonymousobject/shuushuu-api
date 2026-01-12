@@ -2,23 +2,22 @@
 Pydantic schemas for Image endpoints
 """
 
-from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.config import TagType, settings
 from app.models.image import ImageBase
+from app.schemas.base import UTCDatetimeOptional
+from app.schemas.common import UserSummary
 
-
-class UserSummary(BaseModel):
-    """Minimal user info for embedding"""
-
-    user_id: int
-    username: str
-    avatar_url: str | None = Field(default=None, alias="avatar")
-
-    # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
-    model_config = {"from_attributes": True, "populate_by_name": True}
+# Sort order for tags in image responses: artist → source → character → theme
+TAG_TYPE_SORT_ORDER = {
+    TagType.ARTIST: 0,
+    TagType.SOURCE: 1,
+    TagType.CHARACTER: 2,
+    TagType.THEME: 3,
+}
 
 
 class TagSummary(BaseModel):
@@ -64,6 +63,19 @@ class ImageUpdate(BaseModel):
     caption: str | None = None
     rating: float | None = None
 
+    @field_validator("caption")
+    @classmethod
+    def sanitize_caption(cls, v: str | None) -> str | None:
+        """
+        Sanitize image caption.
+
+        Just trims whitespace - HTML escaping is handled by Svelte's
+        safe template interpolation on the frontend.
+        """
+        if v is None:
+            return v
+        return v.strip()
+
 
 class ImageResponse(ImageBase):
     """
@@ -76,8 +88,7 @@ class ImageResponse(ImageBase):
     image_id: int
     user_id: int
     user: UserSummary | None = None  # Embedded user data (optional, loaded with selectinload)
-    date_added: datetime | None = None
-    status: int
+    date_added: UTCDatetimeOptional = None
     locked: int
     posts: int
     favorites: int
@@ -85,34 +96,35 @@ class ImageResponse(ImageBase):
     num_ratings: int
     medium: int
     large: int
+    replacement_id: int | None = None  # Original image ID when this is a repost (status=-1)
 
     # Computed fields
     @computed_field  # type: ignore[prop-decorator]
     @property
     def url(self) -> str:
-        """Generate image URL"""
-        return f"{settings.IMAGE_BASE_URL}/storage/fullsize/{self.filename}.{self.ext}"
+        """Generate image URL (protected path with permission check)"""
+        return f"{settings.IMAGE_BASE_URL}/images/{self.filename}.{self.ext}"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def thumbnail_url(self) -> str:
-        """Generate thumbnail URL"""
-        return f"{settings.IMAGE_BASE_URL}/storage/thumbs/{self.filename}.jpeg"  # Currently all thumbs are jpeg
+        """Generate thumbnail URL (protected path with permission check)"""
+        return f"{settings.IMAGE_BASE_URL}/thumbs/{self.filename}.webp"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def medium_url(self) -> str | None:
-        """Generate medium variant URL (1280px edge) if available"""
+        """Generate medium variant URL (1280px edge, protected path) if available"""
         if self.medium:
-            return f"{settings.IMAGE_BASE_URL}/storage/medium/{self.filename}.{self.ext}"
+            return f"{settings.IMAGE_BASE_URL}/medium/{self.filename}.{self.ext}"
         return None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def large_url(self) -> str | None:
-        """Generate large variant URL (2048px edge) if available"""
+        """Generate large variant URL (2048px edge, protected path) if available"""
         if self.large:
-            return f"{settings.IMAGE_BASE_URL}/storage/large/{self.filename}.{self.ext}"
+            return f"{settings.IMAGE_BASE_URL}/large/{self.filename}.{self.ext}"
         return None
 
 
@@ -127,32 +139,64 @@ class ImageDetailedResponse(ImageResponse):
 
     user: UserSummary | None = None  # Embedded user data (optional, loaded with selectinload)
     tags: list[TagSummary] | None = None  # Embedded tags (optional, loaded with selectinload)
+    is_favorited: bool = False  # Whether the current user has favorited this image
+    user_rating: int | None = None  # The rating given by the current user (if any)
+    prev_image_id: int | None = None  # ID of the previous image (chronological)
+    next_image_id: int | None = None  # ID of the next image (chronological)
 
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_db_model(cls, image):
+    def from_db_model(
+        cls,
+        image: Any,
+        is_favorited: bool = False,
+        user_rating: int | None = None,
+        prev_image_id: int | None = None,
+        next_image_id: int | None = None,
+    ) -> "ImageDetailedResponse":
         """Create response from database model with relationships"""
         data = ImageResponse.model_validate(image).model_dump()
 
-        # Add user if loaded
+        # Add user if loaded (groups come from User.groups property via eager-loaded user_groups)
         if hasattr(image, "user") and image.user:
             data["user"] = UserSummary.model_validate(image.user)
 
-        # Add tags if loaded through tag_links
+        # Add tags if loaded through tag_links, sorted by type then alphabetically
         if hasattr(image, "tag_links") and image.tag_links:
-            data["tags"] = [TagSummary.model_validate(tag_link.tag) for tag_link in image.tag_links]
+            sorted_links = sorted(
+                image.tag_links,
+                key=lambda tl: (
+                    TAG_TYPE_SORT_ORDER.get(tl.tag.type, 99),  # Primary: type order
+                    (tl.tag.title or "").lower(),  # Secondary: alphabetical
+                ),
+            )
+            data["tags"] = [TagSummary.model_validate(tl.tag) for tl in sorted_links]
+
+        data["is_favorited"] = is_favorited
+        data["user_rating"] = user_rating
+        data["prev_image_id"] = prev_image_id
+        data["next_image_id"] = next_image_id
 
         return cls(**data)
 
 
 class ImageListResponse(BaseModel):
-    """Schema for paginated image list"""
+    """Schema for paginated image list with basic image data"""
 
     total: int
     page: int
     per_page: int
     images: list[ImageResponse]
+
+
+class ImageDetailedListResponse(BaseModel):
+    """Schema for paginated image list with detailed image data (includes relationships)"""
+
+    total: int
+    page: int
+    per_page: int
+    images: list[ImageDetailedResponse]
 
 
 class ImageUploadResponse(BaseModel):
@@ -203,3 +247,36 @@ class ImageStatsResponse(BaseModel):
     total_images: int
     total_favorites: int
     average_rating: float
+
+
+class BookmarkPageResponse(BaseModel):
+    """Schema for bookmark page calculation response.
+
+    Returns the page number where the user's bookmark appears based on
+    their sort preferences and visibility settings.
+    """
+
+    page: int | None = Field(
+        description="Page number (1-indexed) where bookmark appears, "
+        "or null if bookmark is not visible under user's settings"
+    )
+    image_id: int = Field(description="The bookmarked image ID")
+    images_per_page: int = Field(description="User's images_per_page setting")
+
+
+class SimilarImageResult(ImageResponse):
+    """Schema for a similar image result from IQDB.
+
+    Extends ImageResponse with similarity score.
+    """
+
+    similarity_score: float = Field(description="Similarity score from IQDB (0-100)")
+
+
+class SimilarImagesResponse(BaseModel):
+    """Schema for similar images search response."""
+
+    query_image_id: int = Field(description="The image ID that was searched")
+    similar_images: list[SimilarImageResult] = Field(
+        description="List of similar images ordered by similarity score (highest first)"
+    )

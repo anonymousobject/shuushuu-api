@@ -15,6 +15,7 @@ from app.models.admin_action import AdminActions
 
 # User-related models
 from app.models.ban import Bans
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.comment import Comments
 
 # Junction/relationship tables
@@ -24,6 +25,7 @@ from app.models.favorite import Favorites
 from app.models.image import Images
 from app.models.image_rating import ImageRatings
 from app.models.image_report import ImageReports
+from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
 
 # Utility models
@@ -33,6 +35,7 @@ from app.models.misc import (
     Quicklinks,
     Tips,
 )
+from app.models.ml_model_version import MLModelVersion
 
 # Content models
 from app.models.news import News
@@ -43,11 +46,11 @@ from app.models.privmsg import Privmsgs
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
 from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.tag_mapping import TagMapping
 from app.models.tag_suggestion import TagSuggestion
-from app.models.ml_model_version import MLModelVersion
 from app.models.user import Users
 from app.models.user_session import UserSessions
 
@@ -61,9 +64,12 @@ __all__ = [
     # Junction/relationship tables
     "Favorites",
     "TagLinks",
+    "TagExternalLinks",
+    "CharacterSourceLinks",
     "TagHistory",
     "ImageRatings",
     "ImageReports",
+    "ImageReportTagSuggestions",
     "ImageReviews",
     "ReviewVotes",
     "AdminActions",

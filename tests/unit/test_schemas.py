@@ -4,10 +4,14 @@ Unit tests for Pydantic schemas.
 These tests verify schema validation and serialization.
 """
 
-import pytest
-from pydantic import ValidationError
+from datetime import datetime
 
+import pytest
+from pydantic import BaseModel, ValidationError
+
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.image import ImageBase, ImageResponse
+from app.schemas.user import UserResponse
 
 
 @pytest.mark.unit
@@ -92,3 +96,162 @@ class TestImageSchemas:
         image = ImageBase(**data)
         assert image.width > 0
         assert image.height > 0
+
+
+@pytest.mark.unit
+class TestUserSchemas:
+    """Tests for user schemas."""
+
+    def test_plain_text_storage_with_none_values(self):
+        """Test None values are handled correctly in plain text fields."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": None,
+            "location": None,
+            "website": None,
+            "user_title": None,
+        }
+        user = UserResponse(**data)
+        assert user.interests is None
+        assert user.location is None
+        assert user.website is None
+        assert user.user_title is None
+
+    def test_plain_text_storage_with_empty_strings(self):
+        """Test empty strings are handled correctly in plain text fields."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": "",
+            "location": "",
+            "website": "",
+            "user_title": "",
+        }
+        user = UserResponse(**data)
+        # Empty strings should be returned as empty strings
+        assert user.interests == ""
+        assert user.location == ""
+        assert user.website == ""
+        assert user.user_title == ""
+
+    def test_fields_without_html_entities_unchanged(self):
+        """Test fields without HTML entities are passed through unchanged."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "interests": "Plain text with no entities",
+            "location": "Simple Location",
+            "website": "https://example.com/path",
+            "user_title": "Regular Title",
+        }
+        user = UserResponse(**data)
+        assert user.interests == "Plain text with no entities"
+        assert user.location == "Simple Location"
+        assert user.website == "https://example.com/path"
+        assert user.user_title == "Regular Title"
+
+    def test_int_to_bool_conversion_for_active(self):
+        """Test database int (0/1) is converted to boolean for active field."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": 1,
+            "admin": 0,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+        }
+        user = UserResponse(**data)
+        assert user.active is True
+        assert user.admin is False
+
+    def test_int_to_bool_conversion_for_admin(self):
+        """Test database int (0/1) is converted to boolean for admin field."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": 0,
+            "admin": 1,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+        }
+        user = UserResponse(**data)
+        assert user.active is False
+        assert user.admin is True
+
+
+@pytest.mark.unit
+class TestUTCDatetimeSerialization:
+    """Tests for UTC datetime serialization with Z suffix."""
+
+    def test_utc_datetime_serializes_with_z_suffix(self):
+        """Test UTCDatetime serializes to ISO format with Z suffix."""
+
+        class TestModel(BaseModel):
+            timestamp: UTCDatetime
+
+        dt = datetime(2026, 1, 11, 16, 30, 0)
+        model = TestModel(timestamp=dt)
+        json_data = model.model_dump_json()
+
+        assert '"2026-01-11T16:30:00Z"' in json_data
+
+    def test_utc_datetime_optional_with_value(self):
+        """Test UTCDatetimeOptional serializes datetime with Z suffix."""
+
+        class TestModel(BaseModel):
+            timestamp: UTCDatetimeOptional = None
+
+        dt = datetime(2026, 1, 11, 8, 15, 30)
+        model = TestModel(timestamp=dt)
+        json_data = model.model_dump_json()
+
+        assert '"2026-01-11T08:15:30Z"' in json_data
+
+    def test_utc_datetime_optional_with_none(self):
+        """Test UTCDatetimeOptional serializes None as null."""
+
+        class TestModel(BaseModel):
+            timestamp: UTCDatetimeOptional = None
+
+        model = TestModel(timestamp=None)
+        data = model.model_dump()
+
+        assert data["timestamp"] is None
+
+    def test_utc_datetime_in_real_schema(self):
+        """Test UTCDatetime works in actual schema (UserResponse)."""
+        data = {
+            "user_id": 1,
+            "username": "testuser",
+            "active": True,
+            "admin": False,
+            "posts": 0,
+            "favorites": 0,
+            "image_posts": 0,
+            "date_joined": datetime(2026, 1, 11, 12, 0, 0),
+            "last_login": datetime(2026, 1, 11, 16, 30, 0),
+        }
+        user = UserResponse(**data)
+        json_data = user.model_dump_json()
+
+        # Both datetime fields should have Z suffix
+        assert '"2026-01-11T12:00:00Z"' in json_data
+        assert '"2026-01-11T16:30:00Z"' in json_data
