@@ -41,7 +41,6 @@ from app.models.favorite import Favorites
 from app.models.image_rating import ImageRatings
 from app.models.tag_link import TagLinks
 from app.models.tag_history import TagHistory
-from app.models.user_session import UserSessions
 from app.config import settings
 
 
@@ -105,8 +104,6 @@ async def find_inactive_users(
               SELECT DISTINCT user_id FROM tag_links WHERE user_id IS NOT NULL
               UNION
               SELECT DISTINCT user_id FROM tag_history WHERE user_id IS NOT NULL
-              UNION
-              SELECT DISTINCT user_id FROM user_sessions WHERE user_id IS NOT NULL
           )
         ORDER BY u.user_id
     """)

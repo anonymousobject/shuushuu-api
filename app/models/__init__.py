@@ -49,7 +49,6 @@ from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.user import Users
-from app.models.user_session import UserSessions
 
 __all__ = [
     "Base",
@@ -72,7 +71,6 @@ __all__ = [
     "AdminActions",
     # User-related models
     "Bans",
-    "UserSessions",
     "RefreshTokens",
     "Privmsgs",
     # Content models
