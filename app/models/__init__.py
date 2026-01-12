@@ -52,7 +52,6 @@ from app.models.tag_link import TagLinks
 from app.models.tag_mapping import TagMapping
 from app.models.tag_suggestion import TagSuggestion
 from app.models.user import Users
-from app.models.user_session import UserSessions
 
 __all__ = [
     "Base",
@@ -75,7 +74,6 @@ __all__ = [
     "AdminActions",
     # User-related models
     "Bans",
-    "UserSessions",
     "RefreshTokens",
     "Privmsgs",
     # Content models
