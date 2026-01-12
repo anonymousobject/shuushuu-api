@@ -265,7 +265,6 @@ def setup_test_database():
     from app.models.tag_history import TagHistory  # noqa: F401
     from app.models.tag_link import TagLinks  # noqa: F401
     from app.models.user import Users  # noqa: F401
-    from app.models.user_session import UserSessions  # noqa: F401
     from app.models.user_suspension import UserSuspensions  # noqa: F401
 
     sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
