@@ -159,6 +159,8 @@ services:
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
+      # ML models for tag suggestion generation
+      - ./ml_models:/app/ml_models:ro
     depends_on:
       redis:
         condition: service_healthy

@@ -40,6 +40,7 @@ dependencies = [
     # "python-multipart>=0.0.9",  # Multipart form data - needed for image uploads
     "aiosmtplib>=5.0.0",
     "onnxruntime>=1.23.2",
+    "numpy>=2.4.1",
 ]
 
 [dependency-groups]
