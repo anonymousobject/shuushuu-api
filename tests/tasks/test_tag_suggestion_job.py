@@ -526,3 +526,109 @@ async def test_generate_tag_suggestions_handles_no_mappings(db_session, tmp_path
     # Should complete but create 0 suggestions
     assert result["status"] == "completed"
     assert result["suggestions_created"] == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_tag_suggestions_resets_approved_when_tag_removed(db_session, tmp_path):
+    """Test that approved suggestions are reset to pending when their tag is removed."""
+    # Create test tags
+    tag1 = Tags(tag_id=46, tag="long_hair")
+    tag2 = Tags(tag_id=161, tag="short_hair")
+    db_session.add_all([tag1, tag2])
+    await db_session.flush()
+
+    # Create test user and image
+    user = Users(
+        username=f"testuser_{id(db_session)}_7",
+        email=f"test{id(db_session)}_7@example.com",
+        password="hashed",
+        salt="testsalt12345678"
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    image = Images(
+        filename="2024-01-01-7",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash=f"reset123_{id(db_session)}_7",
+        filesize=1024,
+        width=800,
+        height=600,
+    )
+    db_session.add(image)
+    await db_session.flush()
+
+    # Create an approved suggestion (simulating previously approved tag)
+    # Note: No corresponding TagLink - simulating that the tag was removed
+    approved_suggestion = TagSuggestion(
+        image_id=image.image_id,
+        tag_id=46,
+        confidence=0.92,
+        model_source="danbooru",
+        model_version="v3",
+        status="approved",
+    )
+    db_session.add(approved_suggestion)
+
+    # Create a rejected suggestion (should stay rejected)
+    rejected_suggestion = TagSuggestion(
+        image_id=image.image_id,
+        tag_id=161,
+        confidence=0.88,
+        model_source="danbooru",
+        model_version="v3",
+        status="rejected",
+    )
+    db_session.add(rejected_suggestion)
+    await db_session.commit()
+
+    # Mock ML service - returns both tags
+    mock_predictions = [
+        {"external_tag": "long_hair", "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+        {"external_tag": "short_hair", "confidence": 0.88, "model_source": "danbooru", "model_version": "v3"},
+    ]
+
+    mock_ml_service = MagicMock()
+    mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
+
+    async def mock_mapping_resolver(db, suggestions):
+        return [
+            {"tag_id": 46, "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+            {"tag_id": 161, "confidence": 0.88, "model_source": "danbooru", "model_version": "v3"},
+        ]
+
+    async def mock_tag_resolver(db, suggestions):
+        return suggestions
+
+    # Create fake image file
+    fake_image = tmp_path / "fullsize" / "2024-01-01-7.jpg"
+    fake_image.parent.mkdir(parents=True, exist_ok=True)
+    fake_image.write_bytes(b"fake image data")
+
+    with (
+        patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_mapping_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_tag_resolver),
+        patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
+        patch("app.tasks.tag_suggestion_job.get_async_session", lambda: mock_get_async_session(db_session)),
+    ):
+        mock_settings.STORAGE_PATH = str(tmp_path)
+
+        ctx = {"ml_service": mock_ml_service}
+        result = await generate_tag_suggestions(ctx, image.image_id)
+
+    # Should not create new suggestions (both already exist)
+    assert result["status"] == "completed"
+    assert result["suggestions_created"] == 0
+
+    # Refresh suggestions from database
+    await db_session.refresh(approved_suggestion)
+    await db_session.refresh(rejected_suggestion)
+
+    # Approved suggestion should be reset to pending (tag was removed)
+    assert approved_suggestion.status == "pending"
+    assert approved_suggestion.reviewed_at is None
+    assert approved_suggestion.reviewed_by_user_id is None
+
+    # Rejected suggestion should stay rejected
+    assert rejected_suggestion.status == "rejected"

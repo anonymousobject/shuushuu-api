@@ -242,7 +242,47 @@ async def generate_tag_suggestions(
                 db, resolved_predictions, all_existing_tag_ids
             )
 
-            # 8. Create TagSuggestion records
+            # 8. Get existing suggestions for this image (to avoid duplicate key errors on regenerate)
+            existing_suggestions_result = await db.execute(
+                select(TagSuggestion).where(
+                    TagSuggestion.image_id == image_id,  # type: ignore[arg-type]
+                )
+            )
+            existing_suggestions = list(existing_suggestions_result.scalars().all())
+            existing_suggestion_tag_ids = {s.tag_id for s in existing_suggestions}
+
+            if existing_suggestion_tag_ids:
+                logger.info(
+                    "tag_suggestion_job_existing_suggestions_found",
+                    image_id=image_id,
+                    count=len(existing_suggestion_tag_ids),
+                )
+
+            # 8b. Reset "approved" suggestions back to "pending" if their tag was removed
+            suggestions_reset = 0
+            for suggestion in existing_suggestions:
+                if (
+                    suggestion.status == "approved"
+                    and suggestion.tag_id not in all_existing_tag_ids
+                ):
+                    suggestion.status = "pending"
+                    suggestion.reviewed_at = None
+                    suggestion.reviewed_by_user_id = None
+                    suggestions_reset += 1
+                    logger.debug(
+                        "tag_suggestion_job_reset_removed_tag",
+                        image_id=image_id,
+                        tag_id=suggestion.tag_id,
+                    )
+
+            if suggestions_reset:
+                logger.info(
+                    "tag_suggestion_job_suggestions_reset",
+                    image_id=image_id,
+                    count=suggestions_reset,
+                )
+
+            # 9. Create TagSuggestion records
             suggestions_created = 0
 
             for pred in filtered_predictions:
@@ -253,6 +293,15 @@ async def generate_tag_suggestions(
                 if tag_id in all_existing_tag_ids:
                     logger.debug(
                         "tag_suggestion_job_skipping_existing_tag", image_id=image_id, tag_id=tag_id
+                    )
+                    continue
+
+                # Skip if suggestion already exists for this tag (from previous generation)
+                if tag_id in existing_suggestion_tag_ids:
+                    logger.debug(
+                        "tag_suggestion_job_skipping_existing_suggestion",
+                        image_id=image_id,
+                        tag_id=tag_id,
                     )
                     continue
 
