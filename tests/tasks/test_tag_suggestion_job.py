@@ -3,8 +3,6 @@ Tests for tag suggestion generation background job.
 """
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
-from pathlib import Path as FilePath
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -56,19 +54,27 @@ async def test_generate_tag_suggestions_creates_suggestions(db_session, tmp_path
     db_session.add(image)
     await db_session.commit()
 
-    # Mock ML service predictions
+    # Mock ML service predictions (now returns external_tag format)
     mock_predictions = [
-        {"tag_id": 46, "confidence": 0.92, "model_source": "custom_theme"},
-        {"tag_id": 161, "confidence": 0.88, "model_source": "custom_theme"},
-        {"tag_id": 25, "confidence": 0.85, "model_source": "danbooru"},
+        {"external_tag": "long_hair", "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+        {"external_tag": "short_hair", "confidence": 0.88, "model_source": "danbooru", "model_version": "v3"},
+        {"external_tag": "blush", "confidence": 0.85, "model_source": "danbooru", "model_version": "v3"},
     ]
 
     # Mock ML service
     mock_ml_service = MagicMock()
     mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
 
+    # Mock tag mapping resolver (converts external_tag to tag_id)
+    async def mock_mapping_resolver(db, suggestions):
+        return [
+            {"tag_id": 46, "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+            {"tag_id": 161, "confidence": 0.88, "model_source": "danbooru", "model_version": "v3"},
+            {"tag_id": 25, "confidence": 0.85, "model_source": "danbooru", "model_version": "v3"},
+        ]
+
     # Mock tag resolver (just pass through for this test)
-    async def mock_resolver(db, suggestions):
+    async def mock_tag_resolver(db, suggestions):
         return suggestions
 
     # Create fake image file
@@ -77,7 +83,8 @@ async def test_generate_tag_suggestions_creates_suggestions(db_session, tmp_path
     fake_image.write_bytes(b"fake image data")
 
     with (
-        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_mapping_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_tag_resolver),
         patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
         patch("app.tasks.tag_suggestion_job.get_async_session", lambda: mock_get_async_session(db_session)),
     ):
@@ -142,17 +149,25 @@ async def test_generate_tag_suggestions_skips_existing_tags(db_session, tmp_path
     db_session.add(existing_link)
     await db_session.commit()
 
-    # Mock ML service predictions (includes tag 46 which is already linked)
+    # Mock ML service predictions
     mock_predictions = [
-        {"tag_id": 46, "confidence": 0.92, "model_source": "custom_theme"},  # Already linked
-        {"tag_id": 161, "confidence": 0.88, "model_source": "custom_theme"},
-        {"tag_id": 25, "confidence": 0.85, "model_source": "danbooru"},
+        {"external_tag": "long_hair", "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+        {"external_tag": "short_hair", "confidence": 0.88, "model_source": "danbooru", "model_version": "v3"},
+        {"external_tag": "blush", "confidence": 0.85, "model_source": "danbooru", "model_version": "v3"},
     ]
 
     mock_ml_service = MagicMock()
     mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
 
-    async def mock_resolver(db, suggestions):
+    # Mock resolvers (tag 46 is already linked but will still be returned by resolvers)
+    async def mock_mapping_resolver(db, suggestions):
+        return [
+            {"tag_id": 46, "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+            {"tag_id": 161, "confidence": 0.88, "model_source": "danbooru", "model_version": "v3"},
+            {"tag_id": 25, "confidence": 0.85, "model_source": "danbooru", "model_version": "v3"},
+        ]
+
+    async def mock_tag_resolver(db, suggestions):
         return suggestions
 
     # Create fake image file
@@ -161,7 +176,8 @@ async def test_generate_tag_suggestions_skips_existing_tags(db_session, tmp_path
     fake_image.write_bytes(b"fake image data")
 
     with (
-        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_mapping_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_tag_resolver),
         patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
         patch("app.tasks.tag_suggestion_job.get_async_session", lambda: mock_get_async_session(db_session)),
     ):
@@ -217,11 +233,15 @@ async def test_generate_tag_suggestions_resolves_tag_relationships(db_session, t
 
     # Mock ML predictions
     mock_predictions = [
-        {"tag_id": 100, "confidence": 0.90, "model_source": "custom_theme"},
+        {"external_tag": "some_tag", "confidence": 0.90, "model_source": "danbooru", "model_version": "v3"},
     ]
 
+    # Mock tag mapping resolver
+    async def mock_mapping_resolver(db, suggestions):
+        return [{"tag_id": 100, "confidence": 0.90, "model_source": "danbooru", "model_version": "v3"}]
+
     # Mock tag resolver - simulates alias resolution
-    async def mock_resolver(db, suggestions):
+    async def mock_tag_resolver(db, suggestions):
         # Simulate resolving tag 100 to tag 101 (alias)
         resolved = []
         for sugg in suggestions:
@@ -243,7 +263,8 @@ async def test_generate_tag_suggestions_resolves_tag_relationships(db_session, t
     fake_image.write_bytes(b"fake image data")
 
     with (
-        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_mapping_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_tag_resolver),
         patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
         patch("app.tasks.tag_suggestion_job.get_async_session", lambda: mock_get_async_session(db_session)),
     ):
@@ -397,17 +418,25 @@ async def test_generate_tag_suggestions_filters_low_confidence(db_session, tmp_p
     db_session.add(image)
     await db_session.commit()
 
-    # Mock predictions with varying confidence (ML service should filter, but we test the job too)
+    # Mock predictions
     mock_predictions = [
-        {"tag_id": 46, "confidence": 0.92, "model_source": "custom_theme"},  # Keep
-        {"tag_id": 161, "confidence": 0.55, "model_source": "custom_theme"},  # Filter out
-        {"tag_id": 25, "confidence": 0.65, "model_source": "danbooru"},  # Keep
+        {"external_tag": "long_hair", "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+        {"external_tag": "short_hair", "confidence": 0.55, "model_source": "danbooru", "model_version": "v3"},
+        {"external_tag": "blush", "confidence": 0.65, "model_source": "danbooru", "model_version": "v3"},
     ]
 
     mock_ml_service = MagicMock()
     mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
 
-    async def mock_resolver(db, suggestions):
+    # Mock resolvers - return varying confidence values
+    async def mock_mapping_resolver(db, suggestions):
+        return [
+            {"tag_id": 46, "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+            {"tag_id": 161, "confidence": 0.55, "model_source": "danbooru", "model_version": "v3"},
+            {"tag_id": 25, "confidence": 0.65, "model_source": "danbooru", "model_version": "v3"},
+        ]
+
+    async def mock_tag_resolver(db, suggestions):
         return suggestions
 
     # Create fake image file
@@ -416,7 +445,8 @@ async def test_generate_tag_suggestions_filters_low_confidence(db_session, tmp_p
     fake_image.write_bytes(b"fake image data")
 
     with (
-        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_mapping_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_tag_resolver),
         patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
         patch("app.tasks.tag_suggestion_job.get_async_session", lambda: mock_get_async_session(db_session)),
     ):
@@ -435,3 +465,64 @@ async def test_generate_tag_suggestions_filters_low_confidence(db_session, tmp_p
     tag_ids = {s.tag_id for s in suggestions}
     assert tag_ids == {46, 25}
     assert all(s.confidence >= 0.6 for s in suggestions)
+
+
+@pytest.mark.asyncio
+async def test_generate_tag_suggestions_handles_no_mappings(db_session, tmp_path):
+    """Test that job handles case where no tags can be mapped."""
+    # Create test user and image
+    user = Users(
+        username=f"testuser_{id(db_session)}_6",
+        email=f"test{id(db_session)}_6@example.com",
+        password="hashed",
+        salt="testsalt12345678"
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    image = Images(
+        filename="2024-01-01-6",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash=f"nomap123_{id(db_session)}_6",
+        filesize=1024,
+        width=800,
+        height=600,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    # Mock predictions
+    mock_predictions = [
+        {"external_tag": "unmapped_tag", "confidence": 0.92, "model_source": "danbooru", "model_version": "v3"},
+    ]
+
+    mock_ml_service = MagicMock()
+    mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
+
+    # Mock resolvers - no mappings found
+    async def mock_mapping_resolver(db, suggestions):
+        return []  # No mappings
+
+    async def mock_tag_resolver(db, suggestions):
+        return suggestions
+
+    # Create fake image file
+    fake_image = tmp_path / "fullsize" / "2024-01-01-6.jpg"
+    fake_image.parent.mkdir(parents=True, exist_ok=True)
+    fake_image.write_bytes(b"fake image data")
+
+    with (
+        patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_mapping_resolver),
+        patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_tag_resolver),
+        patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
+        patch("app.tasks.tag_suggestion_job.get_async_session", lambda: mock_get_async_session(db_session)),
+    ):
+        mock_settings.STORAGE_PATH = str(tmp_path)
+
+        ctx = {"ml_service": mock_ml_service}
+        result = await generate_tag_suggestions(ctx, image.image_id)
+
+    # Should complete but create 0 suggestions
+    assert result["status"] == "completed"
+    assert result["suggestions_created"] == 0

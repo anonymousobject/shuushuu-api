@@ -95,7 +95,7 @@ async def import_mappings(csv_path: Path) -> None:
                 print(f"  ... and {len(errors) - 20} more")
 
 
-async def main():
+async def main() -> None:
     csv_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_CSV
 
     if not csv_path.exists():

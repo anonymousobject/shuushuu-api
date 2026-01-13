@@ -1,133 +1,153 @@
 """
 ML Tag Suggestion Service
 
-PHASE 1: Mock implementation that returns hardcoded suggestions.
-PHASE 2: Replace with real model inference.
+Uses WD-Tagger v3 for anime image tagging with Danbooru vocabulary.
 """
 
 import asyncio
 import random
+from pathlib import Path
+from typing import Any
+
+from app.config import settings
+from app.core.logging import get_logger
+from app.services.onnx_model import WDTaggerModel
+
+logger = get_logger(__name__)
 
 
 class MockModel:
-    """Mock ML model for testing"""
+    """Mock ML model for testing when real model is unavailable."""
 
-    def __init__(self, model_type: str):
-        self.model_type = model_type
+    def __init__(self) -> None:
+        # Mock predictions with external tags (Danbooru format)
+        self.predictions = [
+            ("long_hair", 0.92),
+            ("smile", 0.88),
+            ("blush", 0.85),
+            ("dress", 0.82),
+            ("ribbon", 0.78),
+            ("blue_eyes", 0.75),
+            ("blonde_hair", 0.72),
+        ]
 
-        # Mock tag predictions (tag_id → confidence)
-        if model_type == "custom_theme":
-            self.predictions = {
-                46: 0.92,   # long hair
-                161: 0.88,  # short hair
-                25: 0.85,   # blush
-                3: 0.75,    # ribbon
-                143: 0.82,  # smile
-            }
-        else:  # danbooru
-            self.predictions = {
-                46: 0.90,   # long hair (overlap with custom)
-                12525: 0.87,  # blue eyes
-                169: 0.78,    # blonde hair
-            }
+    async def predict(
+        self,
+        _image_path: str,
+        min_confidence: float = 0.35,
+        include_categories: set[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Mock prediction - returns hardcoded suggestions."""
+        await asyncio.sleep(0.05)  # Simulate inference delay
 
-    async def predict(self, _image_path: str) -> list[dict]:
-        """Mock prediction - returns hardcoded suggestions"""
-        # Simulate inference delay
-        await asyncio.sleep(0.1)
-
-        # Add some randomness to confidence
-        predictions = []
-        for tag_id, base_confidence in self.predictions.items():
+        results = []
+        for tag, base_confidence in self.predictions:
+            # Add randomness
             confidence = base_confidence + random.uniform(-0.05, 0.05)
-            confidence = max(0.0, min(1.0, confidence))  # Clamp to [0, 1]
+            confidence = max(0.0, min(1.0, confidence))
 
-            predictions.append({
-                "tag_id": tag_id,
-                "confidence": confidence,
-                "model_source": self.model_type
-            })
+            if confidence >= min_confidence:
+                results.append(
+                    {
+                        "tag": tag,
+                        "confidence": confidence,
+                        "category": 0,  # General
+                    }
+                )
 
-        return predictions
+        return results
+
+    async def cleanup(self) -> None:
+        """No-op for mock model."""
+        pass
 
 
 class MLTagSuggestionService:
     """
     ML Tag Suggestion Service
 
-    PHASE 1: Uses mock models
-    PHASE 2: Replace with real ONNX/PyTorch models
+    Uses WD-Tagger v3 for Danbooru tag predictions.
+    Falls back to mock model if real model is unavailable.
     """
 
-    def __init__(self):
-        self.custom_model = None
-        self.danbooru_model = None
+    def __init__(self) -> None:
+        self.danbooru_model: WDTaggerModel | MockModel | None = None
+        self._using_mock = False
 
-    async def load_models(self):
-        """Load ML models into memory"""
-        # PHASE 1: Load mock models
-        self.custom_model = MockModel("custom_theme")
-        self.danbooru_model = MockModel("danbooru")
+    async def load_models(self) -> None:
+        """Load ML models into memory."""
+        model_dir = Path(settings.ML_MODELS_PATH)
+        model_path = model_dir / "wd-swinv2-tagger-v3" / "model.onnx"
+        tags_path = model_dir / "wd-swinv2-tagger-v3" / "selected_tags.csv"
 
-        # PHASE 2: Load real models
-        # self.custom_model = ONNXModel("/path/to/custom_theme.onnx")
-        # self.danbooru_model = ONNXModel("/path/to/danbooru.onnx")
+        if model_path.exists() and tags_path.exists():
+            logger.info(
+                "ml_service_loading_wd_tagger",
+                model_path=str(model_path),
+            )
+            self.danbooru_model = WDTaggerModel(str(model_path), str(tags_path))
+            await self.danbooru_model.load()
+            self._using_mock = False
+        else:
+            logger.warning(
+                "ml_service_model_not_found_using_mock",
+                expected_model=str(model_path),
+                expected_tags=str(tags_path),
+            )
+            self.danbooru_model = MockModel()
+            self._using_mock = True
 
     async def generate_suggestions(
         self,
         image_path: str,
-        min_confidence: float = 0.6
-    ) -> list[dict]:
+        min_confidence: float = 0.35,
+    ) -> list[dict[str, Any]]:
         """
         Generate tag suggestions for an image.
 
-        Returns list of dicts with keys: tag_id, confidence, model_source
+        Returns list of dicts with keys:
+            - external_tag: Danbooru tag name (e.g., "long_hair")
+            - confidence: float 0-1
+            - model_source: "danbooru"
+            - model_version: "wd-swinv2-tagger-v3"
         """
-        if not self.custom_model or not self.danbooru_model:
+        if not self.danbooru_model:
             raise RuntimeError("Models not loaded. Call load_models() first.")
 
-        # Run both models in parallel
-        custom_preds, danbooru_preds = await asyncio.gather(
-            self.custom_model.predict(image_path),
-            self.danbooru_model.predict(image_path)
+        # Run WD-Tagger inference
+        predictions = await self.danbooru_model.predict(
+            image_path,
+            min_confidence=min_confidence,
         )
 
-        # Merge predictions (prioritize custom for themes)
-        merged = self._merge_predictions(custom_preds, danbooru_preds)
+        # Format results
+        suggestions = []
+        for pred in predictions:
+            suggestions.append(
+                {
+                    "external_tag": pred["tag"],
+                    "confidence": pred["confidence"],
+                    "model_source": "danbooru",
+                    "model_version": "wd-swinv2-tagger-v3" if not self._using_mock else "mock",
+                }
+            )
 
-        # Filter by confidence
-        filtered = [
-            pred for pred in merged
-            if pred["confidence"] >= min_confidence
-        ]
+        logger.info(
+            "ml_service_suggestions_generated",
+            image_path=image_path,
+            suggestion_count=len(suggestions),
+            using_mock=self._using_mock,
+        )
 
-        return filtered
+        return suggestions
 
-    def _merge_predictions(
-        self,
-        custom_preds: list[dict],
-        danbooru_preds: list[dict]
-    ) -> list[dict]:
-        """
-        Merge predictions from both models.
+    @property
+    def using_mock(self) -> bool:
+        """Whether the service is using mock model."""
+        return self._using_mock
 
-        Strategy: Prioritize custom model predictions, use Danbooru for additional tags.
-        """
-        # Use dict to deduplicate by tag_id
-        merged = {}
-
-        # Add custom predictions first (higher priority)
-        for pred in custom_preds:
-            merged[pred["tag_id"]] = pred
-
-        # Add Danbooru predictions if not already present
-        for pred in danbooru_preds:
-            if pred["tag_id"] not in merged:
-                merged[pred["tag_id"]] = pred
-
-        return list(merged.values())
-
-    async def cleanup(self):
-        """Cleanup resources"""
-        self.custom_model = None
+    async def cleanup(self) -> None:
+        """Cleanup resources."""
+        if self.danbooru_model:
+            await self.danbooru_model.cleanup()
         self.danbooru_model = None

@@ -181,7 +181,7 @@ def write_output(
     print(f"Output written to: {OUTPUT_CSV}")
 
 
-async def main():
+async def main() -> None:
     print("Loading WD-Tagger tags...")
     wd_tags = load_wd_tagger_tags()
     print(f"  Loaded {len(wd_tags)} general tags from WD-Tagger")

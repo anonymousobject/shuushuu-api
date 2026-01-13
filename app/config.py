@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     IQDB_PORT: int = 5588
     IQDB_SIMILARITY_THRESHOLD: float = 50.0
 
+    # ML Models
+    ML_MODELS_PATH: str = "ml_models"
+    ML_MIN_CONFIDENCE: float = 0.35  # Minimum confidence for WD-Tagger predictions
+
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60
     UPLOAD_DELAY_SECONDS: int = 30
