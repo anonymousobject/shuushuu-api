@@ -7,8 +7,8 @@ Provides endpoints for viewing and managing ML-generated tag suggestions.
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser
@@ -41,7 +41,7 @@ async def get_tag_suggestions(
         Query(alias="status", description="Filter by suggestion status"),
     ] = None,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = ...,
+    current_user: CurrentUser = ...,  # type: ignore[assignment]
 ) -> TagSuggestionsListResponse:
     """
     Get ML-generated tag suggestions for an image.
@@ -68,7 +68,7 @@ async def get_tag_suggestions(
 
     Get all suggestions (any status):
     ```
-    GET /api/v1/images/12345/tag-suggestions
+    GET / api / v1 / images / 12345 / tag - suggestions
     ```
 
     **Response includes:**
@@ -89,14 +89,20 @@ async def get_tag_suggestions(
         HTTPException: 404 if image not found, 403 if permission denied
     """
     # Check if image exists
-    result = await db.execute(select(Images).where(Images.image_id == image_id))
-    image = result.scalar_one_or_none()
+    image_result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = image_result.scalar_one_or_none()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check permissions: owner or moderator
     is_owner = image.user_id == current_user.user_id
-    is_moderator = await has_permission(db, current_user.user_id, Permission.IMAGE_TAG_ADD)
+    is_moderator = await has_permission(
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.IMAGE_TAG_ADD,
+    )
 
     if not is_owner and not is_moderator:
         raise HTTPException(
@@ -105,26 +111,32 @@ async def get_tag_suggestions(
         )
 
     # Build query for suggestions
-    query = select(TagSuggestion).where(TagSuggestion.image_id == image_id)
+    query = select(TagSuggestion).where(
+        TagSuggestion.image_id == image_id  # type: ignore[arg-type]
+    )
     if status_filter:
-        query = query.where(TagSuggestion.status == status_filter)
+        query = query.where(TagSuggestion.status == status_filter)  # type: ignore[arg-type]
 
-    result = await db.execute(query.order_by(TagSuggestion.confidence.desc()))
-    suggestions = result.scalars().all()
+    suggestions_result = await db.execute(
+        query.order_by(desc(TagSuggestion.confidence))  # type: ignore[arg-type]
+    )
+    suggestions = list(suggestions_result.scalars().all())
 
     # Batch fetch all tags in one query to avoid N+1 problem
     tag_ids = [sugg.tag_id for sugg in suggestions]
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id.in_(tag_ids)))
+    tag_result = await db.execute(
+        select(Tags).where(Tags.tag_id.in_(tag_ids))  # type: ignore[union-attr]
+    )
     tags_by_id = {tag.tag_id: tag for tag in tag_result.scalars().all()}
 
     # Build suggestion responses
     suggestion_responses = [
         TagSuggestionResponse(
-            suggestion_id=sugg.suggestion_id,
+            suggestion_id=sugg.suggestion_id,  # type: ignore[arg-type]
             tag=TagResponse.model_validate(tags_by_id[sugg.tag_id]),
             confidence=sugg.confidence,
-            model_source=sugg.model_source,
-            status=sugg.status,
+            model_source=sugg.model_source,  # type: ignore[arg-type]
+            status=sugg.status,  # type: ignore[arg-type]
             created_at=sugg.created_at,
             reviewed_at=sugg.reviewed_at,
         )
@@ -133,7 +145,7 @@ async def get_tag_suggestions(
 
     # Count by status (for all suggestions, not just filtered ones)
     status_counts_result = await db.execute(
-        select(TagSuggestion.status, func.count(TagSuggestion.suggestion_id))
+        select(TagSuggestion.status, func.count(TagSuggestion.suggestion_id))  # type: ignore[call-overload, arg-type]
         .where(TagSuggestion.image_id == image_id)
         .group_by(TagSuggestion.status)
     )
@@ -161,7 +173,7 @@ async def review_tag_suggestions(
     image_id: int,
     request: ReviewSuggestionsRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = ...,
+    current_user: CurrentUser = ...,  # type: ignore[assignment]
 ) -> ReviewSuggestionsResponse:
     """
     Approve or reject tag suggestions in batch.
@@ -224,14 +236,20 @@ async def review_tag_suggestions(
         HTTPException: 404 if image not found, 403 if permission denied
     """
     # Check if image exists
-    result = await db.execute(select(Images).where(Images.image_id == image_id))
-    image = result.scalar_one_or_none()
+    image_result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = image_result.scalar_one_or_none()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check permissions: owner or moderator
     is_owner = image.user_id == current_user.user_id
-    is_moderator = await has_permission(db, current_user.user_id, Permission.IMAGE_TAG_ADD)
+    is_moderator = await has_permission(
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.IMAGE_TAG_ADD,
+    )
 
     if not is_owner and not is_moderator:
         raise HTTPException(
@@ -241,27 +259,27 @@ async def review_tag_suggestions(
 
     # Batch fetch all suggestions in one query to avoid N+1
     suggestion_ids = [item.suggestion_id for item in request.suggestions]
-    result = await db.execute(
+    suggestions_result = await db.execute(
         select(TagSuggestion).where(
-            TagSuggestion.suggestion_id.in_(suggestion_ids),
-            TagSuggestion.image_id == image_id,
+            TagSuggestion.suggestion_id.in_(suggestion_ids),  # type: ignore[union-attr]
+            TagSuggestion.image_id == image_id,  # type: ignore[arg-type]
         )
     )
-    suggestions_by_id = {sugg.suggestion_id: sugg for sugg in result.scalars().all()}
+    suggestions_by_id = {sugg.suggestion_id: sugg for sugg in suggestions_result.scalars().all()}
 
     # Batch fetch existing TagLinks to avoid creating duplicates
     tag_ids = [sugg.tag_id for sugg in suggestions_by_id.values()]
-    result = await db.execute(
+    links_result = await db.execute(
         select(TagLinks).where(
-            TagLinks.image_id == image_id,
-            TagLinks.tag_id.in_(tag_ids),
+            TagLinks.image_id == image_id,  # type: ignore[arg-type]
+            TagLinks.tag_id.in_(tag_ids),  # type: ignore[attr-defined]
         )
     )
-    existing_links = {(link.image_id, link.tag_id) for link in result.scalars().all()}
+    existing_links = {(link.image_id, link.tag_id) for link in links_result.scalars().all()}
 
     approved_count = 0
     rejected_count = 0
-    errors = []
+    errors: list[str] = []
 
     review_time = datetime.now(UTC)
 
