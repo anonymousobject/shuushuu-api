@@ -11,7 +11,7 @@ from typing import Any
 
 from app.config import settings
 from app.core.logging import get_logger
-from app.services.onnx_model import WDTaggerModel
+from app.services.onnx_model import CHARACTER_CATEGORY, GENERAL_CATEGORY, WDTaggerModel
 
 logger = get_logger(__name__)
 
@@ -114,10 +114,11 @@ class MLTagSuggestionService:
         if not self.danbooru_model:
             raise RuntimeError("Models not loaded. Call load_models() first.")
 
-        # Run WD-Tagger inference
+        # Run WD-Tagger inference (include both general and character tags)
         predictions = await self.danbooru_model.predict(
             image_path,
             min_confidence=min_confidence,
+            include_categories={GENERAL_CATEGORY, CHARACTER_CATEGORY},
         )
 
         # Format results
