@@ -543,7 +543,7 @@ class TestImageUploadJobIntegration:
         from unittest.mock import patch
         from io import BytesIO
         from PIL import Image
-        from app.core.auth import get_current_user
+        from app.core.auth import get_verified_user
 
         # Create a real test image
         img = Image.new("RGB", (100, 100), color="red")
@@ -551,11 +551,11 @@ class TestImageUploadJobIntegration:
         img.save(img_bytes, format="JPEG")
         img_bytes.seek(0)
 
-        # Override auth dependency
-        async def override_get_current_user():
+        # Override auth dependency (upload requires verified user)
+        async def override_get_verified_user():
             return test_user
 
-        app.dependency_overrides[get_current_user] = override_get_current_user
+        app.dependency_overrides[get_verified_user] = override_get_verified_user
 
         try:
             # Mock the enqueue_job function to track calls
@@ -602,7 +602,7 @@ class TestImageUploadJobIntegration:
         from unittest.mock import patch
         from io import BytesIO
         from PIL import Image
-        from app.core.auth import get_current_user
+        from app.core.auth import get_verified_user
 
         # Create test image
         img = Image.new("RGB", (100, 100), color="blue")
@@ -610,11 +610,11 @@ class TestImageUploadJobIntegration:
         img.save(img_bytes, format="JPEG")
         img_bytes.seek(0)
 
-        # Override auth dependency
-        async def override_get_current_user():
+        # Override auth dependency (upload requires verified user)
+        async def override_get_verified_user():
             return test_user
 
-        app.dependency_overrides[get_current_user] = override_get_current_user
+        app.dependency_overrides[get_verified_user] = override_get_verified_user
 
         try:
             with patch("app.api.v1.images.enqueue_job") as mock_enqueue:
@@ -646,16 +646,16 @@ class TestImageUploadJobIntegration:
         """Test that tag suggestion job is NOT enqueued if upload fails."""
         from unittest.mock import patch
         from io import BytesIO
-        from app.core.auth import get_current_user
+        from app.core.auth import get_verified_user
 
         # Create invalid file (not an image)
         invalid_file = BytesIO(b"not an image")
 
-        # Override auth dependency
-        async def override_get_current_user():
+        # Override auth dependency (upload requires verified user)
+        async def override_get_verified_user():
             return test_user
 
-        app.dependency_overrides[get_current_user] = override_get_current_user
+        app.dependency_overrides[get_verified_user] = override_get_verified_user
 
         try:
             with patch("app.api.v1.images.enqueue_job") as mock_enqueue:
@@ -689,7 +689,7 @@ class TestImageUploadJobIntegration:
         from unittest.mock import patch
         from io import BytesIO
         from PIL import Image
-        from app.core.auth import get_current_user
+        from app.core.auth import get_verified_user
 
         # Create test image
         img = Image.new("RGB", (100, 100), color="green")
@@ -705,11 +705,11 @@ class TestImageUploadJobIntegration:
             # Return success for other jobs (thumbnail, IQDB, etc.)
             return "test-job-id"
 
-        # Override auth dependency
-        async def override_get_current_user():
+        # Override auth dependency (upload requires verified user)
+        async def override_get_verified_user():
             return test_user
 
-        app.dependency_overrides[get_current_user] = override_get_current_user
+        app.dependency_overrides[get_verified_user] = override_get_verified_user
 
         try:
             with patch("app.api.v1.images.enqueue_job", side_effect=mock_enqueue_with_error):
@@ -734,7 +734,7 @@ class TestImageUploadJobIntegration:
         from unittest.mock import patch
         from io import BytesIO
         from PIL import Image
-        from app.core.auth import get_current_user
+        from app.core.auth import get_verified_user
 
         # Create test image
         img = Image.new("RGB", (100, 100), color="yellow")
@@ -742,11 +742,11 @@ class TestImageUploadJobIntegration:
         img.save(img_bytes, format="JPEG")
         img_bytes.seek(0)
 
-        # Override auth dependency
-        async def override_get_current_user():
+        # Override auth dependency (upload requires verified user)
+        async def override_get_verified_user():
             return test_user
 
-        app.dependency_overrides[get_current_user] = override_get_current_user
+        app.dependency_overrides[get_verified_user] = override_get_verified_user
 
         try:
             with patch("app.api.v1.images.enqueue_job") as mock_enqueue:
@@ -768,8 +768,8 @@ class TestImageUploadJobIntegration:
 
                 # Verify tag suggestion is enqueued (order doesn't matter as they're async)
                 # but it should be present alongside thumbnail and IQDB jobs
-                assert "create_thumbnail" in job_names
-                assert "add_to_iqdb" in job_names
+                assert "create_thumbnail_job" in job_names
+                assert "add_to_iqdb_job" in job_names
         finally:
             app.dependency_overrides.clear()
 

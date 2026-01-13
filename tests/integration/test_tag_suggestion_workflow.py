@@ -92,7 +92,10 @@ class TestTagSuggestionWorkflow:
         mock_ml_service = MagicMock()
         mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
 
-        # Mock tag resolver (pass through for this test)
+        # Mock tag mapping and resolver (pass through for this test)
+        async def mock_tag_mapping(db, suggestions):
+            return suggestions
+
         async def mock_resolver(db, suggestions):
             return suggestions
 
@@ -103,6 +106,7 @@ class TestTagSuggestionWorkflow:
 
         # Execute background job
         with (
+            patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_tag_mapping),
             patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
             patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
             patch(
@@ -228,6 +232,9 @@ class TestTagSuggestionWorkflow:
         mock_ml_service = MagicMock()
         mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
 
+        async def mock_tag_mapping(db, suggestions):
+            return suggestions
+
         async def mock_resolver(db, suggestions):
             return suggestions
 
@@ -236,6 +243,7 @@ class TestTagSuggestionWorkflow:
         fake_image.write_bytes(b"fake image data")
 
         with (
+            patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_tag_mapping),
             patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
             patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
             patch(
@@ -336,6 +344,9 @@ class TestTagSuggestionWorkflow:
         mock_ml_service = MagicMock()
         mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
 
+        async def mock_tag_mapping(db, suggestions):
+            return suggestions
+
         async def mock_resolver(db, suggestions):
             return suggestions
 
@@ -344,6 +355,7 @@ class TestTagSuggestionWorkflow:
         fake_image.write_bytes(b"fake image data")
 
         with (
+            patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_tag_mapping),
             patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
             patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
             patch(
@@ -449,6 +461,9 @@ class TestTagSuggestionWorkflow:
         mock_ml_service = MagicMock()
         mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
 
+        async def mock_tag_mapping(db, suggestions):
+            return suggestions
+
         async def mock_resolver(db, suggestions):
             return suggestions
 
@@ -457,6 +472,7 @@ class TestTagSuggestionWorkflow:
         fake_image.write_bytes(b"fake image data")
 
         with (
+            patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_tag_mapping),
             patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
             patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
             patch(
@@ -671,6 +687,9 @@ class TestTagSuggestionWorkflow:
         mock_ml_service = MagicMock()
         mock_ml_service.generate_suggestions = AsyncMock(return_value=mock_predictions)
 
+        async def mock_tag_mapping(db, suggestions):
+            return suggestions
+
         async def mock_resolver(db, suggestions):
             return suggestions
 
@@ -679,6 +698,7 @@ class TestTagSuggestionWorkflow:
         fake_image.write_bytes(b"fake image data")
 
         with (
+            patch("app.tasks.tag_suggestion_job.resolve_external_tags", mock_tag_mapping),
             patch("app.tasks.tag_suggestion_job.resolve_tag_relationships", mock_resolver),
             patch("app.tasks.tag_suggestion_job.settings") as mock_settings,
             patch(
