@@ -5,6 +5,7 @@ Generates ML-based tag suggestions for newly uploaded images.
 """
 
 from pathlib import Path as FilePath
+from typing import Any
 
 from sqlalchemy import select
 
@@ -24,7 +25,7 @@ MIN_CONFIDENCE_THRESHOLD = 0.6
 
 
 async def generate_tag_suggestions(
-    ctx: dict,
+    ctx: dict[str, Any],
     image_id: int,
 ) -> dict[str, str | int]:
     """
@@ -55,7 +56,9 @@ async def generate_tag_suggestions(
     try:
         async with get_async_session() as db:
             # 1. Fetch image from database
-            result = await db.execute(select(Images).where(Images.image_id == image_id))
+            result = await db.execute(
+                select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+            )
             image = result.scalar_one_or_none()
 
             if not image:
@@ -113,8 +116,9 @@ async def generate_tag_suggestions(
             tag_ids_from_predictions = {pred["tag_id"] for pred in resolved_predictions}
 
             existing_links_result = await db.execute(
-                select(TagLinks.tag_id).where(
-                    TagLinks.image_id == image_id, TagLinks.tag_id.in_(tag_ids_from_predictions)
+                select(TagLinks.tag_id).where(  # type: ignore[call-overload]
+                    TagLinks.image_id == image_id,
+                    TagLinks.tag_id.in_(tag_ids_from_predictions),  # type: ignore[attr-defined]
                 )
             )
             existing_tag_ids = {row[0] for row in existing_links_result.all()}

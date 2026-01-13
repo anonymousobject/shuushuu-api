@@ -4,6 +4,8 @@ Tag Relationship Resolver
 Resolves tag aliases and hierarchies for ML suggestions.
 """
 
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +16,9 @@ HIERARCHY_CONFIDENCE_THRESHOLD = 0.7
 PARENT_CONFIDENCE_MULTIPLIER = 0.9
 
 
-async def resolve_tag_relationships(db: AsyncSession, suggestions: list[dict]) -> list[dict]:
+async def resolve_tag_relationships(
+    db: AsyncSession, suggestions: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """
     Resolve tag aliases and hierarchies.
 
@@ -33,29 +37,32 @@ async def resolve_tag_relationships(db: AsyncSession, suggestions: list[dict]) -
     tag_ids = {sugg["tag_id"] for sugg in suggestions}
 
     # Batch load all tags at once
-    result = await db.execute(select(Tags).where(Tags.tag_id.in_(tag_ids)))
+    result = await db.execute(
+        select(Tags).where(Tags.tag_id.in_(tag_ids))  # type: ignore[union-attr]
+    )
     tags_by_id = {tag.tag_id: tag for tag in result.scalars().all()}
 
     # Collect canonical tag IDs from aliases
     canonical_ids = set()
     for tag_id in tag_ids:
         tag = tags_by_id.get(tag_id)
-        if tag and tag.alias:
-            canonical_ids.add(tag.alias)
+        if tag and tag.alias_of:
+            canonical_ids.add(tag.alias_of)
 
     # Fetch canonical tags if any aliases exist
     if canonical_ids:
-        result = await db.execute(select(Tags).where(Tags.tag_id.in_(canonical_ids)))
+        result = await db.execute(
+            select(Tags).where(Tags.tag_id.in_(canonical_ids))  # type: ignore[union-attr]
+        )
         for tag in result.scalars().all():
             tags_by_id[tag.tag_id] = tag
 
     # CRITICAL FIX #2: Use dict to deduplicate by tag_id, keeping highest confidence
-    resolved_dict = {}
+    resolved_dict: dict[int, dict[str, Any]] = {}
 
     for sugg in suggestions:
         # IMPORTANT FIX #5: Initialize flags to False at start of loop
         resolved_from_alias = False
-        from_hierarchy = False
 
         # Fetch tag from our batch-loaded dict
         tag = tags_by_id.get(sugg["tag_id"])
@@ -68,13 +75,13 @@ async def resolve_tag_relationships(db: AsyncSession, suggestions: list[dict]) -
         sugg = sugg.copy()
 
         # Resolve alias
-        if tag.alias:
+        if tag.alias_of:
             # This tag is an alias, use the canonical tag
-            sugg["tag_id"] = tag.alias
+            sugg["tag_id"] = tag.alias_of
             resolved_from_alias = True
 
             # CRITICAL FIX #3: Check if canonical tag exists
-            tag = tags_by_id.get(tag.alias)
+            tag = tags_by_id.get(tag.alias_of)
             if not tag:
                 # Canonical tag doesn't exist, skip
                 continue
