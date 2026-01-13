@@ -105,7 +105,9 @@ class TagSuggestionsListResponse(BaseModel):
         description="List of tag suggestions (may be filtered by status)"
     )
     total: int = Field(description="Total number of suggestions in the filtered list")
-    pending: int = Field(description="Count of pending (not yet reviewed) suggestions for this image")
+    pending: int = Field(
+        description="Count of pending (not yet reviewed) suggestions for this image"
+    )
     approved: int = Field(description="Count of approved suggestions for this image")
     rejected: int = Field(description="Count of rejected suggestions for this image")
 
@@ -247,7 +249,34 @@ class SuggestionStatusResponse(BaseModel):
     status: Literal["queued", "processing", "completed", "failed"] = Field(
         description="Current status of the suggestion generation job"
     )
-    pending_count: int = Field(description="Number of pending suggestions generated (0 if not completed)")
+    pending_count: int = Field(
+        description="Number of pending suggestions generated (0 if not completed)"
+    )
     job_id: str | None = Field(
         default=None, description="Background job ID (if available) for status tracking"
+    )
+
+
+class GenerateSuggestionsResponse(BaseModel):
+    """
+    Response schema for triggering tag suggestion generation.
+
+    Returned when a user requests ML tag suggestions to be generated
+    for an existing image.
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "message": "Tag suggestion generation queued",
+                "image_id": 12345,
+                "job_id": "arq:generate-12345",
+            }
+        }
+    )
+
+    message: str = Field(description="Status message")
+    image_id: int = Field(description="ID of the image for which suggestions are being generated")
+    job_id: str | None = Field(
+        default=None, description="Background job ID for tracking (if available)"
     )

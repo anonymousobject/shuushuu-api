@@ -762,3 +762,139 @@ class TestReviewTagSuggestions:
         )
         tag_links = result.scalars().all()
         assert len(tag_links) == 1
+
+
+@pytest.mark.api
+class TestGenerateTagSuggestions:
+    """Tests for POST /api/v1/images/{image_id}/tag-suggestions/generate endpoint."""
+
+    async def test_generate_suggestions_as_owner(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that image owner can trigger suggestion generation."""
+        from unittest.mock import patch
+
+        # Create test data
+        user = Users(
+            username="test_generate_owner",
+            email="test_generate_owner@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="generate123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        # Mock enqueue_job
+        with patch("app.api.v1.tag_suggestions.enqueue_job") as mock_enqueue:
+            mock_enqueue.return_value = "test-job-id"
+
+            access_token = create_access_token(user_id=user.user_id)
+            response = await client.post(
+                f"/api/v1/images/{image.image_id}/tag-suggestions/generate",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+            assert response.status_code == 202
+            data = response.json()
+            assert data["message"] == "Tag suggestion generation queued"
+            assert data["image_id"] == image.image_id
+            assert data["job_id"] == "test-job-id"
+
+            # Verify enqueue_job was called with correct args
+            mock_enqueue.assert_called_once_with(
+                "generate_tag_suggestions", image_id=image.image_id
+            )
+
+    async def test_generate_suggestions_requires_auth(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that authentication is required."""
+        response = await client.post("/api/v1/images/1/tag-suggestions/generate")
+        assert response.status_code == 401
+
+    async def test_generate_suggestions_image_not_found(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that 404 is returned for non-existent image."""
+        user = Users(
+            username="test_generate_404",
+            email="test_generate_404@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.post(
+            "/api/v1/images/99999/tag-suggestions/generate",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Image not found"
+
+    async def test_generate_suggestions_permission_denied(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that non-owner without permission cannot trigger generation."""
+        # Create owner and another user
+        owner = Users(
+            username="test_generate_owner2",
+            email="test_generate_owner2@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        other_user = Users(
+            username="test_generate_other",
+            email="test_generate_other@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt87654321",
+            active=1,
+        )
+        db_session.add(other_user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=owner.user_id,
+            md5_hash="generate456",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        # Try to generate as non-owner
+        access_token = create_access_token(user_id=other_user.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/tag-suggestions/generate",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 403
+        assert "your own images" in response.json()["detail"]

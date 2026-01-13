@@ -7,7 +7,7 @@ Provides endpoints for viewing and managing ML-generated tag suggestions.
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,11 +20,13 @@ from app.models.tag_link import TagLinks
 from app.models.tag_suggestion import TagSuggestion
 from app.schemas.tag import TagResponse
 from app.schemas.tag_suggestion import (
+    GenerateSuggestionsResponse,
     ReviewSuggestionsRequest,
     ReviewSuggestionsResponse,
     TagSuggestionResponse,
     TagSuggestionsListResponse,
 )
+from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/images", tags=["tag-suggestions"])
 
@@ -320,4 +322,89 @@ async def review_tag_suggestions(
         approved=approved_count,
         rejected=rejected_count,
         errors=errors,
+    )
+
+
+@router.post(
+    "/{image_id}/tag-suggestions/generate",
+    response_model=GenerateSuggestionsResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    response_description="Tag suggestion generation job queued",
+)
+async def generate_tag_suggestions(
+    image_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = ...,  # type: ignore[assignment]
+) -> GenerateSuggestionsResponse:
+    """
+    Trigger ML tag suggestion generation for an existing image.
+
+    This endpoint queues a background job to analyze the image using ML models
+    and generate tag suggestions. Use this for images uploaded before the tag
+    suggestion system was implemented, or to regenerate suggestions.
+
+    **Permissions:**
+    - Image uploader can trigger generation for their own images
+    - Users with IMAGE_TAG_ADD permission can trigger for any image
+
+    **Behavior:**
+    - Queues a background job (does not block)
+    - New suggestions are created with 'pending' status
+    - Existing suggestions are NOT deleted (idempotent)
+    - Tags already applied to the image are skipped
+
+    **Example:**
+    ```
+    POST / api / v1 / images / 12345 / tag - suggestions / generate
+    ```
+
+    **Response:**
+    ```json
+    {
+      "message": "Tag suggestion generation queued",
+      "image_id": 12345,
+      "job_id": "arq:generate-12345"
+    }
+    ```
+
+    Args:
+        image_id: ID of the image
+        db: Database session
+        current_user: Current authenticated user
+
+    Returns:
+        Confirmation with job ID for tracking
+
+    Raises:
+        HTTPException: 404 if image not found, 403 if permission denied
+    """
+    # Check if image exists
+    image_result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = image_result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    # Check permissions: owner or moderator with IMAGE_TAG_ADD
+    is_owner = image.user_id == current_user.user_id
+    is_moderator = await has_permission(
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.IMAGE_TAG_ADD,
+    )
+
+    if not is_owner and not is_moderator:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only generate suggestions for your own images",
+        )
+
+    # Enqueue the background job
+    job_id = await enqueue_job("generate_tag_suggestions", image_id=image_id)
+
+    return GenerateSuggestionsResponse(
+        message="Tag suggestion generation queued",
+        image_id=image_id,
+        job_id=job_id,
     )
