@@ -15,6 +15,9 @@ from app.services.onnx_model import CHARACTER_CATEGORY, GENERAL_CATEGORY, WDTagg
 
 logger = get_logger(__name__)
 
+# Project root is parent of app/ directory
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 class MockModel:
     """Mock ML model for testing when real model is unavailable."""
@@ -76,9 +79,21 @@ class MLTagSuggestionService:
 
     async def load_models(self) -> None:
         """Load ML models into memory."""
-        model_dir = Path(settings.ML_MODELS_PATH)
+        model_path_setting = Path(settings.ML_MODELS_PATH)
+        # Resolve relative paths relative to project root
+        if not model_path_setting.is_absolute():
+            model_dir = PROJECT_ROOT / model_path_setting
+        else:
+            model_dir = model_path_setting
         model_path = model_dir / "wd-swinv2-tagger-v3" / "model.onnx"
         tags_path = model_dir / "wd-swinv2-tagger-v3" / "selected_tags.csv"
+
+        logger.info(
+            "ml_service_checking_model_paths",
+            model_dir=str(model_dir),
+            model_exists=model_path.exists(),
+            tags_exists=tags_path.exists(),
+        )
 
         if model_path.exists() and tags_path.exists():
             logger.info(

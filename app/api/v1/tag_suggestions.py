@@ -446,7 +446,10 @@ async def _get_ml_service() -> MLTagSuggestionService:
     if _ml_service is None:
         _ml_service = MLTagSuggestionService()
         await _ml_service.load_models()
-        logger.info("ml_service_loaded_for_sync_mode")
+        logger.info(
+            "ml_service_loaded_for_sync_mode",
+            using_mock=_ml_service.using_mock,
+        )
     return _ml_service
 
 
