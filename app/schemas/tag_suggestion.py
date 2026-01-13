@@ -262,7 +262,9 @@ class GenerateSuggestionsResponse(BaseModel):
     Response schema for triggering tag suggestion generation.
 
     Returned when a user requests ML tag suggestions to be generated
-    for an existing image.
+    for an existing image. Response varies based on sync parameter:
+    - sync=false (default): Returns job_id for background processing
+    - sync=true: Returns suggestions_created count after inline processing
     """
 
     model_config = ConfigDict(
@@ -271,6 +273,7 @@ class GenerateSuggestionsResponse(BaseModel):
                 "message": "Tag suggestion generation queued",
                 "image_id": 12345,
                 "job_id": "arq:generate-12345",
+                "suggestions_created": None,
             }
         }
     )
@@ -278,5 +281,8 @@ class GenerateSuggestionsResponse(BaseModel):
     message: str = Field(description="Status message")
     image_id: int = Field(description="ID of the image for which suggestions are being generated")
     job_id: str | None = Field(
-        default=None, description="Background job ID for tracking (if available)"
+        default=None, description="Background job ID for tracking (async mode only)"
+    )
+    suggestions_created: int | None = Field(
+        default=None, description="Number of suggestions created (sync mode only)"
     )

@@ -5,14 +5,17 @@ Provides endpoints for viewing and managing ML-generated tag suggestions.
 """
 
 from datetime import UTC, datetime
+from pathlib import Path as FilePath
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.auth import CurrentUser
 from app.core.database import get_db
+from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
 from app.models.image import Images
 from app.models.tag import Tags
@@ -26,7 +29,16 @@ from app.schemas.tag_suggestion import (
     TagSuggestionResponse,
     TagSuggestionsListResponse,
 )
+from app.services.ml_service import MLTagSuggestionService
+from app.services.tag_mapping_service import resolve_external_tags
+from app.services.tag_resolver import resolve_tag_relationships
 from app.tasks.queue import enqueue_job
+from app.tasks.tag_suggestion_job import (
+    MIN_CONFIDENCE_THRESHOLD,
+    filter_redundant_suggestions,
+)
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/images", tags=["tag-suggestions"])
 
@@ -328,52 +340,56 @@ async def review_tag_suggestions(
 @router.post(
     "/{image_id}/tag-suggestions/generate",
     response_model=GenerateSuggestionsResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    response_description="Tag suggestion generation job queued",
+    response_description="Tag suggestion generation triggered",
 )
 async def generate_tag_suggestions(
     image_id: int,
+    response: Response,
+    sync: Annotated[
+        bool,
+        Query(description="Run synchronously instead of queueing background job"),
+    ] = False,
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = ...,  # type: ignore[assignment]
 ) -> GenerateSuggestionsResponse:
     """
     Trigger ML tag suggestion generation for an existing image.
 
-    This endpoint queues a background job to analyze the image using ML models
-    and generate tag suggestions. Use this for images uploaded before the tag
-    suggestion system was implemented, or to regenerate suggestions.
+    **Modes:**
+    - `sync=false` (default): Queues background job, returns immediately with job_id
+    - `sync=true`: Runs ML inference inline (~0.6s), returns with suggestions_created count
 
     **Permissions:**
     - Image uploader can trigger generation for their own images
     - Users with IMAGE_TAG_ADD permission can trigger for any image
 
     **Behavior:**
-    - Queues a background job (does not block)
     - New suggestions are created with 'pending' status
     - Existing suggestions are NOT deleted (idempotent)
     - Tags already applied to the image are skipped
+    - Approved suggestions for removed tags are reset to 'pending'
 
-    **Example:**
+    **Examples:**
+
+    Async (background job):
     ```
     POST / api / v1 / images / 12345 / tag - suggestions / generate
     ```
 
-    **Response:**
-    ```json
-    {
-      "message": "Tag suggestion generation queued",
-      "image_id": 12345,
-      "job_id": "arq:generate-12345"
-    }
+    Sync (inline, ~0.6s):
+    ```
+    POST /api/v1/images/12345/tag-suggestions/generate?sync=true
     ```
 
     Args:
         image_id: ID of the image
+        sync: If true, run synchronously instead of queueing job
         db: Database session
         current_user: Current authenticated user
 
     Returns:
-        Confirmation with job ID for tracking
+        - Async: 202 with job_id
+        - Sync: 200 with suggestions_created count
 
     Raises:
         HTTPException: 404 if image not found, 403 if permission denied
@@ -400,11 +416,131 @@ async def generate_tag_suggestions(
             detail="You can only generate suggestions for your own images",
         )
 
-    # Enqueue the background job
-    job_id = await enqueue_job("generate_tag_suggestions", image_id=image_id)
+    if sync:
+        # Run synchronously
+        response.status_code = status.HTTP_200_OK
+        suggestions_created = await _generate_suggestions_sync(db, image)
+        return GenerateSuggestionsResponse(
+            message="Tag suggestions generated",
+            image_id=image_id,
+            suggestions_created=suggestions_created,
+        )
+    else:
+        # Queue background job
+        response.status_code = status.HTTP_202_ACCEPTED
+        job_id = await enqueue_job("generate_tag_suggestions", image_id=image_id)
+        return GenerateSuggestionsResponse(
+            message="Tag suggestion generation queued",
+            image_id=image_id,
+            job_id=job_id,
+        )
 
-    return GenerateSuggestionsResponse(
-        message="Tag suggestion generation queued",
-        image_id=image_id,
-        job_id=job_id,
+
+# Lazy-loaded ML service singleton for sync mode
+_ml_service: MLTagSuggestionService | None = None
+
+
+async def _get_ml_service() -> MLTagSuggestionService:
+    """Get or create the ML service singleton."""
+    global _ml_service
+    if _ml_service is None:
+        _ml_service = MLTagSuggestionService()
+        await _ml_service.load_models()
+        logger.info("ml_service_loaded_for_sync_mode")
+    return _ml_service
+
+
+async def _generate_suggestions_sync(db: AsyncSession, image: Images) -> int:
+    """
+    Generate tag suggestions synchronously.
+
+    This mirrors the logic in tag_suggestion_job.py but runs inline.
+    """
+    image_id = image.image_id
+
+    # Get image file path
+    image_path = FilePath(settings.STORAGE_PATH) / "fullsize" / f"{image.filename}.{image.ext}"
+
+    if not image_path.exists():
+        logger.error("sync_generation_file_not_found", image_id=image_id, path=str(image_path))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Image file not found: {image_path}",
+        )
+
+    # Get ML service
+    ml_service = await _get_ml_service()
+
+    # Generate predictions
+    predictions = await ml_service.generate_suggestions(
+        str(image_path), min_confidence=MIN_CONFIDENCE_THRESHOLD
     )
+
+    # Resolve external tags to internal tag IDs
+    mapped_predictions = await resolve_external_tags(db, predictions)
+
+    # Resolve tag relationships (aliases, hierarchies)
+    resolved_predictions = await resolve_tag_relationships(db, mapped_predictions)
+
+    # Get existing tags on the image
+    existing_links_result = await db.execute(
+        select(TagLinks.tag_id).where(  # type: ignore[call-overload]
+            TagLinks.image_id == image_id,
+        )
+    )
+    existing_tag_ids = {row[0] for row in existing_links_result.all()}
+
+    # Filter redundant suggestions
+    filtered_predictions = await filter_redundant_suggestions(
+        db, resolved_predictions, existing_tag_ids
+    )
+
+    # Get existing suggestions
+    existing_suggestions_result = await db.execute(
+        select(TagSuggestion).where(
+            TagSuggestion.image_id == image_id,  # type: ignore[arg-type]
+        )
+    )
+    existing_suggestions = list(existing_suggestions_result.scalars().all())
+    existing_suggestion_tag_ids = {s.tag_id for s in existing_suggestions}
+
+    # Reset approved suggestions if their tag was removed
+    for suggestion in existing_suggestions:
+        if suggestion.status == "approved" and suggestion.tag_id not in existing_tag_ids:
+            suggestion.status = "pending"
+            suggestion.reviewed_at = None
+            suggestion.reviewed_by_user_id = None
+
+    # Create new suggestions
+    suggestions_created = 0
+    for pred in filtered_predictions:
+        tag_id = pred["tag_id"]
+        confidence = pred["confidence"]
+
+        # Skip if tag already applied or suggestion exists
+        if tag_id in existing_tag_ids or tag_id in existing_suggestion_tag_ids:
+            continue
+
+        if confidence < MIN_CONFIDENCE_THRESHOLD:
+            continue
+
+        suggestion = TagSuggestion(
+            image_id=image_id,
+            tag_id=tag_id,
+            confidence=confidence,
+            model_source=pred["model_source"],
+            model_version=pred.get("model_version", "v1"),
+            status="pending",
+        )
+        db.add(suggestion)
+        suggestions_created += 1
+
+    await db.commit()
+
+    logger.info(
+        "sync_generation_completed",
+        image_id=image_id,
+        suggestions_created=suggestions_created,
+    )
+
+    return suggestions_created
