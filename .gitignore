@@ -113,3 +113,7 @@ shuu-php/
 # Local project instructions (not shared)
 CLAUDE.md
 .github/copilot-instructions.md
+
+# ML models (large binary files - download separately)
+ml_models/*.onnx
+ml_models/**/*.onnx
