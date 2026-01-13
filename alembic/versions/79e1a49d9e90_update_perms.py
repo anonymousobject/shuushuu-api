@@ -81,6 +81,16 @@ def upgrade() -> None:
         WHERE g.title = 'admins' AND p.title = 'image_delete'
     """)
 
+    # Grants new perms to admins and moderators groups
+    new_perms = ['image_tag_add', 'image_tag_remove', 'privmsg_view']
+    for perm in new_perms:
+        op.execute(f"""
+            INSERT INTO group_perms (group_id, perm_id, permvalue)
+            SELECT g.group_id, p.perm_id, 1
+            FROM groups g, perms p
+            WHERE g.title IN ('admins', 'moderators') AND p.title = '{perm}'
+        """)
+
 
 def downgrade() -> None:
     """Revert permissions to original naming convention."""
