@@ -64,6 +64,32 @@ class TestListTags:
         assert data["total"] == 1
         assert data["tags"][0]["title"] == "school uniform"
 
+    async def test_search_tags_with_periods(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test searching tags containing periods like 'C.C.'.
+
+        MySQL fulltext treats periods as word delimiters, so "C.C." becomes tokens
+        "C" and "C" which are both below the minimum token size. The search should
+        fall back to LIKE prefix matching for such terms.
+        """
+        # Create tags with periods in the name
+        tag1 = Tags(title="C.C.", desc="Code Geass character", type=TagType.CHARACTER)
+        tag2 = Tags(title="C.C. Lemon", desc="Drink mascot", type=TagType.CHARACTER)
+        tag3 = Tags(title="Regular Tag", desc="Normal tag", type=TagType.CHARACTER)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        # Search for "C.C." should find the matching tags, not random "C" words
+        response = await client.get("/api/v1/tags?search=C.C.")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "C.C." in titles
+        assert "C.C. Lemon" in titles
+        assert "Regular Tag" not in titles
+
     async def test_filter_tags_by_type(
         self, client: AsyncClient, db_session: AsyncSession
     ):
