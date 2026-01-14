@@ -96,7 +96,8 @@ class Settings(BaseSettings):
 
     # ML Models
     ML_MODELS_PATH: str = "ml_models"
-    ML_MIN_CONFIDENCE: float = 0.35  # Minimum confidence for WD-Tagger predictions
+    ML_MIN_CONFIDENCE: float = 0.35  # Minimum confidence for tag predictions
+    ML_MODEL_NAME: str = "wd-swinv2-tagger-v3"  # Model to use: wd-swinv2-tagger-v3 or swinv2_base_window8_256.dbv4-full
 
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60
