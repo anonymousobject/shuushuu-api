@@ -90,10 +90,20 @@ FULLTEXT_MIN_TOKEN_SIZE = 3
 # e.g., "C++" would create "+C++*" which interprets the extra + as operators
 FULLTEXT_SPECIAL_CHARS = frozenset('+-~*"()><@')
 
-# Characters that MySQL fulltext parser treats as word delimiters
-# These split terms into separate tokens, which may result in tokens too short for fulltext
-# e.g., "C.C." becomes ["C", "C"] which are both below min token size
+# Characters that MySQL/MariaDB InnoDB fulltext parser typically treats as word delimiters.
+# This is an approximation of default tokenization behavior in BOOLEAN MODE, used only for
+# local validation to determine if a search term will produce valid tokens.
+#
+# Derived from testing against default InnoDB FULLTEXT indexes on MariaDB with utf8mb4.
+# Actual delimiters may vary by server version, storage engine, charset, collation, or
+# custom fulltext parser configuration. If any change, verify against current behavior.
+#
+# These split terms into separate tokens, which may result in tokens too short for fulltext.
+# e.g., "C.C." becomes ["C", "C"] which are both below min token size.
 FULLTEXT_WORD_DELIMITERS = frozenset(" \n\t;:!?.'\"`()[]{}|&/\\,-_=~")
+
+# Pre-computed translation table for efficient delimiter replacement (used by str.translate)
+_DELIMITER_TRANS_TABLE = str.maketrans(dict.fromkeys(FULLTEXT_WORD_DELIMITERS, " "))
 
 
 def _escape_like_pattern(value: str) -> str:
@@ -113,11 +123,8 @@ def _get_fulltext_tokens(term: str) -> list[str]:
     MySQL splits on word delimiters, so "C.C." becomes ["C", "C"].
     This helps determine if a term will actually produce searchable tokens.
     """
-    # Replace all delimiters with spaces, then split
-    result = term
-    for delim in FULLTEXT_WORD_DELIMITERS:
-        result = result.replace(delim, " ")
-    return [t for t in result.split() if t]
+    # Replace all delimiters with spaces using pre-computed translation table, then split
+    return term.translate(_DELIMITER_TRANS_TABLE).split()
 
 
 def _has_valid_fulltext_tokens(term: str) -> bool:
