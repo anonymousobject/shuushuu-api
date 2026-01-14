@@ -138,7 +138,7 @@ async def resolve_tag_alias(
     return tag, tag_id
 
 
-async def get_tag_hierarchy(db: AsyncSession, tag_id: int) -> list[int]:
+async def get_tag_hierarchy(db: AsyncSession, tag_id: int, max_depth: int = 10) -> list[int]:
     """
     Get all tag IDs in a tag's hierarchy (self + all descendants).
 
@@ -146,28 +146,31 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int) -> list[int]:
     (like "school swimsuit", "bikini") that have inheritedfrom_id pointing to it.
     This allows querying a parent tag to include all images tagged with child tags.
 
+    Uses a recursive CTE for single-query performance instead of N+1 queries.
+
+    Args:
+        db: Database session
+        tag_id: The root tag ID to get hierarchy for
+        max_depth: Maximum depth to traverse (default 10, safety limit)
+
     Returns:
         list[int]: List of tag IDs including the parent and all descendants
     """
-    # Start with the requested tag
-    tag_ids = [tag_id]
-
-    # Find all tags that inherit from this tag (children)
-    children_result = await db.execute(
-        select(Tags.tag_id).where(Tags.inheritedfrom_id == tag_id)  # type: ignore[call-overload]
-    )
-    child_tag_ids = children_result.scalars().all()
-
-    # Add all child tag IDs
-    tag_ids.extend(child_tag_ids)
-
-    # Recursively get descendants of children (grandchildren, etc.)
-    for child_id in child_tag_ids:
-        grandchildren = await get_tag_hierarchy(db, child_id)
-        # Add only the new ones (exclude the child_id itself which is already in the list)
-        tag_ids.extend([gid for gid in grandchildren if gid not in tag_ids])
-
-    return tag_ids
+    query = text("""
+        WITH RECURSIVE tag_tree AS (
+            SELECT tag_id, 1 as depth
+            FROM tags
+            WHERE tag_id = :root_id
+            UNION ALL
+            SELECT t.tag_id, tt.depth + 1
+            FROM tags t
+            INNER JOIN tag_tree tt ON t.inheritedfrom_id = tt.tag_id
+            WHERE tt.depth < :max_depth
+        )
+        SELECT tag_id FROM tag_tree
+    """)
+    result = await db.execute(query, {"root_id": tag_id, "max_depth": max_depth})
+    return [row[0] for row in result.fetchall()]
 
 
 @router.get("/", response_model=TagListResponse, include_in_schema=False)
@@ -452,9 +455,15 @@ async def get_images_by_tag(
     # Main query: Join full image data only for the limited set of IDs
     # Apply sorting here on the small result set (e.g., 20 rows)
     sort_column = sorting.sort_by.get_column(Images)
-    query = select(Images).join(
-        image_id_subquery,
-        Images.image_id == image_id_subquery.columns.image_id,  # type: ignore[arg-type]
+    query = (
+        select(Images)
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        )
+        .join(
+            image_id_subquery,
+            Images.image_id == image_id_subquery.columns.image_id,  # type: ignore[arg-type]
+        )
     )
 
     # Apply sorting on main query
