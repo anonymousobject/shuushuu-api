@@ -90,6 +90,11 @@ FULLTEXT_MIN_TOKEN_SIZE = 3
 # e.g., "C++" would create "+C++*" which interprets the extra + as operators
 FULLTEXT_SPECIAL_CHARS = frozenset('+-~*"()><@')
 
+# Characters that MySQL fulltext parser treats as word delimiters
+# These split terms into separate tokens, which may result in tokens too short for fulltext
+# e.g., "C.C." becomes ["C", "C"] which are both below min token size
+FULLTEXT_WORD_DELIMITERS = frozenset(" \n\t;:!?.'\"`()[]{}|&/\\,-_=~")
+
 
 def _escape_like_pattern(value: str) -> str:
     """Escape special LIKE pattern characters (% and _) in a search value."""
@@ -99,6 +104,32 @@ def _escape_like_pattern(value: str) -> str:
 def _sanitize_fulltext_term(term: str) -> str:
     """Remove MySQL fulltext boolean operators from a search term."""
     return "".join(char for char in term if char not in FULLTEXT_SPECIAL_CHARS)
+
+
+def _get_fulltext_tokens(term: str) -> list[str]:
+    """
+    Simulate MySQL fulltext tokenization of a term.
+
+    MySQL splits on word delimiters, so "C.C." becomes ["C", "C"].
+    This helps determine if a term will actually produce searchable tokens.
+    """
+    # Replace all delimiters with spaces, then split
+    result = term
+    for delim in FULLTEXT_WORD_DELIMITERS:
+        result = result.replace(delim, " ")
+    return [t for t in result.split() if t]
+
+
+def _has_valid_fulltext_tokens(term: str) -> bool:
+    """
+    Check if a term will produce at least one valid fulltext token.
+
+    A token is valid if it's >= FULLTEXT_MIN_TOKEN_SIZE after tokenization.
+    e.g., "C.C." -> False (tokens are "C", "C", both < 3)
+    e.g., "sakura" -> True (token is "sakura", >= 3)
+    """
+    tokens = _get_fulltext_tokens(term)
+    return any(len(t) >= FULLTEXT_MIN_TOKEN_SIZE for t in tokens)
 
 
 # TODO: Create tag proposal/review system. Let users petition for new tags, and allow admins to review and approve them.
@@ -275,9 +306,13 @@ async def list_tags(
             # Additionally, strip special fulltext boolean operators from terms to prevent
             # unexpected behavior (e.g., "C++" becoming "+C++*" with extra operators).
             search_terms = search.split()
-            # Sanitize terms first, then filter by stopwords and length.
-            # Order matters: we need to check stopwords and length AFTER sanitization.
+            # Sanitize terms first, then filter by stopwords and token validity.
+            # Order matters: we need to check stopwords and tokens AFTER sanitization.
             # e.g., "+the+" becomes "the" (a stopword), and "C++" becomes "C" (too short).
+            #
+            # IMPORTANT: We check _has_valid_fulltext_tokens() to handle cases like "C.C."
+            # where the overall length >= 3, but MySQL tokenizes it into "C", "C" which
+            # are both below the minimum token size. Such terms should fall back to LIKE.
             valid_terms = []
             for term in search_terms:
                 sanitized = _sanitize_fulltext_term(term)
@@ -285,7 +320,10 @@ async def list_tags(
                     continue
                 if sanitized.lower() in FULLTEXT_STOPWORDS:
                     continue
-                if len(sanitized) >= FULLTEXT_MIN_TOKEN_SIZE:
+                # Check both overall length AND whether MySQL will produce valid tokens
+                if len(sanitized) >= FULLTEXT_MIN_TOKEN_SIZE and _has_valid_fulltext_tokens(
+                    sanitized
+                ):
                     valid_terms.append(sanitized)
 
             if valid_terms:
