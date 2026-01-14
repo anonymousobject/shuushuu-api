@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
-from app.api.v1.tags import resolve_tag_alias
+from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import AdminActionType, ReportCategory, ReportStatus, settings
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
@@ -217,24 +217,27 @@ async def list_images(
             )
         if tag_ids:
             if tags_mode == "all":
-                # Images must have ALL specified tags
+                # Images must have ALL specified tags (including their descendants)
                 for tag_id in tag_ids:
                     _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
+                    # Expand to full hierarchy (parent + all descendants)
+                    hierarchy_ids = await get_tag_hierarchy(db, resolved_tag_id)
                     query = query.where(
                         Images.image_id.in_(  # type: ignore[union-attr]
-                            select(TagLinks.image_id).where(TagLinks.tag_id == resolved_tag_id)  # type: ignore[call-overload]
+                            select(TagLinks.image_id).where(TagLinks.tag_id.in_(hierarchy_ids))  # type: ignore[call-overload,attr-defined]
                         )
                     )
             else:
-                # Images must have ANY of the specified tags
-                # Resolve aliases for all tags to support searching by alias names
-                resolved_tag_ids = []
+                # Images must have ANY of the specified tags (including their descendants)
+                # Resolve aliases and expand hierarchies for all tags
+                all_hierarchy_ids: set[int] = set()
                 for tag_id in tag_ids:
                     _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
-                    resolved_tag_ids.append(resolved_tag_id)
+                    hierarchy_ids = await get_tag_hierarchy(db, resolved_tag_id)
+                    all_hierarchy_ids.update(hierarchy_ids)
                 query = query.where(
                     Images.image_id.in_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id).where(TagLinks.tag_id.in_(resolved_tag_ids))  # type: ignore[call-overload,attr-defined]
+                        select(TagLinks.image_id).where(TagLinks.tag_id.in_(all_hierarchy_ids))  # type: ignore[call-overload,attr-defined]
                     )
                 )
 

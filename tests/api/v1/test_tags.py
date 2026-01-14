@@ -15,6 +15,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.tags import get_tag_hierarchy
 from app.config import TagType
 from app.core.security import get_password_hash
 from app.models.image import Images
@@ -2075,3 +2076,155 @@ class TestGetTagWithLinks:
         data = response.json()
         assert "links" in data
         assert data["links"] == []
+
+
+@pytest.mark.api
+class TestGetTagHierarchy:
+    """Tests for get_tag_hierarchy function.
+
+    This function uses a recursive CTE to efficiently get all descendant tags
+    in a tag's hierarchy (children, grandchildren, etc.).
+    """
+
+    async def test_single_tag_no_children(self, db_session: AsyncSession):
+        """Test hierarchy for a tag with no children returns only itself."""
+        tag = Tags(title="lone tag", desc="No children", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        hierarchy = await get_tag_hierarchy(db_session, tag.tag_id)
+
+        assert hierarchy == [tag.tag_id]
+
+    async def test_parent_with_direct_children(self, db_session: AsyncSession):
+        """Test hierarchy includes direct children."""
+        # Create parent
+        parent = Tags(title="parent", desc="Parent tag", type=TagType.THEME)
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        # Create children
+        child1 = Tags(
+            title="child1",
+            desc="First child",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        child2 = Tags(
+            title="child2",
+            desc="Second child",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        db_session.add_all([child1, child2])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        hierarchy = await get_tag_hierarchy(db_session, parent.tag_id)
+
+        assert set(hierarchy) == {parent.tag_id, child1.tag_id, child2.tag_id}
+
+    async def test_multi_level_hierarchy(self, db_session: AsyncSession):
+        """Test hierarchy includes grandchildren (multi-level)."""
+        # Create grandparent -> parent -> child structure
+        grandparent = Tags(title="food", desc="Top level", type=TagType.THEME)
+        db_session.add(grandparent)
+        await db_session.commit()
+        await db_session.refresh(grandparent)
+
+        parent = Tags(
+            title="sweets",
+            desc="Child of food",
+            type=TagType.THEME,
+            inheritedfrom_id=grandparent.tag_id,
+        )
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        grandchild = Tags(
+            title="cake",
+            desc="Child of sweets",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        db_session.add(grandchild)
+        await db_session.commit()
+        await db_session.refresh(grandchild)
+
+        # Query from top level should include all descendants
+        hierarchy = await get_tag_hierarchy(db_session, grandparent.tag_id)
+
+        assert set(hierarchy) == {grandparent.tag_id, parent.tag_id, grandchild.tag_id}
+
+    async def test_max_depth_limits_recursion(self, db_session: AsyncSession):
+        """Test that max_depth parameter limits how deep the hierarchy goes."""
+        # Create a 4-level deep hierarchy
+        level1 = Tags(title="level1", desc="Level 1", type=TagType.THEME)
+        db_session.add(level1)
+        await db_session.commit()
+        await db_session.refresh(level1)
+
+        level2 = Tags(
+            title="level2", type=TagType.THEME, inheritedfrom_id=level1.tag_id
+        )
+        db_session.add(level2)
+        await db_session.commit()
+        await db_session.refresh(level2)
+
+        level3 = Tags(
+            title="level3", type=TagType.THEME, inheritedfrom_id=level2.tag_id
+        )
+        db_session.add(level3)
+        await db_session.commit()
+        await db_session.refresh(level3)
+
+        level4 = Tags(
+            title="level4", type=TagType.THEME, inheritedfrom_id=level3.tag_id
+        )
+        db_session.add(level4)
+        await db_session.commit()
+        await db_session.refresh(level4)
+
+        # With max_depth=2, should only get level1 and level2
+        hierarchy = await get_tag_hierarchy(db_session, level1.tag_id, max_depth=2)
+        assert set(hierarchy) == {level1.tag_id, level2.tag_id}
+
+        # With max_depth=3, should get level1, level2, and level3
+        hierarchy = await get_tag_hierarchy(db_session, level1.tag_id, max_depth=3)
+        assert set(hierarchy) == {level1.tag_id, level2.tag_id, level3.tag_id}
+
+        # With default max_depth (10), should get all levels
+        hierarchy = await get_tag_hierarchy(db_session, level1.tag_id)
+        assert set(hierarchy) == {
+            level1.tag_id,
+            level2.tag_id,
+            level3.tag_id,
+            level4.tag_id,
+        }
+
+    async def test_child_hierarchy_excludes_parent(self, db_session: AsyncSession):
+        """Test querying a child tag does not include its parent."""
+        parent = Tags(title="parent", desc="Parent", type=TagType.THEME)
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        child = Tags(
+            title="child",
+            desc="Child",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        db_session.add(child)
+        await db_session.commit()
+        await db_session.refresh(child)
+
+        # Query from child should not include parent
+        hierarchy = await get_tag_hierarchy(db_session, child.tag_id)
+
+        assert hierarchy == [child.tag_id]
+        assert parent.tag_id not in hierarchy
