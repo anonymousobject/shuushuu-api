@@ -455,9 +455,17 @@ async def get_images_by_tag(
     # Main query: Join full image data only for the limited set of IDs
     # Apply sorting here on the small result set (e.g., 20 rows)
     sort_column = sorting.sort_by.get_column(Images)
-    query = select(Images).join(
-        image_id_subquery,
-        Images.image_id == image_id_subquery.columns.image_id,  # type: ignore[arg-type]
+    query = (
+        select(Images)
+        .options(
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id, Users.username, Users.avatar
+            )
+        )
+        .join(
+            image_id_subquery,
+            Images.image_id == image_id_subquery.columns.image_id,  # type: ignore[arg-type]
+        )
     )
 
     # Apply sorting on main query
