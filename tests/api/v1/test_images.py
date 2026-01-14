@@ -451,6 +451,231 @@ class TestTagSearchValidation:
 
 
 @pytest.mark.api
+class TestTagHierarchySearch:
+    """Tests for image search with tag hierarchy expansion.
+
+    When searching by a parent tag, images tagged with any descendant tags
+    should also be included in the results.
+    """
+
+    async def test_search_parent_includes_child_images(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that searching by parent tag includes images tagged with child tags."""
+        # Create parent tag
+        parent_tag = Tags(title="food", desc="Parent", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tag
+        child_tag = Tags(
+            title="cake",
+            desc="Child of food",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add(child_tag)
+        await db_session.commit()
+        await db_session.refresh(child_tag)
+
+        # Create image tagged with CHILD tag only (not parent)
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_link = TagLinks(image_id=image.image_id, tag_id=child_tag.tag_id, user_id=1)
+        db_session.add(tag_link)
+        await db_session.commit()
+
+        # Search by PARENT tag should find the image
+        response = await client.get(f"/api/v1/images?tags={parent_tag.tag_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image.image_id
+
+    async def test_search_parent_includes_grandchild_images(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that searching by grandparent tag includes images tagged with grandchild tags."""
+        # Create 3-level hierarchy: food -> sweets -> cake
+        grandparent = Tags(title="food", desc="Top level", type=TagType.THEME)
+        db_session.add(grandparent)
+        await db_session.commit()
+        await db_session.refresh(grandparent)
+
+        parent = Tags(
+            title="sweets",
+            desc="Child",
+            type=TagType.THEME,
+            inheritedfrom_id=grandparent.tag_id,
+        )
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        grandchild = Tags(
+            title="cake",
+            desc="Grandchild",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        db_session.add(grandchild)
+        await db_session.commit()
+        await db_session.refresh(grandchild)
+
+        # Create image tagged with GRANDCHILD tag only
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_link = TagLinks(image_id=image.image_id, tag_id=grandchild.tag_id, user_id=1)
+        db_session.add(tag_link)
+        await db_session.commit()
+
+        # Search by GRANDPARENT should find the image
+        response = await client.get(f"/api/v1/images?tags={grandparent.tag_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image.image_id
+
+    async def test_search_hierarchy_any_mode(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test tags_mode=any with hierarchy - should find images tagged with any descendant."""
+        # Create two separate parent tags with children
+        parent1 = Tags(title="clothing", desc="Parent 1", type=TagType.THEME)
+        parent2 = Tags(title="food", desc="Parent 2", type=TagType.THEME)
+        db_session.add_all([parent1, parent2])
+        await db_session.commit()
+        await db_session.refresh(parent1)
+        await db_session.refresh(parent2)
+
+        child1 = Tags(
+            title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id
+        )
+        child2 = Tags(title="cake", type=TagType.THEME, inheritedfrom_id=parent2.tag_id)
+        db_session.add_all([child1, child2])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        # Create two images, each tagged with a different child
+        image1_data = sample_image_data.copy()
+        image1_data["filename"] = "img1"
+        image1_data["md5_hash"] = "a" * 32
+        image1 = Images(**image1_data)
+        db_session.add(image1)
+        await db_session.flush()
+
+        image2_data = sample_image_data.copy()
+        image2_data["filename"] = "img2"
+        image2_data["md5_hash"] = "b" * 32
+        image2 = Images(**image2_data)
+        db_session.add(image2)
+        await db_session.flush()
+
+        tag_link1 = TagLinks(image_id=image1.image_id, tag_id=child1.tag_id, user_id=1)
+        tag_link2 = TagLinks(image_id=image2.image_id, tag_id=child2.tag_id, user_id=1)
+        db_session.add_all([tag_link1, tag_link2])
+        await db_session.commit()
+
+        # Search with tags_mode=any using PARENT tags should find both images
+        response = await client.get(
+            f"/api/v1/images?tags={parent1.tag_id},{parent2.tag_id}&tags_mode=any"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        found_ids = {img["image_id"] for img in data["images"]}
+        assert image1.image_id in found_ids
+        assert image2.image_id in found_ids
+
+    async def test_search_hierarchy_all_mode(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test tags_mode=all with hierarchy - image must match all parent hierarchies."""
+        # Create two parent tags with children
+        parent1 = Tags(title="clothing", desc="Parent 1", type=TagType.THEME)
+        parent2 = Tags(title="food", desc="Parent 2", type=TagType.THEME)
+        db_session.add_all([parent1, parent2])
+        await db_session.commit()
+        await db_session.refresh(parent1)
+        await db_session.refresh(parent2)
+
+        child1 = Tags(
+            title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id
+        )
+        child2 = Tags(title="cake", type=TagType.THEME, inheritedfrom_id=parent2.tag_id)
+        db_session.add_all([child1, child2])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        # Create image tagged with BOTH children
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_link1 = TagLinks(image_id=image.image_id, tag_id=child1.tag_id, user_id=1)
+        tag_link2 = TagLinks(image_id=image.image_id, tag_id=child2.tag_id, user_id=1)
+        db_session.add_all([tag_link1, tag_link2])
+        await db_session.commit()
+
+        # Search with tags_mode=all using PARENT tags should find the image
+        response = await client.get(
+            f"/api/v1/images?tags={parent1.tag_id},{parent2.tag_id}&tags_mode=all"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image.image_id
+
+    async def test_search_hierarchy_all_mode_no_match(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test tags_mode=all returns nothing if image doesn't have all hierarchies."""
+        # Create two parent tags with children
+        parent1 = Tags(title="clothing", desc="Parent 1", type=TagType.THEME)
+        parent2 = Tags(title="food", desc="Parent 2", type=TagType.THEME)
+        db_session.add_all([parent1, parent2])
+        await db_session.commit()
+        await db_session.refresh(parent1)
+        await db_session.refresh(parent2)
+
+        child1 = Tags(
+            title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id
+        )
+        db_session.add(child1)
+        await db_session.commit()
+        await db_session.refresh(child1)
+
+        # Create image tagged with only ONE child
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_link = TagLinks(image_id=image.image_id, tag_id=child1.tag_id, user_id=1)
+        db_session.add(tag_link)
+        await db_session.commit()
+
+        # Search with tags_mode=all using BOTH parent tags should NOT find the image
+        response = await client.get(
+            f"/api/v1/images?tags={parent1.tag_id},{parent2.tag_id}&tags_mode=all"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+
+
+@pytest.mark.api
 class TestImagesSorting:
     """Tests for image sorting."""
 

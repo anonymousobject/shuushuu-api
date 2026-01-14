@@ -230,13 +230,11 @@ async def list_images(
             else:
                 # Images must have ANY of the specified tags (including their descendants)
                 # Resolve aliases and expand hierarchies for all tags
-                all_hierarchy_ids: list[int] = []
+                all_hierarchy_ids: set[int] = set()
                 for tag_id in tag_ids:
                     _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
                     hierarchy_ids = await get_tag_hierarchy(db, resolved_tag_id)
-                    all_hierarchy_ids.extend(hierarchy_ids)
-                # Deduplicate
-                all_hierarchy_ids = list(set(all_hierarchy_ids))
+                    all_hierarchy_ids.update(hierarchy_ids)
                 query = query.where(
                     Images.image_id.in_(  # type: ignore[union-attr]
                         select(TagLinks.image_id).where(TagLinks.tag_id.in_(all_hierarchy_ids))  # type: ignore[call-overload,attr-defined]
