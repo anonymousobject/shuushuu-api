@@ -2,6 +2,32 @@
 
 This project uses the following third-party components:
 
+## Services
+
+### iqdb-rs
+
+- **Source**: https://github.com/TheBobBobs/iqdb-rs
+- **Author**: TheBobBobs
+- **License**: GPL-2.0
+- **Description**: Rust implementation of IQDB (Image Query Database) for reverse image search
+
+```
+Copyright (c) TheBobBobs
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, see <https://www.gnu.org/licenses/>.
+```
+
 ## ML Models
 
 ### animetimm/swinv2_base_window8_256.dbv4-full
