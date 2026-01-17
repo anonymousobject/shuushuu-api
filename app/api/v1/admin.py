@@ -962,19 +962,35 @@ async def apply_tag_suggestions(
 
     approved_ids = set(request_data.approved_suggestion_ids)
     applied_tags: list[int] = []
+    removed_tags: list[int] = []
     already_present: list[int] = []
+    already_absent: list[int] = []
 
     for suggestion in suggestions:
         if suggestion.suggestion_id in approved_ids:
             suggestion.accepted = True
-            # Add tag to image if not already present
-            if suggestion.tag_id not in existing_tag_ids:
-                tag_link = TagLinks(image_id=report.image_id, tag_id=suggestion.tag_id)
-                db.add(tag_link)
-                applied_tags.append(suggestion.tag_id)
-                existing_tag_ids.add(suggestion.tag_id)  # Track to avoid duplicates
-            else:
-                already_present.append(suggestion.tag_id)
+
+            if suggestion.suggestion_type == 1:  # Add
+                if suggestion.tag_id not in existing_tag_ids:
+                    tag_link = TagLinks(image_id=report.image_id, tag_id=suggestion.tag_id)
+                    db.add(tag_link)
+                    applied_tags.append(suggestion.tag_id)
+                    existing_tag_ids.add(suggestion.tag_id)
+                else:
+                    already_present.append(suggestion.tag_id)
+
+            elif suggestion.suggestion_type == 2:  # Remove
+                if suggestion.tag_id in existing_tag_ids:
+                    await db.execute(
+                        delete(TagLinks).where(
+                            TagLinks.image_id == report.image_id,
+                            TagLinks.tag_id == suggestion.tag_id,
+                        )
+                    )
+                    removed_tags.append(suggestion.tag_id)
+                    existing_tag_ids.discard(suggestion.tag_id)
+                else:
+                    already_absent.append(suggestion.tag_id)
         else:
             suggestion.accepted = False
 
@@ -996,6 +1012,7 @@ async def apply_tag_suggestions(
             "approved_count": len(approved_ids),
             "rejected_count": len(suggestions) - len(approved_ids),
             "applied_tags": applied_tags,
+            "removed_tags": removed_tags,
         },
     )
     db.add(action)
@@ -1003,9 +1020,11 @@ async def apply_tag_suggestions(
     await db.commit()
 
     return ApplyTagSuggestionsResponse(
-        message=f"Applied {len(applied_tags)} tags to image",
+        message=f"Applied {len(applied_tags)} tags, removed {len(removed_tags)} tags",
         applied_tags=applied_tags,
+        removed_tags=removed_tags,
         already_present=already_present,
+        already_absent=already_absent,
     )
 
 
