@@ -19,6 +19,7 @@ class ImageReportTagSuggestionBase(SQLModel):
 
     report_id: int
     tag_id: int
+    suggestion_type: int = Field(default=1)  # 1=add, 2=remove
     accepted: bool | None = Field(default=None)  # NULL=pending, True=approved, False=rejected
 
 
