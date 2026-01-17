@@ -23,6 +23,7 @@ class TagSuggestion(BaseModel):
     tag_id: int
     tag_name: str
     tag_type: int | None = None
+    suggestion_type: int = 1  # 1=add, 2=remove
     accepted: bool | None = None  # NULL=pending, True=approved, False=rejected
 
     model_config = {"from_attributes": True}
@@ -277,8 +278,10 @@ class ApplyTagSuggestionsResponse(BaseModel):
     """Response schema for apply tag suggestions endpoint."""
 
     message: str
-    applied_tags: list[int]  # Tag IDs actually added to image
-    already_present: list[int] = []  # Tag IDs that were already on image
+    applied_tags: list[int]  # Tag IDs added to image
+    removed_tags: list[int] = []  # Tag IDs removed from image
+    already_present: list[int] = []  # Additions skipped (already on image)
+    already_absent: list[int] = []  # Removals skipped (not on image)
 
 
 # ===== Simple Response =====
