@@ -931,6 +931,94 @@ class TestReportWithTagSuggestions:
         data = response.json()
         assert data["suggested_tags"] is None or len(data["suggested_tags"]) == 0
 
+    async def test_report_with_removal_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating TAG_SUGGESTIONS report with removal suggestions."""
+        user, password = await create_auth_user(db_session, username="removeuser1")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        # Add tags to image so they can be suggested for removal
+        for tag in tags:
+            await add_tag_to_image(db_session, image.image_id, tag.tag_id)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,  # TAG_SUGGESTIONS
+                "reason_text": "These tags don't belong",
+                "suggested_tag_ids_remove": [t.tag_id for t in tags],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["category"] == 4
+        assert data["suggested_tags"] is not None
+        assert len(data["suggested_tags"]) == 3
+        # Verify all are removal suggestions
+        for suggestion in data["suggested_tags"]:
+            assert suggestion["suggestion_type"] == 2
+
+    async def test_report_with_mixed_add_and_remove_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating report with both add and remove suggestions."""
+        user, password = await create_auth_user(db_session, username="mixeduser1")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=4)
+        # Add first 2 tags to image (for removal suggestions)
+        await add_tag_to_image(db_session, image.image_id, tags[0].tag_id)
+        await add_tag_to_image(db_session, image.image_id, tags[1].tag_id)
+        # tags[2] and tags[3] are not on image (for addition suggestions)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "suggested_tag_ids_add": [tags[2].tag_id, tags[3].tag_id],
+                "suggested_tag_ids_remove": [tags[0].tag_id, tags[1].tag_id],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["suggested_tags"]) == 4
+
+        add_suggestions = [s for s in data["suggested_tags"] if s["suggestion_type"] == 1]
+        remove_suggestions = [s for s in data["suggested_tags"] if s["suggestion_type"] == 2]
+        assert len(add_suggestions) == 2
+        assert len(remove_suggestions) == 2
+
+    async def test_report_skips_removal_for_tags_not_on_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that removal suggestions for tags not on image are skipped."""
+        user, password = await create_auth_user(db_session, username="removeuser2")
+        image = await create_test_image(db_session, user.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        # Only add first tag to image
+        await add_tag_to_image(db_session, image.image_id, tags[0].tag_id)
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/report",
+            json={
+                "category": 4,
+                "suggested_tag_ids_remove": [t.tag_id for t in tags],  # Only tags[0] is on image
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert len(data["suggested_tags"]) == 1  # Only tags[0]
+        assert data["skipped_tags"]["not_on_image"] == [tags[1].tag_id, tags[2].tag_id]
+
 
 @pytest.mark.api
 class TestAdminApplyTagSuggestions:
