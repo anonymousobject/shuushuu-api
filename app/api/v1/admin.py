@@ -819,6 +819,7 @@ async def list_reports(
                     tag_id=suggestion.tag_id,
                     tag_name=tag.title or "",
                     tag_type=tag.type,
+                    suggestion_type=suggestion.suggestion_type,
                     accepted=suggestion.accepted,
                 )
             )
