@@ -912,7 +912,7 @@ async def apply_tag_suggestions(
     db: AsyncSession = Depends(get_db),
 ) -> ApplyTagSuggestionsResponse:
     """
-    Apply tag suggestions from a MISSING_TAGS report.
+    Apply tag suggestions from a TAG_SUGGESTIONS report.
 
     Approves specified suggestions, rejects others, adds approved tags
     to the image, and marks the report as reviewed.
@@ -931,10 +931,10 @@ async def apply_tag_suggestions(
     if report.status != ReportStatus.PENDING:
         raise HTTPException(status_code=400, detail="Report has already been processed")
 
-    # Validate this is a MISSING_TAGS report
-    if report.category != ReportCategory.MISSING_TAGS:
+    # Validate this is a TAG_SUGGESTIONS report
+    if report.category != ReportCategory.TAG_SUGGESTIONS:
         raise HTTPException(
-            status_code=400, detail="Tag suggestions can only be applied to MISSING_TAGS reports"
+            status_code=400, detail="Tag suggestions can only be applied to TAG_SUGGESTIONS reports"
         )
 
     # Get all suggestions for this report

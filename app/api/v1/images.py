@@ -1527,11 +1527,11 @@ async def report_image(
     - 1: Repost (duplicate of another image)
     - 2: Inappropriate content
     - 3: Spam
-    - 4: Missing tags (can include tag suggestions)
+    - 4: Tag suggestions (can include add/remove suggestions)
     - 5: Spoiler
     - 127: Other
 
-    For MISSING_TAGS (category 4), users can optionally include a list of
+    For TAG_SUGGESTIONS (category 4), users can optionally include a list of
     suggested_tag_ids. Invalid tags and tags already on the image are
     skipped and reported in the response.
 
@@ -1561,11 +1561,11 @@ async def report_image(
             detail="You already have a pending report for this image",
         )
 
-    # Process tag suggestions for MISSING_TAGS category
+    # Process tag suggestions for TAG_SUGGESTIONS category
     skipped_tags = SkippedTagsInfo()
     valid_tag_ids: list[int] = []
 
-    if report_data.category == ReportCategory.MISSING_TAGS and report_data.suggested_tag_ids:
+    if report_data.category == ReportCategory.TAG_SUGGESTIONS and report_data.suggested_tag_ids:
         # Get existing tags on image
         existing_tags_result = await db.execute(
             select(TagLinks.tag_id).where(TagLinks.image_id == image_id)  # type: ignore[call-overload]

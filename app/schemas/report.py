@@ -43,12 +43,12 @@ class ReportCreate(BaseModel):
 
     category: int = Field(
         ...,
-        description="Report category (1=repost, 2=inappropriate, 3=spam, 4=missing_tags, 127=other)",
+        description="Report category (1=repost, 2=inappropriate, 3=spam, 4=tag_suggestions, 127=other)",
     )
     reason_text: str | None = Field(None, max_length=1000, description="Optional explanation")
     suggested_tag_ids: list[int] | None = Field(
         None,
-        description="Tag IDs to suggest (only for MISSING_TAGS category)",
+        description="Tag IDs to suggest (only for TAG_SUGGESTIONS category)",
     )
 
     @field_validator("reason_text")
@@ -77,9 +77,9 @@ class ReportCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_tag_suggestions(self) -> "ReportCreate":
-        """Validate tag suggestions are only for MISSING_TAGS category."""
-        if self.suggested_tag_ids and self.category != ReportCategory.MISSING_TAGS:
-            raise ValueError("Tag suggestions only allowed for MISSING_TAGS reports")
+        """Validate tag suggestions are only for TAG_SUGGESTIONS category."""
+        if self.suggested_tag_ids and self.category != ReportCategory.TAG_SUGGESTIONS:
+            raise ValueError("Tag suggestions only allowed for TAG_SUGGESTIONS reports")
         return self
 
 

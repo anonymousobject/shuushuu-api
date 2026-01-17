@@ -1174,7 +1174,7 @@ class TestAdminApplyTagSuggestions:
         )
 
         assert response.status_code == 400
-        assert "MISSING_TAGS" in response.json()["detail"]
+        assert "TAG_SUGGESTIONS" in response.json()["detail"]
 
     async def test_tag_already_added_between_report_and_review(
         self, client: AsyncClient, db_session: AsyncSession
@@ -1219,7 +1219,7 @@ class TestAdminApplyTagSuggestions:
 
         assert response.status_code == 200
         data = response.json()
-        
+
         # Should have 2 applied tags (tags[1] and tags[2])
         # and 1 already present (tags[0])
         assert len(data["applied_tags"]) == 2
