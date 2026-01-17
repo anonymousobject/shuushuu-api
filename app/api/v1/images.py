@@ -1563,28 +1563,45 @@ async def report_image(
 
     # Process tag suggestions for TAG_SUGGESTIONS category
     skipped_tags = SkippedTagsInfo()
-    valid_tag_ids: list[int] = []
+    valid_add_tags: list[int] = []
+    valid_remove_tags: list[int] = []
 
-    if report_data.category == ReportCategory.TAG_SUGGESTIONS and report_data.suggested_tag_ids:
+    if report_data.category == ReportCategory.TAG_SUGGESTIONS:
         # Get existing tags on image
         existing_tags_result = await db.execute(
             select(TagLinks.tag_id).where(TagLinks.image_id == image_id)  # type: ignore[call-overload]
         )
         existing_tag_ids = set(existing_tags_result.scalars().all())
 
-        # Validate which tag IDs exist
-        valid_tags_result = await db.execute(
-            select(Tags.tag_id).where(Tags.tag_id.in_(report_data.suggested_tag_ids))  # type: ignore[call-overload,union-attr]
-        )
-        valid_db_tag_ids = set(valid_tags_result.scalars().all())
+        # Process addition suggestions
+        if report_data.suggested_tag_ids_add:
+            valid_add_result = await db.execute(
+                select(Tags.tag_id).where(Tags.tag_id.in_(report_data.suggested_tag_ids_add))  # type: ignore[call-overload,union-attr]
+            )
+            valid_add_db_ids = set(valid_add_result.scalars().all())
 
-        for tag_id in report_data.suggested_tag_ids:
-            if tag_id not in valid_db_tag_ids:
-                skipped_tags.invalid_tag_ids.append(tag_id)
-            elif tag_id in existing_tag_ids:
-                skipped_tags.already_on_image.append(tag_id)
-            else:
-                valid_tag_ids.append(tag_id)
+            for tag_id in report_data.suggested_tag_ids_add:
+                if tag_id not in valid_add_db_ids:
+                    skipped_tags.invalid_tag_ids.append(tag_id)
+                elif tag_id in existing_tag_ids:
+                    skipped_tags.already_on_image.append(tag_id)
+                else:
+                    valid_add_tags.append(tag_id)
+
+        # Process removal suggestions
+        if report_data.suggested_tag_ids_remove:
+            valid_remove_result = await db.execute(
+                select(Tags.tag_id).where(Tags.tag_id.in_(report_data.suggested_tag_ids_remove))  # type: ignore[call-overload,union-attr]
+            )
+            valid_remove_db_ids = set(valid_remove_result.scalars().all())
+
+            for tag_id in report_data.suggested_tag_ids_remove:
+                if tag_id not in valid_remove_db_ids:
+                    skipped_tags.invalid_tag_ids.append(tag_id)
+                elif tag_id not in existing_tag_ids:
+                    skipped_tags.not_on_image.append(tag_id)
+                else:
+                    valid_remove_tags.append(tag_id)
 
     # Create the report
     new_report = ImageReports(
@@ -1599,10 +1616,23 @@ async def report_image(
 
     # Create tag suggestions
     suggestions: list[ImageReportTagSuggestions] = []
-    for tag_id in valid_tag_ids:
+
+    # Addition suggestions (type=1)
+    for tag_id in valid_add_tags:
         suggestion = ImageReportTagSuggestions(
             report_id=new_report.report_id,
             tag_id=tag_id,
+            suggestion_type=1,
+        )
+        db.add(suggestion)
+        suggestions.append(suggestion)
+
+    # Removal suggestions (type=2)
+    for tag_id in valid_remove_tags:
+        suggestion = ImageReportTagSuggestions(
+            report_id=new_report.report_id,
+            tag_id=tag_id,
+            suggestion_type=2,
         )
         db.add(suggestion)
         suggestions.append(suggestion)
@@ -1650,12 +1680,13 @@ async def report_image(
                     tag_id=s.tag_id,
                     tag_name=tag.title or "",
                     tag_type=tag.type,
+                    suggestion_type=s.suggestion_type,
                     accepted=s.accepted,
                 )
             )
 
     # Include skipped tags info if any were skipped
-    if skipped_tags.invalid_tag_ids or skipped_tags.already_on_image:
+    if skipped_tags.invalid_tag_ids or skipped_tags.already_on_image or skipped_tags.not_on_image:
         response.skipped_tags = skipped_tags
 
     return response

@@ -807,9 +807,9 @@ class TestReportWithTagSuggestions:
         response = await client.post(
             f"/api/v1/images/{image.image_id}/report",
             json={
-                "category": 4,  # MISSING_TAGS
+                "category": 4,  # TAG_SUGGESTIONS
                 "reason_text": "Missing character tags",
-                "suggested_tag_ids": [t.tag_id for t in tags],
+                "suggested_tag_ids_add": [t.tag_id for t in tags],
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -833,7 +833,7 @@ class TestReportWithTagSuggestions:
             f"/api/v1/images/{image.image_id}/report",
             json={
                 "category": 4,
-                "suggested_tag_ids": [tags[0].tag_id, 999999, tags[1].tag_id],  # 999999 is invalid
+                "suggested_tag_ids_add": [tags[0].tag_id, 999999, tags[1].tag_id],  # 999999 is invalid
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -858,7 +858,7 @@ class TestReportWithTagSuggestions:
             f"/api/v1/images/{image.image_id}/report",
             json={
                 "category": 4,
-                "suggested_tag_ids": [t.tag_id for t in tags],
+                "suggested_tag_ids_add": [t.tag_id for t in tags],
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -880,8 +880,8 @@ class TestReportWithTagSuggestions:
         response = await client.post(
             f"/api/v1/images/{image.image_id}/report",
             json={
-                "category": 1,  # REPOST, not MISSING_TAGS
-                "suggested_tag_ids": [t.tag_id for t in tags],
+                "category": 1,  # REPOST, not TAG_SUGGESTIONS
+                "suggested_tag_ids_add": [t.tag_id for t in tags],
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -901,7 +901,7 @@ class TestReportWithTagSuggestions:
             f"/api/v1/images/{image.image_id}/report",
             json={
                 "category": 4,
-                "suggested_tag_ids": [tags[0].tag_id, tags[0].tag_id, tags[1].tag_id],  # Duplicate
+                "suggested_tag_ids_add": [tags[0].tag_id, tags[0].tag_id, tags[1].tag_id],  # Duplicate
             },
             headers={"Authorization": f"Bearer {token}"},
         )
