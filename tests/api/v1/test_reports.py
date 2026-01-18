@@ -392,6 +392,92 @@ class TestAdminReportsList:
         assert report_item["suggested_tags"] is not None
         assert len(report_item["suggested_tags"]) == 2
 
+    async def test_tagger_can_list_tag_suggestion_reports(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test user with TAG_SUGGESTION_APPLY can list TAG_SUGGESTIONS reports."""
+        tagger, password = await create_auth_user(db_session, username="tagger1")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        image = await create_test_image(db_session, tagger.user_id)
+        token = await login_user(client, tagger.username, password)
+
+        # Create TAG_SUGGESTIONS report
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=tagger.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/admin/reports",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        # All returned reports should be TAG_SUGGESTIONS
+        for item in data["items"]:
+            assert item["category"] == 4
+
+    async def test_tagger_cannot_list_other_report_categories(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test user with only TAG_SUGGESTION_APPLY cannot request other categories."""
+        tagger, password = await create_auth_user(db_session, username="tagger2")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        token = await login_user(client, tagger.username, password)
+
+        # Try to list REPOST reports
+        response = await client.get(
+            "/api/v1/admin/reports?category=1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+
+    async def test_tagger_auto_filters_to_tag_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test tagger without category param auto-filters to TAG_SUGGESTIONS."""
+        tagger, password = await create_auth_user(db_session, username="tagger3")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        image = await create_test_image(db_session, tagger.user_id)
+        token = await login_user(client, tagger.username, password)
+
+        # Create both types of reports
+        repost_report = ImageReports(
+            image_id=image.image_id,
+            user_id=tagger.user_id,
+            category=1,  # REPOST
+            status=ReportStatus.PENDING,
+        )
+        tag_report = ImageReports(
+            image_id=image.image_id,
+            user_id=tagger.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(repost_report)
+        db_session.add(tag_report)
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/admin/reports",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        # Should only see TAG_SUGGESTIONS, not REPOST
+        for item in data["items"]:
+            assert item["category"] == 4
+
 
 @pytest.mark.api
 class TestAdminReportDismiss:
