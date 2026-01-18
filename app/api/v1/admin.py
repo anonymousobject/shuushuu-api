@@ -760,25 +760,54 @@ async def change_image_status(
 
 @router.get("/reports", response_model=ReportListResponse)
 async def list_reports(
-    _: Annotated[None, Depends(require_permission(Permission.REPORT_VIEW))],
+    current_user: Annotated[Users, Depends(get_current_user)],
     status_filter: Annotated[
         int | None,
         Query(alias="status", description="Filter by status (0=pending, 1=reviewed, 2=dismissed)"),
     ] = ReportStatus.PENDING,
+    category: Annotated[
+        int | None,
+        Query(description="Filter by category (4=TAG_SUGGESTIONS)"),
+    ] = None,
     page: Annotated[int, Query(ge=1, description="Page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ReportListResponse:
     """
     List image reports in the triage queue.
 
-    Requires REPORT_VIEW permission.
+    Requires REPORT_VIEW permission OR TAG_SUGGESTION_APPLY permission.
+    Users with only TAG_SUGGESTION_APPLY can only see TAG_SUGGESTIONS reports.
     """
+    from app.core.permissions import has_permission
+
+    has_report_view = await has_permission(
+        db, current_user.user_id, Permission.REPORT_VIEW, redis_client
+    )
+    has_tag_suggestion_apply = await has_permission(
+        db, current_user.user_id, Permission.TAG_SUGGESTION_APPLY, redis_client
+    )
+
+    if not has_report_view and not has_tag_suggestion_apply:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Taggers can only see TAG_SUGGESTIONS
+    if has_tag_suggestion_apply and not has_report_view:
+        if category is not None and category != ReportCategory.TAG_SUGGESTIONS:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only view TAG_SUGGESTIONS reports",
+            )
+        category = ReportCategory.TAG_SUGGESTIONS
+
     # Build a filtered base query against ImageReports (used for counting)
     base_query = select(ImageReports)
     if status_filter is not None:
         # SQLModel/SQLAlchemy equality comparisons sometimes confuse mypy; ignore arg-type here
         base_query = base_query.where(ImageReports.status == status_filter)  # type: ignore[arg-type]
+    if category is not None:
+        base_query = base_query.where(ImageReports.category == category)  # type: ignore[arg-type]
 
     # Count total rows efficiently using ImageReports only
     count_query = select(func.count()).select_from(base_query.subquery())
@@ -790,6 +819,8 @@ async def list_reports(
     query = query.join(Users, Users.user_id == ImageReports.user_id)
     if status_filter is not None:
         query = query.where(ImageReports.status == status_filter)
+    if category is not None:
+        query = query.where(ImageReports.category == category)  # type: ignore[arg-type]
 
     # Apply pagination and ordering (newest first)
     offset = (page - 1) * per_page
