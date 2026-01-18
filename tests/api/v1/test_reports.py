@@ -838,6 +838,31 @@ class TestReportPermissionDenials:
 
         assert response.status_code == 403
 
+    async def test_tagger_cannot_dismiss_report(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test user with only TAG_SUGGESTION_APPLY cannot dismiss reports."""
+        tagger, password = await create_auth_user(db_session, username="tagger_dismiss1")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        image = await create_test_image(db_session, tagger.user_id)
+        token = await login_user(client, tagger.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=tagger.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/dismiss",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+
 
 @pytest.mark.api
 class TestReportValidation:
@@ -1589,3 +1614,69 @@ class TestAdminApplyTagSuggestions:
         assert len(data["removed_tags"]) == 1  # Only tags[1] was actually removed
         assert len(data["already_absent"]) == 1
         assert tags[0].tag_id in data["already_absent"]
+
+    async def test_tagger_can_apply_tag_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test user with TAG_SUGGESTION_APPLY can apply tag suggestions."""
+        tagger, password = await create_auth_user(db_session, username="tagger_apply1")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        image = await create_test_image(db_session, tagger.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, tagger.username, password)
+
+        # Create TAG_SUGGESTIONS report with suggestions
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=tagger.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestion = ImageReportTagSuggestions(
+            report_id=report.report_id,
+            tag_id=tags[0].tag_id,
+            suggestion_type=1,  # add
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": [suggestion.suggestion_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert tags[0].tag_id in data["applied_tags"]
+
+    async def test_tagger_cannot_apply_to_non_tag_suggestions_report(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test tagger cannot apply tag suggestions to non-TAG_SUGGESTIONS report."""
+        tagger, password = await create_auth_user(db_session, username="tagger_apply2")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        image = await create_test_image(db_session, tagger.user_id)
+        token = await login_user(client, tagger.username, password)
+
+        # Create REPOST report
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=tagger.user_id,
+            category=1,  # REPOST
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": []},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
