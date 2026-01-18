@@ -984,8 +984,8 @@ async def apply_tag_suggestions(
                 if suggestion.tag_id in existing_tag_ids:
                     await db.execute(
                         delete(TagLinks).where(
-                            TagLinks.image_id == report.image_id,
-                            TagLinks.tag_id == suggestion.tag_id,
+                            TagLinks.image_id == report.image_id,  # type: ignore[arg-type]
+                            TagLinks.tag_id == suggestion.tag_id,  # type: ignore[arg-type]
                         )
                     )
                     removed_tags.append(suggestion.tag_id)
