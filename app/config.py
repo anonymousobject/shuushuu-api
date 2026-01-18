@@ -239,7 +239,7 @@ class ReportCategory:
     REPOST = 1
     INAPPROPRIATE = 2
     SPAM = 3
-    MISSING_TAGS = 4
+    TAG_SUGGESTIONS = 4  # Renamed from MISSING_TAGS
     SPOILER = 5
     OTHER = 127
 
@@ -247,7 +247,7 @@ class ReportCategory:
         REPOST: "Repost",
         INAPPROPRIATE: "Inappropriate Image",
         SPAM: "Spam",
-        MISSING_TAGS: "Missing Tag Info",
+        TAG_SUGGESTIONS: "Tag Suggestions",  # Updated label
         SPOILER: "Spoiler",
         OTHER: "Other",
     }

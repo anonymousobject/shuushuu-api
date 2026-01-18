@@ -23,6 +23,7 @@ class TagSuggestion(BaseModel):
     tag_id: int
     tag_name: str
     tag_type: int | None = None
+    suggestion_type: int = 1  # 1=add, 2=remove
     accepted: bool | None = None  # NULL=pending, True=approved, False=rejected
 
     model_config = {"from_attributes": True}
@@ -31,8 +32,9 @@ class TagSuggestion(BaseModel):
 class SkippedTagsInfo(BaseModel):
     """Feedback about tags that were skipped during report creation."""
 
-    already_on_image: list[int] = []  # Tag IDs already applied to image
-    invalid_tag_ids: list[int] = []  # Tag IDs that don't exist
+    already_on_image: list[int] = []  # Addition skipped: tag already present
+    not_on_image: list[int] = []  # Removal skipped: tag not on image
+    invalid_tag_ids: list[int] = []  # Tag ID doesn't exist
 
 
 # ===== Report Schemas =====
@@ -43,43 +45,40 @@ class ReportCreate(BaseModel):
 
     category: int = Field(
         ...,
-        description="Report category (1=repost, 2=inappropriate, 3=spam, 4=missing_tags, 127=other)",
+        description="Report category (1=repost, 2=inappropriate, 3=spam, 4=tag_suggestions, 127=other)",
     )
     reason_text: str | None = Field(None, max_length=1000, description="Optional explanation")
-    suggested_tag_ids: list[int] | None = Field(
+    suggested_tag_ids_add: list[int] | None = Field(
         None,
-        description="Tag IDs to suggest (only for MISSING_TAGS category)",
+        description="Tag IDs to suggest adding (only for TAG_SUGGESTIONS category)",
+    )
+    suggested_tag_ids_remove: list[int] | None = Field(
+        None,
+        description="Tag IDs to suggest removing (only for TAG_SUGGESTIONS category)",
     )
 
     @field_validator("reason_text")
     @classmethod
     def sanitize_reason_text(cls, v: str | None) -> str | None:
-        """
-        Sanitize report reason.
-
-        Just trims whitespace - HTML escaping is handled by Svelte's
-        safe template interpolation on the frontend.
-        """
+        """Sanitize report reason."""
         if v is None:
             return v
         return v.strip()
 
-    @field_validator("suggested_tag_ids")
+    @field_validator("suggested_tag_ids_add", "suggested_tag_ids_remove")
     @classmethod
     def dedupe_tag_ids(cls, v: list[int] | None) -> list[int] | None:
-        """Remove duplicate tag IDs while preserving order.
-
-        Also normalizes empty lists to None so that [] and None are treated equivalently.
-        """
+        """Remove duplicate tag IDs while preserving order."""
         if not v:
             return None
         return list(dict.fromkeys(v))
 
     @model_validator(mode="after")
     def validate_tag_suggestions(self) -> "ReportCreate":
-        """Validate tag suggestions are only for MISSING_TAGS category."""
-        if self.suggested_tag_ids and self.category != ReportCategory.MISSING_TAGS:
-            raise ValueError("Tag suggestions only allowed for MISSING_TAGS reports")
+        """Validate tag suggestions are only for TAG_SUGGESTIONS category."""
+        has_suggestions = self.suggested_tag_ids_add or self.suggested_tag_ids_remove
+        if has_suggestions and self.category != ReportCategory.TAG_SUGGESTIONS:
+            raise ValueError("Tag suggestions only allowed for TAG_SUGGESTIONS reports")
         return self
 
 
@@ -279,8 +278,10 @@ class ApplyTagSuggestionsResponse(BaseModel):
     """Response schema for apply tag suggestions endpoint."""
 
     message: str
-    applied_tags: list[int]  # Tag IDs actually added to image
-    already_present: list[int] = []  # Tag IDs that were already on image
+    applied_tags: list[int]  # Tag IDs added to image
+    removed_tags: list[int] = []  # Tag IDs removed from image
+    already_present: list[int] = []  # Additions skipped (already on image)
+    already_absent: list[int] = []  # Removals skipped (not on image)
 
 
 # ===== Simple Response =====

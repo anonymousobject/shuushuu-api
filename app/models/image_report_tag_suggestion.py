@@ -1,7 +1,7 @@
 """
 SQLModel-based ImageReportTagSuggestion model.
 
-This table stores tag suggestions made by users when filing MISSING_TAGS reports.
+This table stores tag suggestions made by users when filing TAG_SUGGESTIONS reports.
 Each suggestion tracks whether it was accepted/rejected by moderators for
 contribution metrics and potential promotion to tagging roles.
 """
@@ -19,6 +19,7 @@ class ImageReportTagSuggestionBase(SQLModel):
 
     report_id: int
     tag_id: int
+    suggestion_type: int = Field(default=1)  # 1=add, 2=remove
     accepted: bool | None = Field(default=None)  # NULL=pending, True=approved, False=rejected
 
 
@@ -26,7 +27,7 @@ class ImageReportTagSuggestions(ImageReportTagSuggestionBase, table=True):
     """
     Database table for tag suggestions in image reports.
 
-    Stores tags suggested by users when filing MISSING_TAGS reports.
+    Stores tags suggested by users when filing TAG_SUGGESTIONS reports.
     Tracks acceptance/rejection for contribution metrics.
     """
 
