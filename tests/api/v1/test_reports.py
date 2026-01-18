@@ -478,6 +478,44 @@ class TestAdminReportsList:
         for item in data["items"]:
             assert item["category"] == 4
 
+    async def test_mod_with_report_view_sees_all_categories(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test user with REPORT_VIEW can see all report categories."""
+        mod, password = await create_auth_user(db_session, username="mod_compat1")
+        await grant_permission(db_session, mod.user_id, "report_view")
+        image = await create_test_image(db_session, mod.user_id)
+        token = await login_user(client, mod.username, password)
+
+        # Create reports of different categories
+        repost_report = ImageReports(
+            image_id=image.image_id,
+            user_id=mod.user_id,
+            category=1,  # REPOST
+            status=ReportStatus.PENDING,
+        )
+        tag_report = ImageReports(
+            image_id=image.image_id,
+            user_id=mod.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(repost_report)
+        db_session.add(tag_report)
+        await db_session.commit()
+
+        # Without category filter, mod sees all
+        response = await client.get(
+            "/api/v1/admin/reports",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        categories = {item["category"] for item in data["items"]}
+        assert 1 in categories  # REPOST
+        assert 4 in categories  # TAG_SUGGESTIONS
+
 
 @pytest.mark.api
 class TestAdminReportDismiss:

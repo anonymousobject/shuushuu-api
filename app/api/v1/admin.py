@@ -783,10 +783,16 @@ async def list_reports(
     from app.core.permissions import has_permission
 
     has_report_view = await has_permission(
-        db, current_user.user_id, Permission.REPORT_VIEW, redis_client
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.REPORT_VIEW,
+        redis_client,
     )
     has_tag_suggestion_apply = await has_permission(
-        db, current_user.user_id, Permission.TAG_SUGGESTION_APPLY, redis_client
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.TAG_SUGGESTION_APPLY,
+        redis_client,
     )
 
     if not has_report_view and not has_tag_suggestion_apply:
@@ -820,7 +826,7 @@ async def list_reports(
     if status_filter is not None:
         query = query.where(ImageReports.status == status_filter)
     if category is not None:
-        query = query.where(ImageReports.category == category)  # type: ignore[arg-type]
+        query = query.where(ImageReports.category == category)
 
     # Apply pagination and ordering (newest first)
     offset = (page - 1) * per_page
@@ -955,10 +961,16 @@ async def apply_tag_suggestions(
     from app.core.permissions import has_permission
 
     has_report_manage = await has_permission(
-        db, current_user.user_id, Permission.REPORT_MANAGE, redis_client
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.REPORT_MANAGE,
+        redis_client,
     )
     has_tag_suggestion_apply = await has_permission(
-        db, current_user.user_id, Permission.TAG_SUGGESTION_APPLY, redis_client
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.TAG_SUGGESTION_APPLY,
+        redis_client,
     )
 
     if not has_report_manage and not has_tag_suggestion_apply:
