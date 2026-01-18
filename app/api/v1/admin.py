@@ -940,8 +940,8 @@ async def apply_tag_suggestions(
     report_id: Annotated[int, Path(description="Report ID")],
     request_data: ApplyTagSuggestionsRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
-    _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ApplyTagSuggestionsResponse:
     """
     Apply tag suggestions from a TAG_SUGGESTIONS report.
@@ -949,8 +949,21 @@ async def apply_tag_suggestions(
     Approves specified suggestions, rejects others, adds approved tags
     to the image, and marks the report as reviewed.
 
-    Requires REPORT_MANAGE permission.
+    Requires REPORT_MANAGE permission OR TAG_SUGGESTION_APPLY permission.
+    Users with only TAG_SUGGESTION_APPLY can only apply to TAG_SUGGESTIONS reports.
     """
+    from app.core.permissions import has_permission
+
+    has_report_manage = await has_permission(
+        db, current_user.user_id, Permission.REPORT_MANAGE, redis_client
+    )
+    has_tag_suggestion_apply = await has_permission(
+        db, current_user.user_id, Permission.TAG_SUGGESTION_APPLY, redis_client
+    )
+
+    if not has_report_manage and not has_tag_suggestion_apply:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
     # Get the report
     result = await db.execute(
         select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
@@ -965,6 +978,9 @@ async def apply_tag_suggestions(
 
     # Validate this is a TAG_SUGGESTIONS report
     if report.category != ReportCategory.TAG_SUGGESTIONS:
+        # Taggers can only apply to TAG_SUGGESTIONS
+        if has_tag_suggestion_apply and not has_report_manage:
+            raise HTTPException(status_code=403, detail="Permission denied")
         raise HTTPException(
             status_code=400, detail="Tag suggestions can only be applied to TAG_SUGGESTIONS reports"
         )
