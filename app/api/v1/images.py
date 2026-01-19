@@ -43,6 +43,7 @@ from app.models import (
     ImageReports,
     ImageReportTagSuggestions,
     Images,
+    TagHistory,
     TagLinks,
     Tags,
     Users,
@@ -998,6 +999,16 @@ async def add_tag_to_image(
         user_id=current_user.id,
     )
     db.add(tag_link)
+
+    # Record in tag history
+    history_entry = TagHistory(
+        image_id=image_id,
+        tag_id=resolved_tag_id,
+        action="a",
+        user_id=current_user.id,
+    )
+    db.add(history_entry)
+
     await db.commit()
 
     return {"message": "Tag added successfully"}
@@ -1047,6 +1058,15 @@ async def remove_tag_from_image(
 
     if not tag_link:
         raise HTTPException(status_code=404, detail="Tag not linked to this image")
+
+    # Record in tag history (before deleting the link)
+    history_entry = TagHistory(
+        image_id=image_id,
+        tag_id=tag_id,
+        action="r",
+        user_id=current_user.id,
+    )
+    db.add(history_entry)
 
     # Delete tag link (usage_count is maintained by database trigger)
     await db.execute(
