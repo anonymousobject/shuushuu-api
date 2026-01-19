@@ -11,7 +11,7 @@ These schemas handle:
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.config import ReportCategory
-from app.schemas.base import UTCDatetimeOptional
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 
 # ===== Tag Suggestion Schemas =====
 
@@ -94,7 +94,7 @@ class ReportResponse(BaseModel):
     reason_text: str | None
     status: int
     status_label: str | None = None
-    created_at: UTCDatetimeOptional = None
+    created_at: UTCDatetime
     reviewed_by: int | None
     reviewed_at: UTCDatetimeOptional = None
     admin_notes: str | None = None
@@ -198,7 +198,7 @@ class VoteResponse(BaseModel):
     vote: int | None
     vote_label: str | None = None
     comment: str | None
-    created_at: UTCDatetimeOptional = None
+    created_at: UTCDatetime
 
     model_config = {"from_attributes": True}
 
@@ -221,13 +221,13 @@ class ReviewResponse(BaseModel):
     initiated_by_username: str | None = None
     review_type: int
     review_type_label: str | None = None
-    deadline: UTCDatetimeOptional = None
+    deadline: UTCDatetime
     extension_used: int
     status: int
     status_label: str | None = None
     outcome: int
     outcome_label: str | None = None
-    created_at: UTCDatetimeOptional = None
+    created_at: UTCDatetime
     closed_at: UTCDatetimeOptional = None
     # Vote summary (populated by endpoint)
     vote_count: int = 0

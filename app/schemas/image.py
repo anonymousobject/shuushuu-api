@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.config import TagType, settings
 from app.models.image import ImageBase
-from app.schemas.base import UTCDatetimeOptional
+from app.schemas.base import UTCDatetime
 from app.schemas.common import UserSummary
 
 # Sort order for tags in image responses: artist → source → character → theme
@@ -88,7 +88,7 @@ class ImageResponse(ImageBase):
     image_id: int
     user_id: int
     user: UserSummary | None = None  # Embedded user data (optional, loaded with selectinload)
-    date_added: UTCDatetimeOptional = None
+    date_added: UTCDatetime
     locked: int
     posts: int
     favorites: int

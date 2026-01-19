@@ -70,8 +70,14 @@ def upgrade() -> None:
     # Add new perms
     op.execute("INSERT INTO perms (title, `desc`) VALUES ('image_tag_add', 'Add tags to images')")
     op.execute("INSERT INTO perms (title, `desc`) VALUES ('image_tag_remove', 'Remove tags from images')")
+    op.execute("INSERT INTO perms (title, `desc`) VALUES ('tag_suggestion_apply', 'Apply tag suggestions')")
     op.execute("INSERT INTO perms (title, `desc`) VALUES ('privmsg_view', 'View private messages')")
     op.execute("INSERT INTO perms (title, `desc`) VALUES ('image_delete', 'Delete images')")
+
+    # Rename groups
+    op.execute("UPDATE groups SET title = 'Taggers' WHERE title = 'image taggers'")
+    op.execute("UPDATE groups SET title = 'Admins' WHERE title = 'admins'")
+    op.execute("UPDATE groups SET title = 'Mods' WHERE title = 'mods'")
 
     # Grant admins group the IMAGE_DELETE permission
     op.execute("""
@@ -80,6 +86,25 @@ def upgrade() -> None:
         FROM groups g, perms p
         WHERE g.title = 'admins' AND p.title = 'image_delete'
     """)
+
+    # Grants new perms to admins and moderators groups
+    new_perms = ['image_tag_add', 'image_tag_remove', 'privmsg_view']
+    for perm in new_perms:
+        op.execute(f"""
+            INSERT INTO group_perms (group_id, perm_id, permvalue)
+            SELECT g.group_id, p.perm_id, 1
+            FROM groups g, perms p
+            WHERE g.title IN ('admins', 'moderators') AND p.title = '{perm}'
+        """)
+
+    # Grants image tagging perms to Taggers group
+    for perm in ['image_tag_add', 'image_tag_remove', 'tag_suggestion_apply']:
+        op.execute(f"""
+            INSERT INTO group_perms (group_id, perm_id, permvalue)
+            SELECT g.group_id, p.perm_id, 1
+            FROM groups g, perms p
+            WHERE g.title = 'Taggers' AND p.title = '{perm}'
+        """)
 
 
 def downgrade() -> None:
@@ -116,7 +141,7 @@ def downgrade() -> None:
         )
 
     # Remove newly added perms (must delete FK references first)
-    new_perms = ['image_tag_add', 'image_tag_remove', 'privmsg_view', 'image_delete']
+    new_perms = ['image_tag_add', 'image_tag_remove', 'privmsg_view', 'image_delete', 'tag_suggestion_apply']
     for perm in new_perms:
         op.execute(f"""
             DELETE gp FROM group_perms gp

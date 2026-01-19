@@ -130,7 +130,7 @@ class UserResponse(UserBase):
     """Schema for user response - what API returns"""
 
     user_id: int
-    date_joined: UTCDatetimeOptional = None
+    date_joined: UTCDatetime
     last_login: UTCDatetimeOptional = None
     active: bool
     admin: bool

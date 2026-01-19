@@ -112,6 +112,7 @@ class TestUserSchemas:
             "posts": 0,
             "favorites": 0,
             "image_posts": 0,
+            "date_joined": datetime(2026, 1, 1, 0, 0, 0),
             "interests": None,
             "location": None,
             "website": None,
@@ -133,6 +134,7 @@ class TestUserSchemas:
             "posts": 0,
             "favorites": 0,
             "image_posts": 0,
+            "date_joined": datetime(2026, 1, 1, 0, 0, 0),
             "interests": "",
             "location": "",
             "website": "",
@@ -155,6 +157,7 @@ class TestUserSchemas:
             "posts": 0,
             "favorites": 0,
             "image_posts": 0,
+            "date_joined": datetime(2026, 1, 1, 0, 0, 0),
             "interests": "Plain text with no entities",
             "location": "Simple Location",
             "website": "https://example.com/path",
@@ -176,6 +179,7 @@ class TestUserSchemas:
             "posts": 0,
             "favorites": 0,
             "image_posts": 0,
+            "date_joined": datetime(2026, 1, 1, 0, 0, 0),
         }
         user = UserResponse(**data)
         assert user.active is True
@@ -191,6 +195,7 @@ class TestUserSchemas:
             "posts": 0,
             "favorites": 0,
             "image_posts": 0,
+            "date_joined": datetime(2026, 1, 1, 0, 0, 0),
         }
         user = UserResponse(**data)
         assert user.active is False

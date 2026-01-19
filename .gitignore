@@ -110,6 +110,7 @@ dump.rdb
 shuu-php/
 .worktrees/
 
-# Local project instructions (not shared)
+# Local project instructions
+AGENTS.md
 CLAUDE.md
 .github/copilot-instructions.md
