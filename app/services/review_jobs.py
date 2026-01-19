@@ -21,6 +21,7 @@ from app.config import (
 from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_review import ImageReviews
+from app.models.image_status_history import ImageStatusHistory
 from app.models.review_vote import ReviewVotes
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,15 @@ async def _close_review(
             image.status = ImageStatus.ACTIVE
         else:  # REMOVE
             image.status = ImageStatus.INAPPROPRIATE
+
+        # Log to public status history
+        status_history = ImageStatusHistory(
+            image_id=review.image_id,
+            old_status=ImageStatus.REVIEW,  # Was under review
+            new_status=image.status,
+            user_id=None,  # System action
+        )
+        db.add(status_history)
 
     # Create audit log entry
     action = AdminActions(

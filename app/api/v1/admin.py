@@ -43,6 +43,7 @@ from app.models.image import Images
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
+from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
@@ -733,6 +734,16 @@ async def change_image_status(
     # Handle locked change if provided
     if status_data.locked is not None:
         image.locked = 1 if status_data.locked else 0
+
+    # Log to public status history (only if status actually changed)
+    if status_data.status is not None and status_data.status != previous_status:
+        status_history = ImageStatusHistory(
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=image.status,
+            user_id=current_user.user_id,
+        )
+        db.add(status_history)
 
     # Log admin action
     action = AdminActions(
