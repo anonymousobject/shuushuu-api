@@ -262,10 +262,15 @@ def setup_test_database():
     from app.models.refresh_token import RefreshTokens  # noqa: F401
     from app.models.review_vote import ReviewVotes  # noqa: F401
     from app.models.tag import Tags  # noqa: F401
+    from app.models.tag_audit_log import TagAuditLog  # noqa: F401
+    from app.models.tag_external_link import TagExternalLinks  # noqa: F401
     from app.models.tag_history import TagHistory  # noqa: F401
     from app.models.tag_link import TagLinks  # noqa: F401
     from app.models.user import Users  # noqa: F401
     from app.models.user_suspension import UserSuspensions  # noqa: F401
+    from app.models.character_source_link import CharacterSourceLinks  # noqa: F401
+    from app.models.image_report_tag_suggestion import ImageReportTagSuggestions  # noqa: F401
+    from app.models.image_status_history import ImageStatusHistory  # noqa: F401
 
     sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 

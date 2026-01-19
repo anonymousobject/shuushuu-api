@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams
-from app.config import TagType
+from app.config import TagAuditActionType, TagType
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
@@ -19,6 +19,7 @@ from app.core.permissions import Permission
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
 from app.models.permissions import UserGroups
+from app.models.tag_audit_log import TagAuditLog
 from app.schemas.common import UserSummary
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
@@ -763,6 +764,7 @@ async def create_tag(
 async def update_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     tag_data: TagCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagResponse:
@@ -775,6 +777,12 @@ async def update_tag(
 
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Store original values for audit logging
+    original_title = tag.title
+    original_type = tag.type
+    original_alias_of = tag.alias_of
+    original_inheritedfrom_id = tag.inheritedfrom_id
 
     update_data = tag_data.model_dump(exclude_unset=True)
 
@@ -796,9 +804,117 @@ async def update_tag(
             raise HTTPException(
                 status_code=400, detail=f"Alias of tag with id {alias_id} does not exist"
             )
+
     # Update fields
     for key, value in update_data.items():
         setattr(tag, key, value)
+
+    # Create audit log entries for changes
+    # Check for title change (rename)
+    if tag.title != original_title:
+        audit_entry = TagAuditLog(
+            tag_id=tag_id,
+            action_type=TagAuditActionType.RENAME,
+            old_title=original_title,
+            new_title=tag.title,
+            user_id=current_user.user_id,
+        )
+        db.add(audit_entry)
+
+    # Check for type change
+    if tag.type != original_type:
+        audit_entry = TagAuditLog(
+            tag_id=tag_id,
+            action_type=TagAuditActionType.TYPE_CHANGE,
+            old_type=original_type,
+            new_type=tag.type,
+            user_id=current_user.user_id,
+        )
+        db.add(audit_entry)
+
+    # Check for alias change
+    if tag.alias_of != original_alias_of:
+        if original_alias_of is None and tag.alias_of is not None:
+            # Alias was set
+            audit_entry = TagAuditLog(
+                tag_id=tag_id,
+                action_type=TagAuditActionType.ALIAS_SET,
+                old_alias_of=original_alias_of,
+                new_alias_of=tag.alias_of,
+                user_id=current_user.user_id,
+            )
+            db.add(audit_entry)
+        elif original_alias_of is not None and tag.alias_of is None:
+            # Alias was removed
+            audit_entry = TagAuditLog(
+                tag_id=tag_id,
+                action_type=TagAuditActionType.ALIAS_REMOVED,
+                old_alias_of=original_alias_of,
+                new_alias_of=tag.alias_of,
+                user_id=current_user.user_id,
+            )
+            db.add(audit_entry)
+        else:
+            # Alias was changed (from one to another)
+            # This is a removal of old alias and setting of new alias
+            audit_entry = TagAuditLog(
+                tag_id=tag_id,
+                action_type=TagAuditActionType.ALIAS_REMOVED,
+                old_alias_of=original_alias_of,
+                new_alias_of=None,
+                user_id=current_user.user_id,
+            )
+            db.add(audit_entry)
+            audit_entry = TagAuditLog(
+                tag_id=tag_id,
+                action_type=TagAuditActionType.ALIAS_SET,
+                old_alias_of=None,
+                new_alias_of=tag.alias_of,
+                user_id=current_user.user_id,
+            )
+            db.add(audit_entry)
+
+    # Check for parent (inheritedfrom_id) change
+    if tag.inheritedfrom_id != original_inheritedfrom_id:
+        if original_inheritedfrom_id is None and tag.inheritedfrom_id is not None:
+            # Parent was set
+            audit_entry = TagAuditLog(
+                tag_id=tag_id,
+                action_type=TagAuditActionType.PARENT_SET,
+                old_parent_id=original_inheritedfrom_id,
+                new_parent_id=tag.inheritedfrom_id,
+                user_id=current_user.user_id,
+            )
+            db.add(audit_entry)
+        elif original_inheritedfrom_id is not None and tag.inheritedfrom_id is None:
+            # Parent was removed
+            audit_entry = TagAuditLog(
+                tag_id=tag_id,
+                action_type=TagAuditActionType.PARENT_REMOVED,
+                old_parent_id=original_inheritedfrom_id,
+                new_parent_id=tag.inheritedfrom_id,
+                user_id=current_user.user_id,
+            )
+            db.add(audit_entry)
+        else:
+            # Parent was changed (from one to another)
+            # This is a removal of old parent and setting of new parent
+            audit_entry = TagAuditLog(
+                tag_id=tag_id,
+                action_type=TagAuditActionType.PARENT_REMOVED,
+                old_parent_id=original_inheritedfrom_id,
+                new_parent_id=None,
+                user_id=current_user.user_id,
+            )
+            db.add(audit_entry)
+            audit_entry = TagAuditLog(
+                tag_id=tag_id,
+                action_type=TagAuditActionType.PARENT_SET,
+                old_parent_id=None,
+                new_parent_id=tag.inheritedfrom_id,
+                user_id=current_user.user_id,
+            )
+            db.add(audit_entry)
 
     db.add(tag)
     await db.commit()
