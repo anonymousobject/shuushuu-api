@@ -27,6 +27,7 @@ from app.models.image_rating import ImageRatings
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
+from app.models.image_status_history import ImageStatusHistory
 
 # Utility models
 from app.models.misc import (
@@ -69,6 +70,7 @@ __all__ = [
     "ImageReports",
     "ImageReportTagSuggestions",
     "ImageReviews",
+    "ImageStatusHistory",
     "ReviewVotes",
     "AdminActions",
     # User-related models
