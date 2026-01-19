@@ -662,3 +662,475 @@ class TestTagAuditLogMultipleChanges:
         action_types = {entry.action_type for entry in audit_entries}
         assert TagAuditActionType.RENAME in action_types
         assert TagAuditActionType.TYPE_CHANGE in action_types
+
+
+@pytest.mark.api
+class TestTagAuditLogOnCharacterSourceLinks:
+    """Tests that TagAuditLog is written for character-source link changes."""
+
+    async def test_create_link_creates_audit_entry(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ) -> None:
+        """Creating a character-source link should create an audit entry."""
+        # Create TAG_CREATE permission (required for character-source link creation)
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="linkauditadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="linkauditadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_CREATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create CHARACTER type tag
+        character_tag = Tags(title="Sakura Kinomoto", desc="test character", type=TagType.CHARACTER)
+        db_session.add(character_tag)
+        await db_session.commit()
+        await db_session.refresh(character_tag)
+
+        # Create SOURCE type tag
+        source_tag = Tags(title="Cardcaptor Sakura", desc="test source", type=TagType.SOURCE)
+        db_session.add(source_tag)
+        await db_session.commit()
+        await db_session.refresh(source_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "linkauditadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create the character-source link
+        response = await client.post(
+            "/api/v1/character-source-links",
+            json={
+                "character_tag_id": character_tag.tag_id,
+                "source_tag_id": source_tag.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 201
+
+        # Verify TagAuditLog entry with action_type=SOURCE_LINKED
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == character_tag.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.SOURCE_LINKED,
+            )
+        )
+        audit_entries = audit_result.scalars().all()
+
+        assert len(audit_entries) == 1
+        audit_entry = audit_entries[0]
+        assert audit_entry.character_tag_id == character_tag.tag_id
+        assert audit_entry.source_tag_id == source_tag.tag_id
+        assert audit_entry.user_id == admin.user_id
+
+    async def test_delete_link_creates_audit_entry(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ) -> None:
+        """Deleting a character-source link should create an audit entry."""
+        # Create TAG_CREATE permission (required for character-source link deletion)
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="linkdelauditadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="linkdelauditadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_CREATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create CHARACTER type tag
+        character_tag = Tags(title="Tomoyo Daidouji", desc="test character", type=TagType.CHARACTER)
+        db_session.add(character_tag)
+        await db_session.commit()
+        await db_session.refresh(character_tag)
+
+        # Create SOURCE type tag
+        source_tag = Tags(title="Cardcaptor Sakura", desc="test source", type=TagType.SOURCE)
+        db_session.add(source_tag)
+        await db_session.commit()
+        await db_session.refresh(source_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "linkdelauditadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create the character-source link first
+        create_response = await client.post(
+            "/api/v1/character-source-links",
+            json={
+                "character_tag_id": character_tag.tag_id,
+                "source_tag_id": source_tag.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert create_response.status_code == 201
+        link_id = create_response.json()["id"]
+
+        # Delete the link
+        delete_response = await client.delete(
+            f"/api/v1/character-source-links/{link_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert delete_response.status_code == 204
+
+        # Verify TagAuditLog entry with action_type=SOURCE_UNLINKED
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == character_tag.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.SOURCE_UNLINKED,
+            )
+        )
+        audit_entries = audit_result.scalars().all()
+
+        assert len(audit_entries) == 1
+        audit_entry = audit_entries[0]
+        assert audit_entry.character_tag_id == character_tag.tag_id
+        assert audit_entry.source_tag_id == source_tag.tag_id
+        assert audit_entry.user_id == admin.user_id
+
+
+@pytest.mark.api
+class TestGetTagHistory:
+    """Tests for GET /tags/{tag_id}/history endpoint."""
+
+    async def test_get_tag_history_returns_audit_entries(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """GET /tags/{tag_id}/history should return audit entries."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="historyauditadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="historyauditadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag to rename (this will generate audit history)
+        tag = Tags(title="history test old name", desc="test", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "historyauditadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Rename tag to generate audit history
+        update_data = {
+            "title": "history test new name",
+            "desc": "test",
+            "type": TagType.THEME,
+        }
+        await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json=update_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        # GET the tag history
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/history")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "total" in data
+        assert "page" in data
+        assert "per_page" in data
+        assert "items" in data
+        assert data["total"] >= 1
+        assert len(data["items"]) >= 1
+
+        # Verify the rename entry is present
+        rename_entry = next(
+            (item for item in data["items"] if item["action_type"] == TagAuditActionType.RENAME),
+            None,
+        )
+        assert rename_entry is not None
+        assert rename_entry["old_title"] == "history test old name"
+        assert rename_entry["new_title"] == "history test new name"
+
+    async def test_get_tag_history_includes_user_info(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """History entries should include user info."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="historyuseradmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="historyuseradmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="user info tag", desc="test", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "historyuseradmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Rename tag
+        await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json={"title": "user info tag renamed", "desc": "test", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        # GET the tag history
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/history")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert len(data["items"]) >= 1
+
+        # Verify user info is present
+        entry = data["items"][0]
+        assert "user" in entry
+        assert entry["user"] is not None
+        assert entry["user"]["user_id"] == admin.user_id
+        assert entry["user"]["username"] == "historyuseradmin"
+
+    async def test_get_tag_history_404_for_nonexistent_tag(
+        self, client: AsyncClient
+    ) -> None:
+        """Should return 404 for nonexistent tag."""
+        response = await client.get("/api/v1/tags/99999999/history")
+        assert response.status_code == 404
+
+    async def test_get_tag_history_pagination(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Tag history should support pagination."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="historypageadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="historypageadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag and make multiple changes
+        tag = Tags(title="pagination tag v1", desc="test", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "historypageadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Make multiple updates to create multiple audit entries
+        for i in range(3):
+            await client.put(
+                f"/api/v1/tags/{tag.tag_id}",
+                json={"title": f"pagination tag v{i+2}", "desc": "test", "type": TagType.THEME},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        # Get first page with per_page=2
+        response = await client.get(
+            f"/api/v1/tags/{tag.tag_id}/history?page=1&per_page=2"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["page"] == 1
+        assert data["per_page"] == 2
+        assert len(data["items"]) == 2
+        assert data["total"] >= 3
+
+        # Get second page
+        response = await client.get(
+            f"/api/v1/tags/{tag.tag_id}/history?page=2&per_page=2"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["page"] == 2
+        assert len(data["items"]) >= 1
+
+    async def test_get_tag_history_ordered_by_most_recent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """History should be ordered by most recent first."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="historyorderadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="historyorderadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="order tag first", desc="test", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "historyorderadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Make multiple changes
+        await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json={"title": "order tag second", "desc": "test", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json={"title": "order tag third", "desc": "test", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        # Get history
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Most recent should be first (third rename)
+        assert data["items"][0]["new_title"] == "order tag third"
+        assert data["items"][1]["new_title"] == "order tag second"

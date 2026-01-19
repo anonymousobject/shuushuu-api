@@ -20,12 +20,14 @@ from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
 from app.models.permissions import UserGroups
 from app.models.tag_audit_log import TagAuditLog
+from app.schemas.audit import TagAuditLogListResponse, TagAuditLogResponse
 from app.schemas.common import UserSummary
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
     CharacterSourceLinkCreate,
     CharacterSourceLinkListResponse,
     CharacterSourceLinkResponse,
+    LinkedTag,
     TagCreate,
     TagExternalLinkCreate,
     TagExternalLinkResponse,
@@ -710,6 +712,121 @@ async def get_tag(
     )
 
 
+@router.get("/{tag_id}/history", response_model=TagAuditLogListResponse)
+async def get_tag_history(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> TagAuditLogListResponse:
+    """
+    Get tag metadata change history.
+
+    Returns paginated list of all metadata changes (renames, type changes,
+    alias changes, inheritance changes, character-source links).
+    """
+    # Verify tag exists
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    if not tag_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Query audit log entries
+    # Include where tag_id matches OR character_tag_id/source_tag_id matches
+    # Eager load user groups for UserSummary
+    query = (
+        select(TagAuditLog, Users)
+        .outerjoin(Users, TagAuditLog.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(
+            (TagAuditLog.tag_id == tag_id)  # type: ignore[arg-type]
+            | (TagAuditLog.character_tag_id == tag_id)
+            | (TagAuditLog.source_tag_id == tag_id)
+        )
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Paginate and order by most recent first
+    # Secondary sort by ID for stable ordering when timestamps match
+    query = (
+        query.order_by(
+            desc(TagAuditLog.created_at),  # type: ignore[arg-type]
+            desc(TagAuditLog.id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Batch load all referenced character/source tag IDs to avoid N+1 queries
+    tag_ids_to_load: set[int] = set()
+    for audit, _ in rows:
+        if audit.character_tag_id:
+            tag_ids_to_load.add(audit.character_tag_id)
+        if audit.source_tag_id:
+            tag_ids_to_load.add(audit.source_tag_id)
+
+    tags_map: dict[int, str] = {}
+    if tag_ids_to_load:
+        tags_result = await db.execute(
+            select(Tags.tag_id, Tags.title).where(  # type: ignore[call-overload]
+                Tags.tag_id.in_(tag_ids_to_load)  # type: ignore[union-attr]
+            )
+        )
+        tags_map = {row[0]: row[1] for row in tags_result.all()}
+
+    items = []
+    for audit, user in rows:
+        user_summary = None
+        if user:
+            user_summary = UserSummary(
+                user_id=user.user_id,
+                username=user.username,
+                avatar=user.avatar,
+                groups=user.groups if user else [],
+            )
+
+        response = TagAuditLogResponse(
+            id=audit.id,
+            tag_id=audit.tag_id,
+            action_type=audit.action_type,
+            old_title=audit.old_title,
+            new_title=audit.new_title,
+            old_type=audit.old_type,
+            new_type=audit.new_type,
+            old_alias_of=audit.old_alias_of,
+            new_alias_of=audit.new_alias_of,
+            old_parent_id=audit.old_parent_id,
+            new_parent_id=audit.new_parent_id,
+            user=user_summary,
+            created_at=audit.created_at,
+        )
+
+        # Enrich with tag titles for char-source links if present
+        if audit.character_tag_id and audit.source_tag_id:
+            char_title = tags_map.get(audit.character_tag_id)
+            if char_title:
+                response.character_tag = LinkedTag(tag_id=audit.character_tag_id, title=char_title)
+
+            source_title = tags_map.get(audit.source_tag_id)
+            if source_title:
+                response.source_tag = LinkedTag(tag_id=audit.source_tag_id, title=source_title)
+
+        items.append(response)
+
+    return TagAuditLogListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
+    )
+
+
 @router.post("/", response_model=TagResponse, include_in_schema=False)
 @router.post("", response_model=TagResponse)
 async def create_tag(
@@ -1057,6 +1174,16 @@ async def create_character_source_link(
     )
     db.add(new_link)
 
+    # Log audit trail for character tag
+    audit = TagAuditLog(
+        tag_id=link_data.character_tag_id,
+        action_type=TagAuditActionType.SOURCE_LINKED,
+        character_tag_id=link_data.character_tag_id,
+        source_tag_id=link_data.source_tag_id,
+        user_id=current_user.user_id,
+    )
+    db.add(audit)
+
     try:
         await db.commit()
         await db.refresh(new_link)
@@ -1118,6 +1245,7 @@ async def list_character_source_links(
 @character_source_links_router.delete("/{link_id}", status_code=204)
 async def delete_character_source_link(
     link_id: Annotated[int, Path(description="Link ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -1131,6 +1259,16 @@ async def delete_character_source_link(
 
     if not link:
         raise HTTPException(status_code=404, detail="Link not found")
+
+    # Log audit trail before deleting
+    audit = TagAuditLog(
+        tag_id=link.character_tag_id,
+        action_type=TagAuditActionType.SOURCE_UNLINKED,
+        character_tag_id=link.character_tag_id,
+        source_tag_id=link.source_tag_id,
+        user_id=current_user.user_id,
+    )
+    db.add(audit)
 
     await db.delete(link)
     await db.commit()
