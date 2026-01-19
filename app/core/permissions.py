@@ -70,6 +70,7 @@ class Permission(str, Enum):
     # Report & Review system
     REPORT_VIEW = "report_view"
     REPORT_MANAGE = "report_manage"
+    TAG_SUGGESTION_APPLY = "tag_suggestion_apply"
     REVIEW_VIEW = "review_view"
     REVIEW_START = "review_start"
     REVIEW_VOTE = "review_vote"
@@ -110,6 +111,7 @@ _PERMISSION_DESCRIPTIONS: dict["Permission", str] = {
     # Report & Review system
     Permission.REPORT_VIEW: "View report triage queue",
     Permission.REPORT_MANAGE: "Dismiss, action, or escalate reports",
+    Permission.TAG_SUGGESTION_APPLY: "Apply or reject tag suggestions on TAG_SUGGESTIONS reports",
     Permission.REVIEW_VIEW: "View open reviews",
     Permission.REVIEW_START: "Initiate appropriateness review",
     Permission.REVIEW_VOTE: "Cast votes on reviews",
