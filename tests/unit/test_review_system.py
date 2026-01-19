@@ -4,6 +4,8 @@ Unit tests for the image reporting and review system.
 Tests status constants, model defaults, and validation.
 """
 
+from datetime import datetime
+
 from app.config import (
     AdminActionType,
     ImageStatus,
@@ -173,7 +175,7 @@ class TestSchemaValidation:
             category=2,  # Inappropriate
             reason_text=None,
             status=0,  # Pending
-            created_at=None,
+            created_at=datetime(2026, 1, 1, 0, 0, 0),
             reviewed_by=None,
             reviewed_at=None,
         )
@@ -190,11 +192,11 @@ class TestSchemaValidation:
             source_report_id=None,
             initiated_by=1,
             review_type=1,  # Appropriateness
-            deadline=None,
+            deadline=datetime(2026, 1, 8, 0, 0, 0),
             extension_used=0,
             status=0,  # Open
             outcome=0,  # Pending
-            created_at=None,
+            created_at=datetime(2026, 1, 1, 0, 0, 0),
             closed_at=None,
         )
         assert response.review_type_label == "Appropriateness"
@@ -212,7 +214,7 @@ class TestSchemaValidation:
             user_id=1,
             vote=1,
             comment=None,
-            created_at=None,
+            created_at=datetime(2026, 1, 1, 0, 0, 0),
         )
         assert response.vote_label == "Keep"
 
@@ -223,6 +225,6 @@ class TestSchemaValidation:
             user_id=2,
             vote=0,
             comment=None,
-            created_at=None,
+            created_at=datetime(2026, 1, 1, 0, 0, 0),
         )
         assert response.vote_label == "Remove"
