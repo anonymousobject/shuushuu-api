@@ -223,6 +223,19 @@ class AdminActionType:
     IMAGE_DELETE = 9
 
 
+class TagAuditActionType:
+    """Action types for tag audit log."""
+
+    RENAME = "rename"
+    TYPE_CHANGE = "type_change"
+    ALIAS_SET = "alias_set"
+    ALIAS_REMOVED = "alias_removed"
+    PARENT_SET = "parent_set"
+    PARENT_REMOVED = "parent_removed"
+    SOURCE_LINKED = "source_linked"
+    SOURCE_UNLINKED = "source_unlinked"
+
+
 class TagType:
     """Tag type constants"""
 
