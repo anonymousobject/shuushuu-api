@@ -711,7 +711,7 @@ async def get_image_tag_history(
                 action="added" if history.action == "a" else "removed",
                 user=user_summary,
                 date=history.date,
-                tag=LinkedTag(tag_id=tag.tag_id, title=tag.title) if tag else None,
+                tag=LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type) if tag else None,
             )
         )
 

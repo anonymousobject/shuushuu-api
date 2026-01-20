@@ -777,14 +777,14 @@ async def get_tag_history(
         if audit.source_tag_id:
             tag_ids_to_load.add(audit.source_tag_id)
 
-    tags_map: dict[int, str] = {}
+    tags_map: dict[int, tuple[str | None, int]] = {}  # tag_id -> (title, type)
     if tag_ids_to_load:
         tags_result = await db.execute(
-            select(Tags.tag_id, Tags.title).where(  # type: ignore[call-overload]
+            select(Tags.tag_id, Tags.title, Tags.type).where(  # type: ignore[call-overload]
                 Tags.tag_id.in_(tag_ids_to_load)  # type: ignore[union-attr]
             )
         )
-        tags_map = {row[0]: row[1] for row in tags_result.all()}
+        tags_map = {row[0]: (row[1], row[2]) for row in tags_result.all()}
 
     items = []
     for audit, user in rows:
@@ -815,13 +815,17 @@ async def get_tag_history(
 
         # Enrich with tag titles for char-source links if present
         if audit.character_tag_id and audit.source_tag_id:
-            char_title = tags_map.get(audit.character_tag_id)
-            if char_title:
-                response.character_tag = LinkedTag(tag_id=audit.character_tag_id, title=char_title)
+            char_info = tags_map.get(audit.character_tag_id)
+            if char_info:
+                response.character_tag = LinkedTag(
+                    tag_id=audit.character_tag_id, title=char_info[0], type=char_info[1]
+                )
 
-            source_title = tags_map.get(audit.source_tag_id)
-            if source_title:
-                response.source_tag = LinkedTag(tag_id=audit.source_tag_id, title=source_title)
+            source_info = tags_map.get(audit.source_tag_id)
+            if source_info:
+                response.source_tag = LinkedTag(
+                    tag_id=audit.source_tag_id, title=source_info[0], type=source_info[1]
+                )
 
         items.append(response)
 

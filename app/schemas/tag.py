@@ -66,10 +66,11 @@ class TagResponse(TagBase):
 
 
 class LinkedTag(BaseModel):
-    """Minimal tag info for linked sources/characters"""
+    """Minimal tag info for linked sources/characters and history entries"""
 
     tag_id: int
     title: str | None
+    type: int
 
 
 class TagWithStats(TagResponse):

@@ -98,7 +98,7 @@ async def get_user_history(
     # Transform tag audit log entries (type_priority=1)
     for audit_log, tag in tag_audit_rows:
         timestamp = audit_log.created_at or datetime.min
-        tag_info = LinkedTag(tag_id=tag.tag_id, title=tag.title) if tag else None
+        tag_info = LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type) if tag else None
         item = UserHistoryItem(
             type="tag_metadata",
             action_type=audit_log.action_type,
@@ -112,7 +112,7 @@ async def get_user_history(
     # Transform tag history entries (type_priority=2)
     for history, tag in tag_history_rows:
         timestamp = history.date or datetime.min
-        tag_info = LinkedTag(tag_id=tag.tag_id, title=tag.title) if tag else None
+        tag_info = LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type) if tag else None
         action = "added" if history.action == "a" else "removed"
         item = UserHistoryItem(
             type="tag_usage",
