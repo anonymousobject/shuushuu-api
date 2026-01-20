@@ -20,7 +20,13 @@ from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
 from app.models.permissions import UserGroups
 from app.models.tag_audit_log import TagAuditLog
-from app.schemas.audit import TagAuditLogListResponse, TagAuditLogResponse
+from app.models.tag_history import TagHistory
+from app.schemas.audit import (
+    TagAuditLogListResponse,
+    TagAuditLogResponse,
+    TagHistoryListResponse,
+    TagHistoryResponse,
+)
 from app.schemas.common import UserSummary
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
@@ -820,6 +826,81 @@ async def get_tag_history(
         items.append(response)
 
     return TagAuditLogListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
+    )
+
+
+@router.get("/{tag_id}/usage-history", response_model=TagHistoryListResponse)
+async def get_tag_usage_history(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> TagHistoryListResponse:
+    """
+    Get tag usage history (add/remove on images).
+
+    Returns paginated list of when this tag was added or removed from images.
+    """
+    # Verify tag exists
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    if not tag_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Query tag history with user info
+    # Eager load user groups for UserSummary
+    query = (
+        select(TagHistory, Users)
+        .outerjoin(Users, TagHistory.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(TagHistory.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Paginate and order by most recent first
+    # Secondary sort by tag_history_id for stable ordering when timestamps match
+    query = (
+        query.order_by(
+            desc(TagHistory.date),  # type: ignore[arg-type]
+            desc(TagHistory.tag_history_id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = []
+    for history, user in rows:
+        user_summary = None
+        if user:
+            user_summary = UserSummary(
+                user_id=user.user_id,
+                username=user.username,
+                avatar=user.avatar,
+                groups=user.groups if user else [],
+            )
+
+        items.append(
+            TagHistoryResponse(
+                tag_history_id=history.tag_history_id,
+                image_id=history.image_id,
+                tag_id=history.tag_id,
+                action="added" if history.action == "a" else "removed",
+                user=user_summary,
+                date=history.date,
+            )
+        )
+
+    return TagHistoryListResponse(
         total=total,
         page=pagination.page,
         per_page=pagination.per_page,
