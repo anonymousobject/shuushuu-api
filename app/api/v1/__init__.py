@@ -9,6 +9,7 @@ from app.api.v1 import (
     auth,
     comments,
     favorites,
+    history,
     images,
     meta,
     permissions,
@@ -27,6 +28,7 @@ router.include_router(images.router)
 router.include_router(tags.router)
 router.include_router(character_source_links_router)
 router.include_router(users.router)
+router.include_router(history.router)
 router.include_router(favorites.router)
 router.include_router(comments.router)
 router.include_router(privmsgs.router)

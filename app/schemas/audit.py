@@ -204,6 +204,11 @@ class UserHistoryItem(BaseModel):
     Polymorphic history item for user activity feed.
 
     Combines different history types into a unified format.
+    The exact fields present depend on the `type` field:
+
+    - tag_metadata: action_type, tag, old_title/new_title (for rename), created_at
+    - tag_usage: action, tag, image_id, date
+    - status_change: image_id, old_status, new_status, new_status_label, created_at
     """
 
     type: Literal["tag_metadata", "tag_usage", "status_change"]
@@ -214,21 +219,22 @@ class UserHistoryItem(BaseModel):
 
     # Common fields
     image_id: int | None = None
-    tag_id: int | None = None
 
-    # For tag add/remove
-    tag_title: str | None = None
+    # Tag info object (for tag_metadata and tag_usage types)
+    tag: LinkedTag | None = None
+
+    # For tag_usage: "added" or "removed"
+    action: str | None = None
 
     # For status changes
     old_status: int | None = None
     new_status: int | None = None
-    old_status_label: str | None = None
     new_status_label: str | None = None
 
-    # For tag metadata changes
+    # For tag_metadata: rename action
     action_type: str | None = None
-    old_value: str | None = None
-    new_value: str | None = None
+    old_title: str | None = None
+    new_title: str | None = None
 
 
 class UserHistoryListResponse(BaseModel):
