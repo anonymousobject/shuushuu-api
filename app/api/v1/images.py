@@ -29,7 +29,16 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
-from app.config import AdminActionType, ImageStatus, ReportCategory, ReportStatus, settings
+from app.config import (
+    AdminActionType,
+    ImageStatus,
+    ReportCategory,
+    ReportStatus,
+    ReviewOutcome,
+    ReviewStatus,
+    ReviewType,
+    settings,
+)
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
@@ -42,6 +51,7 @@ from app.models import (
     ImageRatings,
     ImageReports,
     ImageReportTagSuggestions,
+    ImageReviews,
     Images,
     TagHistory,
     TagLinks,
@@ -52,6 +62,8 @@ from app.models.image import ImageSortBy
 from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import UserGroups
 from app.schemas.audit import (
+    ImageReviewListResponse,
+    ImageReviewPublicResponse,
     ImageStatusHistoryListResponse,
     ImageStatusHistoryResponse,
     ImageTagHistoryListResponse,
@@ -85,25 +97,6 @@ from app.tasks.queue import enqueue_job
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/images", tags=["images"])
-
-# Status values where user info is shown in status history
-# Show user for: REPOST (-1), SPOILER (2), ACTIVE (1)
-# Hide user for: REVIEW (-4), LOW_QUALITY (-3), INAPPROPRIATE (-2), OTHER (0)
-VISIBLE_USER_STATUSES = {ImageStatus.REPOST, ImageStatus.SPOILER, ImageStatus.ACTIVE}
-
-
-def get_status_label(status_value: int) -> str:
-    """Get human-readable label for image status."""
-    status_labels = {
-        ImageStatus.REVIEW: "review",
-        ImageStatus.LOW_QUALITY: "low_quality",
-        ImageStatus.INAPPROPRIATE: "inappropriate",
-        ImageStatus.REPOST: "repost",
-        ImageStatus.OTHER: "other",
-        ImageStatus.ACTIVE: "active",
-        ImageStatus.SPOILER: "spoiler",
-    }
-    return status_labels.get(status_value, "unknown")
 
 
 def _get_client_ip(request: Request) -> str:
@@ -781,8 +774,8 @@ async def get_image_status_history(
         # Determine if user should be shown based on old/new status
         # Show user if EITHER old_status OR new_status is a visible status
         show_user = (
-            history.old_status in VISIBLE_USER_STATUSES
-            or history.new_status in VISIBLE_USER_STATUSES
+            history.old_status in ImageStatus.VISIBLE_USER_STATUSES
+            or history.new_status in ImageStatus.VISIBLE_USER_STATUSES
         )
 
         user_summary = None
@@ -799,15 +792,96 @@ async def get_image_status_history(
                 id=history.id,
                 image_id=history.image_id,
                 old_status=history.old_status,
-                old_status_label=get_status_label(history.old_status),
+                old_status_label=ImageStatus.get_label(history.old_status),
                 new_status=history.new_status,
-                new_status_label=get_status_label(history.new_status),
+                new_status_label=ImageStatus.get_label(history.new_status),
                 user=user_summary,
                 created_at=history.created_at,
             )
         )
 
     return ImageStatusHistoryListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
+    )
+
+
+def get_review_type_label(review_type: int) -> str:
+    """Get human-readable label for review type."""
+    review_type_labels = {
+        ReviewType.APPROPRIATENESS: "appropriateness",
+    }
+    return review_type_labels.get(review_type, "unknown")
+
+
+def get_review_outcome_label(outcome: int) -> str:
+    """Get human-readable label for review outcome."""
+    outcome_labels = {
+        ReviewOutcome.PENDING: "pending",
+        ReviewOutcome.KEEP: "keep",
+        ReviewOutcome.REMOVE: "remove",
+    }
+    return outcome_labels.get(outcome, "unknown")
+
+
+@router.get("/{image_id}/reviews", response_model=ImageReviewListResponse)
+async def get_image_reviews(
+    image_id: Annotated[int, Path(description="Image ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> ImageReviewListResponse:
+    """
+    Get closed review sessions for an image.
+
+    Returns paginated list of completed review sessions.
+    Only closed reviews are returned (open/in-progress reviews are excluded).
+    Internal fields (initiated_by, votes) are hidden for privacy.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Query only closed reviews
+    query = select(ImageReviews).where(
+        ImageReviews.image_id == image_id,  # type: ignore[arg-type]
+        ImageReviews.status == ReviewStatus.CLOSED,  # type: ignore[arg-type]
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Paginate and order by most recent first
+    # Secondary sort by review_id for stable ordering when timestamps match
+    query = (
+        query.order_by(
+            desc(ImageReviews.created_at),  # type: ignore[arg-type]
+            desc(ImageReviews.review_id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    reviews = result.scalars().all()
+
+    items = [
+        ImageReviewPublicResponse(
+            review_id=review.review_id or 0,
+            review_type=review.review_type,
+            review_type_label=get_review_type_label(review.review_type),
+            outcome=review.outcome,
+            outcome_label=get_review_outcome_label(review.outcome),
+            created_at=review.created_at,  # type: ignore[arg-type]  # server_default ensures non-null
+            closed_at=review.closed_at,
+        )
+        for review in reviews
+    ]
+
+    return ImageReviewListResponse(
         total=total,
         page=pagination.page,
         per_page=pagination.per_page,
