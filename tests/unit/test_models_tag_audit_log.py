@@ -1,10 +1,5 @@
 """Tests for TagAuditLog model."""
 
-from datetime import datetime
-
-import pytest
-from sqlmodel import Session, select
-
 from app.models.tag_audit_log import TagAuditLog
 
 
