@@ -50,6 +50,8 @@ from app.models import (
 )
 from app.models.image import ImageSortBy
 from app.models.permissions import UserGroups
+from app.schemas.audit import ImageTagHistoryListResponse, ImageTagHistoryResponse
+from app.schemas.common import UserSummary
 from app.schemas.image import (
     TAG_TYPE_SORT_ORDER,
     BookmarkPageResponse,
@@ -65,6 +67,7 @@ from app.schemas.image import (
     SimilarImagesResponse,
 )
 from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
+from app.schemas.tag import LinkedTag
 from app.schemas.user import UserListResponse, UserResponse
 from app.services.image_processing import get_image_dimensions
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
@@ -622,6 +625,83 @@ async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> I
             )
             for tag in sorted_tags
         ],
+    )
+
+
+@router.get("/{image_id}/tag-history", response_model=ImageTagHistoryListResponse)
+async def get_image_tag_history(
+    image_id: Annotated[int, Path(description="Image ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> ImageTagHistoryListResponse:
+    """
+    Get tag history for an image.
+
+    Returns paginated list of tags that were added or removed from this image.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Query tag history with joined tag and user info
+    # Eager load user groups for UserSummary
+    query = (
+        select(TagHistory, Tags, Users)
+        .join(Tags, TagHistory.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+        .outerjoin(Users, TagHistory.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(TagHistory.image_id == image_id)  # type: ignore[arg-type]
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Paginate and order by most recent first
+    # Secondary sort by tag_history_id for stable ordering when timestamps match
+    query = (
+        query.order_by(
+            desc(TagHistory.date),  # type: ignore[arg-type]
+            desc(TagHistory.tag_history_id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = []
+    for history, tag, user in rows:
+        user_summary = None
+        if user:
+            user_summary = UserSummary(
+                user_id=user.user_id,
+                username=user.username,
+                avatar=user.avatar,
+                groups=user.groups if user else [],
+            )
+
+        items.append(
+            ImageTagHistoryResponse(
+                tag_history_id=history.tag_history_id,
+                image_id=history.image_id,
+                tag_id=history.tag_id,
+                action="added" if history.action == "a" else "removed",
+                user=user_summary,
+                date=history.date,
+                tag=LinkedTag(tag_id=tag.tag_id, title=tag.title) if tag else None,
+            )
+        )
+
+    return ImageTagHistoryListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
     )
 
 
