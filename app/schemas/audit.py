@@ -45,10 +45,12 @@ class TagAuditLogResponse(BaseModel):
     # Alias change fields
     old_alias_of: int | None = None
     new_alias_of: int | None = None
+    alias_tag: LinkedTag | None = None  # Resolved tag for alias changes
 
     # Parent/inheritance change fields
     old_parent_id: int | None = None
     new_parent_id: int | None = None
+    parent_tag: LinkedTag | None = None  # Resolved tag for parent changes
 
     # Character-source link fields (with resolved tag info)
     character_tag: LinkedTag | None = None

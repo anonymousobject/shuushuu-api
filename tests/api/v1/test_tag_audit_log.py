@@ -1134,3 +1134,163 @@ class TestGetTagHistory:
         # Most recent should be first (third rename)
         assert data["items"][0]["new_title"] == "order tag third"
         assert data["items"][1]["new_title"] == "order tag second"
+
+    async def test_get_tag_history_includes_alias_tag_info(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that alias changes include resolved alias_tag info."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="aliastaginfoadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="aliastaginfoadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create target tag (the one that will be aliased to)
+        target_tag = Tags(title="Target Tag", desc="target", type=TagType.CHARACTER)
+        db_session.add(target_tag)
+        await db_session.commit()
+        await db_session.refresh(target_tag)
+
+        # Create source tag (the one that will become an alias)
+        source_tag = Tags(title="Source Alias", desc="source", type=TagType.CHARACTER)
+        db_session.add(source_tag)
+        await db_session.commit()
+        await db_session.refresh(source_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "aliastaginfoadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set alias
+        response = await client.put(
+            f"/api/v1/tags/{source_tag.tag_id}",
+            json={
+                "title": "Source Alias",
+                "desc": "source",
+                "type": TagType.CHARACTER,
+                "alias_of": target_tag.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Get history
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert len(data["items"]) >= 1
+        alias_entry = data["items"][0]
+        assert alias_entry["action_type"] == "alias_set"
+        assert alias_entry["new_alias_of"] == target_tag.tag_id
+        # Verify alias_tag is populated with full tag info
+        assert alias_entry["alias_tag"] is not None
+        assert alias_entry["alias_tag"]["tag_id"] == target_tag.tag_id
+        assert alias_entry["alias_tag"]["title"] == "Target Tag"
+        assert alias_entry["alias_tag"]["type"] == TagType.CHARACTER
+
+    async def test_get_tag_history_includes_parent_tag_info(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that parent changes include resolved parent_tag info."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="parenttaginfoadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="parenttaginfoadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create parent tag
+        parent_tag = Tags(title="Parent Source", desc="parent", type=TagType.SOURCE)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tag
+        child_tag = Tags(title="Child Source", desc="child", type=TagType.SOURCE)
+        db_session.add(child_tag)
+        await db_session.commit()
+        await db_session.refresh(child_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "parenttaginfoadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set parent
+        response = await client.put(
+            f"/api/v1/tags/{child_tag.tag_id}",
+            json={
+                "title": "Child Source",
+                "desc": "child",
+                "type": TagType.SOURCE,
+                "inheritedfrom_id": parent_tag.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Get history
+        response = await client.get(f"/api/v1/tags/{child_tag.tag_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert len(data["items"]) >= 1
+        parent_entry = data["items"][0]
+        assert parent_entry["action_type"] == "parent_set"
+        assert parent_entry["new_parent_id"] == parent_tag.tag_id
+        # Verify parent_tag is populated with full tag info
+        assert parent_entry["parent_tag"] is not None
+        assert parent_entry["parent_tag"]["tag_id"] == parent_tag.tag_id
+        assert parent_entry["parent_tag"]["title"] == "Parent Source"
+        assert parent_entry["parent_tag"]["type"] == TagType.SOURCE

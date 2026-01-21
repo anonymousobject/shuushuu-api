@@ -769,13 +769,22 @@ async def get_tag_history(
     result = await db.execute(query)
     rows = result.all()
 
-    # Batch load all referenced character/source tag IDs to avoid N+1 queries
+    # Batch load all referenced tag IDs to avoid N+1 queries
+    # Includes: character_tag, source_tag, alias targets, parent tags
     tag_ids_to_load: set[int] = set()
     for audit, _ in rows:
         if audit.character_tag_id:
             tag_ids_to_load.add(audit.character_tag_id)
         if audit.source_tag_id:
             tag_ids_to_load.add(audit.source_tag_id)
+        if audit.old_alias_of:
+            tag_ids_to_load.add(audit.old_alias_of)
+        if audit.new_alias_of:
+            tag_ids_to_load.add(audit.new_alias_of)
+        if audit.old_parent_id:
+            tag_ids_to_load.add(audit.old_parent_id)
+        if audit.new_parent_id:
+            tag_ids_to_load.add(audit.new_parent_id)
 
     tags_map: dict[int, tuple[str | None, int]] = {}  # tag_id -> (title, type)
     if tag_ids_to_load:
@@ -813,7 +822,8 @@ async def get_tag_history(
             created_at=audit.created_at,
         )
 
-        # Enrich with tag titles for char-source links if present
+        # Enrich with resolved tag info for related tags
+        # Character-source links
         if audit.character_tag_id and audit.source_tag_id:
             char_info = tags_map.get(audit.character_tag_id)
             if char_info:
@@ -825,6 +835,24 @@ async def get_tag_history(
             if source_info:
                 response.source_tag = LinkedTag(
                     tag_id=audit.source_tag_id, title=source_info[0], type=source_info[1]
+                )
+
+        # Alias changes - resolve the target tag
+        alias_target_id = audit.new_alias_of or audit.old_alias_of
+        if alias_target_id:
+            alias_info = tags_map.get(alias_target_id)
+            if alias_info:
+                response.alias_tag = LinkedTag(
+                    tag_id=alias_target_id, title=alias_info[0], type=alias_info[1]
+                )
+
+        # Parent changes - resolve the parent tag
+        parent_target_id = audit.new_parent_id or audit.old_parent_id
+        if parent_target_id:
+            parent_info = tags_map.get(parent_target_id)
+            if parent_info:
+                response.parent_tag = LinkedTag(
+                    tag_id=parent_target_id, title=parent_info[0], type=parent_info[1]
                 )
 
         items.append(response)
