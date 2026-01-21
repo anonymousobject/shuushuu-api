@@ -677,7 +677,7 @@ async def get_tag(
     if tag.type == TagType.CHARACTER:
         # Get all sources linked to this character
         sources_result = await db.execute(
-            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
+            select(Tags.tag_id, Tags.title, Tags.type)  # type: ignore[call-overload]
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.source_tag_id,
@@ -685,12 +685,14 @@ async def get_tag(
             .where(CharacterSourceLinks.character_tag_id == tag_id)
             .order_by(Tags.title)
         )
-        sources = [{"tag_id": row[0], "title": row[1]} for row in sources_result.all()]
+        sources = [
+            {"tag_id": row[0], "title": row[1], "type": row[2]} for row in sources_result.all()
+        ]
 
     elif tag.type == TagType.SOURCE:
         # Get all characters linked to this source
         characters_result = await db.execute(
-            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
+            select(Tags.tag_id, Tags.title, Tags.type)  # type: ignore[call-overload]
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.character_tag_id,
@@ -698,7 +700,9 @@ async def get_tag(
             .where(CharacterSourceLinks.source_tag_id == tag_id)
             .order_by(Tags.title)
         )
-        characters = [{"tag_id": row[0], "title": row[1]} for row in characters_result.all()]
+        characters = [
+            {"tag_id": row[0], "title": row[1], "type": row[2]} for row in characters_result.all()
+        ]
 
     return TagWithStats(
         tag_id=tag.tag_id or 0,
