@@ -34,8 +34,8 @@ class TestTagAuditLogResponse:
             "id": 1,
             "tag_id": 100,
             "action_type": "source_linked",
-            "character_tag": {"tag_id": 100, "title": "Cirno"},
-            "source_tag": {"tag_id": 200, "title": "Touhou"},
+            "character_tag": {"tag_id": 100, "title": "Cirno", "type": "4"},
+            "source_tag": {"tag_id": 200, "title": "Touhou", "type": "2"},
             "user": {"user_id": 1, "username": "test"},
             "created_at": datetime.now(UTC),
         }
