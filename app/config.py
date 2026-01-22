@@ -179,6 +179,26 @@ class ImageStatus:
     ACTIVE = 1
     SPOILER = 2
 
+    # Status values where we show the user who made the change in public audit
+    # Show for: REPOST (-1), SPOILER (2), ACTIVE (1)
+    # Hide for: REVIEW (-4), LOW_QUALITY (-3), INAPPROPRIATE (-2), OTHER (0)
+    VISIBLE_USER_STATUSES: set[int] = {REPOST, SPOILER, ACTIVE}
+
+    LABELS: dict[int, str] = {
+        REVIEW: "review",
+        LOW_QUALITY: "low_quality",
+        INAPPROPRIATE: "inappropriate",
+        REPOST: "repost",
+        OTHER: "other",
+        ACTIVE: "active",
+        SPOILER: "spoiler",
+    }
+
+    @classmethod
+    def get_label(cls, status: int) -> str:
+        """Get human-readable label for image status."""
+        return cls.LABELS.get(status, "unknown")
+
 
 class ReportStatus:
     """Report status constants"""
@@ -221,6 +241,19 @@ class AdminActionType:
     IMAGE_STATUS_CHANGE = 7
     COMMENT_DELETE = 8
     IMAGE_DELETE = 9
+
+
+class TagAuditActionType:
+    """Action types for tag audit log."""
+
+    RENAME = "rename"
+    TYPE_CHANGE = "type_change"
+    ALIAS_SET = "alias_set"
+    ALIAS_REMOVED = "alias_removed"
+    PARENT_SET = "parent_set"
+    PARENT_REMOVED = "parent_removed"
+    SOURCE_LINKED = "source_linked"
+    SOURCE_UNLINKED = "source_unlinked"
 
 
 class TagType:

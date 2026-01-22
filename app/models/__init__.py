@@ -27,6 +27,7 @@ from app.models.image_rating import ImageRatings
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
+from app.models.image_status_history import ImageStatusHistory
 
 # Utility models
 from app.models.misc import (
@@ -45,6 +46,7 @@ from app.models.privmsg import Privmsgs
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
 from app.models.tag import Tags
+from app.models.tag_audit_log import TagAuditLog
 from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
@@ -62,11 +64,13 @@ __all__ = [
     "TagLinks",
     "TagExternalLinks",
     "CharacterSourceLinks",
+    "TagAuditLog",
     "TagHistory",
     "ImageRatings",
     "ImageReports",
     "ImageReportTagSuggestions",
     "ImageReviews",
+    "ImageStatusHistory",
     "ReviewVotes",
     "AdminActions",
     # User-related models

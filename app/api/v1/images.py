@@ -29,7 +29,16 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
-from app.config import AdminActionType, ReportCategory, ReportStatus, settings
+from app.config import (
+    AdminActionType,
+    ImageStatus,
+    ReportCategory,
+    ReportStatus,
+    ReviewOutcome,
+    ReviewStatus,
+    ReviewType,
+    settings,
+)
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
@@ -42,13 +51,25 @@ from app.models import (
     ImageRatings,
     ImageReports,
     ImageReportTagSuggestions,
+    ImageReviews,
     Images,
+    TagHistory,
     TagLinks,
     Tags,
     Users,
 )
 from app.models.image import ImageSortBy
+from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import UserGroups
+from app.schemas.audit import (
+    ImageReviewListResponse,
+    ImageReviewPublicResponse,
+    ImageStatusHistoryListResponse,
+    ImageStatusHistoryResponse,
+    ImageTagHistoryListResponse,
+    ImageTagHistoryResponse,
+)
+from app.schemas.common import UserSummary
 from app.schemas.image import (
     TAG_TYPE_SORT_ORDER,
     BookmarkPageResponse,
@@ -64,6 +85,7 @@ from app.schemas.image import (
     SimilarImagesResponse,
 )
 from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
+from app.schemas.tag import LinkedTag
 from app.schemas.user import UserListResponse, UserResponse
 from app.services.image_processing import get_image_dimensions
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
@@ -624,6 +646,249 @@ async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> I
     )
 
 
+@router.get("/{image_id}/tag-history", response_model=ImageTagHistoryListResponse)
+async def get_image_tag_history(
+    image_id: Annotated[int, Path(description="Image ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> ImageTagHistoryListResponse:
+    """
+    Get tag history for an image.
+
+    Returns paginated list of tags that were added or removed from this image.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Query tag history with joined tag and user info
+    # Eager load user groups for UserSummary
+    query = (
+        select(TagHistory, Tags, Users)
+        .join(Tags, TagHistory.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+        .outerjoin(Users, TagHistory.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(TagHistory.image_id == image_id)  # type: ignore[arg-type]
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Paginate and order by most recent first
+    # Secondary sort by tag_history_id for stable ordering when timestamps match
+    query = (
+        query.order_by(
+            desc(TagHistory.date),  # type: ignore[arg-type]
+            desc(TagHistory.tag_history_id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = []
+    for history, tag, user in rows:
+        user_summary = None
+        if user:
+            user_summary = UserSummary(
+                user_id=user.user_id,
+                username=user.username,
+                avatar=user.avatar,
+                groups=user.groups if user else [],
+            )
+
+        items.append(
+            ImageTagHistoryResponse(
+                tag_history_id=history.tag_history_id,
+                image_id=history.image_id,
+                tag_id=history.tag_id,
+                action="added" if history.action == "a" else "removed",
+                user=user_summary,
+                date=history.date,
+                tag=LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type) if tag else None,
+            )
+        )
+
+    return ImageTagHistoryListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
+    )
+
+
+@router.get("/{image_id}/status-history", response_model=ImageStatusHistoryListResponse)
+async def get_image_status_history(
+    image_id: Annotated[int, Path(description="Image ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> ImageStatusHistoryListResponse:
+    """
+    Get status history for an image.
+
+    Returns paginated list of status changes.
+    User info is shown only for public status changes (repost, spoiler, active).
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Query status history with user info
+    # Eager load user groups for UserSummary
+    query = (
+        select(ImageStatusHistory, Users)
+        .outerjoin(Users, ImageStatusHistory.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(ImageStatusHistory.image_id == image_id)  # type: ignore[arg-type]
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Paginate and order by most recent first
+    # Secondary sort by id for stable ordering when timestamps match
+    query = (
+        query.order_by(
+            desc(ImageStatusHistory.created_at),  # type: ignore[arg-type]
+            desc(ImageStatusHistory.id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = []
+    for history, user in rows:
+        # Determine if user should be shown based on old/new status
+        # Show user if EITHER old_status OR new_status is a visible status
+        show_user = (
+            history.old_status in ImageStatus.VISIBLE_USER_STATUSES
+            or history.new_status in ImageStatus.VISIBLE_USER_STATUSES
+        )
+
+        user_summary = None
+        if show_user and user:
+            user_summary = UserSummary(
+                user_id=user.user_id,
+                username=user.username,
+                avatar=user.avatar,
+                groups=user.groups if user else [],
+            )
+
+        items.append(
+            ImageStatusHistoryResponse(
+                id=history.id,
+                image_id=history.image_id,
+                old_status=history.old_status,
+                old_status_label=ImageStatus.get_label(history.old_status),
+                new_status=history.new_status,
+                new_status_label=ImageStatus.get_label(history.new_status),
+                user=user_summary,
+                created_at=history.created_at,
+            )
+        )
+
+    return ImageStatusHistoryListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
+    )
+
+
+def get_review_type_label(review_type: int) -> str:
+    """Get human-readable label for review type."""
+    review_type_labels = {
+        ReviewType.APPROPRIATENESS: "appropriateness",
+    }
+    return review_type_labels.get(review_type, "unknown")
+
+
+def get_review_outcome_label(outcome: int) -> str:
+    """Get human-readable label for review outcome."""
+    outcome_labels = {
+        ReviewOutcome.PENDING: "pending",
+        ReviewOutcome.KEEP: "keep",
+        ReviewOutcome.REMOVE: "remove",
+    }
+    return outcome_labels.get(outcome, "unknown")
+
+
+@router.get("/{image_id}/reviews", response_model=ImageReviewListResponse)
+async def get_image_reviews(
+    image_id: Annotated[int, Path(description="Image ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> ImageReviewListResponse:
+    """
+    Get closed review sessions for an image.
+
+    Returns paginated list of completed review sessions.
+    Only closed reviews are returned (open/in-progress reviews are excluded).
+    Internal fields (initiated_by, votes) are hidden for privacy.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Query only closed reviews
+    query = select(ImageReviews).where(
+        ImageReviews.image_id == image_id,  # type: ignore[arg-type]
+        ImageReviews.status == ReviewStatus.CLOSED,  # type: ignore[arg-type]
+    )
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Paginate and order by most recent first
+    # Secondary sort by review_id for stable ordering when timestamps match
+    query = (
+        query.order_by(
+            desc(ImageReviews.created_at),  # type: ignore[arg-type]
+            desc(ImageReviews.review_id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    reviews = result.scalars().all()
+
+    items = [
+        ImageReviewPublicResponse(
+            review_id=review.review_id or 0,
+            review_type=review.review_type,
+            review_type_label=get_review_type_label(review.review_type),
+            outcome=review.outcome,
+            outcome_label=get_review_outcome_label(review.outcome),
+            created_at=review.created_at,  # type: ignore[arg-type]  # server_default ensures non-null
+            closed_at=review.closed_at,
+        )
+        for review in reviews
+    ]
+
+    return ImageReviewListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
+    )
+
+
 @router.get("/search/by-hash/{md5_hash}", response_model=ImageHashSearchResponse)
 async def search_by_hash(
     md5_hash: str, db: AsyncSession = Depends(get_db)
@@ -998,6 +1263,16 @@ async def add_tag_to_image(
         user_id=current_user.id,
     )
     db.add(tag_link)
+
+    # Record in tag history
+    history_entry = TagHistory(
+        image_id=image_id,
+        tag_id=resolved_tag_id,
+        action="a",
+        user_id=current_user.id,
+    )
+    db.add(history_entry)
+
     await db.commit()
 
     return {"message": "Tag added successfully"}
@@ -1047,6 +1322,15 @@ async def remove_tag_from_image(
 
     if not tag_link:
         raise HTTPException(status_code=404, detail="Tag not linked to this image")
+
+    # Record in tag history (before deleting the link)
+    history_entry = TagHistory(
+        image_id=image_id,
+        tag_id=tag_id,
+        action="r",
+        user_id=current_user.id,
+    )
+    db.add(history_entry)
 
     # Delete tag link (usage_count is maintained by database trigger)
     await db.execute(
