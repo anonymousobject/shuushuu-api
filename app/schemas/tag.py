@@ -2,11 +2,83 @@
 Pydantic schemas for Tag endpoints
 """
 
+import re
+
 from pydantic import BaseModel, field_validator, model_validator
 
 from app.models.tag import TagBase
 from app.schemas.base import UTCDatetime
 from app.schemas.common import UserSummary
+
+# Tag name validation constants
+TAG_NAME_MIN_LENGTH = 2
+TAG_NAME_MAX_LENGTH = 150
+
+# Regex pattern for allowed characters in tag names:
+# - Latin letters (a-z, A-Z)
+# - Digits (0-9)
+# - CJK Unified Ideographs (U+4E00-9FFF) and Extension A (U+3400-4DBF)
+# - Hiragana (U+3040-309F)
+# - Katakana (U+30A0-30FF)
+# - Hangul Syllables (U+AC00-D7AF) and Jamo (U+1100-11FF)
+# - Basic punctuation: space, hyphen, period, apostrophe, colon, parentheses,
+#   exclamation, question mark, ampersand, forward slash, comma, underscore
+TAG_NAME_PATTERN = re.compile(
+    r"^["
+    r"a-zA-Z"  # Latin letters
+    r"0-9"  # Digits
+    r"\u4E00-\u9FFF"  # CJK Unified Ideographs
+    r"\u3400-\u4DBF"  # CJK Extension A
+    r"\u3040-\u309F"  # Hiragana
+    r"\u30A0-\u30FF"  # Katakana
+    r"\uAC00-\uD7AF"  # Hangul Syllables
+    r"\u1100-\u11FF"  # Hangul Jamo
+    r" \-\.\'\:\(\)\!\?\&\/\,\_"  # Allowed punctuation
+    r"]+$"
+)
+
+
+def validate_tag_name(title: str) -> str:
+    """
+    Validate and normalize a tag name.
+
+    Rules:
+    - Minimum length: 2 characters
+    - Maximum length: 150 characters
+    - Consecutive spaces normalized to single space
+    - Only allowed characters (Latin, digits, CJK, kana, hangul, basic punctuation)
+
+    Args:
+        title: The tag name to validate
+
+    Returns:
+        The normalized tag name
+
+    Raises:
+        ValueError: If the tag name is invalid
+    """
+    # Trim whitespace first
+    title = title.strip()
+
+    # Normalize consecutive spaces to single space
+    title = re.sub(r" +", " ", title)
+
+    # Check minimum length
+    if len(title) < TAG_NAME_MIN_LENGTH:
+        raise ValueError(f"Tag name must be at least {TAG_NAME_MIN_LENGTH} characters")
+
+    # Check maximum length
+    if len(title) > TAG_NAME_MAX_LENGTH:
+        raise ValueError(f"Tag name cannot exceed {TAG_NAME_MAX_LENGTH} characters")
+
+    # Check allowed characters
+    if not TAG_NAME_PATTERN.match(title):
+        raise ValueError(
+            "Tag name contains invalid characters. "
+            "Only letters, numbers, CJK characters, and basic punctuation are allowed."
+        )
+
+    return title
 
 
 class TagCreate(TagBase):
@@ -16,11 +88,19 @@ class TagCreate(TagBase):
     alias_of: int | None = None
     desc: str | None = None
 
-    @field_validator("title", "desc")
+    @field_validator("title")
     @classmethod
-    def sanitize_fields(cls, v: str | None) -> str | None:
+    def validate_title(cls, v: str | None) -> str | None:
+        """Validate and normalize tag title."""
+        if v is None:
+            return v
+        return validate_tag_name(v)
+
+    @field_validator("desc")
+    @classmethod
+    def sanitize_desc(cls, v: str | None) -> str | None:
         """
-        Sanitize title and description.
+        Sanitize description.
 
         Just trims whitespace - HTML escaping is handled by Svelte's
         safe template interpolation on the frontend.
@@ -38,11 +118,11 @@ class TagUpdate(BaseModel):
 
     @field_validator("title")
     @classmethod
-    def sanitize_title(cls, v: str | None) -> str | None:
-        """Trim whitespace from title."""
+    def validate_title(cls, v: str | None) -> str | None:
+        """Validate and normalize tag title."""
         if v is None:
             return v
-        return v.strip()
+        return validate_tag_name(v)
 
 
 class TagResponse(TagBase):
