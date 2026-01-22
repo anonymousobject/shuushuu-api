@@ -262,11 +262,13 @@ class TestRefresh:
         )
         assert login_response.status_code == 200
         original_refresh_token = login_response.cookies.get("refresh_token")
+        assert original_refresh_token is not None
 
         # First refresh succeeds
         refresh1_response = await client.post("/api/v1/auth/refresh")
         assert refresh1_response.status_code == 200
         new_refresh_token = refresh1_response.cookies.get("refresh_token")
+        assert new_refresh_token is not None
 
         # Simulate theft scenario: manually set revoked_at to be older than grace period
         result = await db_session.execute(

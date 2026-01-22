@@ -407,15 +407,25 @@ async def refresh_token(
 
         if db_token.revoked_at:
             # Check if revoked within last 10 seconds
-            revoked_at_utc = db_token.revoked_at.replace(tzinfo=UTC)
+            # Handle both timezone-naive (from DB) and timezone-aware (from code) datetimes
+            revoked_at = db_token.revoked_at
+            if revoked_at.tzinfo is None:
+                # Naive datetime from DB - treat as UTC
+                revoked_at_utc = revoked_at.replace(tzinfo=UTC)
+            else:
+                # Already timezone-aware
+                revoked_at_utc = revoked_at
             time_since_revoked = datetime.now(UTC) - revoked_at_utc
 
             if time_since_revoked.total_seconds() < 10:
                 # Check if a child token exists (legitimate refresh happened)
+                # Use limit(1) to avoid MultipleResultsFound if concurrent refreshes created multiple children
                 child_result = await db.execute(
-                    select(RefreshTokens).where(RefreshTokens.parent_token_id == db_token.id)  # type: ignore[arg-type]
+                    select(RefreshTokens)
+                    .where(RefreshTokens.parent_token_id == db_token.id)  # type: ignore[arg-type]
+                    .limit(1)
                 )
-                child_exists = child_result.scalar_one_or_none() is not None
+                child_exists = child_result.scalars().first() is not None
 
                 if child_exists:
                     is_race_condition = True
@@ -441,8 +451,8 @@ async def refresh_token(
                 family_id=db_token.family_id,
             )
             await db.execute(
-                delete(RefreshTokens).where(RefreshTokens.family_id == db_token.family_id)
-            )  # type: ignore[arg-type]
+                delete(RefreshTokens).where(RefreshTokens.family_id == db_token.family_id)  # type: ignore[arg-type]
+            )
             await db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
