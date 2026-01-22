@@ -204,6 +204,12 @@ def upgrade() -> None:
         unique=False,
     )
 
+    # =========================================================================
+    # 3. Standardize tag_history action values
+    # =========================================================================
+    op.execute("UPDATE tag_history SET action = 'a' WHERE action = '+'")
+    op.execute("UPDATE tag_history SET action = 'r' WHERE action = '-'")
+
 
 def downgrade() -> None:
     """Drop audit trail tables.
