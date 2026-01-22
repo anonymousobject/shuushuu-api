@@ -84,16 +84,17 @@ def validate_tag_name(title: str) -> str:
 class TagCreate(TagBase):
     """Schema for creating a new tag"""
 
+    # Override title to make it required (TagBase has default=None)
+    title: str
+
     inheritedfrom_id: int | None = None
     alias_of: int | None = None
     desc: str | None = None
 
     @field_validator("title")
     @classmethod
-    def validate_title(cls, v: str | None) -> str | None:
+    def validate_title(cls, v: str) -> str:
         """Validate and normalize tag title."""
-        if v is None:
-            return v
         return validate_tag_name(v)
 
     @field_validator("desc")

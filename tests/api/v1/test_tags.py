@@ -2834,3 +2834,51 @@ class TestTagNameValidation:
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 422
+
+    async def test_create_tag_requires_title(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that creating a tag without title is rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagrequiredadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagrequiredadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagrequiredadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Missing title should be rejected
+        response = await client.post(
+            "/api/v1/tags",
+            json={"type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Explicit null title should be rejected
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": None, "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
