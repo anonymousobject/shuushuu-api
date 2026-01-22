@@ -180,6 +180,120 @@ class TestRefresh:
         response = await client.post("/api/v1/auth/refresh")
         assert response.status_code == 401
 
+    async def test_refresh_race_condition_does_not_nuke_family(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that concurrent refresh requests don't nuke the token family.
+
+        Simulates a race condition where multiple requests try to refresh
+        simultaneously: the first one succeeds and revokes the old token,
+        then subsequent requests using the old token should get 401 but
+        NOT trigger the family deletion (since it was just revoked and
+        a child token exists).
+        """
+        # Create user and login
+        user = Users(
+            username="raceuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="race@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Login to get initial token
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "raceuser", "password": "TestPassword123!"},
+        )
+        assert login_response.status_code == 200
+        original_refresh_token = login_response.cookies.get("refresh_token")
+        assert original_refresh_token is not None
+
+        # First refresh succeeds - this revokes the original token
+        refresh1_response = await client.post("/api/v1/auth/refresh")
+        assert refresh1_response.status_code == 200
+
+        # Get the new refresh token
+        new_refresh_token = refresh1_response.cookies.get("refresh_token")
+        assert new_refresh_token is not None
+        assert new_refresh_token != original_refresh_token
+
+        # Simulate concurrent request using the OLD token (race condition)
+        # Manually set the old token cookie
+        client.cookies.set("refresh_token", original_refresh_token)
+        refresh2_response = await client.post("/api/v1/auth/refresh")
+
+        # Should get 401 but with "already refreshed" message (not "reuse detected")
+        assert refresh2_response.status_code == 401
+        assert "already refreshed" in refresh2_response.json()["detail"].lower()
+
+        # The new token should still work - family was NOT nuked
+        client.cookies.set("refresh_token", new_refresh_token)
+        refresh3_response = await client.post("/api/v1/auth/refresh")
+        assert refresh3_response.status_code == 200
+
+    async def test_refresh_reuse_detection_nukes_family_after_grace_period(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that reuse detection still works for actual theft scenarios.
+
+        If a revoked token is used AFTER the grace period (10 seconds),
+        it should trigger family deletion as a security measure.
+        """
+        # Create user and login
+        user = Users(
+            username="theftuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="theft@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # Login to get initial token
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "theftuser", "password": "TestPassword123!"},
+        )
+        assert login_response.status_code == 200
+        original_refresh_token = login_response.cookies.get("refresh_token")
+        assert original_refresh_token is not None
+
+        # First refresh succeeds
+        refresh1_response = await client.post("/api/v1/auth/refresh")
+        assert refresh1_response.status_code == 200
+        new_refresh_token = refresh1_response.cookies.get("refresh_token")
+        assert new_refresh_token is not None
+
+        # Simulate theft scenario: manually set revoked_at to be older than grace period
+        result = await db_session.execute(
+            select(RefreshTokens).where(RefreshTokens.user_id == user.user_id)
+        )
+        tokens = result.scalars().all()
+
+        # Find the revoked token (original one) and backdate its revoked_at
+        for token in tokens:
+            if token.revoked:
+                token.revoked_at = datetime.now(UTC) - timedelta(seconds=15)
+        await db_session.commit()
+
+        # Try to use the old token - should trigger family nuke
+        client.cookies.set("refresh_token", original_refresh_token)
+        refresh2_response = await client.post("/api/v1/auth/refresh")
+
+        assert refresh2_response.status_code == 401
+        assert "reuse detected" in refresh2_response.json()["detail"].lower()
+
+        # The new token should also be invalid now - family was nuked
+        client.cookies.set("refresh_token", new_refresh_token)
+        refresh3_response = await client.post("/api/v1/auth/refresh")
+        assert refresh3_response.status_code == 401
+
 
 @pytest.mark.api
 class TestLogout:
