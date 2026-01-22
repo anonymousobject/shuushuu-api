@@ -48,6 +48,7 @@ class TestListTags:
         assert data["total"] >= 5
         assert "tags" in data
 
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
     async def test_search_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags by name."""
         # Create tags with different names
@@ -525,6 +526,7 @@ class TestAliasOfName:
                 assert tag["alias_of_name"] == "sakura kinomoto"
                 assert tag["is_alias"] is True
 
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
     async def test_alias_of_name_with_search(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -605,6 +607,7 @@ class TestAliasOfName:
 
 
 @pytest.mark.api
+@pytest.mark.needs_commit  # FULLTEXT search requires committed data
 class TestFuzzyTagSearch:
     """Tests for fuzzy/full-text search on tags.
 
