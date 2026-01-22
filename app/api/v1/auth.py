@@ -398,13 +398,56 @@ async def refresh_token(
 
     # SECURITY: Check if token was already used (potential theft!)
     if db_token.revoked:
-        # Token reuse detected! Revoke all tokens in this family
-        await db.execute(delete(RefreshTokens).where(RefreshTokens.family_id == db_token.family_id))  # type: ignore[arg-type]
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token reuse detected. All sessions revoked for security.",
-        )
+        # Distinguish between race condition and actual theft:
+        # - Race condition: token revoked very recently AND child token exists
+        #   (concurrent requests during page load with expired access token)
+        # - Theft: token revoked long ago OR no child token exists
+        #   (attacker using stolen token)
+        is_race_condition = False
+
+        if db_token.revoked_at:
+            # Check if revoked within last 10 seconds
+            revoked_at_utc = db_token.revoked_at.replace(tzinfo=UTC)
+            time_since_revoked = datetime.now(UTC) - revoked_at_utc
+
+            if time_since_revoked.total_seconds() < 10:
+                # Check if a child token exists (legitimate refresh happened)
+                child_result = await db.execute(
+                    select(RefreshTokens).where(RefreshTokens.parent_token_id == db_token.id)  # type: ignore[arg-type]
+                )
+                child_exists = child_result.scalar_one_or_none() is not None
+
+                if child_exists:
+                    is_race_condition = True
+                    logger.info(
+                        "refresh_race_condition_detected",
+                        token_id=db_token.id,
+                        user_id=db_token.user_id,
+                        seconds_since_revoked=time_since_revoked.total_seconds(),
+                    )
+
+        if is_race_condition:
+            # Race condition from concurrent requests - just reject, don't nuke session
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token already refreshed",
+            )
+        else:
+            # Suspicious activity - could be theft. Nuke the entire token family.
+            logger.warning(
+                "refresh_token_reuse_detected",
+                token_id=db_token.id,
+                user_id=db_token.user_id,
+                family_id=db_token.family_id,
+            )
+            await db.execute(
+                delete(RefreshTokens).where(RefreshTokens.family_id == db_token.family_id)
+            )  # type: ignore[arg-type]
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Refresh token reuse detected. All sessions revoked for security.",
+            )
 
     # Load user
     result_user = await db.execute(select(Users).where(Users.user_id == db_token.user_id))  # type: ignore[arg-type]
