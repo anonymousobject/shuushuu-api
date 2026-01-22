@@ -62,6 +62,11 @@ def pytest_configure(config):
         "markers",
         "schema_sync: marks tests that compare model schema vs migration schema (run with --schema-sync)",
     )
+    config.addinivalue_line(
+        "markers",
+        "needs_commit: marks tests that require real database commits (e.g., FULLTEXT search tests). "
+        "These tests use truncate-based cleanup instead of transaction rollback.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -312,8 +317,8 @@ async def engine():
     event loop as the function-scoped db_session fixture. Using different scopes for
     async fixtures causes "Future attached to a different loop" errors in pytest-asyncio.
 
-    Note: Tables are created by Alembic migrations in setup_test_database fixture,
-    so we don't call create_all() here. We DO clean up tables between tests for isolation.
+    Note: Tables are created once per session by setup_test_database fixture.
+    Test isolation is achieved via transaction rollback (not truncation).
     """
     test_engine = create_async_engine(
         TEST_DATABASE_URL,
@@ -323,17 +328,17 @@ async def engine():
 
     yield test_engine
 
-    # Clean up: Truncate all tables between tests (faster than drop/recreate)
-    # This keeps the schema but removes all data for the next test
-    async with test_engine.begin() as conn:
-        # Disable foreign key checks temporarily
+    await test_engine.dispose()
+
+
+async def _truncate_all_tables(engine) -> None:
+    """Truncate all tables for tests that need real commits (e.g., FULLTEXT search)."""
+    async with engine.begin() as conn:
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
 
-        # Get database name from the connection URL
         db_url = make_url(TEST_DATABASE_URL)
         db_name = db_url.database
 
-        # Get all tables
         result = await conn.execute(
             text(
                 "SELECT table_name FROM information_schema.tables "
@@ -342,67 +347,113 @@ async def engine():
         )
         tables = [row[0] for row in result]
 
-        # Truncate each table
         for table in tables:
-            if table != "alembic_version":  # Don't truncate migration tracking table
+            if table != "alembic_version":
                 await conn.execute(text(f"TRUNCATE TABLE `{table}`"))
 
-        # Re-enable foreign key checks
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
 
-    await test_engine.dispose()
+
+async def _create_test_users(session: AsyncSession) -> None:
+    """Create standard test users for foreign key constraints."""
+    from app.models.user import Users
+
+    test_user = Users(
+        user_id=1,
+        username="testuser",
+        password="testpassword",
+        password_type="bcrypt",
+        salt="testsalt12345678",
+        email="test@example.com",
+    )
+    session.add(test_user)
+
+    for i in [2, 3]:
+        user = Users(
+            user_id=i,
+            username=f"testuser{i}",
+            password="testpassword",
+            password_type="bcrypt",
+            salt=f"testsalt{i:07d}",
+            email=f"test{i}@example.com",
+        )
+        session.add(user)
+
+    await session.commit()
 
 
 @pytest.fixture(scope="function")
-async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
+async def db_session(engine, request) -> AsyncGenerator[AsyncSession, None]:
     """
     Create a new database session for each test.
 
-    Depends on the function-scoped engine fixture, ensuring both run in the same
-    event loop. Creates test users (1, 2, 3) that are committed to the database
-    for use in tests with foreign key constraints.
+    Two modes based on test markers:
 
-    Note: The final rollback() only affects uncommitted changes made during the test.
-    Test users are committed, so they persist until tables are dropped by engine teardown.
+    1. DEFAULT (no marker): Transaction rollback isolation
+       - Uses SAVEPOINT for commits (data never actually committed)
+       - Rolls back entire transaction after test (instant cleanup)
+       - ~4x faster than truncation
+       - NOTE: FULLTEXT search won't work (requires committed data)
+
+    2. @pytest.mark.needs_commit: Real commit + truncate isolation
+       - Uses real database commits
+       - Truncates all tables after test (slower but necessary)
+       - Required for FULLTEXT search tests
+
+    Usage:
+        @pytest.mark.needs_commit
+        async def test_fulltext_search(db_session):
+            # This test needs real commits for FULLTEXT to work
+            ...
     """
-    from app.models.user import Users
+    from sqlalchemy import event
 
-    async_session_maker = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
+    # Check if test needs real commits (e.g., for FULLTEXT search)
+    needs_commit = request.node.get_closest_marker("needs_commit") is not None
 
-    async with async_session_maker() as session:
-        # Create test users for foreign key constraints
-        test_user = Users(
-            user_id=1,
-            username="testuser",
-            password="testpassword",
-            password_type="bcrypt",  # Required field
-            salt="testsalt12345678",  # CHAR(16)
-            email="test@example.com",
+    if needs_commit:
+        # Mode 2: Real commits + truncate cleanup (for FULLTEXT search tests)
+        async_session_maker = async_sessionmaker(
+            engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
         )
-        session.add(test_user)
 
-        # Create additional test users
-        for i in [2, 3]:
-            user = Users(
-                user_id=i,
-                username=f"testuser{i}",
-                password="testpassword",
-                password_type="bcrypt",  # Required field
-                salt=f"testsalt{i:07d}",  # CHAR(16) - pad to exactly 16 chars
-                email=f"test{i}@example.com",
-            )
-            session.add(user)
+        async with async_session_maker() as session:
+            await _create_test_users(session)
+            yield session
+            await session.rollback()
 
-        await session.commit()
+        # Truncate all tables after test
+        await _truncate_all_tables(engine)
 
-        yield session
+    else:
+        # Mode 1: Transaction rollback isolation (fast, default)
+        async with engine.connect() as connection:
+            # Start outer transaction - this will be rolled back at the end
+            transaction = await connection.begin()
 
-        # Cleanup - rollback any changes made during the test
-        await session.rollback()
+            # Create session bound to this connection
+            session = AsyncSession(bind=connection, expire_on_commit=False)
+
+            # Make session.commit() use SAVEPOINT instead of real commit
+            @event.listens_for(session.sync_session, "after_transaction_end")
+            def restart_savepoint(sync_session, trans):
+                """After a SAVEPOINT ends, start a new one to keep isolation."""
+                if trans.nested and not trans._parent.nested:
+                    sync_session.begin_nested()
+
+            # Start initial nested transaction (SAVEPOINT)
+            await session.begin_nested()
+
+            await _create_test_users(session)
+
+            yield session
+
+            await session.close()
+
+            # Roll back the outer transaction - undoes ALL changes instantly
+            await transaction.rollback()
 
 
 @pytest.fixture

@@ -48,6 +48,7 @@ class TestListTags:
         assert data["total"] >= 5
         assert "tags" in data
 
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
     async def test_search_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags by name."""
         # Create tags with different names
@@ -525,6 +526,7 @@ class TestAliasOfName:
                 assert tag["alias_of_name"] == "sakura kinomoto"
                 assert tag["is_alias"] is True
 
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
     async def test_alias_of_name_with_search(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -605,6 +607,7 @@ class TestAliasOfName:
 
 
 @pytest.mark.api
+@pytest.mark.needs_commit  # FULLTEXT search requires committed data
 class TestFuzzyTagSearch:
     """Tests for fuzzy/full-text search on tags.
 
@@ -2254,3 +2257,631 @@ class TestGetTagHierarchy:
 
         assert hierarchy == [child.tag_id]
         assert parent.tag_id not in hierarchy
+
+
+@pytest.mark.api
+class TestTagNameValidation:
+    """Tests for tag name character validation.
+
+    Tag names must only contain:
+    - Latin letters (a-z, A-Z)
+    - Digits (0-9)
+    - CJK characters (Chinese, Japanese kanji, Korean)
+    - Hiragana and Katakana
+    - Basic punctuation: space, hyphen, period, apostrophe, colon,
+      parentheses, exclamation, question mark, ampersand, forward slash,
+      comma, underscore
+
+    Additionally:
+    - Minimum length: 2 characters
+    - Maximum length: 150 characters
+    - Consecutive spaces are normalized to single space
+    """
+
+    async def test_valid_latin_tag_name(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that basic Latin letters are allowed."""
+        # Create TAG_CREATE permission and admin user
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagvalidadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagvalidadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagvalidadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create tag with valid Latin name
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "School Uniform", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["title"] == "School Uniform"
+
+    async def test_valid_cjk_tag_name(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that CJK characters (Japanese kanji, Chinese) are allowed."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagcjkadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagcjkadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagcjkadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create tag with Japanese kanji
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "桜木花道", "type": TagType.CHARACTER},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["title"] == "桜木花道"
+
+    async def test_valid_hiragana_katakana_tag_name(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that Hiragana and Katakana are allowed."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagkanaadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagkanaadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagkanaadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create tag with hiragana
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "ひらがな", "type": TagType.CHARACTER},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Create tag with katakana (different word to avoid collation conflicts)
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "カタカナ", "type": TagType.CHARACTER},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+    async def test_valid_korean_tag_name(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that Korean Hangul is allowed."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagkoreanadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagkoreanadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagkoreanadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create tag with Korean
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "한글태그", "type": TagType.CHARACTER},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+    async def test_valid_punctuation_in_tag_name(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that allowed punctuation characters work."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagpunctadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagpunctadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagpunctadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Test various valid punctuation
+        valid_names = [
+            "C.C.",  # periods
+            "Re:Zero",  # colon
+            "Fate/Stay Night",  # forward slash
+            "Sakura (Naruto)",  # parentheses
+            "K-On!",  # hyphen and exclamation
+            "Who's that?",  # apostrophe and question mark
+            "Tom & Jerry",  # ampersand
+            "test_tag",  # underscore
+            "One, Two, Three",  # comma
+        ]
+
+        for i, name in enumerate(valid_names):
+            response = await client.post(
+                "/api/v1/tags",
+                json={"title": name, "type": TagType.THEME},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 200, f"Failed for: {name}"
+
+    async def test_invalid_decorative_symbols(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that decorative unicode symbols are rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="taginvalidadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="taginvalidadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "taginvalidadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Test invalid decorative symbols
+        invalid_names = [
+            "｡☆",  # fullwidth period and star
+            "（ФωФ）",  # fullwidth parens, Cyrillic, Greek
+            "ꕤ H U H U ꕤ",  # decorative Vai syllable
+            "★ star ★",  # star symbols
+            "♥ heart ♥",  # heart symbols
+            "→ arrow",  # arrow symbol
+        ]
+
+        for name in invalid_names:
+            response = await client.post(
+                "/api/v1/tags",
+                json={"title": name, "type": TagType.THEME},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 422, f"Should reject: {name}"
+
+    async def test_invalid_fullwidth_punctuation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that fullwidth punctuation is rejected (use ASCII instead)."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagfwadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagfwadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagfwadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Test fullwidth punctuation (should be rejected)
+        invalid_names = [
+            "test（fullwidth）",  # fullwidth parentheses
+            "test。period",  # fullwidth period
+            "test！exclaim",  # fullwidth exclamation
+        ]
+
+        for name in invalid_names:
+            response = await client.post(
+                "/api/v1/tags",
+                json={"title": name, "type": TagType.THEME},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 422, f"Should reject fullwidth: {name}"
+
+    async def test_invalid_cyrillic_greek(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that Cyrillic and Greek letters are rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagcyrilladmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagcyrilladmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagcyrilladmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Cyrillic and Greek should be rejected
+        invalid_names = [
+            "Привет",  # Cyrillic
+            "αβγ",  # Greek
+            "ωmega",  # Mixed Greek omega with Latin
+        ]
+
+        for name in invalid_names:
+            response = await client.post(
+                "/api/v1/tags",
+                json={"title": name, "type": TagType.THEME},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 422, f"Should reject: {name}"
+
+    async def test_minimum_length_validation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag names must be at least 2 characters."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagminadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagminadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagminadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Single character should be rejected
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "A", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Two characters should be allowed
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "AB", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+    async def test_maximum_length_validation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag names cannot exceed 150 characters."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagmaxadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagmaxadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagmaxadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # 151 characters should be rejected
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "A" * 151, "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # 150 characters should be allowed
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "A" * 150, "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+    async def test_consecutive_spaces_normalized(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that consecutive spaces are normalized to single space."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagspaceadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagspaceadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagspaceadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Multiple spaces should be normalized
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "School    Uniform", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        # The title should be normalized
+        assert response.json()["title"] == "School Uniform"
+
+    async def test_tag_update_validation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag update also validates the title."""
+        # Create permissions
+        create_perm = Perms(title="tag_create", desc="Create tags")
+        update_perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add_all([create_perm, update_perm])
+        await db_session.commit()
+        await db_session.refresh(create_perm)
+        await db_session.refresh(update_perm)
+
+        admin = Users(
+            username="tagupdatevalidadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagupdatevalidadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm1 = UserPerms(user_id=admin.user_id, perm_id=create_perm.perm_id, permvalue=1)
+        user_perm2 = UserPerms(user_id=admin.user_id, perm_id=update_perm.perm_id, permvalue=1)
+        db_session.add_all([user_perm1, user_perm2])
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagupdatevalidadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create a valid tag first
+        create_response = await client.post(
+            "/api/v1/tags",
+            json={"title": "Valid Tag", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert create_response.status_code == 200
+        tag_id = create_response.json()["tag_id"]
+
+        # Try to update with invalid name
+        response = await client.put(
+            f"/api/v1/tags/{tag_id}",
+            json={"title": "★ Invalid ★", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+    async def test_create_tag_requires_title(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that creating a tag without title is rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagrequiredadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagrequiredadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagrequiredadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Missing title should be rejected
+        response = await client.post(
+            "/api/v1/tags",
+            json={"type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Explicit null title should be rejected
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": None, "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
