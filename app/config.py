@@ -3,7 +3,7 @@ Application Configuration - MariaDB Version
 Uses Pydantic Settings for environment-based configuration
 """
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -111,9 +111,9 @@ class Settings(BaseSettings):
     # Email (for notifications)
     SMTP_HOST: str = Field(default="localhost", description="SMTP server hostname")
     SMTP_PORT: int = Field(default=587, description="SMTP server port")
-    SMTP_USER: str = Field(default="user", description="SMTP username")
-    SMTP_PASSWORD: str = Field(default="password", description="SMTP password")
-    SMTP_TLS: bool = Field(default=True, description="Use implicit TLS (port 465)")
+    SMTP_USER: str = Field(default="", description="SMTP username (empty for local relay)")
+    SMTP_PASSWORD: str = Field(default="", description="SMTP password (empty for local relay)")
+    SMTP_TLS: bool = Field(default=False, description="Use implicit TLS (port 465)")
     SMTP_STARTTLS: bool = Field(default=True, description="Use STARTTLS (port 587)")
     SMTP_FROM_EMAIL: str = Field(default="noreply@e-shuushuu.net", description="From email address")
     SMTP_FROM_NAME: str = Field(default="Shuushuu", description="From name")
@@ -161,6 +161,18 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [host.strip() for host in v.split(",")]
         return v
+
+    @model_validator(mode="after")
+    def validate_smtp_tls_settings(self) -> "Settings":
+        """Validate that SMTP_TLS and SMTP_STARTTLS are not both enabled."""
+        if self.SMTP_TLS and self.SMTP_STARTTLS:
+            raise ValueError(
+                "SMTP_TLS and SMTP_STARTTLS are mutually exclusive. "
+                "Use SMTP_TLS=true for implicit TLS (port 465), "
+                "or SMTP_STARTTLS=true for STARTTLS (port 587), "
+                "or both false for unencrypted localhost relay."
+            )
+        return self
 
 
 # Create global settings instance
