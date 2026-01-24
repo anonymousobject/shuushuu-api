@@ -14,6 +14,7 @@ services:
         - PUBLIC_ENVIRONMENT=test
         - PUBLIC_API_URL=http://nginx:8080
         - PUBLIC_DEBUG=false
+        - PUBLIC_TURNSTILE_SITE_KEY=0x4AAAAAACPGAidM1UvJACyQ
     container_name: shuushuu-frontend-test
     environment:
       - PUBLIC_ENVIRONMENT=test
@@ -54,10 +55,14 @@ services:
     ports: []
     env_file: .env.test
     restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   arq-worker:
     env_file: .env.test
     restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   iqdb:
     container_name: shuushuu-iqdb-test
