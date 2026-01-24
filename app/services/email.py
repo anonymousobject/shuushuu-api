@@ -60,9 +60,10 @@ async def send_email(
                 message,
                 hostname=settings.SMTP_HOST,
                 port=settings.SMTP_PORT,
-                username=settings.SMTP_USER,
-                password=settings.SMTP_PASSWORD,
+                username=settings.SMTP_USER or None,
+                password=settings.SMTP_PASSWORD or None,
                 use_tls=settings.SMTP_TLS,
+                start_tls=settings.SMTP_STARTTLS,
                 timeout=30,
             )
             logger.info(
