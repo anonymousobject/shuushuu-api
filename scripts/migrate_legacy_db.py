@@ -38,10 +38,15 @@ import argparse
 import asyncio
 import os
 
+import bcrypt
 import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+
+# Development/test databases where test user should be created
+DEV_TEST_DATABASES = {"shuushuu_dev", "shuushuu_test"}
 
 
 MIGRATION_STEPS = [
@@ -345,6 +350,83 @@ async def run_alembic_upgrade(project_root: Path, database_url: str) -> bool:
     return success
 
 
+async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> bool:
+    """
+    Create a test user for development/test databases.
+
+    Only creates the user if the database name is in DEV_TEST_DATABASES.
+    Uses INSERT IGNORE to avoid errors if user already exists.
+
+    Args:
+        db_config: Database connection parameters
+        dry_run: If True, only show what would be done
+
+    Returns:
+        True if successful (or skipped for non-dev databases), False on error
+    """
+    database_name = db_config["database"]
+
+    # Only create test user for dev/test databases
+    if database_name not in DEV_TEST_DATABASES:
+        print(f"Skipping test user creation (database '{database_name}' is not a dev/test database)")
+        return True
+
+    print(f"Creating test user for database '{database_name}'...")
+
+    # Test user credentials
+    username = "test1"
+    password = "shuutest1"
+    email = "test1@example.com"
+
+    if dry_run:
+        print(f"  Would create user: {username}")
+        print(f"  Email: {email}")
+        print(f"  Password: {password}")
+        return True
+
+    # Hash password with bcrypt
+    password_bytes = password.encode("utf-8")
+    salt = bcrypt.gensalt(rounds=12)
+    hashed_password = bcrypt.hashpw(password_bytes, salt).decode("utf-8")
+
+    # Replace Docker hostname 'mariadb' with 'localhost' when running from host
+    host = db_config["host"]
+    if host == "mariadb":
+        host = "localhost"
+
+    # Build mysql command
+    mysql_cmd = [
+        "mariadb",
+        f"--host={host}",
+        f"--port={db_config['port']}",
+        f"--user={db_config['user']}",
+    ]
+
+    if db_config["password"]:
+        mysql_cmd.append(f"--password={db_config['password']}")
+
+    mysql_cmd.append(db_config["database"])
+
+    # SQL to insert test user (INSERT IGNORE to skip if exists)
+    # Using explicit column list to avoid issues with auto-increment and defaults
+    sql = f"""
+        INSERT IGNORE INTO users (username, password, password_type, salt, email, active)
+        VALUES ('{username}', '{hashed_password}', 'bcrypt', '', '{email}', 1);
+    """
+
+    insert_cmd = mysql_cmd + ["-e", sql]
+
+    success = await run_command(
+        insert_cmd,
+        f"Create test user '{username}'",
+    )
+
+    if success:
+        print(f"  ✓ Test user '{username}' created (password: {password})")
+
+    return success
+
+
 async def stop_docker_services(project_root: Path) -> bool:
     """
     Stop API and worker containers to prevent database connection conflicts.
@@ -541,8 +623,26 @@ async def run_migration(
             print("❌ Failed to run alembic migrations")
             return False
 
+        # Create test user for dev/test databases
+        print("\n" + "=" * 80)
+        print("Creating test user (if dev/test database)")
+        print("=" * 80)
+        if not await create_test_user(db_config, dry_run=dry_run):
+            print("⚠️  Warning: Failed to create test user (continuing anyway)")
+
         print_header("Phase 1 Complete: Database Schema Ready", width=80)
         print()
+
+    # ===== Create test user for dev/test databases (if not done in Phase 1) =====
+    if not sql_dump:
+        database_url = get_database_url()
+        if database_url:
+            db_config = parse_database_url(database_url)
+            if db_config["database"] in DEV_TEST_DATABASES:
+                print_header("Creating Test User", width=80)
+                if not await create_test_user(db_config, dry_run=dry_run):
+                    print("⚠️  Warning: Failed to create test user (continuing anyway)")
+                print()
 
     # ===== Data Migration Steps =====
     print_header("Phase 2: Data Migrations", width=80)
