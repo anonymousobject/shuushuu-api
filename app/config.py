@@ -113,7 +113,8 @@ class Settings(BaseSettings):
     SMTP_PORT: int = Field(default=587, description="SMTP server port")
     SMTP_USER: str = Field(default="user", description="SMTP username")
     SMTP_PASSWORD: str = Field(default="password", description="SMTP password")
-    SMTP_TLS: bool = Field(default=True, description="Use TLS for SMTP")
+    SMTP_TLS: bool = Field(default=True, description="Use implicit TLS (port 465)")
+    SMTP_STARTTLS: bool = Field(default=True, description="Use STARTTLS (port 587)")
     SMTP_FROM_EMAIL: str = Field(default="noreply@e-shuushuu.net", description="From email address")
     SMTP_FROM_NAME: str = Field(default="Shuushuu", description="From name")
 
