@@ -84,7 +84,7 @@ def upgrade() -> None:
         INSERT INTO group_perms (group_id, perm_id, permvalue)
         SELECT g.group_id, p.perm_id, 1
         FROM groups g, perms p
-        WHERE g.title = 'admins' AND p.title = 'image_delete'
+        WHERE g.title = 'Admins' AND p.title = 'image_delete'
     """)
 
     # Grants new perms to admins and moderators groups
@@ -94,7 +94,7 @@ def upgrade() -> None:
             INSERT INTO group_perms (group_id, perm_id, permvalue)
             SELECT g.group_id, p.perm_id, 1
             FROM groups g, perms p
-            WHERE g.title IN ('admins', 'moderators') AND p.title = '{perm}'
+            WHERE g.title IN ('Admins', 'Mods') AND p.title = '{perm}'
         """)
 
     # Grants image tagging perms to Taggers group
