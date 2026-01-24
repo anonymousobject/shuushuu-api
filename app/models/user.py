@@ -146,7 +146,7 @@ class Users(UserBase, table=True):
     thumb_layout: int = Field(default=0)
     sorting_pref: str = Field(default="image_id", max_length=100)
     sorting_pref_order: str = Field(default="DESC", max_length=10)
-    images_per_page: int = Field(default=10)
+    images_per_page: int = Field(default=20)
     show_all_images: int = Field(default=0)
 
     # Rate limiting
