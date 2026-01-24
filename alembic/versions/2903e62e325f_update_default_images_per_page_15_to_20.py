@@ -20,8 +20,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Update images_per_page from 15 to 20 for users with the old default."""
-    op.execute("UPDATE users SET images_per_page = 20 WHERE images_per_page = 15")
+    """Update images_per_page from <= 15 to 20 for users with the old default."""
+    op.execute("UPDATE users SET images_per_page = 20 WHERE images_per_page <= 15")
 
 
 def downgrade() -> None:
