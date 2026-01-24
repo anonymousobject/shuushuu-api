@@ -1,6 +1,6 @@
 """Tests for email service retry logic and SMTP configuration."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiosmtplib.errors import (
@@ -270,7 +270,8 @@ class TestSmtpConfigValidation:
                 SMTP_STARTTLS=True,
             )
 
-        assert "mutually exclusive" in str(exc_info.value).lower()
+        errors = exc_info.value.errors()
+        assert any("mutually exclusive" in err.get("msg", "").lower() for err in errors)
 
     def test_smtp_tls_only_valid(self):
         """Test that SMTP_TLS=True with SMTP_STARTTLS=False is valid."""
