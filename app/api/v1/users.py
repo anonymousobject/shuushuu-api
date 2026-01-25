@@ -173,14 +173,24 @@ async def update_current_user_profile(
     user_data: UserUpdate,
     current_user_id: Annotated[int, Depends(get_current_user_id)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UserPrivateResponse:
     """
     Update the profile of the currently authenticated user.
 
     All fields are optional. Only provided fields will be updated.
     Returns the updated profile including private settings.
+
+    Note: user_title can only be updated by users with USER_EDIT_PROFILE permission.
     """
-    user = await _update_user_profile(current_user_id, user_data, current_user_id, db)
+    # Check if user has permission to edit profiles (required for user_title)
+    has_edit_permission = await has_permission(
+        db, current_user_id, Permission.USER_EDIT_PROFILE, redis_client
+    )
+
+    user = await _update_user_profile(
+        current_user_id, user_data, current_user_id, db, has_edit_permission
+    )
     return UserPrivateResponse.model_validate(user)
 
 
@@ -474,7 +484,9 @@ async def update_user_profile(
             detail="Not authorized to update this user",
         )
 
-    user = await _update_user_profile(user_id, user_data, current_user.user_id, db)
+    user = await _update_user_profile(
+        user_id, user_data, current_user.user_id, db, has_edit_permission
+    )
     return UserResponse.model_validate(user)
 
 
@@ -483,6 +495,7 @@ async def _update_user_profile(
     user_data: UserUpdate,
     current_user_id: int,
     db: AsyncSession,
+    has_edit_permission: bool = False,
 ) -> Users:
     """
     Internal function to handle user profile updates.
@@ -492,6 +505,7 @@ async def _update_user_profile(
         user_data: Update data
         current_user_id: ID of user making the request (for email uniqueness check)
         db: Database session
+        has_edit_permission: Whether the current user has USER_EDIT_PROFILE permission
 
     Returns:
         Updated user response (as UserResponse; caller may wrap as UserPrivateResponse)
@@ -510,6 +524,13 @@ async def _update_user_profile(
 
     # Update only provided fields
     update_data = user_data.model_dump(exclude_unset=True)
+
+    # user_title can only be updated by users with USER_EDIT_PROFILE permission
+    if "user_title" in update_data and not has_edit_permission:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only moderators can update user titles",
+        )
 
     # Handle password separately with validation and hashing
     if "password" in update_data:

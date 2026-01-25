@@ -127,7 +127,11 @@ class TestListUsers:
         assert data["users"] == []
 
     async def test_update_user_freeform_fields_normalized(self, client: AsyncClient, db_session: AsyncSession):
-        """Updating user free-form fields (title/location/interests) stores plain text (no normalization)."""
+        """Updating user free-form fields (location/interests) stores plain text (no normalization).
+
+        Note: user_title is restricted to users with USER_EDIT_PROFILE permission.
+        See TestUserTitleRestriction for user_title tests.
+        """
         # Create user
         user = Users(
             username="normalizeuser",
@@ -148,9 +152,8 @@ class TestListUsers:
         )
         access_token = login_response.json()["access_token"]
 
-        # Update free-form fields with normal text
+        # Update free-form fields with normal text (user_title excluded - requires permission)
         payload = {
-            "user_title": "I am Special & Proud",
             "location": "City & County",
             "interests": "Fish & Chips & More",
         }
@@ -167,7 +170,6 @@ class TestListUsers:
         assert response.status_code == 200
         data = response.json()
         # Plain text storage: what goes in comes out (no HTML escaping/normalization)
-        assert data["user_title"] == "I am Special & Proud"
         assert data["location"] == "City & County"
         assert data["interests"] == "Fish & Chips & More"
 
@@ -1976,6 +1978,112 @@ async def login_test_user(client: AsyncClient, username: str, password: str) -> 
     )
     assert response.status_code == 200
     return response.json()["access_token"]
+
+
+@pytest.mark.api
+class TestUserTitleRestriction:
+    """Tests for user_title field being restricted to mods/admins only."""
+
+    async def test_regular_user_cannot_update_own_title(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that regular users cannot update their own user_title."""
+        user, password = await create_test_user_with_password(
+            db_session, "notitleuser", "notitleuser@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        # Try to update user_title - should be forbidden
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"user_title": "I am special"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+        assert "title" in response.json()["detail"].lower()
+
+    async def test_regular_user_cannot_update_title_via_user_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that regular users cannot update their own user_title via /users/{id}."""
+        user, password = await create_test_user_with_password(
+            db_session, "notitleuser2", "notitleuser2@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        # Try to update user_title via /users/{id} endpoint
+        response = await client.patch(
+            f"/api/v1/users/{user.user_id}",
+            json={"user_title": "I am special"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+        assert "title" in response.json()["detail"].lower()
+
+    async def test_user_with_permission_can_update_own_title(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users with USER_EDIT_PROFILE permission can update their own title."""
+        user, password = await create_test_user_with_password(
+            db_session, "modtitleuser", "modtitleuser@example.com"
+        )
+        await grant_user_permission(db_session, user.user_id, "user_edit_profile")
+        token = await login_test_user(client, user.username, password)
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"user_title": "Moderator"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["user_title"] == "Moderator"
+
+    async def test_user_with_permission_can_update_other_user_title(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users with USER_EDIT_PROFILE permission can update other users' titles."""
+        editor, editor_password = await create_test_user_with_password(
+            db_session, "titleeditor", "titleeditor@example.com"
+        )
+        await grant_user_permission(db_session, editor.user_id, "user_edit_profile")
+
+        target, _ = await create_test_user_with_password(
+            db_session, "titletarget", "titletarget@example.com"
+        )
+
+        token = await login_test_user(client, editor.username, editor_password)
+
+        response = await client.patch(
+            f"/api/v1/users/{target.user_id}",
+            json={"user_title": "Special User"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["user_title"] == "Special User"
+
+    async def test_regular_user_can_still_update_other_fields(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that regular users can still update other profile fields."""
+        user, password = await create_test_user_with_password(
+            db_session, "otherfieldsuser", "otherfieldsuser@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        # Update other fields - should succeed
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"location": "Tokyo", "interests": "Anime"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["location"] == "Tokyo"
+        assert response.json()["interests"] == "Anime"
 
 
 @pytest.mark.api
