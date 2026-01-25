@@ -376,7 +376,7 @@ async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> 
     # Test user credentials
     username = "test1"
     password = "shuutest1"
-    email = "test1@example.com"
+    email = "test1@shuushuu.com"
 
     if dry_run:
         print(f"  Would create user: {username}")
@@ -409,9 +409,10 @@ async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> 
 
     # SQL to insert test user (INSERT IGNORE to skip if exists)
     # Using explicit column list to avoid issues with auto-increment and defaults
+    # Note: images_per_page DB default is 10 but app default is 20, so we set it explicitly
     sql = f"""
-        INSERT IGNORE INTO users (username, password, password_type, salt, email, active)
-        VALUES ('{username}', '{hashed_password}', 'bcrypt', '', '{email}', 1);
+        INSERT IGNORE INTO users (username, password, password_type, salt, email, active, email_verified, images_per_page)
+        VALUES ('{username}', '{hashed_password}', 'bcrypt', '', '{email}', 1, 1, 20);
     """
 
     insert_cmd = mysql_cmd + ["-e", sql]

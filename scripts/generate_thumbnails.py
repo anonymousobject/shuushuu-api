@@ -144,7 +144,6 @@ def get_images_streaming(
                     while True:
                         result = await conn.execute(
                             select(Images.image_id, Images.filename, Images.ext)  # type: ignore[call-overload]
-                            .where(Images.status == 1)  # type: ignore[arg-type]
                             .where(Images.image_id < last_id)  # type: ignore[arg-type,operator]
                             .order_by(Images.image_id.desc())  # type: ignore[union-attr]
                             .limit(batch_size)
@@ -188,7 +187,7 @@ def get_image_count(all_images: bool = False, image_ids: list[int] | None = None
         try:
             async with engine.connect() as conn:
                 result = await conn.execute(
-                    select(func.count()).select_from(Images).where(Images.status == 1)  # type: ignore[arg-type]
+                    select(func.count()).select_from(Images)
                 )
                 return result.scalar() or 0
         finally:
