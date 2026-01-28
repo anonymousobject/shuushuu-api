@@ -670,10 +670,11 @@ async def get_tag(
     )
     links = links_result.scalars().all()
 
-    # Fetch tags that are aliases of this tag
+    # Fetch tags that are aliases of this tag (use resolved_tag_id for consistency
+    # with image_count/child_count - when viewing an alias, show all sibling aliases)
     aliases_result = await db.execute(
         select(Tags.tag_id, Tags.title, Tags.type)  # type: ignore[call-overload]
-        .where(Tags.alias_of == tag_id)
+        .where(Tags.alias_of == resolved_tag_id)
         .order_by(Tags.title)
     )
     aliases = [{"tag_id": row[0], "title": row[1], "type": row[2]} for row in aliases_result.all()]
