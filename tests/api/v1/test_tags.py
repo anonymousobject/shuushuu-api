@@ -1099,6 +1099,85 @@ class TestGetTag:
         assert "groups" in data["created_by"]
         assert set(data["created_by"]["groups"]) == {"mods", "artists"}
 
+    async def test_get_tag_with_aliases(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that getting a tag includes its aliases (tags that redirect to it)."""
+        # Create canonical tag
+        canonical = Tags(title="Canonical Tag", desc="The main tag", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        # Create alias tags pointing to canonical
+        alias1 = Tags(
+            title="Alias One", desc="First alias", type=TagType.THEME, alias_of=canonical.tag_id
+        )
+        alias2 = Tags(
+            title="Alias Two", desc="Second alias", type=TagType.THEME, alias_of=canonical.tag_id
+        )
+        db_session.add_all([alias1, alias2])
+        await db_session.commit()
+
+        # Get canonical tag - should include aliases
+        response = await client.get(f"/api/v1/tags/{canonical.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert "aliases" in data
+        assert len(data["aliases"]) == 2
+        alias_titles = {a["title"] for a in data["aliases"]}
+        assert alias_titles == {"Alias One", "Alias Two"}
+
+    async def test_get_tag_without_aliases(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that a tag without aliases returns an empty aliases list."""
+        tag = Tags(title="Standalone Tag", desc="No aliases", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert "aliases" in data
+        assert data["aliases"] == []
+
+    async def test_get_alias_tag_shows_sibling_aliases(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that viewing an alias tag shows all aliases of the resolved (canonical) tag."""
+        # Create canonical tag
+        canonical = Tags(title="Canonical", desc="Main tag", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        # Create multiple alias tags
+        alias1 = Tags(
+            title="Alias A", desc="First alias", type=TagType.THEME, alias_of=canonical.tag_id
+        )
+        alias2 = Tags(
+            title="Alias B", desc="Second alias", type=TagType.THEME, alias_of=canonical.tag_id
+        )
+        db_session.add_all([alias1, alias2])
+        await db_session.commit()
+        await db_session.refresh(alias1)
+        await db_session.refresh(alias2)
+
+        # Get alias1 - should show both aliases (sibling aliases of the same canonical tag)
+        response = await client.get(f"/api/v1/tags/{alias1.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify this tag is marked as an alias
+        assert data["is_alias"] is True
+        assert data["aliased_tag_id"] == canonical.tag_id
+
+        # Verify aliases shows all tags pointing to the canonical tag (both alias1 and alias2)
+        assert "aliases" in data
+        assert len(data["aliases"]) == 2
+        alias_titles = {a["title"] for a in data["aliases"]}
+        assert alias_titles == {"Alias A", "Alias B"}
+
 
 @pytest.mark.api
 class TestGetImagesByTag:
