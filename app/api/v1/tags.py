@@ -673,11 +673,14 @@ async def get_tag(
     # Fetch tags that are aliases of this tag (use resolved_tag_id for consistency
     # with image_count/child_count - when viewing an alias, show all sibling aliases)
     aliases_result = await db.execute(
-        select(Tags.tag_id, Tags.title, Tags.type)  # type: ignore[call-overload]
+        select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
         .where(Tags.alias_of == resolved_tag_id)
         .order_by(Tags.title)
     )
-    aliases = [{"tag_id": row[0], "title": row[1], "type": row[2]} for row in aliases_result.all()]
+    aliases = [
+        {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
+        for row in aliases_result.all()
+    ]
 
     # Fetch linked sources/characters based on tag type
     sources: list[dict[str, Any]] = []
@@ -685,32 +688,36 @@ async def get_tag(
 
     if tag.type == TagType.CHARACTER:
         # Get all sources linked to this character
+        # Sorted by usage_count descending with title as tiebreaker
         sources_result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type)  # type: ignore[call-overload]
+            select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.source_tag_id,
             )
             .where(CharacterSourceLinks.character_tag_id == tag_id)
-            .order_by(Tags.title)
+            .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
         )
         sources = [
-            {"tag_id": row[0], "title": row[1], "type": row[2]} for row in sources_result.all()
+            {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
+            for row in sources_result.all()
         ]
 
     elif tag.type == TagType.SOURCE:
         # Get all characters linked to this source
+        # Sorted by usage_count descending with title as tiebreaker
         characters_result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type)  # type: ignore[call-overload]
+            select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.character_tag_id,
             )
             .where(CharacterSourceLinks.source_tag_id == tag_id)
-            .order_by(Tags.title)
+            .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
         )
         characters = [
-            {"tag_id": row[0], "title": row[1], "type": row[2]} for row in characters_result.all()
+            {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
+            for row in characters_result.all()
         ]
 
     return TagWithStats(

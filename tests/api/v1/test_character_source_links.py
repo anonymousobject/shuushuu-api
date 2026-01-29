@@ -872,3 +872,174 @@ class TestCharacterSourceLinkCascade:
             select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)
         )
         assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.api
+class TestLinkedTagUsageCount:
+    """Tests for usage_count field in LinkedTag responses."""
+
+    async def test_source_tag_characters_include_usage_count(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        source_tag: Tags,
+    ):
+        """Test that characters linked to a source tag include usage_count."""
+        # Create two character tags with different usage counts
+        char1 = Tags(title="Character A", type=TagType.CHARACTER, usage_count=100)
+        char2 = Tags(title="Character B", type=TagType.CHARACTER, usage_count=50)
+        db_session.add_all([char1, char2])
+        await db_session.commit()
+        await db_session.refresh(char1)
+        await db_session.refresh(char2)
+
+        # Create links
+        link1 = CharacterSourceLinks(
+            character_tag_id=char1.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        link2 = CharacterSourceLinks(
+            character_tag_id=char2.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        db_session.add_all([link1, link2])
+        await db_session.commit()
+
+        # Get source tag detail
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify characters have usage_count field
+        assert "characters" in data
+        assert len(data["characters"]) == 2
+        for char in data["characters"]:
+            assert "usage_count" in char
+
+        # Verify sorted by usage_count descending (char1 should be first with 100)
+        assert data["characters"][0]["usage_count"] == 100
+        assert data["characters"][0]["title"] == "Character A"
+        assert data["characters"][1]["usage_count"] == 50
+        assert data["characters"][1]["title"] == "Character B"
+
+    async def test_character_tag_sources_include_usage_count(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+    ):
+        """Test that sources linked to a character tag include usage_count."""
+        # Create two source tags with different usage counts
+        source1 = Tags(title="Source A", type=TagType.SOURCE, usage_count=200)
+        source2 = Tags(title="Source B", type=TagType.SOURCE, usage_count=75)
+        db_session.add_all([source1, source2])
+        await db_session.commit()
+        await db_session.refresh(source1)
+        await db_session.refresh(source2)
+
+        # Create links
+        link1 = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source1.tag_id,
+        )
+        link2 = CharacterSourceLinks(
+            character_tag_id=character_tag.tag_id,
+            source_tag_id=source2.tag_id,
+        )
+        db_session.add_all([link1, link2])
+        await db_session.commit()
+
+        # Get character tag detail
+        response = await client.get(f"/api/v1/tags/{character_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify sources have usage_count field
+        assert "sources" in data
+        assert len(data["sources"]) == 2
+        for source in data["sources"]:
+            assert "usage_count" in source
+
+        # Verify sorted by usage_count descending (source1 should be first with 200)
+        assert data["sources"][0]["usage_count"] == 200
+        assert data["sources"][0]["title"] == "Source A"
+        assert data["sources"][1]["usage_count"] == 75
+        assert data["sources"][1]["title"] == "Source B"
+
+    async def test_aliases_include_usage_count(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        """Test that alias tags include usage_count."""
+        # Create a main tag
+        main_tag = Tags(title="Main Tag", type=TagType.THEME, usage_count=500)
+        db_session.add(main_tag)
+        await db_session.commit()
+        await db_session.refresh(main_tag)
+
+        # Create alias tags with different usage counts
+        alias1 = Tags(
+            title="Alias A",
+            type=TagType.THEME,
+            usage_count=150,
+            alias_of=main_tag.tag_id,
+        )
+        alias2 = Tags(
+            title="Alias B",
+            type=TagType.THEME,
+            usage_count=25,
+            alias_of=main_tag.tag_id,
+        )
+        db_session.add_all([alias1, alias2])
+        await db_session.commit()
+
+        # Get main tag detail
+        response = await client.get(f"/api/v1/tags/{main_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify aliases have usage_count field with correct values
+        # Aliases are sorted alphabetically by title, so Alias A comes first
+        assert "aliases" in data
+        assert len(data["aliases"]) == 2
+        assert data["aliases"][0]["title"] == "Alias A"
+        assert data["aliases"][0]["usage_count"] == 150
+        assert data["aliases"][1]["title"] == "Alias B"
+        assert data["aliases"][1]["usage_count"] == 25
+
+    async def test_characters_sorted_by_usage_count_with_title_tiebreaker(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        source_tag: Tags,
+    ):
+        """Test that characters with same usage_count are sorted by title."""
+        # Create characters with same usage count
+        char_b = Tags(title="Character B", type=TagType.CHARACTER, usage_count=100)
+        char_a = Tags(title="Character A", type=TagType.CHARACTER, usage_count=100)
+        db_session.add_all([char_b, char_a])
+        await db_session.commit()
+        await db_session.refresh(char_a)
+        await db_session.refresh(char_b)
+
+        # Create links
+        link1 = CharacterSourceLinks(
+            character_tag_id=char_a.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        link2 = CharacterSourceLinks(
+            character_tag_id=char_b.tag_id,
+            source_tag_id=source_tag.tag_id,
+        )
+        db_session.add_all([link1, link2])
+        await db_session.commit()
+
+        # Get source tag detail
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Same usage_count, should be sorted alphabetically by title
+        assert data["characters"][0]["title"] == "Character A"
+        assert data["characters"][1]["title"] == "Character B"
