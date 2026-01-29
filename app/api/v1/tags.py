@@ -664,11 +664,11 @@ async def get_tag(
 
     # Fetch external links for this tag
     links_result = await db.execute(
-        select(TagExternalLinks.url)  # type: ignore[call-overload]
-        .where(TagExternalLinks.tag_id == tag_id)
-        .order_by(TagExternalLinks.date_added)
+        select(TagExternalLinks)
+        .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+        .order_by(TagExternalLinks.date_added)  # type: ignore[arg-type]
     )
-    links = links_result.scalars().all()
+    links = [TagExternalLinkResponse.model_validate(link) for link in links_result.scalars().all()]
 
     # Fetch tags that are aliases of this tag (use resolved_tag_id for consistency
     # with image_count/child_count - when viewing an alias, show all sibling aliases)
@@ -726,7 +726,7 @@ async def get_tag(
         child_count=child_count or 0,
         created_by=created_by,
         date_added=tag.date_added,
-        links=list(links),
+        links=links,
         sources=sources,
         characters=characters,
     )

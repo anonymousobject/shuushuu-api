@@ -2146,7 +2146,7 @@ class TestGetTagWithLinks:
     async def test_get_tag_with_links(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that tag details include external links."""
+        """Test that tag details include external links with full metadata."""
         # Create tag with links
         tag = Tags(title="test tag", desc="Test", type=TagType.ARTIST)
         db_session.add(tag)
@@ -2158,6 +2158,8 @@ class TestGetTagWithLinks:
         link2 = TagExternalLinks(tag_id=tag.tag_id, url="https://pixiv.net/users/123")
         db_session.add_all([link1, link2])
         await db_session.commit()
+        await db_session.refresh(link1)
+        await db_session.refresh(link2)
 
         # Get tag details
         response = await client.get(f"/api/v1/tags/{tag.tag_id}")
@@ -2165,8 +2167,18 @@ class TestGetTagWithLinks:
         data = response.json()
         assert "links" in data
         assert len(data["links"]) == 2
-        assert "https://twitter.com/artist" in data["links"]
-        assert "https://pixiv.net/users/123" in data["links"]
+
+        # Links should be objects with link_id, url, and date_added
+        urls = [link["url"] for link in data["links"]]
+        assert "https://twitter.com/artist" in urls
+        assert "https://pixiv.net/users/123" in urls
+
+        # Verify each link has required fields
+        for link in data["links"]:
+            assert "link_id" in link
+            assert "url" in link
+            assert "date_added" in link
+            assert isinstance(link["link_id"], int)
 
     async def test_get_tag_without_links(
         self, client: AsyncClient, db_session: AsyncSession
