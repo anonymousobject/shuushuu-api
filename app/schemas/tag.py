@@ -152,6 +152,7 @@ class LinkedTag(BaseModel):
     tag_id: int
     title: str | None
     type: int
+    usage_count: int = 0  # Optional with default for backward compat
 
 
 class TagWithStats(TagResponse):
