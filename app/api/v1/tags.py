@@ -665,8 +665,8 @@ async def get_tag(
     # Fetch external links for this tag
     links_result = await db.execute(
         select(TagExternalLinks)
-        .where(TagExternalLinks.tag_id == tag_id)
-        .order_by(TagExternalLinks.date_added)
+        .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+        .order_by(TagExternalLinks.date_added)  # type: ignore[arg-type]
     )
     links = [TagExternalLinkResponse.model_validate(link) for link in links_result.scalars().all()]
 
