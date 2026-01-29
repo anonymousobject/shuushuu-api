@@ -999,11 +999,14 @@ class TestLinkedTagUsageCount:
         assert response.status_code == 200
         data = response.json()
 
-        # Verify aliases have usage_count field
+        # Verify aliases have usage_count field with correct values
+        # Aliases are sorted alphabetically by title, so Alias A comes first
         assert "aliases" in data
         assert len(data["aliases"]) == 2
-        for alias in data["aliases"]:
-            assert "usage_count" in alias
+        assert data["aliases"][0]["title"] == "Alias A"
+        assert data["aliases"][0]["usage_count"] == 150
+        assert data["aliases"][1]["title"] == "Alias B"
+        assert data["aliases"][1]["usage_count"] == 25
 
     async def test_characters_sorted_by_usage_count_with_title_tiebreaker(
         self,
