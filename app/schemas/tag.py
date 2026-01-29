@@ -165,7 +165,7 @@ class TagWithStats(TagResponse):
     child_count: int = 0  # Number of child tags that inherit from this tag
     created_by: UserSummary | None = None  # User who created the tag
     date_added: UTCDatetime  # When the tag was created
-    links: list[str] = []  # External URLs associated with this tag
+    links: list["TagExternalLinkResponse"] = []  # External links associated with this tag
     # Character-source links
     sources: list[LinkedTag] = []  # For character tags: linked sources
     characters: list[LinkedTag] = []  # For source tags: linked characters
