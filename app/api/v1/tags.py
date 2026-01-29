@@ -696,7 +696,7 @@ async def get_tag(
                 Tags.tag_id == CharacterSourceLinks.source_tag_id,
             )
             .where(CharacterSourceLinks.character_tag_id == tag_id)
-            .order_by(Tags.usage_count.desc(), Tags.title)  # type: ignore[union-attr]
+            .order_by(Tags.usage_count.desc(), Tags.title)  # type: ignore[attr-defined]
         )
         sources = [
             {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
@@ -713,7 +713,7 @@ async def get_tag(
                 Tags.tag_id == CharacterSourceLinks.character_tag_id,
             )
             .where(CharacterSourceLinks.source_tag_id == tag_id)
-            .order_by(Tags.usage_count.desc(), Tags.title)  # type: ignore[union-attr]
+            .order_by(Tags.usage_count.desc(), Tags.title)  # type: ignore[attr-defined]
         )
         characters = [
             {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
