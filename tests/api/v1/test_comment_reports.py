@@ -246,3 +246,137 @@ class TestUserCommentReportEndpoint:
         )
 
         assert response.status_code == 422
+
+
+@pytest.mark.api
+class TestAdminCommentReportEndpoints:
+    """Tests for admin comment report endpoints."""
+
+    async def test_list_comment_reports(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test listing comment reports with report_type=comment filter."""
+        user, password = await create_auth_user(db_session, "admin1", "admin1@test.com")
+        await grant_permission(db_session, user.user_id, "report_view")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        # Create a comment report
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.SPAM,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, password)
+
+        response = await client.get(
+            "/api/v1/admin/reports?report_type=comment",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "comment_reports" in data
+        assert len(data["comment_reports"]) >= 1
+
+    async def test_dismiss_comment_report(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test dismissing a comment report."""
+        user, password = await create_auth_user(db_session, "admin2", "admin2@test.com")
+        await grant_permission(db_session, user.user_id, "report_manage")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.SPAM,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/comments/{report.report_id}/dismiss",
+            json={"admin_notes": "Not a valid report"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify report was dismissed
+        await db_session.refresh(report)
+        assert report.status == ReportStatus.DISMISSED
+
+    async def test_delete_comment_via_report(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test deleting a comment via the report action."""
+        user, password = await create_auth_user(db_session, "admin3", "admin3@test.com")
+        await grant_permission(db_session, user.user_id, "report_manage")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.RULE_VIOLATION,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/comments/{report.report_id}/delete",
+            json={"admin_notes": "Violates rules"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify comment was soft-deleted
+        await db_session.refresh(comment)
+        assert comment.deleted is True
+
+        # Verify report was marked reviewed
+        await db_session.refresh(report)
+        assert report.status == ReportStatus.REVIEWED
+
+    async def test_dismiss_requires_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that dismiss requires REPORT_MANAGE permission."""
+        user, password = await create_auth_user(db_session, "nonadmin", "nonadmin@test.com")
+        # No permission granted
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.SPAM,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/comments/{report.report_id}/dismiss",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
