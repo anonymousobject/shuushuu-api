@@ -17,6 +17,7 @@ from app.models.admin_action import AdminActions
 from app.models.ban import Bans
 from app.models.character_source_link import CharacterSourceLinks
 from app.models.comment import Comments
+from app.models.comment_report import CommentReports
 
 # Junction/relationship tables
 from app.models.favorite import Favorites
@@ -69,6 +70,7 @@ __all__ = [
     "ImageRatings",
     "ImageReports",
     "ImageReportTagSuggestions",
+    "CommentReports",
     "ImageReviews",
     "ImageStatusHistory",
     "ReviewVotes",
