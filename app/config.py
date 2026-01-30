@@ -299,6 +299,20 @@ class ReportCategory:
     }
 
 
+class CommentReportCategory:
+    """Comment report category constants"""
+
+    RULE_VIOLATION = 1
+    SPAM = 2
+    OTHER = 127
+
+    LABELS = {
+        RULE_VIOLATION: "Rule Violation",
+        SPAM: "Spam",
+        OTHER: "Other",
+    }
+
+
 class PermissionLevel:
     """User permission levels"""
 
