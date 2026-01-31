@@ -354,6 +354,7 @@ class TestAdminCommentReportEndpoints:
         report2 = CommentReports(
             comment_id=comment.post_id,
             user_id=user2.user_id,
+            category=CommentReportCategory.SPAM,
             status=ReportStatus.PENDING,
         )
         db_session.add(report2)

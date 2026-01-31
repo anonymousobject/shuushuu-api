@@ -837,12 +837,6 @@ async def list_reports(
     if not has_report_view and not has_tag_suggestion_apply:
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    # Validate report_type
-    if report_type not in ("image", "comment", "all"):
-        raise HTTPException(
-            status_code=400, detail="Invalid report_type. Must be 'image', 'comment', or 'all'"
-        )
-
     # Taggers can only see TAG_SUGGESTIONS image reports
     tagger_only = has_tag_suggestion_apply and not has_report_view
     if tagger_only:
