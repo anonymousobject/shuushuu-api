@@ -14,11 +14,11 @@ These endpoints require admin-level permissions and provide:
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
@@ -39,6 +39,8 @@ from app.core.permission_deps import require_all_permissions, require_permission
 from app.core.permissions import Permission
 from app.core.redis import get_redis
 from app.models.admin_action import AdminActions
+from app.models.comment import Comments
+from app.models.comment_report import CommentReports
 from app.models.image import Images
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
@@ -73,13 +75,18 @@ from app.schemas.admin import (
     UserPermItem,
     UserPermsResponse,
 )
+from app.schemas.comment_report import (
+    CommentReportDeleteRequest,
+    CommentReportDismissRequest,
+    CommentReportListItem,
+)
+from app.schemas.common import UserSummary
 from app.schemas.report import (
     ApplyTagSuggestionsRequest,
     ApplyTagSuggestionsResponse,
     ReportActionRequest,
     ReportDismissRequest,
     ReportEscalateRequest,
-    ReportListResponse,
     ReportResponse,
     ReviewCloseRequest,
     ReviewCreate,
@@ -89,6 +96,7 @@ from app.schemas.report import (
     ReviewResponse,
     ReviewVoteRequest,
     TagSuggestion,
+    UnifiedReportListResponse,
     VoteResponse,
 )
 
@@ -769,24 +777,44 @@ async def change_image_status(
 # ===== Report Triage =====
 
 
-@router.get("/reports", response_model=ReportListResponse)
+@router.get("/reports", response_model=UnifiedReportListResponse)
 async def list_reports(
     current_user: Annotated[Users, Depends(get_current_user)],
+    report_type: Annotated[
+        Literal["image", "comment", "all"],
+        Query(description="Report type filter: 'image', 'comment', or 'all'"),
+    ] = "all",
     status_filter: Annotated[
         int | None,
         Query(alias="status", description="Filter by status (0=pending, 1=reviewed, 2=dismissed)"),
     ] = ReportStatus.PENDING,
     category: Annotated[
         int | None,
-        Query(description="Filter by category (4=TAG_SUGGESTIONS)"),
+        Query(description="Filter by category (4=TAG_SUGGESTIONS for images)"),
     ] = None,
     page: Annotated[int, Query(ge=1, description="Page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
     db: AsyncSession = Depends(get_db),
     redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
-) -> ReportListResponse:
+) -> UnifiedReportListResponse:
     """
-    List image reports in the triage queue.
+    List reports in the triage queue.
+
+    Use report_type parameter to filter:
+    - 'image': Only image reports
+    - 'comment': Only comment reports
+    - 'all': Both types (default)
+
+    When 'all' is selected, image and comment reports are paginated independently.
+    Page N returns the Nth page of image reports AND the Nth page of comment reports,
+    each page containing up to `per_page` items per type. This means a single response
+    can contain up to `2 * per_page` items (if both types have enough data), or fewer
+    items if one type has fewer results or has been exhausted.
+
+    In this mode, the `total` field represents the sum of matching image and comment
+    reports across all pages. It does NOT represent the number of items on any single
+    paginated page, and `per_page` is applied per report type rather than to the
+    combined result set.
 
     Requires REPORT_VIEW permission OR TAG_SUGGESTION_APPLY permission.
     Users with only TAG_SUGGESTION_APPLY can only see TAG_SUGGESTIONS reports.
@@ -809,84 +837,336 @@ async def list_reports(
     if not has_report_view and not has_tag_suggestion_apply:
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    # Taggers can only see TAG_SUGGESTIONS
-    if has_tag_suggestion_apply and not has_report_view:
+    # Taggers can only see TAG_SUGGESTIONS image reports
+    tagger_only = has_tag_suggestion_apply and not has_report_view
+    if tagger_only:
+        # Force image reports only and TAG_SUGGESTIONS category
+        if report_type == "comment":
+            raise HTTPException(
+                status_code=403,
+                detail="You can only view TAG_SUGGESTIONS image reports",
+            )
         if category is not None and category != ReportCategory.TAG_SUGGESTIONS:
             raise HTTPException(
                 status_code=403,
                 detail="You can only view TAG_SUGGESTIONS reports",
             )
         category = ReportCategory.TAG_SUGGESTIONS
+        # For "all" requests, taggers only get image reports (no comment reports)
+        if report_type == "all":
+            report_type = "image"
 
-    # Build a filtered base query against ImageReports (used for counting)
-    base_query = select(ImageReports)
-    if status_filter is not None:
-        # SQLModel/SQLAlchemy equality comparisons sometimes confuse mypy; ignore arg-type here
-        base_query = base_query.where(ImageReports.status == status_filter)  # type: ignore[arg-type]
-    if category is not None:
-        base_query = base_query.where(ImageReports.category == category)  # type: ignore[arg-type]
-
-    # Count total rows efficiently using ImageReports only
-    count_query = select(func.count()).select_from(base_query.subquery())
-    total_result = await db.execute(count_query)
-    total = total_result.scalar() or 0
-
-    # Now select ImageReports rows plus the reporting user's username, joining on user_id
-    query = select(ImageReports, Users.username)  # type: ignore[call-overload]
-    query = query.join(Users, Users.user_id == ImageReports.user_id)
-    if status_filter is not None:
-        query = query.where(ImageReports.status == status_filter)
-    if category is not None:
-        query = query.where(ImageReports.category == category)
-
-    # Apply pagination and ordering (newest first)
     offset = (page - 1) * per_page
-    query = query.order_by(desc(ImageReports.created_at))  # type: ignore[arg-type]
-    query = query.offset(offset).limit(per_page)
+    image_reports: list[ReportResponse] = []
+    comment_reports: list[CommentReportListItem] = []
+    total = 0
 
-    result = await db.execute(query)
-    rows = result.all()
+    # Fetch image reports if requested
+    if report_type in ("image", "all"):
+        # Build a filtered base query against ImageReports (used for counting)
+        base_query = select(ImageReports)
+        if status_filter is not None:
+            base_query = base_query.where(ImageReports.status == status_filter)  # type: ignore[arg-type]
+        if category is not None:
+            base_query = base_query.where(ImageReports.category == category)  # type: ignore[arg-type]
 
-    # Collect report IDs to fetch tag suggestions
-    report_ids = [report.report_id for report, _ in rows]
+        # Count total rows
+        count_query = select(func.count()).select_from(base_query.subquery())
+        total_result = await db.execute(count_query)
+        image_total = total_result.scalar() or 0
+        total += image_total
 
-    # Fetch tag suggestions for all reports in one query
-    suggestions_by_report: dict[int, list[TagSuggestion]] = {}
-    if report_ids:
-        suggestions_result = await db.execute(
-            select(ImageReportTagSuggestions, Tags)
-            .join(Tags, Tags.tag_id == ImageReportTagSuggestions.tag_id)  # type: ignore[arg-type]
-            .where(ImageReportTagSuggestions.report_id.in_(report_ids))  # type: ignore[attr-defined]
+        # Now select ImageReports rows plus the reporting user's username
+        query = select(ImageReports, Users.username)  # type: ignore[call-overload]
+        query = query.join(Users, Users.user_id == ImageReports.user_id)
+        if status_filter is not None:
+            query = query.where(ImageReports.status == status_filter)
+        if category is not None:
+            query = query.where(ImageReports.category == category)
+
+        # Apply pagination and ordering (newest first)
+        query = query.order_by(desc(ImageReports.created_at))  # type: ignore[arg-type]
+        query = query.offset(offset).limit(per_page)
+
+        result = await db.execute(query)
+        rows = result.all()
+
+        # Collect report IDs to fetch tag suggestions
+        report_ids = [report.report_id for report, _ in rows]
+
+        # Fetch tag suggestions for all reports in one query
+        suggestions_by_report: dict[int, list[TagSuggestion]] = {}
+        if report_ids:
+            suggestions_result = await db.execute(
+                select(ImageReportTagSuggestions, Tags)
+                .join(Tags, Tags.tag_id == ImageReportTagSuggestions.tag_id)  # type: ignore[arg-type]
+                .where(ImageReportTagSuggestions.report_id.in_(report_ids))  # type: ignore[attr-defined]
+            )
+            for suggestion, tag in suggestions_result.all():
+                if suggestion.report_id not in suggestions_by_report:
+                    suggestions_by_report[suggestion.report_id] = []
+                suggestions_by_report[suggestion.report_id].append(
+                    TagSuggestion(
+                        suggestion_id=suggestion.suggestion_id or 0,
+                        tag_id=suggestion.tag_id,
+                        tag_name=tag.title or "",
+                        tag_type=tag.type,
+                        suggestion_type=suggestion.suggestion_type,
+                        accepted=suggestion.accepted,
+                    )
+                )
+
+        for report, username in rows:
+            response = ReportResponse.model_validate(report)
+            response.username = username
+            if report.report_id in suggestions_by_report:
+                response.suggested_tags = suggestions_by_report[report.report_id]
+            image_reports.append(response)
+
+    # Fetch comment reports if requested
+    if report_type in ("comment", "all"):
+        # Build filtered query for CommentReports
+        base_query = select(CommentReports)
+        if status_filter is not None:
+            base_query = base_query.where(CommentReports.status == status_filter)  # type: ignore[arg-type]
+        if category is not None:
+            base_query = base_query.where(CommentReports.category == category)  # type: ignore[arg-type]
+
+        # Count total rows
+        count_query = select(func.count()).select_from(base_query.subquery())
+        total_result = await db.execute(count_query)
+        comment_total = total_result.scalar() or 0
+        total += comment_total
+
+        # Select comment reports with reporter username, comment author, and comment text
+        query = (
+            select(  # type: ignore[call-overload]
+                CommentReports,
+                Users.username.label("reporter_username"),  # type: ignore[attr-defined]
+                Comments.post_text,
+                Comments.user_id.label("comment_user_id"),  # type: ignore[attr-defined]
+                Comments.image_id,
+                Comments.deleted.label("comment_deleted"),  # type: ignore[attr-defined]
+            )
+            .join(Users, Users.user_id == CommentReports.user_id)
+            .outerjoin(Comments, Comments.post_id == CommentReports.comment_id)
         )
-        for suggestion, tag in suggestions_result.all():
-            if suggestion.report_id not in suggestions_by_report:
-                suggestions_by_report[suggestion.report_id] = []
-            suggestions_by_report[suggestion.report_id].append(
-                TagSuggestion(
-                    suggestion_id=suggestion.suggestion_id or 0,
-                    tag_id=suggestion.tag_id,
-                    tag_name=tag.title or "",
-                    tag_type=tag.type,
-                    suggestion_type=suggestion.suggestion_type,
-                    accepted=suggestion.accepted,
+        if status_filter is not None:
+            query = query.where(CommentReports.status == status_filter)
+        if category is not None:
+            query = query.where(CommentReports.category == category)
+
+        query = query.order_by(desc(CommentReports.created_at))  # type: ignore[arg-type]
+        query = query.offset(offset).limit(per_page)
+
+        result = await db.execute(query)
+        comment_rows = result.all()
+
+        # Collect comment author user IDs to fetch usernames
+        comment_author_ids = {
+            row.comment_user_id for row in comment_rows if row.comment_user_id is not None
+        }
+        author_usernames: dict[int, str] = {}
+        if comment_author_ids:
+            author_result = await db.execute(
+                select(Users.user_id, Users.username).where(  # type: ignore[call-overload]
+                    Users.user_id.in_(comment_author_ids)  # type: ignore[union-attr]
                 )
             )
+            author_usernames = {row.user_id: row.username for row in author_result.all()}
 
-    items: list[ReportResponse] = []
-    for report, username in rows:
-        response = ReportResponse.model_validate(report)
-        response.username = username
-        # Add tag suggestions if present
-        if report.report_id in suggestions_by_report:
-            response.suggested_tags = suggestions_by_report[report.report_id]
-        items.append(response)
+        for row in comment_rows:
+            report = row[0]  # CommentReports object
+            reporter_username = row.reporter_username
+            post_text = row.post_text
+            comment_user_id = row.comment_user_id
+            image_id = row.image_id
+            # If comment is hard-deleted (NULL from outer join), it's "deleted"
+            comment_deleted = bool(row.comment_deleted) if row.comment_deleted is not None else True
 
-    return ReportListResponse(
+            comment_author = None
+            if comment_user_id:
+                comment_author = UserSummary(
+                    user_id=comment_user_id,
+                    username=author_usernames.get(comment_user_id, "Unknown"),
+                )
+            comment_preview = post_text[:100] if post_text else None
+
+            item = CommentReportListItem(
+                report_id=report.report_id,
+                comment_id=report.comment_id,
+                image_id=image_id,
+                user_id=report.user_id,
+                username=reporter_username,
+                category=report.category,
+                reason_text=report.reason_text,
+                status=report.status,
+                created_at=report.created_at,
+                reviewed_by=report.reviewed_by,
+                reviewed_at=report.reviewed_at,
+                admin_notes=report.admin_notes,
+                comment_author=comment_author,
+                comment_preview=comment_preview,
+                comment_deleted=comment_deleted,
+            )
+            comment_reports.append(item)
+
+    return UnifiedReportListResponse(
+        image_reports=image_reports,
+        comment_reports=comment_reports,
         total=total,
         page=page,
         per_page=per_page,
-        items=items,
     )
+
+
+# ===== Comment Report Triage =====
+
+
+@router.post("/reports/comments/{report_id}/dismiss", response_model=MessageResponse)
+async def dismiss_comment_report(
+    report_id: Annotated[int, Path(description="Comment Report ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
+    request_data: CommentReportDismissRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Dismiss a comment report without taking action.
+
+    Optionally include admin_notes to document why the report was dismissed.
+
+    Requires REPORT_MANAGE permission.
+    """
+    result = await db.execute(
+        select(CommentReports).where(CommentReports.report_id == report_id)  # type: ignore[arg-type]
+    )
+    report = result.scalar_one_or_none()
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Comment report not found")
+
+    if report.status != ReportStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Report has already been processed")
+
+    # Get comment for logging details
+    comment_result = await db.execute(
+        select(Comments).where(Comments.post_id == report.comment_id)  # type: ignore[arg-type]
+    )
+    comment = comment_result.scalar_one_or_none()
+
+    # Update report
+    report.status = ReportStatus.DISMISSED
+    report.reviewed_by = current_user.user_id
+    report.reviewed_at = datetime.now(UTC)
+    if request_data and request_data.admin_notes:
+        report.admin_notes = request_data.admin_notes
+
+    # Log action
+    details: dict[str, Any] = {
+        "comment_id": report.comment_id,
+        "report_id": report.report_id,
+        "reporter_id": report.user_id,
+    }
+    if comment:
+        details["image_id"] = comment.image_id
+        details["post_text_preview"] = comment.post_text[:100] if comment.post_text else None
+
+    if request_data and request_data.admin_notes:
+        details["admin_notes"] = request_data.admin_notes
+    action = AdminActions(
+        user_id=current_user.user_id,
+        action_type=AdminActionType.REPORT_DISMISS,
+        details=details,
+    )
+    db.add(action)
+
+    await db.commit()
+
+    return MessageResponse(message="Comment report dismissed successfully")
+
+
+@router.post("/reports/comments/{report_id}/delete", response_model=MessageResponse)
+async def delete_comment_via_report(
+    report_id: Annotated[int, Path(description="Comment Report ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
+    request_data: CommentReportDeleteRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Delete the reported comment and mark the report as reviewed.
+
+    This soft-deletes the comment (sets deleted=True).
+
+    Requires REPORT_MANAGE permission.
+    """
+    result = await db.execute(
+        select(CommentReports).where(CommentReports.report_id == report_id)  # type: ignore[arg-type]
+    )
+    report = result.scalar_one_or_none()
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Comment report not found")
+
+    if report.status != ReportStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Report has already been processed")
+
+    # Get the comment
+    comment_result = await db.execute(
+        select(Comments).where(Comments.post_id == report.comment_id)  # type: ignore[arg-type]
+    )
+    comment = comment_result.scalar_one_or_none()
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment.deleted:
+        raise HTTPException(status_code=400, detail="Comment has already been deleted")
+
+    # Capture original text for logging
+    original_text = comment.post_text
+
+    # Soft-delete the comment
+    comment.deleted = True
+    comment.post_text = "[deleted]"
+
+    # Detach child comments (SET NULL for replies)
+    await db.execute(
+        update(Comments)
+        .where(Comments.parent_comment_id == report.comment_id)  # type: ignore[arg-type]
+        .values(parent_comment_id=None)
+    )
+
+    # Update report
+    report.status = ReportStatus.REVIEWED
+    report.reviewed_by = current_user.user_id
+    report.reviewed_at = datetime.now(UTC)
+    if request_data and request_data.admin_notes:
+        report.admin_notes = request_data.admin_notes
+
+    # Log action
+    details: dict[str, Any] = {
+        "comment_id": report.comment_id,
+        "report_id": report.report_id,
+        "image_id": comment.image_id,
+        "reporter_id": report.user_id,
+        "original_user_id": comment.user_id,
+        "post_text_preview": original_text[:100] if original_text else None,
+        "action": "delete_comment",
+    }
+    if request_data and request_data.admin_notes:
+        details["admin_notes"] = request_data.admin_notes
+    action = AdminActions(
+        user_id=current_user.user_id,
+        action_type=AdminActionType.COMMENT_DELETE,
+        details=details,
+    )
+    db.add(action)
+
+    await db.commit()
+
+    return MessageResponse(message="Comment deleted and report marked as reviewed")
 
 
 @router.post("/reports/{report_id}/dismiss", response_model=MessageResponse)

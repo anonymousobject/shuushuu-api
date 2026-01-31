@@ -276,7 +276,7 @@ class TestAdminReportsList:
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
-        assert len(data["items"]) == 1
+        assert len(data["image_reports"]) == 1
 
     async def test_list_reports_filter_by_status(
         self, client: AsyncClient, db_session: AsyncSession
@@ -339,7 +339,7 @@ class TestAdminReportsList:
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
-        assert len(data["items"]) == 1
+        assert len(data["image_reports"]) == 1
 
     async def test_list_reports_without_permission(
         self, client: AsyncClient, db_session: AsyncSession
@@ -388,7 +388,7 @@ class TestAdminReportsList:
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
-        report_item = data["items"][0]
+        report_item = data["image_reports"][0]
         assert report_item["suggested_tags"] is not None
         assert len(report_item["suggested_tags"]) == 2
 
@@ -420,7 +420,7 @@ class TestAdminReportsList:
         data = response.json()
         assert data["total"] == 1
         # All returned reports should be TAG_SUGGESTIONS
-        for item in data["items"]:
+        for item in data["image_reports"]:
             assert item["category"] == 4
 
     async def test_tagger_cannot_list_other_report_categories(
@@ -473,9 +473,9 @@ class TestAdminReportsList:
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
-        assert len(data["items"]) == 1
+        assert len(data["image_reports"]) == 1
         # Should only see TAG_SUGGESTIONS, not REPOST
-        for item in data["items"]:
+        for item in data["image_reports"]:
             assert item["category"] == 4
 
     async def test_mod_with_report_view_sees_all_categories(
@@ -512,7 +512,7 @@ class TestAdminReportsList:
 
         assert response.status_code == 200
         data = response.json()
-        categories = {item["category"] for item in data["items"]}
+        categories = {item["category"] for item in data["image_reports"]}
         assert 1 in categories  # REPOST
         assert 4 in categories  # TAG_SUGGESTIONS
 

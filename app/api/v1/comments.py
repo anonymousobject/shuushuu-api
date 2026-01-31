@@ -12,13 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import CommentSortParams, PaginationParams
-from app.config import AdminActionType
+from app.config import AdminActionType, ReportStatus
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Comments, Images, Users
 from app.models.admin_action import AdminActions
+from app.models.comment_report import CommentReports
 from app.models.permissions import UserGroups
 from app.schemas.comment import (
     CommentCreate,
@@ -27,6 +28,7 @@ from app.schemas.comment import (
     CommentStatsResponse,
     CommentUpdate,
 )
+from app.schemas.comment_report import CommentReportCreate, CommentReportResponse
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -582,3 +584,76 @@ async def delete_comment(
     comment = result.scalar_one()
 
     return CommentResponse.model_validate(comment)
+
+
+@router.post("/{comment_id}/report", response_model=CommentReportResponse, status_code=201)
+async def report_comment(
+    comment_id: int,
+    report_data: CommentReportCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+    db: AsyncSession = Depends(get_db),
+) -> CommentReportResponse:
+    """
+    Report a comment for rule violations.
+
+    Categories:
+    - 1: Rule Violation (harassment, illegal content, etc.)
+    - 2: Spam
+    - 127: Other
+
+    Rate limit: One pending report per user per comment.
+    """
+    # Check comment exists and is not deleted
+    result = await db.execute(
+        select(Comments).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+    )
+    comment = result.scalar_one_or_none()
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment.deleted:
+        raise HTTPException(status_code=400, detail="Cannot report a deleted comment")
+
+    # Use Redis lock to prevent race conditions on duplicate reports
+    lock_key = f"lock:report_comment:{comment_id}:{current_user.user_id}"
+
+    # Acquire lock with a short timeout
+    async with redis_client.lock(lock_key, blocking_timeout=5):
+        # Check for existing pending report from this user (double-checked inside lock)
+        result = await db.execute(
+            select(CommentReports).where(
+                CommentReports.comment_id == comment_id,  # type: ignore[arg-type]
+                CommentReports.user_id == current_user.user_id,  # type: ignore[arg-type]
+                CommentReports.status == ReportStatus.PENDING,  # type: ignore[arg-type]
+            )
+        )
+        if result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=409,
+                detail="You already have a pending report on this comment",
+            )
+
+        # Create the report
+        report = CommentReports(
+            comment_id=comment_id,
+            user_id=current_user.user_id,
+            category=report_data.category,
+            reason_text=report_data.reason_text,
+            status=ReportStatus.PENDING,
+        )
+        db.add(report)
+        await db.commit()
+        await db.refresh(report)
+
+    return CommentReportResponse(
+        report_id=report.report_id or 0,
+        comment_id=report.comment_id,
+        image_id=comment.image_id,
+        user_id=report.user_id,
+        category=report.category,
+        reason_text=report.reason_text,
+        status=report.status,
+        created_at=report.created_at,  # type: ignore[arg-type]
+    )

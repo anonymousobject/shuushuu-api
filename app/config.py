@@ -220,6 +220,12 @@ class ReportStatus:
     REVIEWED = 1
     DISMISSED = 2
 
+    LABELS = {
+        PENDING: "Pending",
+        REVIEWED: "Reviewed",
+        DISMISSED: "Dismissed",
+    }
+
 
 class ReviewStatus:
     """Review session status constants"""
@@ -295,6 +301,20 @@ class ReportCategory:
         SPAM: "Spam",
         TAG_SUGGESTIONS: "Tag Suggestions",  # Updated label
         SPOILER: "Spoiler",
+        OTHER: "Other",
+    }
+
+
+class CommentReportCategory:
+    """Comment report category constants"""
+
+    RULE_VIOLATION = 1
+    SPAM = 2
+    OTHER = 127
+
+    LABELS = {
+        RULE_VIOLATION: "Rule Violation",
+        SPAM: "Spam",
         OTHER: "Other",
     }
 
