@@ -553,3 +553,31 @@ class TestAdminCommentReportEndpoints:
         )
 
         assert response.status_code == 403
+
+    async def test_delete_comment_via_report_unauthorized(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that delete via report requires REPORT_MANAGE permission."""
+        user, password = await create_auth_user(db_session, "nonadmin2", "nonadmin2@test.com")
+        # No permission granted
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.SPAM,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        token = await login_user(client, user.username, password)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/comments/{report.report_id}/delete",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403

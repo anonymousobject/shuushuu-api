@@ -4,7 +4,7 @@ Pydantic schemas for comment reporting.
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.config import CommentReportCategory
+from app.config import CommentReportCategory, ReportStatus
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.common import UserSummary
 
@@ -64,8 +64,7 @@ class CommentReportResponse(BaseModel):
         """Set computed label fields."""
         if self.category is not None:
             self.category_label = CommentReportCategory.LABELS.get(self.category, "Unknown")
-        status_labels = {0: "Pending", 1: "Reviewed", 2: "Dismissed"}
-        self.status_label = status_labels.get(self.status, "Unknown")
+        self.status_label = ReportStatus.LABELS.get(self.status, "Unknown")
 
 
 class CommentReportListItem(CommentReportResponse):

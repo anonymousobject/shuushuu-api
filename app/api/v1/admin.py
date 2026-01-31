@@ -14,7 +14,7 @@ These endpoints require admin-level permissions and provide:
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
@@ -1049,6 +1049,12 @@ async def dismiss_comment_report(
     if report.status != ReportStatus.PENDING:
         raise HTTPException(status_code=400, detail="Report has already been processed")
 
+    # Get comment for logging details
+    comment_result = await db.execute(
+        select(Comments).where(Comments.post_id == report.comment_id)  # type: ignore[arg-type]
+    )
+    comment = comment_result.scalar_one_or_none()
+
     # Update report
     report.status = ReportStatus.DISMISSED
     report.reviewed_by = current_user.user_id
@@ -1057,7 +1063,15 @@ async def dismiss_comment_report(
         report.admin_notes = request_data.admin_notes
 
     # Log action
-    details: dict[str, int | str] = {"comment_id": report.comment_id}
+    details: dict[str, Any] = {
+        "comment_id": report.comment_id,
+        "report_id": report.report_id,
+        "reporter_id": report.user_id,
+    }
+    if comment:
+        details["image_id"] = comment.image_id
+        details["post_text_preview"] = comment.post_text[:100] if comment.post_text else None
+
     if request_data and request_data.admin_notes:
         details["admin_notes"] = request_data.admin_notes
     action = AdminActions(
@@ -1110,6 +1124,9 @@ async def delete_comment_via_report(
     if comment.deleted:
         raise HTTPException(status_code=400, detail="Comment has already been deleted")
 
+    # Capture original text for logging
+    original_text = comment.post_text
+
     # Soft-delete the comment
     comment.deleted = True
     comment.post_text = "[deleted]"
@@ -1129,8 +1146,13 @@ async def delete_comment_via_report(
         report.admin_notes = request_data.admin_notes
 
     # Log action
-    details: dict[str, int | str] = {
+    details: dict[str, Any] = {
         "comment_id": report.comment_id,
+        "report_id": report.report_id,
+        "image_id": comment.image_id,
+        "reporter_id": report.user_id,
+        "original_user_id": comment.user_id,
+        "post_text_preview": original_text[:100] if original_text else None,
         "action": "delete_comment",
     }
     if request_data and request_data.admin_notes:

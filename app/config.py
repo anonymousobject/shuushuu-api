@@ -220,6 +220,12 @@ class ReportStatus:
     REVIEWED = 1
     DISMISSED = 2
 
+    LABELS = {
+        PENDING: "Pending",
+        REVIEWED: "Reviewed",
+        DISMISSED: "Dismissed",
+    }
+
 
 class ReviewStatus:
     """Review session status constants"""
