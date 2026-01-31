@@ -276,6 +276,7 @@ def setup_test_database():
     from app.models.character_source_link import CharacterSourceLinks  # noqa: F401
     from app.models.image_report_tag_suggestion import ImageReportTagSuggestions  # noqa: F401
     from app.models.image_status_history import ImageStatusHistory  # noqa: F401
+    from app.models.comment_report import CommentReports  # noqa: F401
 
     sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 

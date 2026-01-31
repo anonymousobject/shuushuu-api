@@ -632,7 +632,7 @@ async def report_comment(
     # Create the report
     report = CommentReports(
         comment_id=comment_id,
-        user_id=current_user.user_id,  # type: ignore[arg-type]
+        user_id=current_user.user_id,
         category=report_data.category,
         reason_text=report_data.reason_text,
         status=ReportStatus.PENDING,
@@ -644,7 +644,7 @@ async def report_comment(
     return CommentReportResponse(
         report_id=report.report_id or 0,
         comment_id=report.comment_id,
-        image_id=comment.image_id,
+        image_id=comment.image_id or 0,
         user_id=report.user_id,
         category=report.category,
         reason_text=report.reason_text,

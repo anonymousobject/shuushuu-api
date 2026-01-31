@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.config import ReportCategory
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+from app.schemas.comment_report import CommentReportListItem
 
 # ===== Tag Suggestion Schemas =====
 
@@ -120,6 +121,16 @@ class ReportListResponse(BaseModel):
     page: int
     per_page: int
     items: list[ReportResponse]
+
+
+class UnifiedReportListResponse(BaseModel):
+    """Response schema for unified report listing (both image and comment reports)."""
+
+    image_reports: list[ReportResponse]
+    comment_reports: list[CommentReportListItem]
+    total: int
+    page: int
+    per_page: int
 
 
 class ReportDismissRequest(BaseModel):
