@@ -644,7 +644,7 @@ async def report_comment(
     return CommentReportResponse(
         report_id=report.report_id or 0,
         comment_id=report.comment_id,
-        image_id=comment.image_id or 0,
+        image_id=comment.image_id,
         user_id=report.user_id,
         category=report.category,
         reason_text=report.reason_text,

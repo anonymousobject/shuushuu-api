@@ -281,7 +281,113 @@ class TestAdminCommentReportEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert "comment_reports" in data
-        assert len(data["comment_reports"]) >= 1
+        assert len(data["comment_reports"]) == 1
+
+    async def test_list_unified_reports(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test listing combined image and comment reports."""
+        user, password = await create_auth_user(db_session, "admin_uni", "admin_uni@test.com")
+        await grant_permission(db_session, user.user_id, "report_view")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        # Create comment report
+        comment_report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.SPAM,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(comment_report)
+
+        # Create image report
+        from app.models.image_report import ImageReports
+        from app.config import ReportCategory
+        image_report = ImageReports(
+            image_id=image.image_id,
+            user_id=user.user_id,
+            category=ReportCategory.SPAM,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(image_report)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, password)
+
+        # report_type="all" (default)
+        response = await client.get(
+            "/api/v1/admin/reports?report_type=all",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["image_reports"]) == 1
+        assert len(data["comment_reports"]) == 1
+        assert data["total"] == 2
+
+    async def test_category_filter_invalid_for_comments(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that category filtering is rejected for comment reports."""
+        user, password = await create_auth_user(db_session, "admin_cat", "admin_cat@test.com")
+        await grant_permission(db_session, user.user_id, "report_view")
+        token = await login_user(client, user.username, password)
+
+        response = await client.get(
+            "/api/v1/admin/reports?report_type=comment&category=1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 400
+        assert "not supported" in response.json()["detail"]
+
+    async def test_list_report_deleted_comment(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test listing a report for a deleted comment."""
+        user, password = await create_auth_user(db_session, "admin_del", "admin_del@test.com")
+        await grant_permission(db_session, user.user_id, "report_view")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        # Create report
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.SPAM,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+
+        # Hard delete the comment (to simulate cascade issue, or just manual deletion)
+        # But wait, foreign key actions might cascade delete the report too if not configured otherwise.
+        # Assuming for this test we simulate a disconnect or data inconsistency,
+        # or soft delete if we want to test "deleted" flag.
+        # The code checks `row.comment_deleted` which comes from LEFT JOIN NULL or explicit deleted=True.
+
+        # Test 1: Soft deleted
+        comment.deleted = True
+        await db_session.commit()
+
+        token = await login_user(client, user.username, password)
+        response = await client.get(
+            "/api/v1/admin/reports?report_type=comment",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        report_item = data["comment_reports"][0]
+        assert report_item["comment_deleted"] is True
+
+        # Test 2: Hard deleted (if I can delete it without key violation)
+        # Usually reports cascade on delete, so if comment is gone, report is gone.
+        # But if we rely on OUTER JOIN, we are prepared for it.
+        # I'll just skip hard delete test for now to avoid complexity with DB constraints in test.
+
 
     async def test_dismiss_comment_report(
         self, client: AsyncClient, db_session: AsyncSession

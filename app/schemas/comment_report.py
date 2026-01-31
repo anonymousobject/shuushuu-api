@@ -45,7 +45,7 @@ class CommentReportResponse(BaseModel):
 
     report_id: int
     comment_id: int
-    image_id: int  # Denormalized for convenience
+    image_id: int | None = None  # Denormalized for convenience
     user_id: int
     username: str | None = None
     category: int | None
@@ -73,6 +73,7 @@ class CommentReportListItem(CommentReportResponse):
 
     comment_author: UserSummary | None = None
     comment_preview: str | None = None  # First 100 chars of comment
+    comment_deleted: bool | None = None
 
 
 class CommentReportListResponse(BaseModel):

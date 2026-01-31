@@ -313,6 +313,22 @@ class CommentReportCategory:
     }
 
 
+class ReportActionType:
+    """Action types for report resolution."""
+
+    DISMISSED = 0
+    CONTENT_DELETED = 1
+    CONTENT_DELETED_WARNED = 2
+    CONTENT_DELETED_SUSPENDED = 3
+
+    LABELS = {
+        DISMISSED: "Dismissed",
+        CONTENT_DELETED: "Content Deleted",
+        CONTENT_DELETED_WARNED: "Content Deleted & User Warned",
+        CONTENT_DELETED_SUSPENDED: "Content Deleted & User Suspended",
+    }
+
+
 class PermissionLevel:
     """User permission levels"""
 

@@ -851,6 +851,13 @@ async def list_reports(
         if report_type == "all":
             report_type = "image"
 
+    # Category filtering only applies to image reports
+    if report_type == "comment" and category is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Category filtering is not supported for comment reports",
+        )
+
     offset = (page - 1) * per_page
     image_reports: list[ReportResponse] = []
     comment_reports: list[CommentReportListItem] = []
@@ -939,9 +946,10 @@ async def list_reports(
                 Comments.post_text,
                 Comments.user_id.label("comment_user_id"),  # type: ignore[attr-defined]
                 Comments.image_id,
+                Comments.deleted.label("comment_deleted"),  # type: ignore[attr-defined]
             )
             .join(Users, Users.user_id == CommentReports.user_id)
-            .join(Comments, Comments.post_id == CommentReports.comment_id)
+            .outerjoin(Comments, Comments.post_id == CommentReports.comment_id)
         )
         if status_filter is not None:
             query = query.where(CommentReports.status == status_filter)
@@ -953,7 +961,9 @@ async def list_reports(
         comment_rows = result.all()
 
         # Collect comment author user IDs to fetch usernames
-        comment_author_ids = {row.comment_user_id for row in comment_rows}
+        comment_author_ids = {
+            row.comment_user_id for row in comment_rows if row.comment_user_id is not None
+        }
         author_usernames: dict[int, str] = {}
         if comment_author_ids:
             author_result = await db.execute(
@@ -969,11 +979,15 @@ async def list_reports(
             post_text = row.post_text
             comment_user_id = row.comment_user_id
             image_id = row.image_id
+            # If comment is hard-deleted (NULL from outer join), it's "deleted"
+            comment_deleted = row.comment_deleted if row.comment_deleted is not None else True
 
-            comment_author = UserSummary(
-                user_id=comment_user_id,
-                username=author_usernames.get(comment_user_id, "Unknown"),
-            )
+            comment_author = None
+            if comment_user_id:
+                comment_author = UserSummary(
+                    user_id=comment_user_id,
+                    username=author_usernames.get(comment_user_id, "Unknown"),
+                )
             comment_preview = post_text[:100] if post_text else None
 
             item = CommentReportListItem(
@@ -991,6 +1005,7 @@ async def list_reports(
                 admin_notes=report.admin_notes,
                 comment_author=comment_author,
                 comment_preview=comment_preview,
+                comment_deleted=comment_deleted,
             )
             comment_reports.append(item)
 
@@ -1109,7 +1124,7 @@ async def delete_comment_via_report(
         details["admin_notes"] = request_data.admin_notes
     action = AdminActions(
         user_id=current_user.user_id,
-        action_type=AdminActionType.REPORT_ACTION,
+        action_type=AdminActionType.COMMENT_DELETE,
         details=details,
     )
     db.add(action)
