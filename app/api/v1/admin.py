@@ -14,7 +14,7 @@ These endpoints require admin-level permissions and provide:
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
@@ -781,7 +781,7 @@ async def change_image_status(
 async def list_reports(
     current_user: Annotated[Users, Depends(get_current_user)],
     report_type: Annotated[
-        str,
+        Literal["image", "comment", "all"],
         Query(description="Report type filter: 'image', 'comment', or 'all'"),
     ] = "all",
     status_filter: Annotated[
@@ -805,9 +805,16 @@ async def list_reports(
     - 'comment': Only comment reports
     - 'all': Both types (default)
 
-    When 'all' is selected, pagination applies to each report type independently.
-    Page N returns the Nth page of image reports AND the Nth page of comment reports.
-    Total count is the sum of both types.
+    When 'all' is selected, image and comment reports are paginated independently.
+    Page N returns the Nth page of image reports AND the Nth page of comment reports,
+    each page containing up to `per_page` items per type. This means a single response
+    can contain up to `2 * per_page` items (if both types have enough data), or fewer
+    items if one type has fewer results or has been exhausted.
+
+    In this mode, the `total` field represents the sum of matching image and comment
+    reports across all pages. It does NOT represent the number of items on any single
+    paginated page, and `per_page` is applied per report type rather than to the
+    combined result set.
 
     Requires REPORT_VIEW permission OR TAG_SUGGESTION_APPLY permission.
     Users with only TAG_SUGGESTION_APPLY can only see TAG_SUGGESTIONS reports.
@@ -981,7 +988,7 @@ async def list_reports(
             comment_user_id = row.comment_user_id
             image_id = row.image_id
             # If comment is hard-deleted (NULL from outer join), it's "deleted"
-            comment_deleted = row.comment_deleted if row.comment_deleted is not None else True
+            comment_deleted = bool(row.comment_deleted) if row.comment_deleted is not None else True
 
             comment_author = None
             if comment_user_id:
@@ -1128,7 +1135,10 @@ async def delete_comment_via_report(
         report.admin_notes = request_data.admin_notes
 
     # Log action
-    details = {"comment_id": report.comment_id, "action": "delete_comment"}
+    details: dict[str, int | str] = {
+        "comment_id": report.comment_id,
+        "action": "delete_comment",
+    }
     if request_data and request_data.admin_notes:
         details["admin_notes"] = request_data.admin_notes
     action = AdminActions(

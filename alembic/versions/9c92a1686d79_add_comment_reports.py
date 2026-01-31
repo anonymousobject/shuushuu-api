@@ -69,6 +69,9 @@ def upgrade() -> None:
     op.create_index(
         "idx_comment_reports_status_category", "comment_reports", ["status", "category"]
     )
+    # This index helps enforce "one pending report per user per comment"
+    # Note: MariaDB doesn't support partial unique indexes (WHERE status=0) easily in all versions
+    # so we rely on the application check + this index for speed.
     op.create_index(
         "idx_comment_reports_pending_per_user",
         "comment_reports",

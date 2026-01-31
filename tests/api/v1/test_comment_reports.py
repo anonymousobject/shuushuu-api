@@ -335,6 +335,9 @@ class TestAdminCommentReportEndpoints:
         comment = await create_test_comment(db_session, user.user_id, image.image_id)
 
         # Create two reports with different categories
+        # Note: We must use different users because a single user cannot have multiple
+        # pending reports on the same comment (enforced by application logic)
+
         report1 = CommentReports(
             comment_id=comment.post_id,
             user_id=user.user_id,
@@ -343,11 +346,14 @@ class TestAdminCommentReportEndpoints:
         )
         db_session.add(report1)
 
-        # We need a different user or just another report (same user is fine for list test)
+        # Determine another user ID to use (could create one, or just pick an arbitrary ID
+        # since we're inserting directly into DB and foreign keys might allow existing users)
+        # But to be safe and clean, let's create a second user.
+        user2, _ = await create_auth_user(db_session, "admin_cat_ok2", "admin_cat_ok2@test.com")
+
         report2 = CommentReports(
             comment_id=comment.post_id,
-            user_id=user.user_id,
-            category=CommentReportCategory.SPAM,
+            user_id=user2.user_id,
             status=ReportStatus.PENDING,
         )
         db_session.add(report2)
@@ -481,6 +487,43 @@ class TestAdminCommentReportEndpoints:
         # Verify report was marked reviewed
         await db_session.refresh(report)
         assert report.status == ReportStatus.REVIEWED
+
+    async def test_action_on_processed_report(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that actions cannot be taken on already processed reports."""
+        user, password = await create_auth_user(db_session, "admin4", "admin4@test.com")
+        await grant_permission(db_session, user.user_id, "report_manage")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        # Create a report that is already reviewed
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.RULE_VIOLATION,
+            status=ReportStatus.REVIEWED,
+        )
+        db_session.add(report)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, password)
+
+        # Try to dismiss
+        response = await client.post(
+            f"/api/v1/admin/reports/comments/{report.report_id}/dismiss",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 400
+        assert "already been processed" in response.json()["detail"]
+
+        # Try to delete
+        response = await client.post(
+            f"/api/v1/admin/reports/comments/{report.report_id}/delete",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 400
+        assert "already been processed" in response.json()["detail"]
 
     async def test_dismiss_requires_permission(
         self, client: AsyncClient, db_session: AsyncSession
