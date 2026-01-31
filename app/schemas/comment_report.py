@@ -76,15 +76,6 @@ class CommentReportListItem(CommentReportResponse):
     comment_deleted: bool | None = None
 
 
-class CommentReportListResponse(BaseModel):
-    """Response schema for listing comment reports."""
-
-    total: int
-    page: int
-    per_page: int
-    items: list[CommentReportListItem]
-
-
 class CommentReportDismissRequest(BaseModel):
     """Schema for dismissing a comment report."""
 

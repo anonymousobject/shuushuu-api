@@ -18,7 +18,7 @@ from typing import Annotated
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
@@ -805,6 +805,10 @@ async def list_reports(
     - 'comment': Only comment reports
     - 'all': Both types (default)
 
+    When 'all' is selected, pagination applies to each report type independently.
+    Page N returns the Nth page of image reports AND the Nth page of comment reports.
+    Total count is the sum of both types.
+
     Requires REPORT_VIEW permission OR TAG_SUGGESTION_APPLY permission.
     Users with only TAG_SUGGESTION_APPLY can only see TAG_SUGGESTIONS reports.
     """
@@ -850,13 +854,6 @@ async def list_reports(
         # For "all" requests, taggers only get image reports (no comment reports)
         if report_type == "all":
             report_type = "image"
-
-    # Category filtering only applies to image reports
-    if report_type == "comment" and category is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="Category filtering is not supported for comment reports",
-        )
 
     offset = (page - 1) * per_page
     image_reports: list[ReportResponse] = []
@@ -931,6 +928,8 @@ async def list_reports(
         base_query = select(CommentReports)
         if status_filter is not None:
             base_query = base_query.where(CommentReports.status == status_filter)  # type: ignore[arg-type]
+        if category is not None:
+            base_query = base_query.where(CommentReports.category == category)  # type: ignore[arg-type]
 
         # Count total rows
         count_query = select(func.count()).select_from(base_query.subquery())
@@ -953,6 +952,8 @@ async def list_reports(
         )
         if status_filter is not None:
             query = query.where(CommentReports.status == status_filter)
+        if category is not None:
+            query = query.where(CommentReports.category == category)
 
         query = query.order_by(desc(CommentReports.created_at))  # type: ignore[arg-type]
         query = query.offset(offset).limit(per_page)
@@ -1110,6 +1111,14 @@ async def delete_comment_via_report(
 
     # Soft-delete the comment
     comment.deleted = True
+    comment.post_text = "[deleted]"
+
+    # Detach child comments (SET NULL for replies)
+    await db.execute(
+        update(Comments)
+        .where(Comments.parent_comment_id == report.comment_id)  # type: ignore[arg-type]
+        .values(parent_comment_id=None)
+    )
 
     # Update report
     report.status = ReportStatus.REVIEWED

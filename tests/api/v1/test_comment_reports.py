@@ -11,9 +11,9 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import CommentReportCategory, ImageStatus, ReportStatus
+from app.config import CommentReportCategory, ImageStatus, ReportCategory, ReportStatus
 from app.core.security import get_password_hash
-from app.models import Comments, CommentReports, Images, Users
+from app.models import Comments, CommentReports, ImageReports, Images, Users
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 
 
@@ -302,8 +302,6 @@ class TestAdminCommentReportEndpoints:
         db_session.add(comment_report)
 
         # Create image report
-        from app.models.image_report import ImageReports
-        from app.config import ReportCategory
         image_report = ImageReports(
             image_id=image.image_id,
             user_id=user.user_id,
@@ -327,21 +325,46 @@ class TestAdminCommentReportEndpoints:
         assert len(data["comment_reports"]) == 1
         assert data["total"] == 2
 
-    async def test_category_filter_invalid_for_comments(
+    async def test_list_comment_reports_with_category(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that category filtering is rejected for comment reports."""
-        user, password = await create_auth_user(db_session, "admin_cat", "admin_cat@test.com")
+        """Test listing comment reports with category filter."""
+        user, password = await create_auth_user(db_session, "admin_cat_ok", "admin_cat_ok@test.com")
         await grant_permission(db_session, user.user_id, "report_view")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(db_session, user.user_id, image.image_id)
+
+        # Create two reports with different categories
+        report1 = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.RULE_VIOLATION,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report1)
+
+        # We need a different user or just another report (same user is fine for list test)
+        report2 = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.SPAM,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report2)
+        await db_session.commit()
+
         token = await login_user(client, user.username, password)
 
+        # Filter by RULE_VIOLATION
         response = await client.get(
-            "/api/v1/admin/reports?report_type=comment&category=1",
+            f"/api/v1/admin/reports?report_type=comment&category={CommentReportCategory.RULE_VIOLATION}",
             headers={"Authorization": f"Bearer {token}"},
         )
 
-        assert response.status_code == 400
-        assert "not supported" in response.json()["detail"]
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["comment_reports"]) == 1
+        assert data["comment_reports"][0]["category"] == CommentReportCategory.RULE_VIOLATION
 
     async def test_list_report_deleted_comment(
         self, client: AsyncClient, db_session: AsyncSession

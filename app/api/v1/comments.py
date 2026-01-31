@@ -629,6 +629,11 @@ async def report_comment(
             detail="You already have a pending report on this comment",
         )
 
+    # Note: There is a potential race condition here if two requests come in exactly simultaneously.
+    # We rely on the application-level check above. A strict fix would require a unique constraint
+    # on (comment_id, user_id) where status=PENDING, or using serializable isolation level/locking.
+    # Given the low impact of duplicate reports (they can be dismissed), this is acceptable for now.
+
     # Create the report
     report = CommentReports(
         comment_id=comment_id,
