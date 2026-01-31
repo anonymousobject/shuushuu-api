@@ -591,6 +591,7 @@ async def report_comment(
     comment_id: int,
     report_data: CommentReportCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
     db: AsyncSession = Depends(get_db),
 ) -> CommentReportResponse:
     """
@@ -615,36 +616,36 @@ async def report_comment(
     if comment.deleted:
         raise HTTPException(status_code=400, detail="Cannot report a deleted comment")
 
-    # Check for existing pending report from this user
-    result = await db.execute(
-        select(CommentReports).where(
-            CommentReports.comment_id == comment_id,  # type: ignore[arg-type]
-            CommentReports.user_id == current_user.user_id,  # type: ignore[arg-type]
-            CommentReports.status == ReportStatus.PENDING,  # type: ignore[arg-type]
-        )
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=409,
-            detail="You already have a pending report on this comment",
-        )
+    # Use Redis lock to prevent race conditions on duplicate reports
+    lock_key = f"lock:report_comment:{comment_id}:{current_user.user_id}"
 
-    # Note: There is a potential race condition here if two requests come in exactly simultaneously.
-    # We rely on the application-level check above. A strict fix would require a unique constraint
-    # on (comment_id, user_id) where status=PENDING, or using serializable isolation level/locking.
-    # Given the low impact of duplicate reports (they can be dismissed), this is acceptable for now.
+    # Acquire lock with a short timeout
+    async with redis_client.lock(lock_key, blocking_timeout=5):
+        # Check for existing pending report from this user (double-checked inside lock)
+        result = await db.execute(
+            select(CommentReports).where(
+                CommentReports.comment_id == comment_id,  # type: ignore[arg-type]
+                CommentReports.user_id == current_user.user_id,  # type: ignore[arg-type]
+                CommentReports.status == ReportStatus.PENDING,  # type: ignore[arg-type]
+            )
+        )
+        if result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=409,
+                detail="You already have a pending report on this comment",
+            )
 
-    # Create the report
-    report = CommentReports(
-        comment_id=comment_id,
-        user_id=current_user.user_id,
-        category=report_data.category,
-        reason_text=report_data.reason_text,
-        status=ReportStatus.PENDING,
-    )
-    db.add(report)
-    await db.commit()
-    await db.refresh(report)
+        # Create the report
+        report = CommentReports(
+            comment_id=comment_id,
+            user_id=current_user.user_id,
+            category=report_data.category,
+            reason_text=report_data.reason_text,
+            status=ReportStatus.PENDING,
+        )
+        db.add(report)
+        await db.commit()
+        await db.refresh(report)
 
     return CommentReportResponse(
         report_id=report.report_id or 0,

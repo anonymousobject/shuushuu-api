@@ -581,3 +581,56 @@ class TestAdminCommentReportEndpoints:
         )
 
         assert response.status_code == 403
+
+    async def test_list_unified_reports_pagination(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test unified report pagination with report_type='all'."""
+        user, password = await create_auth_user(db_session, "admin_pag", "admin_pag@test.com")
+        await grant_permission(db_session, user.user_id, "report_view")
+        image = await create_test_image(db_session, user.user_id)
+
+        # Create 2 comment reports
+        c1 = await create_test_comment(db_session, user.user_id, image.image_id, "c1")
+        c2 = await create_test_comment(db_session, user.user_id, image.image_id, "c2")
+
+        cr1 = CommentReports(comment_id=c1.post_id, user_id=user.user_id, status=ReportStatus.PENDING)
+        cr2 = CommentReports(comment_id=c2.post_id, user_id=user.user_id, status=ReportStatus.PENDING)
+        db_session.add(cr1)
+        db_session.add(cr2)
+
+        # Create 2 image reports
+        user2, _ = await create_auth_user(db_session, "u2", "u2@test.com")
+
+        ir1 = ImageReports(image_id=image.image_id, user_id=user.user_id, status=ReportStatus.PENDING)
+        image2 = await create_test_image(db_session, user2.user_id)
+        ir2 = ImageReports(image_id=image2.image_id, user_id=user2.user_id, status=ReportStatus.PENDING)
+
+        db_session.add(ir1)
+        db_session.add(ir2)
+        await db_session.commit()
+
+        token = await login_user(client, user.username, password)
+
+        # Request page 1 with per_page=1
+        # Expect: 1 image report, 1 comment report. Total=4.
+        response = await client.get(
+            "/api/v1/admin/reports?report_type=all&page=1&per_page=1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["image_reports"]) == 1
+        assert len(data["comment_reports"]) == 1
+        assert data["total"] == 4
+
+        # Request page 2 with per_page=1
+        # Expect: the other image report, the other comment report. Total=4.
+        response = await client.get(
+            "/api/v1/admin/reports?report_type=all&page=2&per_page=1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["image_reports"]) == 1
+        assert len(data["comment_reports"]) == 1
