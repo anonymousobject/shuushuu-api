@@ -11,11 +11,20 @@ These are generally simple utility tables with minimal relationships.
 """
 
 from datetime import datetime
+from enum import Enum
 
 from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
 
 # ===== Banners =====
+
+
+class BannerSize(str, Enum):
+    """Banner size variants."""
+
+    small = "small"
+    medium = "medium"
+    large = "large"
 
 
 class BannerBase(SQLModel):
@@ -25,15 +34,23 @@ class BannerBase(SQLModel):
     These fields are safe to expose via the API.
     """
 
-    path: str = Field(default="", max_length=255)
-    author: str = Field(default="", max_length=255)
-    leftext: str = Field(default="png", max_length=3)
-    midext: str = Field(default="png", max_length=3)
-    rightext: str = Field(default="png", max_length=3)
-    full: int = Field(default=0)
-    event_id: int = Field(default=0)
-    active: int = Field(default=1)
-    date: datetime | None = Field(default=None)
+    name: str = Field(max_length=255)
+    author: str | None = Field(default=None, max_length=255)
+
+    size: BannerSize = Field(default=BannerSize.medium)
+
+    # Image paths (relative to banner directory)
+    full_image: str | None = Field(default=None, max_length=255)
+    left_image: str | None = Field(default=None, max_length=255)
+    middle_image: str | None = Field(default=None, max_length=255)
+    right_image: str | None = Field(default=None, max_length=255)
+
+    # Theme compatibility
+    supports_dark: bool = Field(default=True)
+    supports_light: bool = Field(default=True)
+
+    # State
+    active: bool = Field(default=True)
 
 
 class Banners(BannerBase, table=True):
@@ -48,8 +65,8 @@ class Banners(BannerBase, table=True):
     # Primary key
     banner_id: int | None = Field(default=None, primary_key=True)
 
-    # Override to add server default
-    date: datetime | None = Field(
+    # Timestamp
+    created_at: datetime | None = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
     )
 

@@ -6,7 +6,7 @@ Add a rotating, randomized banner system to the image board. Banners rotate ever
 
 ## Requirements
 
-- Banners rotate randomly every 10-15 minutes (cached)
+- Banners rotate randomly every 10-15 minutes (cached). Prefer adding small TTL jitter to avoid synchronized expiry.
 - Theme compatibility: banners support dark theme, light theme, or both
 - Size variants: small, medium, large (intrinsic to banner)
 - Three-part banner support: left + middle + right images with spacing
@@ -145,7 +145,9 @@ banner:current:light:large
 
 ### TTL
 
-10 minutes (configurable via `settings.BANNER_CACHE_TTL`)
+10 minutes base (configurable via `settings.BANNER_CACHE_TTL`).
+
+Optional jitter (configurable via `settings.BANNER_CACHE_TTL_JITTER`) should be added to reduce cache stampedes and to better match the “10–15 minutes” requirement.
 
 ### Selection Logic
 
@@ -181,8 +183,18 @@ async def get_current_banner(
 
     # Cache and return
     response = BannerResponse.from_banner(selected)
-    await redis.setex(cache_key, settings.BANNER_CACHE_TTL, response.model_dump_json())
+    ttl = settings.BANNER_CACHE_TTL + random.randint(0, settings.BANNER_CACHE_TTL_JITTER)
+    await redis.setex(cache_key, ttl, response.model_dump_json())
     return response
+
+### Banner Layout Validation
+
+Banner rows must be valid:
+
+- Full banner: `full_image` set AND `left_image/middle_image/right_image` all null
+- Three-part banner: `left_image/middle_image/right_image` all set AND `full_image` null
+
+Invalid rows should be ignored by selection (and treated as if they do not exist).
 ```
 
 ### Cache Invalidation
@@ -231,6 +243,7 @@ def full_image_url(self) -> str | None:
 # In app/config.py
 BANNER_BASE_URL: str = Field(default="/static/banners")
 BANNER_CACHE_TTL: int = Field(default=600)  # 10 minutes
+BANNER_CACHE_TTL_JITTER: int = Field(default=300)  # up to +5 minutes
 ```
 
 ## Migration Strategy

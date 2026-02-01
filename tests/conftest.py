@@ -477,6 +477,37 @@ async def mock_redis():
     return mock
 
 
+@pytest.fixture
+async def redis_client():
+    """Real Redis client for tests that require Redis functionality.
+
+    Defaults to localhost:6379 DB 15 (dedicated to tests).
+
+    Set env vars to customize:
+    - TEST_REDIS_HOST (default: localhost)
+    - TEST_REDIS_PORT (default: 6379)
+    - TEST_REDIS_DB (default: 15)
+    """
+    import redis.asyncio as redis
+
+    host = os.getenv("TEST_REDIS_HOST", "localhost")
+    port = int(os.getenv("TEST_REDIS_PORT", "6379"))
+    db = int(os.getenv("TEST_REDIS_DB", "15"))
+
+    client = redis.Redis(host=host, port=port, db=db, decode_responses=True)
+
+    try:
+        await client.ping()
+    except Exception as exc:
+        await client.aclose()
+        pytest.skip(f"Redis not available at {host}:{port}/{db}: {exc}")
+
+    yield client
+
+    await client.flushdb()
+    await client.aclose()
+
+
 @pytest.fixture(scope="function")
 def app(db_session: AsyncSession, mock_redis) -> FastAPI:
     """
@@ -500,6 +531,24 @@ def app(db_session: AsyncSession, mock_redis) -> FastAPI:
 
 
 @pytest.fixture(scope="function")
+def app_real_redis(db_session: AsyncSession, redis_client) -> FastAPI:
+    """FastAPI app wired to the real Redis client (instead of mock_redis)."""
+
+    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    async def override_get_redis():
+        yield redis_client
+
+    main_app.dependency_overrides[get_db] = override_get_db
+    main_app.dependency_overrides[get_redis] = override_get_redis
+
+    yield main_app
+
+    main_app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="function")
 async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
     """
     Create async HTTP client for testing API endpoints.
@@ -511,6 +560,16 @@ async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
     """
     async with AsyncClient(
         transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        yield ac
+
+
+@pytest.fixture(scope="function")
+async def client_real_redis(app_real_redis: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+    """Async HTTP client using app_real_redis (real Redis override)."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_real_redis),
         base_url="http://test",
     ) as ac:
         yield ac

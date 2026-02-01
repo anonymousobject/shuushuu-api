@@ -17,11 +17,18 @@
 
 **Step 1: Write the test**
 
-Create a simple test to verify config fields exist (we'll test this manually since config is loaded at import time).
+Create `tests/unit/test_banner_config.py` to verify settings exist and defaults are sane.
 
-```bash
-# Verify current config loads without error
-uv run python -c "from app.config import settings; print('OK')"
+```python
+"""Tests for banner-related config settings."""
+
+from app.config import settings
+
+
+def test_banner_settings_defaults():
+    assert settings.BANNER_BASE_URL
+    assert settings.BANNER_CACHE_TTL >= 60
+    assert settings.BANNER_CACHE_TTL_JITTER >= 0
 ```
 
 **Step 2: Add banner configuration settings**
@@ -32,24 +39,19 @@ In `app/config.py`, find the `# Avatar Settings` section (around line 88) and ad
     # Banner Settings
     BANNER_BASE_URL: str = Field(default="/static/banners")
     BANNER_CACHE_TTL: int = Field(default=600)  # 10 minutes
+    BANNER_CACHE_TTL_JITTER: int = Field(default=300)  # up to +5 minutes (optional)
 ```
 
-**Step 3: Verify configuration loads**
+**Step 3: Run the test**
 
 ```bash
-uv run python -c "from app.config import settings; print(f'BANNER_BASE_URL={settings.BANNER_BASE_URL}'); print(f'BANNER_CACHE_TTL={settings.BANNER_CACHE_TTL}')"
-```
-
-Expected output:
-```
-BANNER_BASE_URL=/static/banners
-BANNER_CACHE_TTL=600
+uv run pytest tests/unit/test_banner_config.py -v
 ```
 
 **Step 4: Commit**
 
 ```bash
-git add app/config.py
+git add app/config.py tests/unit/test_banner_config.py
 git commit -m "feat(banners): add banner configuration settings"
 ```
 
@@ -113,6 +115,11 @@ class TestBannerModel:
         assert banner.middle_image == "middle.png"
         assert banner.right_image == "right.png"
         assert banner.full_image is None
+
+    def test_banner_allows_invalid_layout_in_db_model(self):
+        """DB model should allow rows; validation happens in schema/service."""
+        banner = Banners(name="invalid", left_image="left.png")
+        assert banner.left_image == "left.png"
 ```
 
 **Step 2: Run test to verify it fails**
@@ -203,7 +210,7 @@ git commit -m "feat(banners): update Banner model with size and theme support"
 
 ---
 
-## Task 3: Create Banner Schema
+## Task 3: Create Banner Schema (with layout validation)
 
 **Files:**
 - Create: `app/schemas/banner.py`
@@ -282,7 +289,7 @@ Banner API schemas.
 Defines request/response models for banner endpoints.
 """
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, computed_field, model_validator
 
 from app.config import settings
 from app.models.misc import BannerSize
@@ -343,6 +350,22 @@ class BannerResponse(BaseModel):
         if self.right_image:
             return f"{settings.BANNER_BASE_URL}/{self.right_image}"
         return None
+
+    @model_validator(mode="after")
+    def _validate_layout(self):
+        """Ensure banner is either full-image OR three-part (all parts present)."""
+        has_full = self.full_image is not None
+        parts = [self.left_image, self.middle_image, self.right_image]
+        has_any_part = any(p is not None for p in parts)
+        has_all_parts = all(p is not None for p in parts)
+
+        if has_full and has_any_part:
+            raise ValueError("Banner cannot have both full_image and three-part images")
+        if not has_full and not has_any_part:
+            raise ValueError("Banner must have either full_image or three-part images")
+        if has_any_part and not has_all_parts:
+            raise ValueError("Three-part banner must include left_image, middle_image, and right_image")
+        return self
 ```
 
 **Step 4: Run test to verify it passes**
@@ -367,65 +390,65 @@ git commit -m "feat(banners): add BannerResponse schema with computed URLs"
 **Files:**
 - Create: `app/services/banner.py`
 
-**Step 1: Write failing test for banner service**
+**Step 1: Write failing integration test for banner service (real Redis + real DB)**
 
-Create `tests/unit/test_banner_service.py`:
+Because the service behavior is fundamentally “DB + Redis + schema validation”, avoid heavy mocking.
+
+Create `tests/integration/test_banner_service.py`:
 
 ```python
-"""Tests for Banner service."""
-
-import json
-from unittest.mock import AsyncMock, MagicMock
+"""Integration tests for Banner service."""
 
 import pytest
+import redis.asyncio as redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.misc import BannerSize, Banners
-from app.services.banner import get_current_banner, BANNER_CACHE_KEY_PREFIX
+from app.models.misc import Banners, BannerSize
+from app.services.banner import BANNER_CACHE_KEY_PREFIX, get_current_banner
 
 
+@pytest.mark.integration
 class TestGetCurrentBanner:
-    """Tests for get_current_banner function."""
+    async def test_cache_hit_returns_cached(self, db_session: AsyncSession, redis_client: redis.Redis):  # type: ignore[type-arg]
+        # Seed cache directly
+        cache_key = f"{BANNER_CACHE_KEY_PREFIX}dark:medium"
+        await redis_client.set(cache_key, '{"banner_id":1,"name":"cached","author":null,"size":"medium","supports_dark":true,"supports_light":true,"full_image":"x.png","left_image":null,"middle_image":null,"right_image":null}')
 
-    @pytest.mark.asyncio
-    async def test_returns_cached_banner_on_cache_hit(self):
-        """Test that cached banner is returned when present."""
-        # Setup
-        mock_redis = MagicMock()
-        cached_data = json.dumps({
-            "banner_id": 1,
-            "name": "cached_banner",
-            "author": None,
-            "size": "medium",
-            "full_image": "cached.png",
-            "left_image": None,
-            "middle_image": None,
-            "right_image": None,
-            "supports_dark": True,
-            "supports_light": True,
-        })
-        mock_redis.get = AsyncMock(return_value=cached_data)
-        mock_db = MagicMock()
-
-        # Execute
-        result = await get_current_banner("dark", "medium", mock_db, mock_redis)
-
-        # Verify
+        result = await get_current_banner("dark", "medium", db_session, redis_client)
         assert result.banner_id == 1
-        assert result.name == "cached_banner"
-        mock_redis.get.assert_called_once_with(f"{BANNER_CACHE_KEY_PREFIX}dark:medium")
-        # DB should not be queried on cache hit
-        mock_db.execute.assert_not_called()
+        assert result.name == "cached"
 
-    @pytest.mark.asyncio
-    async def test_cache_key_format(self):
-        """Test cache key is correctly formatted."""
-        assert BANNER_CACHE_KEY_PREFIX == "banner:current:"
+    async def test_cache_miss_selects_valid_banner_and_sets_cache(self, db_session: AsyncSession, redis_client: redis.Redis):  # type: ignore[type-arg]
+        banner = Banners(
+            name="db_banner",
+            size=BannerSize.medium,
+            supports_dark=True,
+            supports_light=True,
+            full_image="db.png",
+            active=True,
+        )
+        db_session.add(banner)
+        await db_session.commit()
+
+        result = await get_current_banner("dark", "medium", db_session, redis_client)
+        assert result.name == "db_banner"
+        assert await redis_client.exists(f"{BANNER_CACHE_KEY_PREFIX}dark:medium")
+
+    async def test_invalid_layout_rows_are_ignored(self, db_session: AsyncSession, redis_client: redis.Redis):  # type: ignore[type-arg]
+        # Invalid: only one part set
+        db_session.add(Banners(name="bad", size=BannerSize.medium, supports_dark=True, supports_light=True, left_image="left.png", active=True))
+        # Valid: full
+        db_session.add(Banners(name="good", size=BannerSize.medium, supports_dark=True, supports_light=True, full_image="ok.png", active=True))
+        await db_session.commit()
+
+        result = await get_current_banner("dark", "medium", db_session, redis_client)
+        assert result.name == "good"
 ```
 
 **Step 2: Run test to verify it fails**
 
 ```bash
-uv run pytest tests/unit/test_banner_service.py -v
+uv run pytest tests/integration/test_banner_service.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'app.services.banner'`
@@ -491,12 +514,10 @@ async def get_current_banner(
     cached = await redis_client.get(cache_key)
     if cached:
         try:
-            cached_str = cached.decode("utf-8") if isinstance(cached, bytes) else cached
-            data = json.loads(cached_str)
-            return BannerResponse.model_validate(data)
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            # Cache corrupted, fall through to database
-            pass
+            return BannerResponse.model_validate_json(cached)
+        except Exception:
+            # Cache corrupted/invalid schema/layout; fall through to DB.
+            await redis_client.delete(cache_key)
 
     # Cache miss - query database
     theme_filter = Banners.supports_dark if theme == "dark" else Banners.supports_light
@@ -514,18 +535,28 @@ async def get_current_banner(
             detail=f"No banners available for theme '{theme}' and size '{size}'",
         )
 
-    # Random selection
-    selected = random.choice(banners)
+    # Filter out invalid banner layouts (schema validator enforces full vs 3-part)
+    valid_responses: list[BannerResponse] = []
+    for banner in banners:
+        try:
+            valid_responses.append(BannerResponse.model_validate(banner))
+        except Exception:
+            continue
 
-    # Build response
-    response = BannerResponse.model_validate(selected)
+    if not valid_responses:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No valid banners available for theme '{theme}' and size '{size}'",
+        )
+
+    # Random selection
+    response = random.choice(valid_responses)
 
     # Cache the response
-    await redis_client.setex(
-        cache_key,
-        settings.BANNER_CACHE_TTL,
-        response.model_dump_json(),
-    )
+    ttl = settings.BANNER_CACHE_TTL
+    if settings.BANNER_CACHE_TTL_JITTER:
+        ttl += random.randint(0, settings.BANNER_CACHE_TTL_JITTER)
+    await redis_client.setex(cache_key, ttl, response.model_dump_json())
 
     return response
 
@@ -584,7 +615,7 @@ async def list_banners(
 **Step 4: Run test to verify it passes**
 
 ```bash
-uv run pytest tests/unit/test_banner_service.py -v
+uv run pytest tests/integration/test_banner_service.py -v
 ```
 
 Expected: PASS
@@ -592,9 +623,15 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add app/services/banner.py tests/unit/test_banner_service.py
+git add app/services/banner.py tests/integration/test_banner_service.py
 git commit -m "feat(banners): add banner service with Redis caching"
 ```
+
+**Note on Redis for tests:**
+
+- There is already a real Redis fixture under `tests/unit/conftest.py`, but API/integration tests should not rely on `tests/unit/` fixtures.
+- Add a top-level `redis_client` fixture in `tests/conftest.py` (or `tests/integration/conftest.py`) modeled after `tests/unit/conftest.py`, using `localhost:6379` and an isolated DB number (recommend `db=1`).
+- For API tests that need real Redis, create a separate `app_real_redis` / `client_real_redis` fixture that overrides `get_redis` to yield the real client (instead of `mock_redis`).
 
 ---
 
