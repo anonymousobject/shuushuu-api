@@ -241,7 +241,7 @@ def full_image_url(self) -> str | None:
 
 ```python
 # In app/config.py
-BANNER_BASE_URL: str = Field(default="/static/banners")
+BANNER_BASE_URL: str = Field(default="")  # Defaults to {IMAGE_BASE_URL}/images/banners
 BANNER_CACHE_TTL: int = Field(default=600)  # 10 minutes
 BANNER_CACHE_TTL_JITTER: int = Field(default=300)  # up to +5 minutes
 ```

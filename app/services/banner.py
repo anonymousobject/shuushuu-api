@@ -47,7 +47,11 @@ async def get_current_banner(
     cached = await redis_client.get(cache_key)
     if cached:
         cached_str = cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
-        return BannerResponse.model_validate_json(cached_str)
+        try:
+            return BannerResponse.model_validate_json(cached_str)
+        except Exception:
+            # Stale/invalid cache entry - delete and fall through to DB lookup
+            await redis_client.delete(cache_key)
 
     # Validate inputs minimally (API layer should also validate)
     if theme not in {"dark", "light"}:

@@ -88,5 +88,4 @@ __all__ = [
     # Banner schemas
     "BannerResponse",
     "BannerListResponse",
-    "BannerListResponse",
 ]
