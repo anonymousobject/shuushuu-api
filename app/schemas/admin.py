@@ -306,3 +306,31 @@ class ImageStatusResponse(BaseModel):
     status_updated: UTCDatetimeOptional = None
 
     model_config = {"from_attributes": True}
+
+
+# ===== Admin Suspension List Schemas =====
+
+
+class AdminSuspensionItem(BaseModel):
+    """Schema for a suspension item in the admin list."""
+
+    suspension_id: int
+    user_id: int
+    username: str
+    action: str
+    is_active: bool
+    actioned_at: UTCDatetime
+    actioned_by_id: int | None
+    actioned_by_username: str | None
+    reason: str | None
+    suspended_until: UTCDatetimeOptional = None
+
+
+class AdminSuspensionListResponse(BaseModel):
+    """Response schema for listing all suspensions across users."""
+
+    items: list[AdminSuspensionItem]
+    total: int
+    page: int
+    per_page: int
+    active_count: int

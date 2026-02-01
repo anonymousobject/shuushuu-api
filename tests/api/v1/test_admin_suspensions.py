@@ -878,3 +878,398 @@ class TestUserWarningAcknowledgement:
 
         response = await client.post("/api/v1/users/me/warnings/acknowledge")
         assert response.status_code == 401
+
+
+@pytest.mark.api
+class TestAdminSuspensionList:
+    """Tests for GET /api/v1/admin/suspensions endpoint."""
+
+    async def test_list_all_suspensions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test listing all suspension records across all users."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+
+        # Create multiple users with suspension records
+        user1 = await create_regular_user(db_session, username="suspended1")
+        user2 = await create_regular_user(db_session, username="warned1")
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Active suspension for user1
+        suspension1 = UserSuspensions(
+            user_id=user1.user_id,
+            action=SuspensionAction.SUSPENDED,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=1),
+            reason="Active suspension",
+            suspended_until=now + timedelta(days=7),
+        )
+        db_session.add(suspension1)
+
+        # Warning for user2
+        warning1 = UserSuspensions(
+            user_id=user2.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(hours=12),
+            reason="First warning",
+        )
+        db_session.add(warning1)
+
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            "/api/v1/admin/suspensions",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        assert data["page"] == 1
+        assert data["per_page"] == 20
+        assert data["active_count"] == 1  # Only the active suspension
+        assert len(data["items"]) == 2
+
+        # Verify item structure
+        item = data["items"][0]  # Most recent first
+        assert "suspension_id" in item
+        assert "user_id" in item
+        assert "username" in item
+        assert "action" in item
+        assert "is_active" in item
+        assert "actioned_at" in item
+        assert "actioned_by_id" in item
+        assert "actioned_by_username" in item
+        assert "reason" in item
+        assert "suspended_until" in item
+
+    async def test_filter_by_action_type_suspended(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering by action_type=suspended."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+
+        user1 = await create_regular_user(db_session, username="filteruser1")
+        user2 = await create_regular_user(db_session, username="filteruser2")
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Create suspension
+        suspension = UserSuspensions(
+            user_id=user1.user_id,
+            action=SuspensionAction.SUSPENDED,
+            actioned_by=admin.user_id,
+            actioned_at=now,
+            reason="Suspended user",
+            suspended_until=now + timedelta(days=7),
+        )
+        db_session.add(suspension)
+
+        # Create warning
+        warning = UserSuspensions(
+            user_id=user2.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            actioned_at=now,
+            reason="Warned user",
+        )
+        db_session.add(warning)
+
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            "/api/v1/admin/suspensions?action_type=suspended",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["items"][0]["action"] == "suspended"
+
+    async def test_filter_by_action_type_warning(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering by action_type=warning."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+
+        user1 = await create_regular_user(db_session, username="warnfilter1")
+        user2 = await create_regular_user(db_session, username="warnfilter2")
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Create suspension
+        suspension = UserSuspensions(
+            user_id=user1.user_id,
+            action=SuspensionAction.SUSPENDED,
+            actioned_by=admin.user_id,
+            actioned_at=now,
+            reason="Suspended",
+            suspended_until=now + timedelta(days=7),
+        )
+        db_session.add(suspension)
+
+        # Create warning
+        warning = UserSuspensions(
+            user_id=user2.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            actioned_at=now,
+            reason="Warned",
+        )
+        db_session.add(warning)
+
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            "/api/v1/admin/suspensions?action_type=warning",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["items"][0]["action"] == "warning"
+
+    async def test_filter_by_days_back(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering by days_back."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+
+        user = await create_regular_user(db_session, username="daysbackuser")
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Recent warning (1 day ago)
+        recent = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=1),
+            reason="Recent warning",
+        )
+        db_session.add(recent)
+
+        # Old warning (10 days ago)
+        old = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.WARNING,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=10),
+            reason="Old warning",
+        )
+        db_session.add(old)
+
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        # Filter to last 5 days
+        response = await client.get(
+            "/api/v1/admin/suspensions?days_back=5",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["items"][0]["reason"] == "Recent warning"
+
+    async def test_pagination(self, client: AsyncClient, db_session: AsyncSession):
+        """Test pagination of suspension list."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+
+        user = await create_regular_user(db_session, username="paginationuser")
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Create 5 warnings
+        for i in range(5):
+            warning = UserSuspensions(
+                user_id=user.user_id,
+                action=SuspensionAction.WARNING,
+                actioned_by=admin.user_id,
+                actioned_at=now - timedelta(hours=i),
+                reason=f"Warning {i + 1}",
+            )
+            db_session.add(warning)
+
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        # Get first page with 2 per page
+        response = await client.get(
+            "/api/v1/admin/suspensions?page=1&per_page=2",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 5
+        assert data["page"] == 1
+        assert data["per_page"] == 2
+        assert len(data["items"]) == 2
+
+        # Get second page
+        response = await client.get(
+            "/api/v1/admin/suspensions?page=2&per_page=2",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) == 2
+
+    async def test_is_active_calculation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that is_active correctly identifies active suspensions."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+
+        user1 = await create_regular_user(db_session, username="activeuser")
+        user2 = await create_regular_user(db_session, username="expireduser")
+        user3 = await create_regular_user(db_session, username="reactivateduser")
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Active suspension (not expired, not reactivated)
+        active_suspension = UserSuspensions(
+            user_id=user1.user_id,
+            action=SuspensionAction.SUSPENDED,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=1),
+            reason="Active",
+            suspended_until=now + timedelta(days=7),
+        )
+        db_session.add(active_suspension)
+
+        # Expired suspension
+        expired_suspension = UserSuspensions(
+            user_id=user2.user_id,
+            action=SuspensionAction.SUSPENDED,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=10),
+            reason="Expired",
+            suspended_until=now - timedelta(days=3),
+        )
+        db_session.add(expired_suspension)
+
+        # Reactivated suspension
+        reactivated_suspension = UserSuspensions(
+            user_id=user3.user_id,
+            action=SuspensionAction.SUSPENDED,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=5),
+            reason="Was reactivated",
+            suspended_until=now + timedelta(days=2),
+        )
+        db_session.add(reactivated_suspension)
+
+        reactivation = UserSuspensions(
+            user_id=user3.user_id,
+            action=SuspensionAction.REACTIVATED,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=3),
+        )
+        db_session.add(reactivation)
+
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            "/api/v1/admin/suspensions?action_type=suspended",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Find items by reason
+        items_by_reason = {item["reason"]: item for item in data["items"]}
+
+        assert items_by_reason["Active"]["is_active"] is True
+        assert items_by_reason["Expired"]["is_active"] is False
+        assert items_by_reason["Was reactivated"]["is_active"] is False
+
+        # active_count should be 1
+        assert data["active_count"] == 1
+
+    async def test_without_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test listing suspensions without USER_BAN permission."""
+        admin, admin_password = await create_admin_user(
+            db_session, username="nopermsusplist"
+        )
+        # Don't grant USER_BAN permission
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            "/api/v1/admin/suspensions",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+
+    async def test_excludes_reactivated_action(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that reactivated action records are excluded from the list."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+
+        user = await create_regular_user(db_session, username="excludereact")
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        # Create suspension and reactivation
+        suspension = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.SUSPENDED,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=2),
+            reason="Suspended",
+            suspended_until=now + timedelta(days=5),
+        )
+        db_session.add(suspension)
+
+        reactivation = UserSuspensions(
+            user_id=user.user_id,
+            action=SuspensionAction.REACTIVATED,
+            actioned_by=admin.user_id,
+            actioned_at=now - timedelta(days=1),
+        )
+        db_session.add(reactivation)
+
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            "/api/v1/admin/suspensions",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Should only include the suspension, not the reactivation
+        assert data["total"] == 1
+        assert data["items"][0]["action"] == "suspended"
