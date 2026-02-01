@@ -26,10 +26,11 @@ async def current_banner(
     return await get_current_banner(theme, size.value, db, redis_client)
 
 
-@router.get("", response_model=BannerListResponse)
+@router.get("/", response_model=BannerListResponse)
+@router.get("", response_model=BannerListResponse, include_in_schema=False)
 async def list_active_banners(
     db: Annotated[AsyncSession, Depends(get_db)],
-    pagination: Annotated[PaginationParams, Depends()] = PaginationParams(),
+    pagination: Annotated[PaginationParams, Depends()],
     theme: Annotated[Literal["dark", "light"] | None, Query()] = None,
     size: Annotated[BannerSize | None, Query()] = None,
 ) -> BannerListResponse:

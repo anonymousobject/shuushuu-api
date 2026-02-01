@@ -7,9 +7,9 @@ class TestBannerSize:
     """Tests for BannerSize enum."""
 
     def test_banner_size_values(self) -> None:
-        assert BannerSize.small == "small"
-        assert BannerSize.medium == "medium"
-        assert BannerSize.large == "large"
+        assert BannerSize.small.value == "small"
+        assert BannerSize.medium.value == "medium"
+        assert BannerSize.large.value == "large"
 
     def test_banner_size_is_string_enum(self) -> None:
         assert isinstance(BannerSize.small.value, str)
