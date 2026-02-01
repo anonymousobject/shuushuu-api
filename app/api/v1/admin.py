@@ -1996,45 +1996,33 @@ async def list_all_suspensions(
 
     Requires USER_BAN permission.
     """
-    # Build base query excluding 'reactivated' actions
-    base_query = select(UserSuspensions).where(
+    # Build base filters (shared between count and fetch queries)
+    base_filters = [
         UserSuspensions.action.in_([SuspensionAction.SUSPENDED, SuspensionAction.WARNING])  # type: ignore[attr-defined]
-    )
+    ]
 
-    # Apply action_type filter
     if action_type is not None:
-        base_query = base_query.where(UserSuspensions.action == action_type)  # type: ignore[arg-type]
+        base_filters.append(UserSuspensions.action == action_type)
 
-    # Apply days_back filter
     if days_back is not None:
         cutoff_date = datetime.now(UTC) - timedelta(days=days_back)
-        base_query = base_query.where(UserSuspensions.actioned_at >= cutoff_date)  # type: ignore[arg-type]
+        base_filters.append(UserSuspensions.actioned_at >= cutoff_date)
 
     # Count total matching records
-    count_query = select(func.count()).select_from(base_query.subquery())
+    count_query = select(func.count()).select_from(UserSuspensions).where(*base_filters)
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Get paginated results with user info
+    # Get paginated results with user info (using same filters)
     offset = (page - 1) * per_page
     query = (
         select(UserSuspensions, Users.username)  # type: ignore[call-overload]
         .join(Users, Users.user_id == UserSuspensions.user_id)
-        .where(
-            UserSuspensions.action.in_([SuspensionAction.SUSPENDED, SuspensionAction.WARNING])  # type: ignore[attr-defined]
-        )
+        .where(*base_filters)
+        .order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
+        .offset(offset)
+        .limit(per_page)
     )
-
-    if action_type is not None:
-        query = query.where(UserSuspensions.action == action_type)
-
-    if days_back is not None:
-        cutoff_date = datetime.now(UTC) - timedelta(days=days_back)
-        query = query.where(UserSuspensions.actioned_at >= cutoff_date)
-
-    # Order by most recent first
-    query = query.order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
-    query = query.offset(offset).limit(per_page)
 
     result = await db.execute(query)
     rows = result.all()
