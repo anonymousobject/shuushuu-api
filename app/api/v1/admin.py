@@ -54,6 +54,8 @@ from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.models.user_suspension import UserSuspensions
 from app.schemas.admin import (
+    AdminSuspensionItem,
+    AdminSuspensionListResponse,
     GroupCreate,
     GroupListResponse,
     GroupMemberItem,
@@ -1966,6 +1968,159 @@ async def extend_review(
 
 
 # ===== User Suspensions =====
+
+
+@router.get("/suspensions", response_model=AdminSuspensionListResponse)
+async def list_all_suspensions(
+    _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
+    action_type: Annotated[
+        Literal["warning", "suspended"] | None,
+        Query(description="Filter by action type: 'warning' or 'suspended'"),
+    ] = None,
+    days_back: Annotated[
+        int | None,
+        Query(ge=1, description="Only show suspensions from the last N days"),
+    ] = None,
+    page: Annotated[int, Query(ge=1, description="Page number")] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
+    db: AsyncSession = Depends(get_db),
+) -> AdminSuspensionListResponse:
+    """
+    List all suspension and warning records across all users.
+
+    Excludes 'reactivated' records from the list.
+
+    For each suspension, calculates whether it's currently active based on:
+    - suspended_until hasn't passed (or is None for permanent)
+    - No reactivation record exists after this suspension
+
+    Requires USER_BAN permission.
+    """
+    # Build base query excluding 'reactivated' actions
+    base_query = select(UserSuspensions).where(
+        UserSuspensions.action.in_([SuspensionAction.SUSPENDED, SuspensionAction.WARNING])  # type: ignore[attr-defined]
+    )
+
+    # Apply action_type filter
+    if action_type is not None:
+        base_query = base_query.where(UserSuspensions.action == action_type)  # type: ignore[arg-type]
+
+    # Apply days_back filter
+    if days_back is not None:
+        cutoff_date = datetime.now(UTC) - timedelta(days=days_back)
+        base_query = base_query.where(UserSuspensions.actioned_at >= cutoff_date)  # type: ignore[arg-type]
+
+    # Count total matching records
+    count_query = select(func.count()).select_from(base_query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Get paginated results with user info
+    offset = (page - 1) * per_page
+    query = (
+        select(UserSuspensions, Users.username)  # type: ignore[call-overload]
+        .join(Users, Users.user_id == UserSuspensions.user_id)
+        .where(
+            UserSuspensions.action.in_([SuspensionAction.SUSPENDED, SuspensionAction.WARNING])  # type: ignore[attr-defined]
+        )
+    )
+
+    if action_type is not None:
+        query = query.where(UserSuspensions.action == action_type)
+
+    if days_back is not None:
+        cutoff_date = datetime.now(UTC) - timedelta(days=days_back)
+        query = query.where(UserSuspensions.actioned_at >= cutoff_date)
+
+    # Order by most recent first
+    query = query.order_by(desc(UserSuspensions.actioned_at))  # type: ignore[arg-type]
+    query = query.offset(offset).limit(per_page)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Collect actioned_by user IDs to fetch usernames
+    actioned_by_ids = {
+        suspension.actioned_by for suspension, _ in rows if suspension.actioned_by is not None
+    }
+    actioned_by_usernames: dict[int, str] = {}
+    if actioned_by_ids:
+        actioned_by_result = await db.execute(
+            select(Users.user_id, Users.username).where(  # type: ignore[call-overload]
+                Users.user_id.in_(actioned_by_ids)  # type: ignore[union-attr]
+            )
+        )
+        actioned_by_usernames = {row.user_id: row.username for row in actioned_by_result.all()}
+
+    # For "suspended" actions, check if they're still active
+    # Need to find reactivation records that come after each suspension
+    suspended_user_ids = {
+        suspension.user_id
+        for suspension, _ in rows
+        if suspension.action == SuspensionAction.SUSPENDED
+    }
+
+    # Get all reactivation records for these users
+    reactivations_by_user: dict[int, list[datetime]] = {}
+    if suspended_user_ids:
+        reactivation_result = await db.execute(
+            select(UserSuspensions.user_id, UserSuspensions.actioned_at).where(  # type: ignore[call-overload]
+                UserSuspensions.user_id.in_(suspended_user_ids),  # type: ignore[attr-defined]
+                UserSuspensions.action == SuspensionAction.REACTIVATED,
+            )
+        )
+        for row in reactivation_result.all():
+            if row.user_id not in reactivations_by_user:
+                reactivations_by_user[row.user_id] = []
+            reactivations_by_user[row.user_id].append(row.actioned_at)
+
+    now = datetime.now(UTC)
+    now_naive = now.replace(tzinfo=None)
+    active_count = 0
+
+    items = []
+    for suspension, username in rows:
+        is_active = False
+
+        if suspension.action == SuspensionAction.SUSPENDED:
+            # Check if suspension is active:
+            # 1. Not expired (suspended_until is None or in the future)
+            # 2. No reactivation record after this suspension's actioned_at
+            not_expired = (
+                suspension.suspended_until is None or suspension.suspended_until > now_naive
+            )
+
+            # Check for reactivation after this suspension
+            user_reactivations = reactivations_by_user.get(suspension.user_id, [])
+            reactivated = any(r > suspension.actioned_at for r in user_reactivations)
+
+            is_active = not_expired and not reactivated
+            if is_active:
+                active_count += 1
+
+        item = AdminSuspensionItem(
+            suspension_id=suspension.suspension_id,
+            user_id=suspension.user_id,
+            username=username,
+            action=suspension.action,
+            is_active=is_active,
+            actioned_at=suspension.actioned_at,
+            actioned_by_id=suspension.actioned_by,
+            actioned_by_username=actioned_by_usernames.get(suspension.actioned_by)
+            if suspension.actioned_by
+            else None,
+            reason=suspension.reason,
+            suspended_until=suspension.suspended_until,
+        )
+        items.append(item)
+
+    return AdminSuspensionListResponse(
+        items=items,
+        total=total,
+        page=page,
+        per_page=per_page,
+        active_count=active_count,
+    )
 
 
 @router.post("/users/{user_id}/suspend", response_model=MessageResponse)
