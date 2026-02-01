@@ -151,7 +151,14 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
-# Frontend - proxy to SvelteKit SSR server (production build in Docker)
+    # Banners - no protection needed, serve directly
+    location /images/banners/ {
+        alias ${STORAGE_PATH}/banners/;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Frontend - proxy to SvelteKit SSR server (production build in Docker)
     location / {
         proxy_pass http://frontend:3000;
         proxy_set_header Host $host;
