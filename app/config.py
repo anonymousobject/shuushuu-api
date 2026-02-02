@@ -146,6 +146,13 @@ class Settings(BaseSettings):
     # CRITICAL: Must match the URL users see in their browser, or image URLs will be broken
     IMAGE_BASE_URL: str = "http://localhost:3000"
 
+    # Banner Settings
+    # If not set, defaults to f"{IMAGE_BASE_URL}/images/banners"
+    BANNER_BASE_URL: str = Field(default="")
+    # Cache durations for rotating banners (seconds)
+    BANNER_CACHE_TTL: int = Field(default=600, ge=0)
+    BANNER_CACHE_TTL_JITTER: int = Field(default=300, ge=0)
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:
@@ -172,6 +179,12 @@ class Settings(BaseSettings):
                 "or SMTP_STARTTLS=true for STARTTLS (port 587), "
                 "or both false for unencrypted localhost relay."
             )
+        return self
+
+    @model_validator(mode="after")
+    def set_default_banner_base_url(self) -> "Settings":
+        if not self.BANNER_BASE_URL:
+            self.BANNER_BASE_URL = f"{self.IMAGE_BASE_URL}/images/banners"
         return self
 
 

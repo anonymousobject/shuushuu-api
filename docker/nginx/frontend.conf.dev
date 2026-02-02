@@ -76,6 +76,13 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    # Banners - no protection needed, serve directly
+    location /images/banners/ {
+        alias ${STORAGE_PATH}/banners/;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
     # Frontend - proxy to Vite dev server running on host (including SvelteKit routes)
     location / {
         proxy_pass http://host.docker.internal:5173;

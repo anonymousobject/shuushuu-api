@@ -11,7 +11,8 @@ async def redis_client():
 
     Connects to test Redis instance (same as integration tests).
     """
-    client = redis.Redis(host="localhost", port=6379, db=1, decode_responses=True)
+    # Use a dedicated Redis DB for tests to avoid interfering with dev services
+    client = redis.Redis(host="localhost", port=6379, db=15, decode_responses=True)
 
     # Verify connection
     await client.ping()
