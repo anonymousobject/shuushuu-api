@@ -11,7 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.image import ImageBase, ImageResponse
-from app.schemas.user import UserResponse
+from app.schemas.user import UserResponse, UserUpdate
 
 
 @pytest.mark.unit
@@ -260,3 +260,35 @@ class TestUTCDatetimeSerialization:
         # Both datetime fields should have Z suffix
         assert '"2026-01-11T12:00:00Z"' in json_data
         assert '"2026-01-11T16:30:00Z"' in json_data
+
+
+@pytest.mark.unit
+class TestUserUpdateSchema:
+    """Tests for UserUpdate schema validation."""
+
+    def test_maximgperday_valid(self):
+        """Test maximgperday accepts valid positive integer."""
+        update = UserUpdate(maximgperday=50)
+        assert update.maximgperday == 50
+
+    def test_maximgperday_rejects_zero(self):
+        """Test maximgperday rejects zero."""
+        with pytest.raises(ValidationError) as exc_info:
+            UserUpdate(maximgperday=0)
+        assert "maximgperday must be a positive integer" in str(exc_info.value)
+
+    def test_maximgperday_rejects_negative(self):
+        """Test maximgperday rejects negative values."""
+        with pytest.raises(ValidationError) as exc_info:
+            UserUpdate(maximgperday=-5)
+        assert "maximgperday must be a positive integer" in str(exc_info.value)
+
+    def test_maximgperday_none_allowed(self):
+        """Test maximgperday allows None (field not being updated)."""
+        update = UserUpdate(maximgperday=None)
+        assert update.maximgperday is None
+
+    def test_maximgperday_omitted(self):
+        """Test maximgperday defaults to None when omitted."""
+        update = UserUpdate(location="Tokyo")
+        assert update.maximgperday is None

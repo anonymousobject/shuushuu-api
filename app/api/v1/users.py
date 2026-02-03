@@ -28,7 +28,12 @@ from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.config import SuspensionAction
-from app.core.auth import get_client_ip, get_current_user, get_current_user_id
+from app.core.auth import (
+    get_client_ip,
+    get_current_user,
+    get_current_user_id,
+    get_optional_current_user,
+)
 from app.core.database import get_db
 from app.core.permission_cache import get_cached_user_permissions
 from app.core.permissions import Permission, has_permission
@@ -532,6 +537,13 @@ async def _update_user_profile(
             detail="Only moderators can update user titles",
         )
 
+    # maximgperday can only be updated by users with USER_EDIT_PROFILE permission
+    if "maximgperday" in update_data and not has_edit_permission:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only moderators can update user upload limits",
+        )
+
     # Handle password separately with validation and hashing
     if "password" in update_data:
         password = update_data.pop("password")
@@ -626,9 +638,15 @@ async def get_user_images(
 async def get_user(
     user_id: Annotated[int, Path(description="User ID")],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    current_user: Users | None = Depends(get_optional_current_user),
 ) -> UserResponse:
     """
     Get user profile information.
+
+    The maximgperday field is only visible to:
+    - The user viewing their own profile
+    - Users with USER_EDIT_PROFILE permission (moderators/admins)
     """
     user_result = await db.execute(
         select(Users)
@@ -642,7 +660,20 @@ async def get_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return UserResponse.model_validate(user)
+    response = UserResponse.model_validate(user)
+
+    # maximgperday is only visible to self or users with edit permission
+    # Default to hidden (None)
+    response.maximgperday = None
+    if current_user and current_user.user_id is not None:
+        is_self = current_user.user_id == user_id
+        has_edit_permission = await has_permission(
+            db, current_user.user_id, Permission.USER_EDIT_PROFILE, redis_client
+        )
+        if is_self or has_edit_permission:
+            response.maximgperday = user.maximgperday
+
+    return response
 
 
 @router.get("/{user_id}/favorites", response_model=ImageDetailedListResponse)
