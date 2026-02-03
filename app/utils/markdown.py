@@ -30,6 +30,7 @@ This module provides security mechanisms for different types of user content:
 - > blockquotes
 - Line breaks
 - BBCode-style [quote="user"]...[/quote]
+- BBCode-style [spoiler]...[/spoiler] (renders as <span class="spoiler">)
 
 All HTML is escaped - no arbitrary HTML/scripts allowed.
 """
@@ -63,6 +64,7 @@ def parse_markdown(text: str) -> str:
     - *italic* → <em>italic</em>
     - [text](url) → <a href="url">text</a>
     - > quote → <blockquote>quote</blockquote>
+    - [spoiler]text[/spoiler] → <span class="spoiler">text</span>
     - Line breaks → <br>
 
     Security features:
@@ -114,8 +116,34 @@ def parse_markdown(text: str) -> str:
             flags=re.DOTALL,
         )
 
-    # Remove any unmatched closing [/quote] tags (orphaned closing tags)
+    # Process anonymous BBCode quotes: [quote]...[/quote] (no username)
+    text = re.sub(
+        r"\[quote\](.*?)\[/quote\]",
+        r"<blockquote>\1</blockquote>",
+        text,
+        flags=re.DOTALL,
+    )
+
+    # Remove any unmatched [quote] or [/quote] tags (orphaned tags)
+    text = text.replace("[quote]", "")
     text = text.replace("[/quote]", "")
+
+    # Process BBCode spoilers: [spoiler]...[/spoiler]
+    # Use iterative approach to handle nested spoilers correctly
+    spoiler_pattern = re.compile(
+        r"\[spoiler\]((?:(?!\[spoiler\]|\[/spoiler\]).)*?)\[/spoiler\]",
+        re.DOTALL,
+    )
+    max_spoiler_iterations = 10
+    for _ in range(max_spoiler_iterations):
+        new_text = spoiler_pattern.sub(r'<span class="spoiler">\1</span>', text)
+        if new_text == text:
+            break
+        text = new_text
+
+    # Remove any unmatched [spoiler] or [/spoiler] tags
+    text = text.replace("[spoiler]", "")
+    text = text.replace("[/spoiler]", "")
 
     # Process markdown blockquotes (must be done after BBCode quotes)
     # Match lines starting with >
@@ -278,6 +306,16 @@ def strip_markdown(text: str) -> str:
     text = re.sub(
         r'\[quote=(?:"[^"]*"|&quot;[^&]*&quot;)\](.*?)\[/quote\]', r"\1", text, flags=re.DOTALL
     )
+
+    # Remove anonymous BBCode quotes: [quote]text[/quote] → text
+    text = re.sub(r"\[quote\](.*?)\[/quote\]", r"\1", text, flags=re.DOTALL)
+
+    # Remove spoilers: [spoiler]text[/spoiler] → text (iterative for nesting)
+    for _ in range(10):
+        new_text = re.sub(r"\[spoiler\](.*?)\[/spoiler\]", r"\1", text, flags=re.DOTALL)
+        if new_text == text:
+            break
+        text = new_text
 
     # Remove links but keep text: [text](url) → text
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)

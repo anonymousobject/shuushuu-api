@@ -50,8 +50,9 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
 
     # Try BBCode format: extract innermost quote recursively
     def extract_innermost_quote(text: str) -> Optional[str]:
-        # Find the first opening quote tag (handles both " and &quot;)
-        start_match = re.search(r'\[quote=(?:"[^"]*"|&quot;[^&]*&quot;)\]', text)
+        # Find the first opening quote tag
+        # Handles: [quote="username"], [quote=&quot;username&quot;], and plain [quote]
+        start_match = re.search(r'\[quote(?:=(?:"[^"]*"|&quot;[^&]*&quot;))?\]', text)
         if not start_match:
             return None
 
@@ -61,13 +62,15 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
         pos = start_pos
 
         while pos < len(text) and depth > 0:
-            # Look for next quote tag (both quote styles)
+            # Look for next quote tag (all quote styles)
+            # Note: [quote] won't match inside [quote="..."] because find() looks for exact string
             next_open_dq = text.find('[quote="', pos)
             next_open_eq = text.find('[quote=&quot;', pos)
+            next_open_plain = text.find('[quote]', pos)
             next_close = text.find('[/quote]', pos)
 
             # Determine which comes first
-            next_opens = [x for x in [next_open_dq, next_open_eq] if x != -1]
+            next_opens = [x for x in [next_open_dq, next_open_eq, next_open_plain] if x != -1]
             next_open = min(next_opens) if next_opens else -1
 
             if next_close == -1:
@@ -83,8 +86,8 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
                 depth -= 1
                 if depth == 0:
                     content = text[start_pos:next_close]
-                    # Check if there are nested quotes inside
-                    if '[quote=' in content:
+                    # Check if there are nested quotes inside (any format)
+                    if '[quote=' in content or '[quote]' in content:
                         # Recursively extract the innermost quote
                         inner = extract_innermost_quote(content)
                         return inner if inner else content.strip()
@@ -123,11 +126,11 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
 
 
 def remove_quoted_text(comment_text: str) -> str:
-    """Remove quoted text from comment (both formats)."""
+    """Remove quoted text from comment (all formats)."""
 
 
-    # Remove BBCode format: [quote="..."]...[/quote] or [quote=&quot;...&quot;]...[/quote]
-    text = re.sub(r'\[quote=(?:"[^"]*"|&quot;[^&]*&quot;)\].*?\[/quote\]', '', comment_text, flags=re.DOTALL)
+    # Remove BBCode format: [quote="..."], [quote=&quot;...&quot;], or plain [quote]
+    text = re.sub(r'\[quote(?:=(?:"[^"]*"|&quot;[^&]*&quot;))?\].*?\[/quote\]', '', comment_text, flags=re.DOTALL)
 
     # Remove Markdown format: lines starting with > or >>
     lines = text.split('\n')
@@ -189,7 +192,7 @@ async def find_parent_comment(
     return None
 
 
-async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, auto_confirm: bool = False):
+async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, auto_confirm: bool = False) -> None:
     """
     Main migration function (two-pass approach for correctness).
 
@@ -213,6 +216,7 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
         result = await db.execute(
             select(Comments).where(
                 (Comments.post_text.like('%[quote=%')) |
+                (Comments.post_text.like('%[quote]%')) |
                 (Comments.post_text.like('>%'))
             )
         )
@@ -283,6 +287,8 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
                     'parent_id': parent_id,
                     'new_text': new_text,
                 })
+            # No matching parent found (could be anonymous quote or orphaned quote)
+            # Left as-is - the markdown parser will render [quote]...[/quote] as blockquotes
 
             # Progress indicator every 5000 comments
             if (i + 1) % 5000 == 0:
@@ -298,7 +304,7 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
                 )
 
         # PASS 2: Apply all updates in batches
-        logger.info("migration_step", step="6_pass2_applying_updates", total_updates=comments_matched)
+        logger.info("migration_step", step="6_pass2_applying_updates", total_updates=len(updates_batch))
 
         if not dry_run and updates_batch:
             for batch_start in range(0, len(updates_batch), batch_size):
@@ -353,7 +359,7 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
                     total_updated=comments_updated,
                 )
         elif dry_run:
-            comments_updated = comments_matched
+            comments_updated = len(updates_batch)
 
         elapsed_total = time.time() - start_time
 
