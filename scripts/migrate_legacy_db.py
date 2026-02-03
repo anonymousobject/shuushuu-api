@@ -496,6 +496,8 @@ async def run_step(step: dict, dry_run: bool = False, auto_confirm: bool = False
         if not step.get("skip_standard_flags", False):
             if dry_run:
                 cmd.append("--dry-run")
+            else:
+                cmd.append("--no-dry-run")
             if auto_confirm:
                 cmd.append("--auto-confirm")
 
