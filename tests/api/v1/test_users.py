@@ -319,6 +319,8 @@ class TestGetUser:
         data = response.json()
         assert data["user_id"] == 1
         assert "username" in data
+        # maximgperday is hidden from anonymous users
+        assert data.get("maximgperday") is None
         # assert "email" in data  # Email may be omitted in public response
 
     async def test_get_nonexistent_user(self, client: AsyncClient):
@@ -2084,6 +2086,170 @@ class TestUserTitleRestriction:
         assert response.status_code == 200
         assert response.json()["location"] == "Tokyo"
         assert response.json()["interests"] == "Anime"
+
+
+@pytest.mark.api
+class TestMaxImgPerDayRestriction:
+    """Tests for maximgperday field being restricted to mods/admins only."""
+
+    async def test_regular_user_cannot_update_own_maximgperday(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that regular users cannot update their own maximgperday."""
+        user, password = await create_test_user_with_password(
+            db_session, "nolimituser", "nolimituser@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        # Try to update maximgperday - should be forbidden
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"maximgperday": 100},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+        assert "upload limit" in response.json()["detail"].lower()
+
+    async def test_regular_user_cannot_update_maximgperday_via_user_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that regular users cannot update their own maximgperday via /users/{id}."""
+        user, password = await create_test_user_with_password(
+            db_session, "nolimituser2", "nolimituser2@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        # Try to update maximgperday via /users/{id} endpoint
+        response = await client.patch(
+            f"/api/v1/users/{user.user_id}",
+            json={"maximgperday": 100},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+        assert "upload limit" in response.json()["detail"].lower()
+
+    async def test_user_with_permission_can_update_own_maximgperday(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users with USER_EDIT_PROFILE permission can update their own maximgperday."""
+        user, password = await create_test_user_with_password(
+            db_session, "modlimituser", "modlimituser@example.com"
+        )
+        await grant_user_permission(db_session, user.user_id, "user_edit_profile")
+        token = await login_test_user(client, user.username, password)
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"maximgperday": 50},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        # Fetch and verify the value was updated
+        await db_session.refresh(user)
+        assert user.maximgperday == 50
+
+    async def test_user_with_permission_can_update_other_user_maximgperday(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users with USER_EDIT_PROFILE permission can update other users' maximgperday."""
+        editor, editor_password = await create_test_user_with_password(
+            db_session, "limiteditor", "limiteditor@example.com"
+        )
+        await grant_user_permission(db_session, editor.user_id, "user_edit_profile")
+
+        target, _ = await create_test_user_with_password(
+            db_session, "limittarget", "limittarget@example.com"
+        )
+
+        token = await login_test_user(client, editor.username, editor_password)
+
+        response = await client.patch(
+            f"/api/v1/users/{target.user_id}",
+            json={"maximgperday": 30},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        # Fetch and verify the value was updated
+        await db_session.refresh(target)
+        assert target.maximgperday == 30
+
+    async def test_maximgperday_hidden_from_anonymous_users(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that maximgperday is not visible to anonymous users."""
+        user, _ = await create_test_user_with_password(
+            db_session, "hiddenuser", "hiddenuser@example.com"
+        )
+
+        # Anonymous request
+        response = await client.get(f"/api/v1/users/{user.user_id}")
+
+        assert response.status_code == 200
+        assert response.json().get("maximgperday") is None
+
+    async def test_maximgperday_hidden_from_other_regular_users(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that maximgperday is not visible to other regular users."""
+        target, _ = await create_test_user_with_password(
+            db_session, "targethidden", "targethidden@example.com"
+        )
+        viewer, viewer_password = await create_test_user_with_password(
+            db_session, "viewerhidden", "viewerhidden@example.com"
+        )
+        token = await login_test_user(client, viewer.username, viewer_password)
+
+        response = await client.get(
+            f"/api/v1/users/{target.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json().get("maximgperday") is None
+
+    async def test_maximgperday_visible_to_self(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that maximgperday is visible when viewing own profile via /users/{id}."""
+        user, password = await create_test_user_with_password(
+            db_session, "selfviewuser", "selfviewuser@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        response = await client.get(
+            f"/api/v1/users/{user.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["maximgperday"] == 15  # Default value
+
+    async def test_maximgperday_visible_to_admin(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that maximgperday is visible to users with USER_EDIT_PROFILE permission."""
+        admin, admin_password = await create_test_user_with_password(
+            db_session, "adminviewer", "adminviewer@example.com"
+        )
+        await grant_user_permission(db_session, admin.user_id, "user_edit_profile")
+
+        target, _ = await create_test_user_with_password(
+            db_session, "adminviewtarget", "adminviewtarget@example.com"
+        )
+
+        token = await login_test_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            f"/api/v1/users/{target.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["maximgperday"] == 15  # Default value
 
 
 @pytest.mark.api

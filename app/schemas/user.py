@@ -54,6 +54,9 @@ class UserUpdate(BaseModel):
     # Navigation
     bookmark: int | None = None  # Bookmarked image_id
 
+    # Admin-only fields (requires USER_EDIT_PROFILE permission)
+    maximgperday: int | None = None  # Max images per day upload limit
+
     @field_validator("location", "website", "interests", "user_title", "gender")
     @classmethod
     def sanitize_text_fields(cls, v: str | None) -> str | None:
@@ -125,6 +128,14 @@ class UserUpdate(BaseModel):
             raise ValueError("bookmark must be a positive integer")
         return v
 
+    @field_validator("maximgperday")
+    @classmethod
+    def validate_maximgperday(cls, v: int | None) -> int | None:
+        """Validate maximgperday is a positive integer when set"""
+        if v is not None and v < 1:
+            raise ValueError("maximgperday must be a positive integer")
+        return v
+
 
 class UserResponse(UserBase):
     """Schema for user response - what API returns"""
@@ -135,6 +146,7 @@ class UserResponse(UserBase):
     active: bool
     admin: bool
     groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
+    maximgperday: int | None = None  # Upload limit - only visible to self or admins
 
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True}
@@ -177,6 +189,9 @@ class UserPrivateResponse(UserResponse):
     permissions: list[
         str
     ] = []  # List of permission strings (e.g., ["image_tag_add", "tag_create"])
+
+    # Override maximgperday from UserResponse - always include for self
+    maximgperday: int  # Max images allowed to upload per day
 
     # User settings
     show_all_images: int  # Show disabled/pending images (0=no, 1=yes)
