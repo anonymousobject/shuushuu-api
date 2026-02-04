@@ -5,14 +5,14 @@ Tags API endpoints
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import asc, case, desc, func, select, text
+from sqlalchemy import asc, case, desc, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
 from app.config import TagAuditActionType, TagType
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
@@ -41,6 +41,7 @@ from app.schemas.tag import (
     TagResponse,
     TagWithStats,
 )
+from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -447,6 +448,16 @@ async def get_images_by_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
+    tag_depth: Annotated[
+        int | None,
+        Query(
+            ge=0,
+            le=9,
+            description="How many levels of child tags to include. "
+            "0=exact tag only, 1=tag+direct children, ..., 9=up to 9 levels. "
+            "Omit for full hierarchy.",
+        ),
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
@@ -467,8 +478,10 @@ async def get_images_by_tag(
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Get the full tag hierarchy (parent + all descendants)
-    tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id)
+    # Get the tag hierarchy to configured depth
+    # tag_depth=0 → max_depth=1 (root only), tag_depth=1 → max_depth=2, etc.
+    hierarchy_max_depth = tag_depth + 1 if tag_depth is not None else 10
+    tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id, max_depth=hierarchy_max_depth)
 
     # Performance optimization: Two-stage query for fast tag filtering
     #
@@ -605,6 +618,7 @@ async def get_characters_for_source(
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     db: AsyncSession = Depends(get_db),
+    current_user: Users | None = Depends(get_optional_current_user),
 ) -> TagWithStats:
     """
     Get a single tag by ID with usage statistics.
@@ -641,9 +655,30 @@ async def get_tag(
     tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id)
 
     # Count images tagged with any tag in the hierarchy
-    count_result = await db.execute(
-        select(func.count(TagLinks.image_id.distinct())).where(TagLinks.tag_id.in_(tag_hierarchy))  # type: ignore[attr-defined]
+    # Respect user's show_all_images setting (matches image search behavior)
+    show_all = current_user is not None and current_user.show_all_images == 1
+    count_query = select(func.count(TagLinks.image_id.distinct())).where(  # type: ignore[attr-defined]
+        TagLinks.tag_id.in_(tag_hierarchy)  # type: ignore[attr-defined]
     )
+    if not show_all:
+        count_query = count_query.join(
+            Images,
+            TagLinks.image_id == Images.image_id,  # type: ignore[arg-type]
+        )
+        if current_user is not None:
+            # Logged in: public statuses OR user's own images (any status)
+            count_query = count_query.where(
+                or_(
+                    Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                    Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+                )
+            )
+        else:
+            # Anonymous: only public statuses
+            count_query = count_query.where(
+                Images.status.in_(PUBLIC_IMAGE_STATUSES)  # type: ignore[attr-defined]
+            )
+    count_result = await db.execute(count_query)
     total_image_count = count_result.scalar()
 
     # Count direct children (tags that inherit from this tag)

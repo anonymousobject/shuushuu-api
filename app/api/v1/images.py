@@ -128,6 +128,16 @@ async def list_images(
     tags_mode: Annotated[
         str, Query(pattern="^(any|all)$", description="Match ANY or ALL tags")
     ] = "any",
+    tag_depth: Annotated[
+        int | None,
+        Query(
+            ge=0,
+            le=9,
+            description="How many levels of child tags to include. "
+            "0=exact tag only, 1=tag+direct children, ..., 9=up to 9 levels. "
+            "Omit for full hierarchy.",
+        ),
+    ] = None,
     # Date filtering
     date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
     date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
@@ -238,12 +248,19 @@ async def list_images(
                 detail=f"You can only search for up to {settings.MAX_SEARCH_TAGS} tags at a time.",
             )
         if tag_ids:
+            # Map tag_depth to max_depth for the CTE query
+            # tag_depth=0 → max_depth=1 (root only), tag_depth=1 → max_depth=2, etc.
+            # None → default (10, full hierarchy)
+            hierarchy_max_depth = tag_depth + 1 if tag_depth is not None else 10
+
             if tags_mode == "all":
                 # Images must have ALL specified tags (including their descendants)
                 for tag_id in tag_ids:
                     _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
-                    # Expand to full hierarchy (parent + all descendants)
-                    hierarchy_ids = await get_tag_hierarchy(db, resolved_tag_id)
+                    # Expand hierarchy to configured depth
+                    hierarchy_ids = await get_tag_hierarchy(
+                        db, resolved_tag_id, max_depth=hierarchy_max_depth
+                    )
                     query = query.where(
                         Images.image_id.in_(  # type: ignore[union-attr]
                             select(TagLinks.image_id).where(TagLinks.tag_id.in_(hierarchy_ids))  # type: ignore[call-overload,attr-defined]
@@ -255,7 +272,9 @@ async def list_images(
                 all_hierarchy_ids: set[int] = set()
                 for tag_id in tag_ids:
                     _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
-                    hierarchy_ids = await get_tag_hierarchy(db, resolved_tag_id)
+                    hierarchy_ids = await get_tag_hierarchy(
+                        db, resolved_tag_id, max_depth=hierarchy_max_depth
+                    )
                     all_hierarchy_ids.update(hierarchy_ids)
                 query = query.where(
                     Images.image_id.in_(  # type: ignore[union-attr]
