@@ -5,12 +5,12 @@ Tags API endpoints
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import case, desc, func, select, text
+from sqlalchemy import asc, case, desc, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.api.dependencies import ImageSortParams, PaginationParams
+from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
 from app.config import TagAuditActionType, TagType
 from app.core.auth import get_current_user
 from app.core.database import get_db
@@ -224,6 +224,7 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int, max_depth: int = 10) 
 @router.get("", response_model=TagListResponse)
 async def list_tags(
     pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[TagSortParams, Depends()],
     search: Annotated[str | None, Query(description="Search tags by name")] = None,
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     ids: Annotated[str | None, Query(description="Comma-separated tag IDs to fetch")] = None,
@@ -404,11 +405,17 @@ async def list_tags(
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
             ).params(search=fulltext_query_str)
     else:
-        # No search - sort by usage count (most popular first), then by date added
-        query = query.order_by(
-            desc(Tags.usage_count),  # type: ignore[arg-type]
-            desc(Tags.date_added),  # type: ignore[arg-type]
-        )
+        # No search - sort by user-specified field (default: usage_count DESC)
+        sort_column_map: dict[str, Any] = {
+            "usage_count": Tags.usage_count,
+            "title": Tags.title,
+            "date_added": Tags.tag_id,  # PK is chronological and indexed
+            "tag_id": Tags.tag_id,
+            "type": Tags.type,
+        }
+        sort_column = sort_column_map[sorting.sort_by]
+        sort_func = desc if sorting.sort_order == "DESC" else asc
+        query = query.order_by(sort_func(sort_column))
 
     # Paginate
     query = query.offset(pagination.offset).limit(pagination.per_page)
@@ -637,7 +644,7 @@ async def get_tag(
     count_result = await db.execute(
         select(func.count(TagLinks.image_id.distinct())).where(TagLinks.tag_id.in_(tag_hierarchy))  # type: ignore[attr-defined]
     )
-    image_count = count_result.scalar()
+    total_image_count = count_result.scalar()
 
     # Count direct children (tags that inherit from this tag)
     children_result = await db.execute(
@@ -671,7 +678,7 @@ async def get_tag(
     links = [TagExternalLinkResponse.model_validate(link) for link in links_result.scalars().all()]
 
     # Fetch tags that are aliases of this tag (use resolved_tag_id for consistency
-    # with image_count/child_count - when viewing an alias, show all sibling aliases)
+    # with total_image_count/child_count - when viewing an alias, show all sibling aliases)
     aliases_result = await db.execute(
         select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
         .where(Tags.alias_of == resolved_tag_id)
@@ -725,7 +732,8 @@ async def get_tag(
         title=tag.title,
         desc=tag.desc,
         type=tag.type,
-        image_count=image_count or 0,
+        usage_count=tag.usage_count,
+        total_image_count=total_image_count or 0,
         is_alias=is_alias,
         aliased_tag_id=aliased_tag_id,
         aliases=aliases,

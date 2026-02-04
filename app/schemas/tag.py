@@ -133,6 +133,7 @@ class TagResponse(TagBase):
     alias_of: int | None = None
     alias_of_name: str | None = None
     is_alias: bool = False
+    usage_count: int = 0
 
     # NOTE: No normalization/escaping for title and desc.
     # These fields are stored as plain text (trimmed on input) and HTML escaping
@@ -158,7 +159,7 @@ class LinkedTag(BaseModel):
 class TagWithStats(TagResponse):
     """Schema for tag response with usage statistics"""
 
-    image_count: int
+    total_image_count: int
     is_alias: bool = False
     aliased_tag_id: int | None = None  # The actual tag this aliases (if is_alias=True)
     aliases: list[LinkedTag] = []  # Tags that are aliases of this tag

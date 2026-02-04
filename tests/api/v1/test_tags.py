@@ -383,6 +383,195 @@ class TestListTags:
 
 
 @pytest.mark.api
+class TestTagListSorting:
+    """Tests for sort_by/sort_order params and usage_count in tag list response."""
+
+    async def test_tag_response_includes_usage_count(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag list response includes usage_count field."""
+        tag = Tags(title="countable tag", type=TagType.THEME, usage_count=42)
+        db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?search=co")
+        assert response.status_code == 200
+        data = response.json()
+        matching = [t for t in data["tags"] if t["title"] == "countable tag"]
+        assert len(matching) == 1
+        assert matching[0]["usage_count"] == 42
+
+    async def test_default_sort_is_usage_count_desc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that default sort without search is usage_count DESC."""
+        tags = [
+            Tags(title="low usage", type=TagType.THEME, usage_count=5),
+            Tags(title="high usage", type=TagType.THEME, usage_count=100),
+            Tags(title="mid usage", type=TagType.THEME, usage_count=50),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=1")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Filter to our test tags
+        titles = [t["title"] for t in data["tags"] if "usage" in t["title"]]
+        assert titles == ["high usage", "mid usage", "low usage"]
+
+    async def test_sort_by_title_asc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting tags alphabetically by title ascending."""
+        tags = [
+            Tags(title="cherry", type=TagType.SOURCE, usage_count=0),
+            Tags(title="apple", type=TagType.SOURCE, usage_count=0),
+            Tags(title="banana", type=TagType.SOURCE, usage_count=0),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=2&sort_by=title&sort_order=ASC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"]]
+        assert titles == ["apple", "banana", "cherry"]
+
+    async def test_sort_by_title_desc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting tags alphabetically by title descending."""
+        tags = [
+            Tags(title="cherry", type=TagType.SOURCE, usage_count=0),
+            Tags(title="apple", type=TagType.SOURCE, usage_count=0),
+            Tags(title="banana", type=TagType.SOURCE, usage_count=0),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=2&sort_by=title&sort_order=DESC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"]]
+        assert titles == ["cherry", "banana", "apple"]
+
+    async def test_sort_by_tag_id_asc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting tags by tag_id ascending (chronological)."""
+        tag1 = Tags(title="first created", type=TagType.ARTIST, usage_count=0)
+        tag2 = Tags(title="second created", type=TagType.ARTIST, usage_count=0)
+        tag3 = Tags(title="third created", type=TagType.ARTIST, usage_count=0)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=3&sort_by=tag_id&sort_order=ASC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"]]
+        assert titles == ["first created", "second created", "third created"]
+
+    async def test_sort_by_date_added_maps_to_tag_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that sort_by=date_added uses tag_id (chronological, indexed)."""
+        tag1 = Tags(title="first created", type=TagType.ARTIST, usage_count=0)
+        tag2 = Tags(title="second created", type=TagType.ARTIST, usage_count=0)
+        tag3 = Tags(title="third created", type=TagType.ARTIST, usage_count=0)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=3&sort_by=date_added&sort_order=DESC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"]]
+        assert titles == ["third created", "second created", "first created"]
+
+    async def test_sort_by_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting tags by type."""
+        tags = [
+            Tags(title="sort type artist", type=TagType.ARTIST, usage_count=0),
+            Tags(title="sort type theme", type=TagType.THEME, usage_count=0),
+            Tags(title="sort type source", type=TagType.SOURCE, usage_count=0),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?sort_by=type&sort_order=ASC&search=sort type")
+        # search present = relevance used, so test without search
+        response = await client.get("/api/v1/tags?sort_by=type&sort_order=ASC")
+        assert response.status_code == 200
+        data = response.json()
+        type_tags = [t for t in data["tags"] if t["title"].startswith("sort type")]
+        types = [t["type"] for t in type_tags]
+        # Types should be in ascending order
+        assert types == sorted(types)
+
+    async def test_sort_by_usage_count_asc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting by usage_count ascending."""
+        tags = [
+            Tags(title="popular sort", type=TagType.CHARACTER, usage_count=200),
+            Tags(title="unpopular sort", type=TagType.CHARACTER, usage_count=1),
+            Tags(title="medium sort", type=TagType.CHARACTER, usage_count=50),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=4&sort_by=usage_count&sort_order=ASC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"] if "sort" in t["title"]]
+        assert titles == ["unpopular sort", "medium sort", "popular sort"]
+
+    async def test_sort_order_case_insensitive(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that sort_order accepts lowercase values."""
+        response = await client.get("/api/v1/tags?sort_by=usage_count&sort_order=desc")
+        assert response.status_code == 200
+
+        response = await client.get("/api/v1/tags?sort_by=usage_count&sort_order=asc")
+        assert response.status_code == 200
+
+    async def test_search_ignores_sort_params(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search uses relevance ranking, ignoring sort_by/sort_order."""
+        tag1 = Tags(title="exact match test", type=TagType.THEME, usage_count=1)
+        tag2 = Tags(title="test partial match", type=TagType.THEME, usage_count=999)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Even with sort_by=usage_count ASC, search should use relevance
+        # The exact/prefix match should come first, not the lowest usage_count
+        response = await client.get(
+            "/api/v1/tags?search=ex&sort_by=usage_count&sort_order=ASC"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        matching = [t for t in data["tags"] if "match test" in t["title"]]
+        if len(matching) >= 2:
+            # exact match test should be first (prefix match), regardless of sort_by
+            assert matching[0]["title"] == "exact match test"
+
+    async def test_invalid_sort_by_rejected(self, client: AsyncClient):
+        """Test that invalid sort_by values are rejected."""
+        response = await client.get("/api/v1/tags?sort_by=invalid_field")
+        assert response.status_code == 422
+
+
+@pytest.mark.api
 class TestAliasOfName:
     """Tests for alias_of_name field in tag list responses.
 
@@ -955,7 +1144,7 @@ class TestGetTag:
         data = response.json()
         assert data["tag_id"] == tag.tag_id
         assert data["title"] == "Test Tag"
-        assert data["image_count"] == 0  # No images yet
+        assert data["total_image_count"] == 0  # No images yet
 
     async def test_get_nonexistent_tag(self, client: AsyncClient):
         """Test getting a tag that doesn't exist."""

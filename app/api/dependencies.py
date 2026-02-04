@@ -56,3 +56,12 @@ class UserSortParams(BaseModel):
         "user_id", "username", "date_joined", "last_login", "image_posts", "posts", "favorites"
     ] = Field(default="user_id", description="Sort field")
     sort_order: SortOrder = Field(default="DESC", description="Sort order")
+
+
+class TagSortParams(BaseModel):
+    """Common sorting parameters for tag queries."""
+
+    sort_by: Literal["usage_count", "title", "date_added", "tag_id", "type"] = Field(
+        default="usage_count", description="Sort field"
+    )
+    sort_order: SortOrder = Field(default="DESC", description="Sort order")
