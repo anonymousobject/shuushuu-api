@@ -5,11 +5,19 @@ These Pydantic models are used with FastAPI's Depends() to provide reusable
 query parameter sets, reducing code duplication across routes.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, BeforeValidator, Field, computed_field
 
 from app.models.image import ImageSortBy
+
+
+def _normalize_sort_order(v: str) -> str:
+    """Normalize sort order to uppercase for case-insensitive matching."""
+    return v.upper() if isinstance(v, str) else v
+
+
+SortOrder = Annotated[Literal["ASC", "DESC"], BeforeValidator(_normalize_sort_order)]
 
 
 class PaginationParams(BaseModel):
@@ -29,7 +37,7 @@ class ImageSortParams(BaseModel):
     """Common sorting parameters for image queries."""
 
     sort_by: ImageSortBy = Field(default=ImageSortBy.image_id, description="Sort field")
-    sort_order: Literal["ASC", "DESC"] = Field(default="DESC", description="Sort order")
+    sort_order: SortOrder = Field(default="DESC", description="Sort order")
 
 
 class CommentSortParams(BaseModel):
@@ -38,7 +46,7 @@ class CommentSortParams(BaseModel):
     sort_by: Literal["post_id", "date", "update_count"] = Field(
         default="date", description="Sort field"
     )
-    sort_order: Literal["ASC", "DESC"] = Field(default="DESC", description="Sort order")
+    sort_order: SortOrder = Field(default="DESC", description="Sort order")
 
 
 class UserSortParams(BaseModel):
@@ -47,4 +55,4 @@ class UserSortParams(BaseModel):
     sort_by: Literal[
         "user_id", "username", "date_joined", "last_login", "image_posts", "posts", "favorites"
     ] = Field(default="user_id", description="Sort field")
-    sort_order: Literal["ASC", "DESC"] = Field(default="DESC", description="Sort order")
+    sort_order: SortOrder = Field(default="DESC", description="Sort order")
