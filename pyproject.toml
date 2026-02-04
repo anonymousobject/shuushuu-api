@@ -37,7 +37,7 @@ dependencies = [
     "arq>=0.26.0", # Task queue for background jobs
     # "python-magic>=0.4.27",  # File type detection - for validating image uploads
     # "slowapi>=0.1.9",  # Rate limiting - for API throttling
-    # "python-multipart>=0.0.9",  # Multipart form data - needed for image uploads
+    # "python-multipart>=0.0.20",  # Multipart form data - needed for image uploads
     "aiosmtplib>=5.0.0",
 ]
 
