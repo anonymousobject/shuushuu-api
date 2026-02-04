@@ -370,14 +370,25 @@ async def list_tags(
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Sort: For search queries, use smart ranking
-    # For general listing, sort by date added
-    if search:
+    # Sort: If sort_by is explicitly provided, always use it.
+    # Otherwise, use relevance ranking for searches, or usage_count for listing.
+    sort_column_map: dict[str, Any] = {
+        "usage_count": Tags.usage_count,
+        "title": Tags.title,
+        "date_added": Tags.tag_id,  # PK is chronological and indexed
+        "tag_id": Tags.tag_id,
+        "type": Tags.type,
+    }
+
+    if sorting.sort_by is not None:
+        # Explicit sort_by: always honor it, even during search
+        sort_column = sort_column_map[sorting.sort_by]
+        sort_func = desc if sorting.sort_order == "DESC" else asc
+        query = query.order_by(sort_func(sort_column))
+    elif search:
+        # No explicit sort_by + search: use relevance ranking
         if len(search) < 3 or not fulltext_query_str:
             # Short query or fallback to LIKE (prefix match): prioritize exact and starts-with
-            # 1. Exact matches first
-            # 2. Starts-with matches second
-            # 3. Contains matches last (alphabetical within each group)
             query = query.order_by(
                 case(
                     (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
@@ -391,11 +402,6 @@ async def list_tags(
             )
         else:
             # Long query (full-text): prioritize exact matches, then sort by relevance
-            # 1. Exact matches first (e.g., searching "maid" finds "maid" tag first)
-            # 2. Then by relevance score from FULLTEXT search
-            # 3. Then by popularity (usage_count)
-            # 4. Finally alphabetical for consistent ordering
-            # Must use the same fulltext_query_str as the WHERE clause
             query = query.order_by(
                 case(
                     (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
@@ -406,17 +412,9 @@ async def list_tags(
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
             ).params(search=fulltext_query_str)
     else:
-        # No search - sort by user-specified field (default: usage_count DESC)
-        sort_column_map: dict[str, Any] = {
-            "usage_count": Tags.usage_count,
-            "title": Tags.title,
-            "date_added": Tags.tag_id,  # PK is chronological and indexed
-            "tag_id": Tags.tag_id,
-            "type": Tags.type,
-        }
-        sort_column = sort_column_map[sorting.sort_by]
+        # No search, no explicit sort_by: default to usage_count, honoring sort_order
         sort_func = desc if sorting.sort_order == "DESC" else asc
-        query = query.order_by(sort_func(sort_column))
+        query = query.order_by(sort_func(sort_column_map["usage_count"]))
 
     # Paginate
     query = query.offset(pagination.offset).limit(pagination.per_page)

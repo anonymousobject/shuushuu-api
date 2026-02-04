@@ -543,26 +543,49 @@ class TestTagListSorting:
         response = await client.get("/api/v1/tags?sort_by=usage_count&sort_order=asc")
         assert response.status_code == 200
 
-    async def test_search_ignores_sort_params(
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_explicit_sort_by_overrides_search_relevance(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that search uses relevance ranking, ignoring sort_by/sort_order."""
-        tag1 = Tags(title="exact match test", type=TagType.THEME, usage_count=1)
-        tag2 = Tags(title="test partial match", type=TagType.THEME, usage_count=999)
+        """Test that explicit sort_by overrides relevance ranking during search."""
+        # Exact match gets HIGH usage_count so usage_count ASC puts it LAST,
+        # while relevance would put it FIRST (exact match priority 0).
+        tag1 = Tags(title="match", type=TagType.THEME, usage_count=999)
+        tag2 = Tags(title="match partial", type=TagType.THEME, usage_count=1)
         db_session.add_all([tag1, tag2])
         await db_session.commit()
 
-        # Even with sort_by=usage_count ASC, search should use relevance
-        # The exact/prefix match should come first, not the lowest usage_count
+        # With explicit sort_by=usage_count ASC, "match partial" (1) comes before
+        # "match" (999), proving sort_by overrides relevance (which would put
+        # the exact match "match" first).
         response = await client.get(
-            "/api/v1/tags?search=ex&sort_by=usage_count&sort_order=ASC"
+            "/api/v1/tags?search=match&sort_by=usage_count&sort_order=ASC"
         )
         assert response.status_code == 200
         data = response.json()
-        matching = [t for t in data["tags"] if "match test" in t["title"]]
-        if len(matching) >= 2:
-            # exact match test should be first (prefix match), regardless of sort_by
-            assert matching[0]["title"] == "exact match test"
+        matching = [t for t in data["tags"] if t["title"].startswith("match")]
+        assert len(matching) == 2
+        assert matching[0]["title"] == "match partial"
+        assert matching[1]["title"] == "match"
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_search_without_sort_by_uses_relevance(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search without explicit sort_by uses relevance ranking."""
+        # Exact match gets LOW usage_count — relevance should still put it first
+        tag1 = Tags(title="match", type=TagType.THEME, usage_count=1)
+        tag2 = Tags(title="match partial", type=TagType.THEME, usage_count=999)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # No sort_by: relevance puts exact match first despite lower usage_count
+        response = await client.get("/api/v1/tags?search=match")
+        assert response.status_code == 200
+        data = response.json()
+        matching = [t for t in data["tags"] if t["title"].startswith("match")]
+        assert len(matching) == 2
+        assert matching[0]["title"] == "match"
 
     async def test_invalid_sort_by_rejected(self, client: AsyncClient):
         """Test that invalid sort_by values are rejected."""
