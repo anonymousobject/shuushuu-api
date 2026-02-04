@@ -676,6 +676,230 @@ class TestTagHierarchySearch:
 
 
 @pytest.mark.api
+class TestTagDepthFiltering:
+    """Tests for tag_depth query parameter in image search.
+
+    tag_depth controls how deep tag hierarchy traversal goes:
+    - tag_depth not provided → full hierarchy (current behavior)
+    - tag_depth=0 → exact tag only, no children
+    - tag_depth=1 → tag + direct children
+    - tag_depth=N → tag + N levels of descendants
+    """
+
+    async def test_tag_depth_0_returns_only_exact_tag(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """tag_depth=0 should only return images tagged with the exact tag, not children."""
+        # Create parent tag
+        parent_tag = Tags(title="clothing", desc="Parent", type=TagType.THEME)
+        db_session.add(parent_tag)
+        await db_session.commit()
+        await db_session.refresh(parent_tag)
+
+        # Create child tag
+        child_tag = Tags(
+            title="dress",
+            desc="Child of clothing",
+            type=TagType.THEME,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add(child_tag)
+        await db_session.commit()
+        await db_session.refresh(child_tag)
+
+        # Image tagged with parent directly
+        image1_data = sample_image_data.copy()
+        image1_data["filename"] = "parent-tagged"
+        image1_data["md5_hash"] = "a" * 32
+        image1 = Images(**image1_data)
+        db_session.add(image1)
+        await db_session.flush()
+
+        # Image tagged with child only
+        image2_data = sample_image_data.copy()
+        image2_data["filename"] = "child-tagged"
+        image2_data["md5_hash"] = "b" * 32
+        image2 = Images(**image2_data)
+        db_session.add(image2)
+        await db_session.flush()
+
+        tag_link1 = TagLinks(image_id=image1.image_id, tag_id=parent_tag.tag_id, user_id=1)
+        tag_link2 = TagLinks(image_id=image2.image_id, tag_id=child_tag.tag_id, user_id=1)
+        db_session.add_all([tag_link1, tag_link2])
+        await db_session.commit()
+
+        # tag_depth=0: only exact tag, no children
+        response = await client.get(
+            f"/api/v1/images?tags={parent_tag.tag_id}&tag_depth=0"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image1.image_id
+
+    async def test_tag_depth_1_returns_direct_children_only(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """tag_depth=1 should return tag + direct children, but not grandchildren."""
+        # Create 3-level hierarchy: clothing -> dress -> sundress
+        grandparent = Tags(title="clothing", desc="Top", type=TagType.THEME)
+        db_session.add(grandparent)
+        await db_session.commit()
+        await db_session.refresh(grandparent)
+
+        parent = Tags(
+            title="dress",
+            desc="Child",
+            type=TagType.THEME,
+            inheritedfrom_id=grandparent.tag_id,
+        )
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        grandchild = Tags(
+            title="sundress",
+            desc="Grandchild",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        db_session.add(grandchild)
+        await db_session.commit()
+        await db_session.refresh(grandchild)
+
+        # Image tagged with direct child
+        image1_data = sample_image_data.copy()
+        image1_data["filename"] = "child-img"
+        image1_data["md5_hash"] = "a" * 32
+        image1 = Images(**image1_data)
+        db_session.add(image1)
+        await db_session.flush()
+
+        # Image tagged with grandchild
+        image2_data = sample_image_data.copy()
+        image2_data["filename"] = "grandchild-img"
+        image2_data["md5_hash"] = "b" * 32
+        image2 = Images(**image2_data)
+        db_session.add(image2)
+        await db_session.flush()
+
+        tag_link1 = TagLinks(image_id=image1.image_id, tag_id=parent.tag_id, user_id=1)
+        tag_link2 = TagLinks(image_id=image2.image_id, tag_id=grandchild.tag_id, user_id=1)
+        db_session.add_all([tag_link1, tag_link2])
+        await db_session.commit()
+
+        # tag_depth=1: grandparent + direct children (dress), NOT grandchildren (sundress)
+        response = await client.get(
+            f"/api/v1/images?tags={grandparent.tag_id}&tag_depth=1"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image1.image_id
+
+    async def test_tag_depth_default_returns_full_hierarchy(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """No tag_depth param should return full hierarchy (current default behavior)."""
+        # Create 3-level hierarchy
+        grandparent = Tags(title="clothing", desc="Top", type=TagType.THEME)
+        db_session.add(grandparent)
+        await db_session.commit()
+        await db_session.refresh(grandparent)
+
+        parent = Tags(
+            title="dress",
+            type=TagType.THEME,
+            inheritedfrom_id=grandparent.tag_id,
+        )
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        grandchild = Tags(
+            title="sundress",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        db_session.add(grandchild)
+        await db_session.commit()
+        await db_session.refresh(grandchild)
+
+        # Image tagged with grandchild only
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_link = TagLinks(image_id=image.image_id, tag_id=grandchild.tag_id, user_id=1)
+        db_session.add(tag_link)
+        await db_session.commit()
+
+        # No tag_depth: full hierarchy, should find grandchild image
+        response = await client.get(f"/api/v1/images?tags={grandparent.tag_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image.image_id
+
+    async def test_tag_depth_with_tags_mode_all(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """tag_depth should work correctly with tags_mode=all."""
+        # Create two parent tags, each with a child
+        parent1 = Tags(title="clothing", desc="Parent 1", type=TagType.THEME)
+        parent2 = Tags(title="color", desc="Parent 2", type=TagType.THEME)
+        db_session.add_all([parent1, parent2])
+        await db_session.commit()
+        await db_session.refresh(parent1)
+        await db_session.refresh(parent2)
+
+        child1 = Tags(
+            title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id
+        )
+        child2 = Tags(
+            title="red", type=TagType.THEME, inheritedfrom_id=parent2.tag_id
+        )
+        db_session.add_all([child1, child2])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        # Image tagged with both children
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_link1 = TagLinks(image_id=image.image_id, tag_id=child1.tag_id, user_id=1)
+        tag_link2 = TagLinks(image_id=image.image_id, tag_id=child2.tag_id, user_id=1)
+        db_session.add_all([tag_link1, tag_link2])
+        await db_session.commit()
+
+        # tag_depth=0 + tags_mode=all: only exact tags, children not expanded
+        # Image has children, not parents, so searching by parents with depth=0 finds nothing
+        response = await client.get(
+            f"/api/v1/images?tags={parent1.tag_id},{parent2.tag_id}&tags_mode=all&tag_depth=0"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+
+        # tag_depth=1 + tags_mode=all: parents + direct children
+        # Image has both children, so it should match
+        response = await client.get(
+            f"/api/v1/images?tags={parent1.tag_id},{parent2.tag_id}&tags_mode=all&tag_depth=1"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image.image_id
+
+
+@pytest.mark.api
 class TestImagesSorting:
     """Tests for image sorting."""
 

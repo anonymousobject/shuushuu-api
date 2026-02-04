@@ -5,14 +5,14 @@ Tags API endpoints
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import asc, case, desc, func, select, text
+from sqlalchemy import asc, case, desc, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
 from app.config import TagAuditActionType, TagType
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
@@ -41,6 +41,7 @@ from app.schemas.tag import (
     TagResponse,
     TagWithStats,
 )
+from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -369,14 +370,25 @@ async def list_tags(
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # Sort: For search queries, use smart ranking
-    # For general listing, sort by date added
-    if search:
+    # Sort: If sort_by is explicitly provided, always use it.
+    # Otherwise, use relevance ranking for searches, or usage_count for listing.
+    sort_column_map: dict[str, Any] = {
+        "usage_count": Tags.usage_count,
+        "title": Tags.title,
+        "date_added": Tags.tag_id,  # PK is chronological and indexed
+        "tag_id": Tags.tag_id,
+        "type": Tags.type,
+    }
+
+    if sorting.sort_by is not None:
+        # Explicit sort_by: always honor it, even during search
+        sort_column = sort_column_map[sorting.sort_by]
+        sort_func = desc if sorting.sort_order == "DESC" else asc
+        query = query.order_by(sort_func(sort_column))
+    elif search:
+        # No explicit sort_by + search: use relevance ranking
         if len(search) < 3 or not fulltext_query_str:
             # Short query or fallback to LIKE (prefix match): prioritize exact and starts-with
-            # 1. Exact matches first
-            # 2. Starts-with matches second
-            # 3. Contains matches last (alphabetical within each group)
             query = query.order_by(
                 case(
                     (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
@@ -390,11 +402,6 @@ async def list_tags(
             )
         else:
             # Long query (full-text): prioritize exact matches, then sort by relevance
-            # 1. Exact matches first (e.g., searching "maid" finds "maid" tag first)
-            # 2. Then by relevance score from FULLTEXT search
-            # 3. Then by popularity (usage_count)
-            # 4. Finally alphabetical for consistent ordering
-            # Must use the same fulltext_query_str as the WHERE clause
             query = query.order_by(
                 case(
                     (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
@@ -405,17 +412,8 @@ async def list_tags(
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
             ).params(search=fulltext_query_str)
     else:
-        # No search - sort by user-specified field (default: usage_count DESC)
-        sort_column_map: dict[str, Any] = {
-            "usage_count": Tags.usage_count,
-            "title": Tags.title,
-            "date_added": Tags.tag_id,  # PK is chronological and indexed
-            "tag_id": Tags.tag_id,
-            "type": Tags.type,
-        }
-        sort_column = sort_column_map[sorting.sort_by]
-        sort_func = desc if sorting.sort_order == "DESC" else asc
-        query = query.order_by(sort_func(sort_column))
+        # No search, no explicit sort_by: default to usage_count DESC
+        query = query.order_by(desc(sort_column_map["usage_count"]))
 
     # Paginate
     query = query.offset(pagination.offset).limit(pagination.per_page)
@@ -447,6 +445,16 @@ async def get_images_by_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
+    tag_depth: Annotated[
+        int | None,
+        Query(
+            ge=0,
+            le=9,
+            description="How many levels of child tags to include. "
+            "0=exact tag only, 1=tag+direct children, ..., 9=up to 9 levels. "
+            "Omit for full hierarchy.",
+        ),
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
@@ -467,8 +475,10 @@ async def get_images_by_tag(
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Get the full tag hierarchy (parent + all descendants)
-    tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id)
+    # Get the tag hierarchy to configured depth
+    # tag_depth=0 → max_depth=1 (root only), tag_depth=1 → max_depth=2, etc.
+    hierarchy_max_depth = tag_depth + 1 if tag_depth is not None else 10
+    tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id, max_depth=hierarchy_max_depth)
 
     # Performance optimization: Two-stage query for fast tag filtering
     #
@@ -605,6 +615,7 @@ async def get_characters_for_source(
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     db: AsyncSession = Depends(get_db),
+    current_user: Users | None = Depends(get_optional_current_user),
 ) -> TagWithStats:
     """
     Get a single tag by ID with usage statistics.
@@ -641,9 +652,30 @@ async def get_tag(
     tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id)
 
     # Count images tagged with any tag in the hierarchy
-    count_result = await db.execute(
-        select(func.count(TagLinks.image_id.distinct())).where(TagLinks.tag_id.in_(tag_hierarchy))  # type: ignore[attr-defined]
+    # Respect user's show_all_images setting (matches image search behavior)
+    show_all = current_user is not None and current_user.show_all_images == 1
+    count_query = select(func.count(TagLinks.image_id.distinct())).where(  # type: ignore[attr-defined]
+        TagLinks.tag_id.in_(tag_hierarchy)  # type: ignore[attr-defined]
     )
+    if not show_all:
+        count_query = count_query.join(
+            Images,
+            TagLinks.image_id == Images.image_id,  # type: ignore[arg-type]
+        )
+        if current_user is not None:
+            # Logged in: public statuses OR user's own images (any status)
+            count_query = count_query.where(
+                or_(
+                    Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                    Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+                )
+            )
+        else:
+            # Anonymous: only public statuses
+            count_query = count_query.where(
+                Images.status.in_(PUBLIC_IMAGE_STATUSES)  # type: ignore[attr-defined]
+            )
+    count_result = await db.execute(count_query)
     total_image_count = count_result.scalar()
 
     # Count direct children (tags that inherit from this tag)

@@ -61,7 +61,7 @@ class UserSortParams(BaseModel):
 class TagSortParams(BaseModel):
     """Common sorting parameters for tag queries."""
 
-    sort_by: Literal["usage_count", "title", "date_added", "tag_id", "type"] = Field(
-        default="usage_count", description="Sort field"
+    sort_by: Literal["usage_count", "title", "date_added", "tag_id", "type"] | None = Field(
+        default=None, description="Sort field (omit to use relevance when searching)"
     )
     sort_order: SortOrder = Field(default="DESC", description="Sort order")
