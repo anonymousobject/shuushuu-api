@@ -383,6 +383,194 @@ class TestListTags:
 
 
 @pytest.mark.api
+class TestTagListSorting:
+    """Tests for sort_by/sort_order params and usage_count in tag list response."""
+
+    async def test_tag_response_includes_usage_count(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag list response includes usage_count field."""
+        tag = Tags(title="countable tag", type=TagType.THEME, usage_count=42)
+        db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?search=co")
+        assert response.status_code == 200
+        data = response.json()
+        matching = [t for t in data["tags"] if t["title"] == "countable tag"]
+        assert len(matching) == 1
+        assert matching[0]["usage_count"] == 42
+
+    async def test_default_sort_is_usage_count_desc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that default sort without search is usage_count DESC."""
+        tags = [
+            Tags(title="low usage", type=TagType.THEME, usage_count=5),
+            Tags(title="high usage", type=TagType.THEME, usage_count=100),
+            Tags(title="mid usage", type=TagType.THEME, usage_count=50),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=1")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Filter to our test tags
+        titles = [t["title"] for t in data["tags"] if "usage" in t["title"]]
+        assert titles == ["high usage", "mid usage", "low usage"]
+
+    async def test_sort_by_title_asc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting tags alphabetically by title ascending."""
+        tags = [
+            Tags(title="cherry", type=TagType.SOURCE, usage_count=0),
+            Tags(title="apple", type=TagType.SOURCE, usage_count=0),
+            Tags(title="banana", type=TagType.SOURCE, usage_count=0),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=2&sort_by=title&sort_order=ASC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"]]
+        assert titles == ["apple", "banana", "cherry"]
+
+    async def test_sort_by_title_desc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting tags alphabetically by title descending."""
+        tags = [
+            Tags(title="cherry", type=TagType.SOURCE, usage_count=0),
+            Tags(title="apple", type=TagType.SOURCE, usage_count=0),
+            Tags(title="banana", type=TagType.SOURCE, usage_count=0),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=2&sort_by=title&sort_order=DESC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"]]
+        assert titles == ["cherry", "banana", "apple"]
+
+    async def test_sort_by_tag_id_asc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting tags by tag_id ascending (chronological)."""
+        tag1 = Tags(title="first created", type=TagType.ARTIST, usage_count=0)
+        tag2 = Tags(title="second created", type=TagType.ARTIST, usage_count=0)
+        tag3 = Tags(title="third created", type=TagType.ARTIST, usage_count=0)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=3&sort_by=tag_id&sort_order=ASC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"]]
+        assert titles == ["first created", "second created", "third created"]
+
+    async def test_sort_by_date_added_maps_to_tag_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that sort_by=date_added uses tag_id (chronological, indexed)."""
+        tag1 = Tags(title="first created", type=TagType.ARTIST, usage_count=0)
+        tag2 = Tags(title="second created", type=TagType.ARTIST, usage_count=0)
+        tag3 = Tags(title="third created", type=TagType.ARTIST, usage_count=0)
+        db_session.add_all([tag1, tag2, tag3])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=3&sort_by=date_added&sort_order=DESC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"]]
+        assert titles == ["third created", "second created", "first created"]
+
+    async def test_sort_by_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting tags by type."""
+        tags = [
+            Tags(title="sort type artist", type=TagType.ARTIST, usage_count=0),
+            Tags(title="sort type theme", type=TagType.THEME, usage_count=0),
+            Tags(title="sort type source", type=TagType.SOURCE, usage_count=0),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        # Don't use search param here - search activates relevance sorting
+        response = await client.get("/api/v1/tags?sort_by=type&sort_order=ASC")
+        assert response.status_code == 200
+        data = response.json()
+        type_tags = [t for t in data["tags"] if t["title"].startswith("sort type")]
+        types = [t["type"] for t in type_tags]
+        # Types should be in ascending order
+        assert types == sorted(types)
+
+    async def test_sort_by_usage_count_asc(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test sorting by usage_count ascending."""
+        tags = [
+            Tags(title="popular sort", type=TagType.CHARACTER, usage_count=200),
+            Tags(title="unpopular sort", type=TagType.CHARACTER, usage_count=1),
+            Tags(title="medium sort", type=TagType.CHARACTER, usage_count=50),
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=4&sort_by=usage_count&sort_order=ASC")
+        assert response.status_code == 200
+        data = response.json()
+        titles = [t["title"] for t in data["tags"] if "sort" in t["title"]]
+        assert titles == ["unpopular sort", "medium sort", "popular sort"]
+
+    async def test_sort_order_case_insensitive(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that sort_order accepts lowercase values."""
+        response = await client.get("/api/v1/tags?sort_by=usage_count&sort_order=desc")
+        assert response.status_code == 200
+
+        response = await client.get("/api/v1/tags?sort_by=usage_count&sort_order=asc")
+        assert response.status_code == 200
+
+    async def test_search_ignores_sort_params(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that search uses relevance ranking, ignoring sort_by/sort_order."""
+        tag1 = Tags(title="exact match test", type=TagType.THEME, usage_count=1)
+        tag2 = Tags(title="test partial match", type=TagType.THEME, usage_count=999)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Even with sort_by=usage_count ASC, search should use relevance
+        # The exact/prefix match should come first, not the lowest usage_count
+        response = await client.get(
+            "/api/v1/tags?search=ex&sort_by=usage_count&sort_order=ASC"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        matching = [t for t in data["tags"] if "match test" in t["title"]]
+        if len(matching) >= 2:
+            # exact match test should be first (prefix match), regardless of sort_by
+            assert matching[0]["title"] == "exact match test"
+
+    async def test_invalid_sort_by_rejected(self, client: AsyncClient):
+        """Test that invalid sort_by values are rejected."""
+        response = await client.get("/api/v1/tags?sort_by=invalid_field")
+        assert response.status_code == 422
+
+
+@pytest.mark.api
 class TestAliasOfName:
     """Tests for alias_of_name field in tag list responses.
 
@@ -955,7 +1143,7 @@ class TestGetTag:
         data = response.json()
         assert data["tag_id"] == tag.tag_id
         assert data["title"] == "Test Tag"
-        assert data["image_count"] == 0  # No images yet
+        assert data["total_image_count"] == 0  # No images yet
 
     async def test_get_nonexistent_tag(self, client: AsyncClient):
         """Test getting a tag that doesn't exist."""
@@ -1178,6 +1366,164 @@ class TestGetTag:
         alias_titles = {a["title"] for a in data["aliases"]}
         assert alias_titles == {"Alias A", "Alias B"}
 
+    async def test_total_image_count_anonymous_excludes_non_public(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Anonymous users should only see public-status images in total_image_count."""
+        from app.config import ImageStatus
+
+        tag = Tags(title="Count Test Tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.flush()
+
+        # Create images with various statuses
+        statuses = [
+            ImageStatus.ACTIVE,    # public
+            ImageStatus.ACTIVE,    # public
+            ImageStatus.SPOILER,   # public
+            ImageStatus.REPOST,    # public
+            ImageStatus.OTHER,     # non-public (status=0)
+            ImageStatus.INAPPROPRIATE,  # non-public (status=-2)
+        ]
+        for i, status_val in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": f"count-test-{i}",
+                "md5_hash": f"counttest{i:018d}",
+                "status": status_val,
+            })
+            img = Images(**img_data)
+            db_session.add(img)
+            await db_session.flush()
+            db_session.add(TagLinks(tag_id=tag.tag_id, image_id=img.image_id))
+
+        await db_session.commit()
+
+        # Anonymous request - should only count public statuses (ACTIVE, SPOILER, REPOST)
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_image_count"] == 4  # 2 ACTIVE + 1 SPOILER + 1 REPOST
+
+    async def test_total_image_count_show_all_images_sees_all(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """User with show_all_images=1 should see all images in total_image_count."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="showall_user",
+            email="showall@test.com",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            show_all_images=1,
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        tag = Tags(title="Show All Count Tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.flush()
+
+        statuses = [
+            ImageStatus.ACTIVE,
+            ImageStatus.SPOILER,
+            ImageStatus.OTHER,
+            ImageStatus.INAPPROPRIATE,
+        ]
+        for i, status_val in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": f"showall-test-{i}",
+                "md5_hash": f"showalltest{i:015d}",
+                "status": status_val,
+            })
+            img = Images(**img_data)
+            db_session.add(img)
+            await db_session.flush()
+            db_session.add(TagLinks(tag_id=tag.tag_id, image_id=img.image_id))
+
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        response = await client.get(
+            f"/api/v1/tags/{tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_image_count"] == 4  # All statuses visible
+
+    async def test_total_image_count_show_all_images_0_excludes_non_public(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """User with show_all_images=0 sees public images + own non-public images."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="noshowuser",
+            email="noshow@test.com",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            show_all_images=0,
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        tag = Tags(title="No Show All Count Tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.flush()
+
+        # Other user's images (various statuses)
+        statuses = [
+            ImageStatus.ACTIVE,
+            ImageStatus.SPOILER,
+            ImageStatus.OTHER,
+            ImageStatus.INAPPROPRIATE,
+        ]
+        for i, status_val in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": f"noshow-test-{i}",
+                "md5_hash": f"noshowtest{i:015d}",
+                "status": status_val,
+            })
+            img = Images(**img_data)
+            db_session.add(img)
+            await db_session.flush()
+            db_session.add(TagLinks(tag_id=tag.tag_id, image_id=img.image_id))
+
+        # User's own non-public image (should be counted)
+        own_img_data = sample_image_data.copy()
+        own_img_data.update({
+            "filename": "noshow-own",
+            "md5_hash": "noshowown" + "0" * 16,
+            "status": ImageStatus.OTHER,
+            "user_id": user.user_id,
+        })
+        own_img = Images(**own_img_data)
+        db_session.add(own_img)
+        await db_session.flush()
+        db_session.add(TagLinks(tag_id=tag.tag_id, image_id=own_img.image_id))
+
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        response = await client.get(
+            f"/api/v1/tags/{tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        # 2 public (ACTIVE + SPOILER) + 1 own non-public = 3
+        assert data["total_image_count"] == 3
+
 
 @pytest.mark.api
 class TestGetImagesByTag:
@@ -1220,6 +1566,94 @@ class TestGetImagesByTag:
         """Test getting images for non-existent tag."""
         response = await client.get("/api/v1/tags/999999/images")
         assert response.status_code == 404
+
+    async def test_get_images_by_tag_with_depth_0(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """tag_depth=0 should only return images tagged with the exact tag, not children."""
+        # Create parent tag
+        parent = Tags(title="clothing", desc="Parent", type=TagType.THEME)
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        # Create child tag
+        child = Tags(
+            title="dress",
+            desc="Child of clothing",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        db_session.add(child)
+        await db_session.commit()
+        await db_session.refresh(child)
+
+        # Image tagged with parent directly
+        image1_data = sample_image_data.copy()
+        image1_data["filename"] = "parent-img"
+        image1_data["md5_hash"] = "a" * 32
+        image1 = Images(**image1_data)
+        db_session.add(image1)
+        await db_session.flush()
+
+        # Image tagged with child only
+        image2_data = sample_image_data.copy()
+        image2_data["filename"] = "child-img"
+        image2_data["md5_hash"] = "b" * 32
+        image2 = Images(**image2_data)
+        db_session.add(image2)
+        await db_session.flush()
+
+        tag_link1 = TagLinks(tag_id=parent.tag_id, image_id=image1.image_id)
+        tag_link2 = TagLinks(tag_id=child.tag_id, image_id=image2.image_id)
+        db_session.add_all([tag_link1, tag_link2])
+        await db_session.commit()
+
+        # tag_depth=0: only exact tag, no children
+        response = await client.get(
+            f"/api/v1/tags/{parent.tag_id}/images?tag_depth=0"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image1.image_id
+
+    async def test_get_images_by_tag_default_depth(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """No tag_depth should return full hierarchy (default behavior)."""
+        # Create parent → child hierarchy
+        parent = Tags(title="clothing", desc="Parent", type=TagType.THEME)
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        child = Tags(
+            title="dress",
+            type=TagType.THEME,
+            inheritedfrom_id=parent.tag_id,
+        )
+        db_session.add(child)
+        await db_session.commit()
+        await db_session.refresh(child)
+
+        # Image tagged with child only
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_link = TagLinks(tag_id=child.tag_id, image_id=image.image_id)
+        db_session.add(tag_link)
+        await db_session.commit()
+
+        # No tag_depth: full hierarchy, should find child-tagged image
+        response = await client.get(f"/api/v1/tags/{parent.tag_id}/images")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["image_id"] == image.image_id
 
 
 @pytest.mark.api

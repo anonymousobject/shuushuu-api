@@ -104,6 +104,8 @@ class Tags(TagBase, table=True):
         Index("fk_tags_inheritedfrom_id", "inheritedfrom_id"),
         Index("fk_tags_user_id", "user_id"),
         Index("type_alias", "type", "alias_of"),
+        Index("idx_tags_usage_count", "usage_count"),
+        Index("idx_tags_title", "title"),
     )
 
     # Primary key
