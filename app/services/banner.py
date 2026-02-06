@@ -55,9 +55,9 @@ async def get_current_banner(
 
         # Check for pinned banner
         pin_query = select(UserBannerPins).where(
-            UserBannerPins.user_id == user_id,
-            UserBannerPins.size == BannerSize(effective_size),
-            UserBannerPins.theme == BannerTheme(theme),
+            cast(ColumnElement[bool], UserBannerPins.user_id == user_id),
+            cast(ColumnElement[bool], UserBannerPins.size == BannerSize(effective_size)),
+            cast(ColumnElement[bool], UserBannerPins.theme == BannerTheme(theme)),
         )
         pin_result = await db.execute(pin_query)
         pin = pin_result.scalar_one_or_none()
@@ -199,7 +199,9 @@ async def get_user_preferences(
     preferred_size = prefs.preferred_size if prefs else BannerSize.small
 
     # Fetch all pins for this user with their banners
-    pin_query = select(UserBannerPins).where(UserBannerPins.user_id == user_id)
+    pin_query = select(UserBannerPins).where(
+        cast(ColumnElement[bool], UserBannerPins.user_id == user_id)
+    )
     pin_result = await db.execute(pin_query)
     pin_rows = pin_result.scalars().all()
 
@@ -271,9 +273,9 @@ async def pin_banner(
 
     # Upsert: find existing pin for this slot or create new
     existing_query = select(UserBannerPins).where(
-        UserBannerPins.user_id == user_id,
-        UserBannerPins.size == size,
-        UserBannerPins.theme == theme,
+        cast(ColumnElement[bool], UserBannerPins.user_id == user_id),
+        cast(ColumnElement[bool], UserBannerPins.size == size),
+        cast(ColumnElement[bool], UserBannerPins.theme == theme),
     )
     result = await db.execute(existing_query)
     existing = result.scalar_one_or_none()
@@ -300,9 +302,9 @@ async def unpin_banner(
     """Remove a pin for a user's size+theme slot. Raises 404 if no pin exists."""
 
     query = select(UserBannerPins).where(
-        UserBannerPins.user_id == user_id,
-        UserBannerPins.size == size,
-        UserBannerPins.theme == theme,
+        cast(ColumnElement[bool], UserBannerPins.user_id == user_id),
+        cast(ColumnElement[bool], UserBannerPins.size == size),
+        cast(ColumnElement[bool], UserBannerPins.theme == theme),
     )
     result = await db.execute(query)
     pin = result.scalar_one_or_none()
