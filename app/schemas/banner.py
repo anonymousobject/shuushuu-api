@@ -6,7 +6,7 @@ Defines request/response models for banner endpoints.
 from pydantic import BaseModel, computed_field, model_validator
 
 from app.config import settings
-from app.models.misc import BannerSize
+from app.models.misc import BannerSize, BannerTheme
 
 
 class BannerResponse(BaseModel):
@@ -87,3 +87,30 @@ class BannerListResponse(BaseModel):
     total: int
     page: int
     per_page: int
+
+
+class PreferenceUpdateRequest(BaseModel):
+    """Request to update banner size preference."""
+
+    preferred_size: BannerSize
+
+
+class PinRequest(BaseModel):
+    """Request to pin a banner for a size+theme slot."""
+
+    banner_id: int
+
+
+class BannerPinResponse(BaseModel):
+    """A single pin entry in the preferences response."""
+
+    size: BannerSize
+    theme: BannerTheme
+    banner: BannerResponse | None
+
+
+class BannerPreferencesResponse(BaseModel):
+    """Full user banner preferences response."""
+
+    preferred_size: BannerSize
+    pins: list[BannerPinResponse]

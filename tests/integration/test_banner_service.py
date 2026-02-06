@@ -19,7 +19,7 @@ class TestGetCurrentBanner:
     ) -> None:
         from app.services.banner import BANNER_CACHE_KEY_PREFIX, get_current_banner
 
-        cache_key = f"{BANNER_CACHE_KEY_PREFIX}dark:medium"
+        cache_key = f"{BANNER_CACHE_KEY_PREFIX}dark:small"
         await redis_client.set(
             cache_key,
             json.dumps(
@@ -27,7 +27,7 @@ class TestGetCurrentBanner:
                     "banner_id": 1,
                     "name": "cached",
                     "author": None,
-                    "size": "medium",
+                    "size": "small",
                     "supports_dark": True,
                     "supports_light": True,
                     "full_image": "x.png",
@@ -38,7 +38,7 @@ class TestGetCurrentBanner:
             ),
         )
 
-        result = await get_current_banner("dark", "medium", db_session, redis_client)
+        result = await get_current_banner("dark", "small", db_session, redis_client)
         assert result.banner_id == 1
         assert result.name == "cached"
 
@@ -55,7 +55,7 @@ class TestGetCurrentBanner:
 
         valid = Banners(
             name="db_banner",
-            size=BannerSize.medium,
+            size=BannerSize.small,
             supports_dark=True,
             supports_light=True,
             full_image="db.png",
@@ -64,7 +64,7 @@ class TestGetCurrentBanner:
         # Invalid layout should be ignored by the service
         invalid = Banners(
             name="invalid_banner",
-            size=BannerSize.medium,
+            size=BannerSize.small,
             supports_dark=True,
             supports_light=True,
             full_image="full.png",
@@ -77,11 +77,11 @@ class TestGetCurrentBanner:
         await db_session.commit()
         await db_session.refresh(valid)
 
-        result = await get_current_banner("dark", "medium", db_session, redis_client)
+        result = await get_current_banner("dark", "small", db_session, redis_client)
         assert result.banner_id == valid.banner_id
         assert result.name == "db_banner"
 
-        cache_key = f"{BANNER_CACHE_KEY_PREFIX}dark:medium"
+        cache_key = f"{BANNER_CACHE_KEY_PREFIX}dark:small"
         cached = await redis_client.get(cache_key)
         assert cached is not None
 

@@ -23,7 +23,6 @@ class BannerSize(str, Enum):
     """Banner size variants."""
 
     small = "small"
-    medium = "medium"
     large = "large"
 
 
@@ -37,7 +36,7 @@ class BannerBase(SQLModel):
     name: str = Field(max_length=255)
     author: str | None = Field(default=None, max_length=255)
 
-    size: BannerSize = Field(default=BannerSize.medium)
+    size: BannerSize = Field(default=BannerSize.small)
 
     # Image paths (relative to banner directory)
     full_image: str | None = Field(default=None, max_length=255)
@@ -69,6 +68,72 @@ class Banners(BannerBase, table=True):
     created_at: datetime | None = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
     )
+
+
+class BannerTheme(str, Enum):
+    """Banner theme variants."""
+
+    dark = "dark"
+    light = "light"
+
+
+class UserBannerPreferencesBase(SQLModel):
+    """Base model for user banner size preference."""
+
+    preferred_size: BannerSize = Field(default=BannerSize.small)
+
+
+class UserBannerPreferences(UserBannerPreferencesBase, table=True):
+    """One row per user — stores preferred banner size."""
+
+    __tablename__ = "user_banner_preferences"
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_banner_prefs_user_id",
+        ),
+    )
+
+    user_id: int = Field(primary_key=True, foreign_key="users.user_id")
+
+
+class UserBannerPinsBase(SQLModel):
+    """Base model for user banner pins."""
+
+    size: BannerSize
+    theme: BannerTheme
+
+
+class UserBannerPins(UserBannerPinsBase, table=True):
+    """One row per pin — up to 4 per user (2 sizes x 2 themes)."""
+
+    __tablename__ = "user_banner_pins"
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_banner_pins_user_id",
+        ),
+        ForeignKeyConstraint(
+            ["banner_id"],
+            ["banners.banner_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_banner_pins_banner_id",
+        ),
+        Index("uq_user_size_theme", "user_id", "size", "theme", unique=True),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.user_id")
+    banner_id: int = Field(foreign_key="banners.banner_id")
 
 
 # ===== EvaTheme =====

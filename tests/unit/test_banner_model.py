@@ -1,6 +1,6 @@
 """Tests for Banner model."""
 
-from app.models.misc import BannerSize, Banners
+from app.models.misc import BannerSize, BannerTheme, Banners, UserBannerPins, UserBannerPreferences
 
 
 class TestBannerSize:
@@ -8,8 +8,10 @@ class TestBannerSize:
 
     def test_banner_size_values(self) -> None:
         assert BannerSize.small.value == "small"
-        assert BannerSize.medium.value == "medium"
         assert BannerSize.large.value == "large"
+
+    def test_banner_size_has_exactly_two_values(self) -> None:
+        assert len(BannerSize) == 2
 
     def test_banner_size_is_string_enum(self) -> None:
         assert isinstance(BannerSize.small.value, str)
@@ -24,7 +26,7 @@ class TestBannerModel:
             full_image="test.png",
         )
         assert banner.name == "test_banner"
-        assert banner.size == BannerSize.medium
+        assert banner.size == BannerSize.small
         assert banner.supports_dark is True
         assert banner.supports_light is True
         assert banner.active is True
@@ -45,3 +47,42 @@ class TestBannerModel:
         """DB model should allow rows; validation happens in schema/service."""
         banner = Banners(name="invalid", left_image="left.png")
         assert banner.left_image == "left.png"
+
+
+class TestBannerThemeEnum:
+    def test_values(self):
+        assert BannerTheme.dark == "dark"
+        assert BannerTheme.light == "light"
+
+    def test_has_exactly_two_values(self):
+        assert len(BannerTheme) == 2
+
+
+class TestUserBannerPreferencesModel:
+    def test_default_preferred_size(self):
+        prefs = UserBannerPreferences(user_id=1)
+        assert prefs.preferred_size == BannerSize.small
+
+    def test_custom_preferred_size(self):
+        prefs = UserBannerPreferences(user_id=1, preferred_size=BannerSize.large)
+        assert prefs.preferred_size == BannerSize.large
+
+    def test_table_name(self):
+        assert UserBannerPreferences.__tablename__ == "user_banner_preferences"
+
+
+class TestUserBannerPinsModel:
+    def test_fields(self):
+        pin = UserBannerPins(
+            user_id=1,
+            size=BannerSize.small,
+            theme=BannerTheme.dark,
+            banner_id=10,
+        )
+        assert pin.user_id == 1
+        assert pin.size == BannerSize.small
+        assert pin.theme == BannerTheme.dark
+        assert pin.banner_id == 10
+
+    def test_table_name(self):
+        assert UserBannerPins.__tablename__ == "user_banner_pins"
