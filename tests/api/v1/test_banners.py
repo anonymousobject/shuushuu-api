@@ -18,7 +18,7 @@ class TestCurrentBanner:
     ) -> None:
         response = await client_real_redis.get(
             "/api/v1/banners/current",
-            params={"theme": "dark", "size": "medium"},
+            params={"theme": "dark", "size": "small"},
         )
         assert response.status_code == 404
         # Distinguish from missing route 404
@@ -30,13 +30,13 @@ class TestCurrentBanner:
         redis_client: redis.Redis,  # type: ignore[type-arg]
     ) -> None:
         await redis_client.set(
-            "banner:current:dark:medium",
+            "banner:current:dark:small",
             json.dumps(
                 {
                     "banner_id": 1,
                     "name": "cached",
                     "author": None,
-                    "size": "medium",
+                    "size": "small",
                     "supports_dark": True,
                     "supports_light": True,
                     "full_image": "x.png",
@@ -49,7 +49,7 @@ class TestCurrentBanner:
 
         response = await client_real_redis.get(
             "/api/v1/banners/current",
-            params={"theme": "dark", "size": "medium"},
+            params={"theme": "dark", "size": "small"},
         )
         assert response.status_code == 200
         data = response.json()
@@ -67,7 +67,7 @@ class TestListBanners:
     ) -> None:
         active_banner = Banners(
             name="list_banner",
-            size=BannerSize.medium,
+            size=BannerSize.small,
             supports_dark=True,
             supports_light=True,
             full_image="db.png",
@@ -75,7 +75,7 @@ class TestListBanners:
         )
         inactive_banner = Banners(
             name="inactive_banner",
-            size=BannerSize.medium,
+            size=BannerSize.small,
             supports_dark=True,
             supports_light=True,
             full_image="inactive.png",

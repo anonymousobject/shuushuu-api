@@ -115,8 +115,8 @@ class TestPinBanner:
         self, authenticated_client: AsyncClient, db_session: AsyncSession,
     ):
         banner = Banners(
-            name="medium_b", size=BannerSize.medium, supports_dark=True,
-            supports_light=True, full_image="m.png", active=True,
+            name="large_b", size=BannerSize.large, supports_dark=True,
+            supports_light=True, full_image="lg.png", active=True,
         )
         db_session.add(banner)
         await db_session.commit()

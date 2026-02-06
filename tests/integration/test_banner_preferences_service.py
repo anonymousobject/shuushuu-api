@@ -77,10 +77,10 @@ class TestUpdatePreferredSize:
         db_session.add(prefs)
         await db_session.commit()
 
-        await update_preferred_size(user_id=1, size=BannerSize.medium, db=db_session)
+        await update_preferred_size(user_id=1, size=BannerSize.large, db=db_session)
 
         await db_session.refresh(prefs)
-        assert prefs.preferred_size == BannerSize.medium
+        assert prefs.preferred_size == BannerSize.large
 
 
 @pytest.mark.integration
@@ -165,8 +165,8 @@ class TestPinBanner:
         from fastapi import HTTPException
 
         banner = Banners(
-            name="medium_banner",
-            size=BannerSize.medium,
+            name="large_banner",
+            size=BannerSize.large,
             supports_dark=True,
             supports_light=True,
             full_image="m.png",
@@ -326,14 +326,14 @@ class TestGetCurrentBannerWithPreferences:
         from app.services.banner import get_current_banner
 
         banner = Banners(
-            name="medium_banner", size=BannerSize.medium, supports_dark=True,
-            supports_light=True, full_image="m.png", active=True,
+            name="small_banner", size=BannerSize.small, supports_dark=True,
+            supports_light=True, full_image="s.png", active=True,
         )
         db_session.add(banner)
         await db_session.commit()
 
-        result = await get_current_banner("dark", "medium", db_session, redis_client)
-        assert result.size == BannerSize.medium
+        result = await get_current_banner("dark", "small", db_session, redis_client)
+        assert result.size == BannerSize.small
 
     async def test_authenticated_user_preferred_size_overrides_param(
         self, db_session: AsyncSession, redis_client: redis.Redis,

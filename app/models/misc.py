@@ -23,7 +23,6 @@ class BannerSize(str, Enum):
     """Banner size variants."""
 
     small = "small"
-    medium = "medium"
     large = "large"
 
 
@@ -37,7 +36,7 @@ class BannerBase(SQLModel):
     name: str = Field(max_length=255)
     author: str | None = Field(default=None, max_length=255)
 
-    size: BannerSize = Field(default=BannerSize.medium)
+    size: BannerSize = Field(default=BannerSize.small)
 
     # Image paths (relative to banner directory)
     full_image: str | None = Field(default=None, max_length=255)
@@ -100,7 +99,7 @@ class UserBannerPinsBase(SQLModel):
 
 
 class UserBannerPins(UserBannerPinsBase, table=True):
-    """One row per pin — up to 6 per user (3 sizes x 2 themes)."""
+    """One row per pin — up to 4 per user (2 sizes x 2 themes)."""
 
     __tablename__ = "user_banner_pins"
 

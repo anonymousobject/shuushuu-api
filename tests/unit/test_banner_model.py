@@ -8,8 +8,10 @@ class TestBannerSize:
 
     def test_banner_size_values(self) -> None:
         assert BannerSize.small.value == "small"
-        assert BannerSize.medium.value == "medium"
         assert BannerSize.large.value == "large"
+
+    def test_banner_size_has_exactly_two_values(self) -> None:
+        assert len(BannerSize) == 2
 
     def test_banner_size_is_string_enum(self) -> None:
         assert isinstance(BannerSize.small.value, str)
@@ -24,7 +26,7 @@ class TestBannerModel:
             full_image="test.png",
         )
         assert banner.name == "test_banner"
-        assert banner.size == BannerSize.medium
+        assert banner.size == BannerSize.small
         assert banner.supports_dark is True
         assert banner.supports_light is True
         assert banner.active is True
