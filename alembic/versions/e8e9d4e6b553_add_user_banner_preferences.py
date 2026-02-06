@@ -9,6 +9,7 @@ from typing import Sequence
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import mysql
 
 
 # revision identifiers, used by Alembic.
@@ -21,7 +22,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "user_banner_preferences",
-        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
         sa.Column(
             "preferred_size",
             sa.Enum("small", "medium", "large", name="bannersize"),
@@ -40,7 +41,7 @@ def upgrade() -> None:
     op.create_table(
         "user_banner_pins",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
         sa.Column(
             "size",
             sa.Enum("small", "medium", "large", name="bannersize"),
