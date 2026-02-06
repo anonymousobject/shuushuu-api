@@ -71,6 +71,46 @@ class Banners(BannerBase, table=True):
     )
 
 
+class BannerTheme(str, Enum):
+    """Banner theme variants."""
+
+    dark = "dark"
+    light = "light"
+
+
+class UserBannerPreferencesBase(SQLModel):
+    """Base model for user banner size preference."""
+
+    preferred_size: BannerSize = Field(default=BannerSize.small)
+
+
+class UserBannerPreferences(UserBannerPreferencesBase, table=True):
+    """One row per user — stores preferred banner size."""
+
+    __tablename__ = "user_banner_preferences"
+
+    user_id: int = Field(primary_key=True, foreign_key="users.user_id")
+
+
+class UserBannerPinsBase(SQLModel):
+    """Base model for user banner pins."""
+
+    size: BannerSize
+    theme: BannerTheme
+
+
+class UserBannerPins(UserBannerPinsBase, table=True):
+    """One row per pin — up to 6 per user (3 sizes x 2 themes)."""
+
+    __tablename__ = "user_banner_pins"
+
+    __table_args__ = (Index("uq_user_size_theme", "user_id", "size", "theme", unique=True),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.user_id")
+    banner_id: int = Field(foreign_key="banners.banner_id")
+
+
 # ===== EvaTheme =====
 
 

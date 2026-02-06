@@ -254,6 +254,8 @@ def setup_test_database():
         ImageRatingsAvg,
         Quicklinks,
         Tips,
+        UserBannerPins,
+        UserBannerPreferences,
     )
     from app.models.news import News  # noqa: F401
     from app.models.permissions import (  # noqa: F401
