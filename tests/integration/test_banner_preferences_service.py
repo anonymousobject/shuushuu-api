@@ -5,7 +5,6 @@ import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.misc import Banners, BannerSize, BannerTheme, UserBannerPins, UserBannerPreferences
-from app.schemas.banner import BannerPreferencesResponse
 
 
 @pytest.mark.integration

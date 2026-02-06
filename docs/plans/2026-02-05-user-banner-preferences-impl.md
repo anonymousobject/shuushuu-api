@@ -60,7 +60,7 @@ class UserBannerPinsBase(SQLModel):
 
 
 class UserBannerPins(UserBannerPinsBase, table=True):
-    """One row per pin — up to 6 per user (3 sizes x 2 themes)."""
+    """One row per pin — up to 4 per user (2 sizes x 2 themes)."""
 
     __tablename__ = "user_banner_pins"
 
@@ -197,7 +197,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column(
             "preferred_size",
-            sa.Enum("small", "medium", "large", name="bannersize"),
+            sa.Enum("small", "large", name="bannersize"),
             nullable=False,
             server_default="small",
         ),
@@ -216,7 +216,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column(
             "size",
-            sa.Enum("small", "medium", "large", name="bannersize"),
+            sa.Enum("small", "large", name="bannersize"),
             nullable=False,
         ),
         sa.Column("theme", sa.VARCHAR(5), nullable=False),
@@ -476,10 +476,10 @@ class TestUpdatePreferredSize:
         db_session.add(prefs)
         await db_session.commit()
 
-        await update_preferred_size(user_id=1, size=BannerSize.medium, db=db_session)
+        await update_preferred_size(user_id=1, size=BannerSize.large, db=db_session)
 
         await db_session.refresh(prefs)
-        assert prefs.preferred_size == BannerSize.medium
+        assert prefs.preferred_size == BannerSize.large
 
 
 @pytest.mark.integration
@@ -563,8 +563,8 @@ class TestPinBanner:
         from fastapi import HTTPException
 
         banner = Banners(
-            name="medium_banner",
-            size=BannerSize.medium,
+            name="large_banner",
+            size=BannerSize.large,
             supports_dark=True,
             supports_light=True,
             full_image="m.png",
@@ -867,14 +867,14 @@ class TestGetCurrentBannerWithPreferences:
         from app.services.banner import get_current_banner
 
         banner = Banners(
-            name="medium_banner", size=BannerSize.medium, supports_dark=True,
-            supports_light=True, full_image="m.png", active=True,
+            name="small_banner", size=BannerSize.small, supports_dark=True,
+            supports_light=True, full_image="s.png", active=True,
         )
         db_session.add(banner)
         await db_session.commit()
 
-        result = await get_current_banner("dark", "medium", db_session, redis_client)
-        assert result.size == BannerSize.medium
+        result = await get_current_banner("dark", "small", db_session, redis_client)
+        assert result.size == BannerSize.small
 
     async def test_authenticated_user_preferred_size_overrides_param(
         self, db_session: AsyncSession, redis_client: redis.Redis,
@@ -1156,8 +1156,8 @@ class TestPinBanner:
         self, authenticated_client: AsyncClient, db_session: AsyncSession,
     ):
         banner = Banners(
-            name="medium_b", size=BannerSize.medium, supports_dark=True,
-            supports_light=True, full_image="m.png", active=True,
+            name="large_b", size=BannerSize.large, supports_dark=True,
+            supports_light=True, full_image="lg.png", active=True,
         )
         db_session.add(banner)
         await db_session.commit()

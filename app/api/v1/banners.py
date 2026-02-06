@@ -35,7 +35,7 @@ async def current_banner(
     theme: Annotated[Literal["dark", "light"], Query(description="Theme for banner selection")],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
-    current_user: OptionalCurrentUser = None,
+    current_user: OptionalCurrentUser,
     size: Annotated[BannerSize, Query(description="Banner size")] = BannerSize.small,
 ) -> BannerResponse:
     user_id = current_user.id if current_user else None

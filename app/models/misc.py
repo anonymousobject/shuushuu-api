@@ -88,6 +88,16 @@ class UserBannerPreferences(UserBannerPreferencesBase, table=True):
 
     __tablename__ = "user_banner_preferences"
 
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_banner_prefs_user_id",
+        ),
+    )
+
     user_id: int = Field(primary_key=True, foreign_key="users.user_id")
 
 
@@ -103,7 +113,23 @@ class UserBannerPins(UserBannerPinsBase, table=True):
 
     __tablename__ = "user_banner_pins"
 
-    __table_args__ = (Index("uq_user_size_theme", "user_id", "size", "theme", unique=True),)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_banner_pins_user_id",
+        ),
+        ForeignKeyConstraint(
+            ["banner_id"],
+            ["banners.banner_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_banner_pins_banner_id",
+        ),
+        Index("uq_user_size_theme", "user_id", "size", "theme", unique=True),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.user_id")

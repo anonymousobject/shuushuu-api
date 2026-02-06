@@ -6,8 +6,8 @@ Allow logged-in users to customize banner display: choose a preferred size and p
 
 ## Requirements
 
-- Preferred banner size: defaults to small, user can change to medium or large
-- Per-size, per-theme pinned banners: users can pin a favorite banner for each size+theme combination (up to 6 pins: 3 sizes × 2 themes)
+- Preferred banner size: defaults to small, user can change to large
+- Per-size, per-theme pinned banners: users can pin a favorite banner for each size+theme combination (up to 4 pins: 2 sizes × 2 themes)
 - Pinned banners always display (replace rotation entirely for that slot)
 - Server-side resolution: the `/current` endpoint handles preference logic — frontend makes the same API call regardless of auth state
 - Stale pins (inactive banners) fall through to normal rotation without deleting the pin
@@ -25,7 +25,7 @@ class UserBannerPreferences(SQLModel, table=True):
     preferred_size: BannerSize = BannerSize.small
 
 class UserBannerPins(SQLModel, table=True):
-    """One row per pin — up to 6 per user (3 sizes × 2 themes)."""
+    """One row per pin — up to 4 per user (2 sizes × 2 themes)."""
     __tablename__ = "user_banner_pins"
 
     user_id: int       # FK to users
@@ -42,7 +42,7 @@ No row in `user_banner_preferences` means defaults apply (size=small, no pins). 
 ```sql
 CREATE TABLE user_banner_preferences (
     user_id INT PRIMARY KEY,
-    preferred_size ENUM('small', 'medium', 'large') NOT NULL DEFAULT 'small',
+    preferred_size ENUM('small', 'large') NOT NULL DEFAULT 'small',
     CONSTRAINT fk_ubp_user FOREIGN KEY (user_id) REFERENCES users(user_id)
         ON DELETE CASCADE ON UPDATE CASCADE
 );
@@ -50,7 +50,7 @@ CREATE TABLE user_banner_preferences (
 CREATE TABLE user_banner_pins (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
-    size ENUM('small', 'medium', 'large') NOT NULL,
+    size ENUM('small', 'large') NOT NULL,
     theme VARCHAR(5) NOT NULL,  -- 'dark' or 'light'
     banner_id INT NOT NULL,
     UNIQUE KEY uq_user_size_theme (user_id, size, theme),
@@ -66,7 +66,7 @@ CREATE TABLE user_banner_pins (
 ### Modified: GET /api/v1/banners/current
 
 - `theme` (required): dark | light
-- `size` (optional, default: small): small | medium | large
+- `size` (optional, default: small): small | large
 - If authenticated with preferences, `preferred_size` overrides the `size` query param
 - If a pin exists for (user_id, effective_size, theme) and the banner is active, return it
 - Otherwise, fall through to normal cached rotation
@@ -130,7 +130,7 @@ Request: GET /banners/current?theme=dark&size=small (+ optional auth)
 
 ## Caching
 
-- The shared rotation cache (6 keys) is unchanged — all non-pinned users share it
+- The shared rotation cache (4 keys) is unchanged — all non-pinned users share it
 - Pinned banner lookups hit the DB (PK lookup, cheap). Skip per-user caching in v1.
 - Preference/pin updates don't require cache invalidation for the shared cache
 

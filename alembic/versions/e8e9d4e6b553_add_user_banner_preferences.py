@@ -20,12 +20,18 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Narrow banners.size enum from (small,medium,large) to (small,large)
+    op.execute("UPDATE banners SET size = 'small' WHERE size = 'medium'")
+    op.execute(
+        "ALTER TABLE banners MODIFY COLUMN size ENUM('small','large') NOT NULL DEFAULT 'small'"
+    )
+
     op.create_table(
         "user_banner_preferences",
         sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
         sa.Column(
             "preferred_size",
-            sa.Enum("small", "medium", "large", name="bannersize"),
+            sa.Enum("small", "large", name="bannersize"),
             nullable=False,
             server_default="small",
         ),
@@ -44,7 +50,7 @@ def upgrade() -> None:
         sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
         sa.Column(
             "size",
-            sa.Enum("small", "medium", "large", name="bannersize"),
+            sa.Enum("small", "large", name="bannersize"),
             nullable=False,
         ),
         sa.Column("theme", sa.VARCHAR(5), nullable=False),
@@ -75,3 +81,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("user_banner_pins")
     op.drop_table("user_banner_preferences")
+
+    # Restore banners.size enum to include medium
+    op.execute(
+        "ALTER TABLE banners "
+        "MODIFY COLUMN size ENUM('small','medium','large') NOT NULL DEFAULT 'medium'"
+    )

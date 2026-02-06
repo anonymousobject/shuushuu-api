@@ -45,19 +45,29 @@ async def get_current_banner(
     If user_id is provided, resolves preferred size and pinned banners before rotation.
     """
 
-    effective_size = size
+    # Validate inputs early (API layer should also validate)
+    if theme not in {"dark", "light"}:
+        raise HTTPException(status_code=400, detail=f"Invalid theme '{theme}'")
+
+    try:
+        size_enum = BannerSize(size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid size '{size}'") from exc
+
+    effective_size = size_enum
 
     if user_id is not None:
         # Check for user preferences
         prefs = await db.get(UserBannerPreferences, user_id)
         if prefs:
-            effective_size = prefs.preferred_size.value
+            effective_size = prefs.preferred_size
 
         # Check for pinned banner
+        theme_enum = BannerTheme(theme)
         pin_query = select(UserBannerPins).where(
             cast(ColumnElement[bool], UserBannerPins.user_id == user_id),
-            cast(ColumnElement[bool], UserBannerPins.size == BannerSize(effective_size)),
-            cast(ColumnElement[bool], UserBannerPins.theme == BannerTheme(theme)),
+            cast(ColumnElement[bool], UserBannerPins.size == effective_size),
+            cast(ColumnElement[bool], UserBannerPins.theme == theme_enum),
         )
         pin_result = await db.execute(pin_query)
         pin = pin_result.scalar_one_or_none()
@@ -70,7 +80,7 @@ async def get_current_banner(
                 except Exception:
                     pass  # Invalid layout, fall through to rotation
 
-    cache_key = _make_cache_key(theme, effective_size)
+    cache_key = _make_cache_key(theme, effective_size.value)
 
     cached = await redis_client.get(cache_key)
     if cached:
@@ -81,20 +91,11 @@ async def get_current_banner(
             # Stale/invalid cache entry - delete and fall through to DB lookup
             await redis_client.delete(cache_key)
 
-    # Validate inputs minimally (API layer should also validate)
-    if theme not in {"dark", "light"}:
-        raise HTTPException(status_code=400, detail=f"Invalid theme '{theme}'")
-
-    try:
-        size_enum = BannerSize(effective_size)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid size '{effective_size}'") from exc
-
     theme_filter = Banners.supports_dark if theme == "dark" else Banners.supports_light
 
     active_filter = cast(ColumnElement[bool], Banners.active == True)  # noqa: E712
     theme_filter_expr = cast(ColumnElement[bool], theme_filter == True)  # noqa: E712
-    size_filter = cast(ColumnElement[bool], Banners.size == size_enum)
+    size_filter = cast(ColumnElement[bool], Banners.size == effective_size)
 
     query = select(Banners).where(active_filter, theme_filter_expr, size_filter)
 
@@ -104,7 +105,7 @@ async def get_current_banner(
     if not banners:
         raise HTTPException(
             status_code=404,
-            detail=f"No banners available for theme '{theme}' and size '{effective_size}'",
+            detail=f"No banners available for theme '{theme}' and size '{effective_size.value}'",
         )
 
     valid_responses: list[BannerResponse] = []
@@ -112,12 +113,12 @@ async def get_current_banner(
         try:
             valid_responses.append(BannerResponse.model_validate(banner))
         except Exception:
-            continue
+            continue  # Skip banners with invalid layout (e.g. partial three-part)
 
     if not valid_responses:
         raise HTTPException(
             status_code=404,
-            detail=f"No valid banners available for theme '{theme}' and size '{effective_size}'",
+            detail=f"No valid banners available for theme '{theme}' and size '{effective_size.value}'",
         )
 
     response = random.choice(valid_responses)
@@ -213,7 +214,7 @@ async def get_user_preferences(
             try:
                 banner_response = BannerResponse.model_validate(banner)
             except Exception:
-                pass
+                pass  # Skip banners with invalid layout (e.g. partial three-part)
         pins.append(
             BannerPinResponse(
                 size=pin_row.size,
