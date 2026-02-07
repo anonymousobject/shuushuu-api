@@ -223,7 +223,7 @@ async def main(dry_run: bool = False, batch_size: int = 1000, auto_confirm: bool
 
         if dry_run:
             print("\n⚠️  This was a DRY RUN - no changes were made")
-            print("Run without --dry-run to apply changes")
+            print("Run with --no-dry-run to apply changes")
 
 
 if __name__ == "__main__":
@@ -231,7 +231,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview changes without committing to database",
+        default=True,
+        help="Preview changes without committing to database (default: True)",
+    )
+    parser.add_argument(
+        "--no-dry-run",
+        dest="dry_run",
+        action="store_false",
+        help="Apply changes to database",
     )
     parser.add_argument(
         "--batch-size",

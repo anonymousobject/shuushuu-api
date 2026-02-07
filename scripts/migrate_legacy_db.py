@@ -73,6 +73,7 @@ MIGRATION_STEPS = [
         "name": "backfill_tag_usage_counts",
         "script": "backfill_tag_usage_counts.py",
         "description": "Backfill tag usage counts from tag_links table",
+        "skip_standard_flags": True,  # Script has no CLI args (idempotent operation)
     },
     {
         "number": 5,
