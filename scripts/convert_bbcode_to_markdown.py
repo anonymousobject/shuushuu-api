@@ -69,7 +69,7 @@ def convert_bbcode_to_markdown(text: str) -> tuple[str, bool]:
     def convert_url_with_param(match: re.Match[str]) -> str:
         nonlocal modified
         modified = True
-        url = match.group(1)
+        url = match.group(1).strip('"\'')
         link_text = match.group(2)
         # Handle relative URLs
         if url.startswith("/"):
