@@ -2528,6 +2528,99 @@ class TestShowAllImagesFilter:
         filenames = {img["filename"] for img in data["images"]}
         assert filenames == {"repost1", "repost2"}
 
+    async def test_multi_status_filter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Multiple status values should filter to images matching any of them."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="multistatuser",
+            email="multistatus@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000030",
+            show_all_images=1,
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        statuses = [
+            (ImageStatus.ACTIVE, "active1"),
+            (ImageStatus.SPOILER, "spoiler1"),
+            (ImageStatus.REPOST, "repost1"),
+            (ImageStatus.REVIEW, "review1"),
+        ]
+
+        for i, (status_val, filename) in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": filename,
+                "md5_hash": f"hash_multi_{i:03d}",
+                "status": status_val,
+                "user_id": user.user_id,
+            })
+            db_session.add(Images(**img_data))
+
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        # Filter to ACTIVE + SPOILER (status=1&status=2)
+        response = await client.get("/api/v1/images?status=1&status=2")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        filenames = {img["filename"] for img in data["images"]}
+        assert filenames == {"active1", "spoiler1"}
+
+    async def test_single_status_still_works(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Single status value should still work (backwards compatibility)."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="singlestatuser",
+            email="singlestatus@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000031",
+            show_all_images=1,
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        for i, (status_val, filename) in enumerate([
+            (ImageStatus.ACTIVE, "active1"),
+            (ImageStatus.SPOILER, "spoiler1"),
+        ]):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": filename,
+                "md5_hash": f"hash_single_{i:03d}",
+                "status": status_val,
+                "user_id": user.user_id,
+            })
+            db_session.add(Images(**img_data))
+
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        # Single status=1 should only return ACTIVE
+        response = await client.get("/api/v1/images?status=1")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "active1"
+
 
 class TestBookmarkPage:
     """Tests for GET /images/bookmark/page endpoint."""
