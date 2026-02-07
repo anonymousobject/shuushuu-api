@@ -45,6 +45,9 @@ SPOILER_TITLE_PATTERN = re.compile(
 SPOILER_PLAIN_PATTERN = re.compile(
     r"\[spoiler\](.+?)\[/spoiler\]", re.DOTALL | re.IGNORECASE
 )
+# Cleanup: fix already-converted markdown links with quoted URLs
+# e.g. [text]("http://...") → [text](http://...)
+BROKEN_MD_LINK_PATTERN = re.compile(r'\[([^\]]+)\]\((["\'])(.+?)\2\)')
 
 
 def convert_bbcode_to_markdown(text: str) -> tuple[str, bool]:
@@ -69,7 +72,7 @@ def convert_bbcode_to_markdown(text: str) -> tuple[str, bool]:
     def convert_url_with_param(match: re.Match[str]) -> str:
         nonlocal modified
         modified = True
-        url = match.group(1).strip('"\'')
+        url = match.group(1).replace("&quot;", '"').strip('"\'')
         link_text = match.group(2)
         # Handle relative URLs
         if url.startswith("/"):
@@ -109,6 +112,16 @@ def convert_bbcode_to_markdown(text: str) -> tuple[str, bool]:
         return f"[spoiler]\n{content}\n[/spoiler]"
 
     text = SPOILER_PLAIN_PATTERN.sub(convert_spoiler_plain, text)
+
+    # Fix already-converted markdown links with quoted URLs: [text]("url") → [text](url)
+    def fix_broken_md_link(match: re.Match[str]) -> str:
+        nonlocal modified
+        modified = True
+        link_text = match.group(1)
+        url = match.group(3)
+        return f"[{link_text}]({url})"
+
+    text = BROKEN_MD_LINK_PATTERN.sub(fix_broken_md_link, text)
 
     # Quote tags should already be in correct format, but normalize any HTML entities
     if "&quot;" in text:
