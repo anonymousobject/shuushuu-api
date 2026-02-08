@@ -176,3 +176,28 @@ class TestUploadIQDBDuplicateDetection:
         assert response.status_code == 201
         data = response.json()
         assert "similar_images" not in data
+
+    @pytest.mark.asyncio
+    async def test_upload_stores_and_returns_miscmeta(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Upload with miscmeta parameter stores it and returns it in the response."""
+        with (
+            _mock_save_uploaded_image("abc123unique4"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": "", "miscmeta": "pixiv: 12345"},
+            )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["image"]["miscmeta"] == "pixiv: 12345"

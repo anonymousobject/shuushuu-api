@@ -80,6 +80,7 @@ from app.schemas.image import (
     ImageStatsResponse,
     ImageTagItem,
     ImageTagsResponse,
+    ImageUpdate,
     ImageUploadResponse,
     ImageUploadSimilarResponse,
     SimilarImageResult,
@@ -652,6 +653,74 @@ async def delete_image(
         deleted_by=current_user.user_id,
         reason=reason,
     )
+
+
+@router.patch("/{image_id}", response_model=ImageDetailedResponse)
+async def update_image(
+    image_id: Annotated[int, Path(description="Image ID")],
+    image_data: ImageUpdate,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+) -> ImageDetailedResponse:
+    """
+    Update image metadata (caption, miscmeta).
+
+    Can be used by:
+    - The image owner
+    - Admin users
+    - Users with IMAGE_EDIT_META permission
+    """
+    update_fields = image_data.model_dump(exclude_unset=True)
+    if not update_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields to update",
+        )
+
+    # Fetch image
+    result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    # Check ownership, admin, or permission
+    is_owner = image.user_id == current_user.id
+    is_admin = current_user.admin
+    has_edit_permission = False
+    if not is_owner and not is_admin:
+        has_edit_permission = await has_permission(
+            db, current_user.id, Permission.IMAGE_EDIT_META, redis_client
+        )
+
+    if not is_owner and not is_admin and not has_edit_permission:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to edit this image",
+        )
+
+    for field, value in update_fields.items():
+        setattr(image, field, value)
+
+    await db.commit()
+
+    # Re-fetch with relationships for response
+    result = await db.execute(
+        select(Images)
+        .options(
+            selectinload(Images.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group),  # type: ignore[arg-type]
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
+        )
+        .where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = result.scalar_one()
+
+    return ImageDetailedResponse.from_db_model(image)
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)
@@ -1564,6 +1633,7 @@ async def upload_image(
     current_user: VerifiedUser,
     file: Annotated[UploadFile, File(description="Image file to upload")],
     caption: Annotated[str, Form(max_length=35)] = "",
+    miscmeta: Annotated[str | None, Form(max_length=255)] = None,
     tag_ids: Annotated[str, Form(description="Comma-separated tag IDs (e.g., '1,2,3')")] = "",
     confirm_similar: Annotated[
         bool, Form(description="Set to true to bypass IQDB similarity check")
@@ -1711,6 +1781,7 @@ async def upload_image(
         temp_image.medium = has_medium
         temp_image.large = has_large
         temp_image.caption = caption
+        temp_image.miscmeta = miscmeta
 
         # Link tags if provided
         if tag_ids.strip():
@@ -1794,6 +1865,7 @@ async def upload_image(
             width=temp_image.width,
             height=temp_image.height,
             caption=temp_image.caption,
+            miscmeta=temp_image.miscmeta,
             rating=temp_image.rating,
             user_id=temp_image.user_id,  # user_id is guaranteed from database
             date_added=temp_image.date_added,

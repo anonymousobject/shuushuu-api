@@ -98,6 +98,7 @@ class ImageBase(SQLModel):
 
     # Metadata
     caption: str = Field(default="", max_length=35)
+    miscmeta: str | None = Field(default=None, max_length=255)
 
     # Status
     status: int = Field(
@@ -143,7 +144,7 @@ class Images(ImageBase, table=True):
     - ip: Privacy-sensitive tracking
     - status_user_id, status_updated, last_post: Internal moderation
     - medium, large: image variant booleans
-    - total_pixels, miscmeta: Internal metadata
+    - total_pixels: Internal metadata
     - replacement_id: Internal reference
     """
 
@@ -222,7 +223,6 @@ class Images(ImageBase, table=True):
 
     # Internal metadata
     total_pixels: Decimal | None = Field(default=None)
-    miscmeta: str | None = Field(default=None, max_length=255)
     replacement_id: int | None = Field(default=None, foreign_key="images.image_id")
 
     # Relationships - Example implementation
