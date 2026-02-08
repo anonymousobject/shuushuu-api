@@ -119,7 +119,11 @@ async def list_images(
         int | None, Query(description="Filter by user who favorited the image")
     ] = None,
     image_status: Annotated[
-        int | None, Query(description="Filter by status (1=active, 2=pending, etc)", alias="status")
+        list[int] | None,
+        Query(
+            description="Filter by status (1=active, 2=spoiler, etc). Repeat for multiple.",
+            alias="status",
+        ),
     ] = None,
     # Tag filtering
     tags: Annotated[
@@ -220,8 +224,8 @@ async def list_images(
         query = query.join(Favorites).where(Favorites.user_id == favorited_by_user_id)  # type: ignore[arg-type]
     # Status filtering: explicit param overrides, otherwise use user's show_all_images setting
     if image_status is not None:
-        # Explicit status filter - always honor it
-        query = query.where(Images.status == image_status)  # type: ignore[arg-type]
+        # Explicit status filter - always honor it (supports single or multiple values)
+        query = query.where(Images.status.in_(image_status))  # type: ignore[attr-defined]
     else:
         # No explicit filter - apply default based on user's show_all_images setting
         # Anonymous users or users with show_all_images=0 see only public statuses
