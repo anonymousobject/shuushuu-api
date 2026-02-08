@@ -38,7 +38,6 @@ class ImageSortBy(str, Enum):
 
     image_id = "image_id"  # Primary sort, essentially same as date_added
     date_added = "date_added"  # Date added
-    last_updated = "last_updated"  # Last modification date
     last_post = "last_post"  # Last post activity
     total_pixels = "total_pixels"  # Image size (width × height)
     bayesian_rating = "bayesian_rating"  # Calculated rating
@@ -141,8 +140,8 @@ class Images(ImageBase, table=True):
     - Relationships to other tables
 
     Internal fields (should NOT be exposed via public API):
-    - useragent, ip: Privacy-sensitive tracking
-    - status_user_id, status_updated, last_updated, last_post: Internal moderation
+    - ip: Privacy-sensitive tracking
+    - status_user_id, status_updated, last_post: Internal moderation
     - medium, large: image variant booleans
     - total_pixels, miscmeta: Internal metadata
     - replacement_id: Internal reference
@@ -210,18 +209,15 @@ class Images(ImageBase, table=True):
     )
 
     # Internal tracking fields (privacy-sensitive)
-    useragent: str = Field(default="", max_length=255)
     ip: str = Field(default="", max_length=15)
 
     # Internal flags and metadata
     medium: int = Field(default=0)
     large: int = Field(default=0)
-    reviewed: int = Field(default=0)
 
     # Internal moderation fields
     status_user_id: int | None = Field(default=None, foreign_key="users.user_id")
     status_updated: datetime | None = Field(default=None)
-    last_updated: datetime | None = Field(default=None)
     last_post: datetime | None = Field(default=None)
 
     # Internal metadata

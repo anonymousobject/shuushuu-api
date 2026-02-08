@@ -43,6 +43,13 @@ def upgrade() -> None:
     op.drop_column('images', 'artist')  # Tags now handle artist info
     op.drop_column('images', 'characters')  # Tags now handle character info
     op.drop_column('images', 'change_id')
+    op.drop_column('images', 'useragent')
+    op.drop_column('images', 'image_source')
+    op.drop_column('images', 'reviewed')
+    op.drop_column('images', 'last_updated')
+
+    # Drop unused comments columns
+    op.drop_column('posts', 'useragent')
 
 
 def downgrade() -> None:
@@ -64,4 +71,9 @@ def downgrade() -> None:
     op.add_column('images', sa.Column('artist', sa.String(255), nullable=True))
     op.add_column('images', sa.Column('characters', sa.String(255), nullable=True))
     op.add_column('images', sa.Column('change_id', sa.Integer(), nullable=False, server_default='0'))
+    op.add_column('images', sa.Column('useragent', sa.String(255), nullable=True))
+    op.add_column('images', sa.Column('image_source', sa.String(255), nullable=True))
+    op.add_column('images', sa.Column('reviewed', sa.Integer(), nullable=False, server_default='0'))
+    op.add_column('images', sa.Column('last_updated', sa.DATETIME(), nullable=True))
+    op.add_column('posts', sa.Column('useragent', sa.String(255), nullable=True))
     op.create_index('ix_images_change_id', 'images', ['change_id'])

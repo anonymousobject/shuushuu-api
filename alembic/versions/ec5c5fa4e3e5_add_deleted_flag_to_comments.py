@@ -36,79 +36,207 @@ def upgrade() -> None:
         WHERE post_text = '[deleted]'
     """)
 
-    # Update triggers to fire on UPDATE as well as INSERT/DELETE
-    # This allows soft-delete (UPDATE deleted=TRUE) to trigger counter decrements
-
-    # Drop existing triggers
+    # ========================================
+    # Replace post triggers with soft-delete-aware versions
+    # ========================================
+    # Drop triggers from previous migration (2cd4e874e956) that don't know about `deleted`
+    op.execute("DROP TRIGGER IF EXISTS images_posts_increment")
+    op.execute("DROP TRIGGER IF EXISTS images_posts_decrement")
+    op.execute("DROP TRIGGER IF EXISTS images_posts_update")
+    op.execute("DROP TRIGGER IF EXISTS users_posts_increment")
+    op.execute("DROP TRIGGER IF EXISTS users_posts_decrement")
+    op.execute("DROP TRIGGER IF EXISTS users_posts_update")
+    # Also drop any leftover triggers from earlier iterations
     op.execute("DROP TRIGGER IF EXISTS comments_after_insert")
+    op.execute("DROP TRIGGER IF EXISTS comments_after_update")
     op.execute("DROP TRIGGER IF EXISTS comments_after_delete")
 
-    # Recreate INSERT trigger
+    # INSERT: only count non-deleted comments
     op.execute("""
-        CREATE TRIGGER comments_after_insert
+        CREATE TRIGGER images_posts_increment
         AFTER INSERT ON posts
         FOR EACH ROW
         BEGIN
-            IF NEW.deleted = FALSE THEN
-                UPDATE images SET posts = posts + 1 WHERE image_id = NEW.image_id;
+            IF NEW.deleted = 0 THEN
+                UPDATE images
+                SET posts = posts + 1, last_post = NEW.date
+                WHERE image_id = NEW.image_id;
+            END IF;
+        END
+    """)
+
+    op.execute("""
+        CREATE TRIGGER users_posts_increment
+        AFTER INSERT ON posts
+        FOR EACH ROW
+        BEGIN
+            IF NEW.deleted = 0 THEN
                 UPDATE users SET posts = posts + 1 WHERE user_id = NEW.user_id;
             END IF;
         END
     """)
 
-    # Create UPDATE trigger for soft-delete
+    # UPDATE: handle soft-delete flag changes AND image_id/user_id changes
     op.execute("""
-        CREATE TRIGGER comments_after_update
+        CREATE TRIGGER images_posts_update
         AFTER UPDATE ON posts
         FOR EACH ROW
         BEGIN
-            IF OLD.deleted = FALSE AND NEW.deleted = TRUE THEN
-                UPDATE images SET posts = posts - 1 WHERE image_id = NEW.image_id;
-                UPDATE users SET posts = posts - 1 WHERE user_id = NEW.user_id;
+            -- Soft delete
+            IF OLD.deleted = 0 AND NEW.deleted = 1 THEN
+                UPDATE images
+                SET posts = posts - 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = NEW.image_id AND deleted = 0)
+                WHERE image_id = NEW.image_id;
+            -- Undelete
+            ELSEIF OLD.deleted = 1 AND NEW.deleted = 0 THEN
+                UPDATE images
+                SET posts = posts + 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = NEW.image_id AND deleted = 0)
+                WHERE image_id = NEW.image_id;
+            -- Comment moved between images
+            ELSEIF OLD.image_id != NEW.image_id THEN
+                UPDATE images
+                SET posts = posts - 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = OLD.image_id AND deleted = 0)
+                WHERE image_id = OLD.image_id;
+                UPDATE images
+                SET posts = posts + 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = NEW.image_id AND deleted = 0)
+                WHERE image_id = NEW.image_id;
             END IF;
         END
     """)
 
-    # Recreate DELETE trigger for hard-delete
     op.execute("""
-        CREATE TRIGGER comments_after_delete
+        CREATE TRIGGER users_posts_update
+        AFTER UPDATE ON posts
+        FOR EACH ROW
+        BEGIN
+            -- Soft delete
+            IF OLD.deleted = 0 AND NEW.deleted = 1 THEN
+                UPDATE users SET posts = posts - 1 WHERE user_id = NEW.user_id;
+            -- Undelete
+            ELSEIF OLD.deleted = 1 AND NEW.deleted = 0 THEN
+                UPDATE users SET posts = posts + 1 WHERE user_id = NEW.user_id;
+            -- Comment moved between users
+            ELSEIF OLD.user_id != NEW.user_id THEN
+                UPDATE users SET posts = posts - 1 WHERE user_id = OLD.user_id;
+                UPDATE users SET posts = posts + 1 WHERE user_id = NEW.user_id;
+            END IF;
+        END
+    """)
+
+    # DELETE (hard-delete): only adjust if the row wasn't already soft-deleted
+    op.execute("""
+        CREATE TRIGGER images_posts_decrement
         AFTER DELETE ON posts
         FOR EACH ROW
         BEGIN
-            IF OLD.deleted = FALSE THEN
-                UPDATE images SET posts = posts - 1 WHERE image_id = OLD.image_id;
+            IF OLD.deleted = 0 THEN
+                UPDATE images
+                SET posts = posts - 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = OLD.image_id AND deleted = 0)
+                WHERE image_id = OLD.image_id;
+            END IF;
+        END
+    """)
+
+    op.execute("""
+        CREATE TRIGGER users_posts_decrement
+        AFTER DELETE ON posts
+        FOR EACH ROW
+        BEGIN
+            IF OLD.deleted = 0 THEN
                 UPDATE users SET posts = posts - 1 WHERE user_id = OLD.user_id;
             END IF;
         END
     """)
 
+    # Reinitialize counters excluding soft-deleted comments
+    op.execute("""
+        UPDATE images i
+        SET posts = (SELECT COUNT(*) FROM posts p WHERE p.image_id = i.image_id AND p.deleted = 0),
+            last_post = (SELECT MAX(date) FROM posts p WHERE p.image_id = i.image_id AND p.deleted = 0)
+    """)
+
+    op.execute("""
+        UPDATE users u
+        SET posts = (SELECT COUNT(*) FROM posts p WHERE p.user_id = u.user_id AND p.deleted = 0)
+    """)
+
 
 def downgrade() -> None:
     """Downgrade schema."""
-    # Restore original triggers
-    op.execute("DROP TRIGGER IF EXISTS comments_after_insert")
-    op.execute("DROP TRIGGER IF EXISTS comments_after_update")
-    op.execute("DROP TRIGGER IF EXISTS comments_after_delete")
+    # Drop soft-delete-aware triggers
+    op.execute("DROP TRIGGER IF EXISTS images_posts_increment")
+    op.execute("DROP TRIGGER IF EXISTS images_posts_decrement")
+    op.execute("DROP TRIGGER IF EXISTS images_posts_update")
+    op.execute("DROP TRIGGER IF EXISTS users_posts_increment")
+    op.execute("DROP TRIGGER IF EXISTS users_posts_decrement")
+    op.execute("DROP TRIGGER IF EXISTS users_posts_update")
 
-    # Recreate original INSERT trigger
+    # Restore simple triggers from 2cd4e874e956 (no deleted awareness)
     op.execute("""
-        CREATE TRIGGER comments_after_insert
+        CREATE TRIGGER images_posts_increment
         AFTER INSERT ON posts
         FOR EACH ROW
+        UPDATE images
+        SET posts = posts + 1, last_post = NEW.date
+        WHERE image_id = NEW.image_id
+    """)
+
+    op.execute("""
+        CREATE TRIGGER images_posts_decrement
+        AFTER DELETE ON posts
+        FOR EACH ROW
+        UPDATE images
+        SET posts = posts - 1,
+            last_post = (SELECT MAX(date) FROM posts WHERE image_id = OLD.image_id)
+        WHERE image_id = OLD.image_id
+    """)
+
+    op.execute("""
+        CREATE TRIGGER images_posts_update
+        AFTER UPDATE ON posts
+        FOR EACH ROW
         BEGIN
-            UPDATE images SET posts = posts + 1 WHERE image_id = NEW.image_id;
-            UPDATE users SET posts = posts + 1 WHERE user_id = NEW.user_id;
+            IF OLD.image_id != NEW.image_id THEN
+                UPDATE images
+                SET posts = posts - 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = OLD.image_id)
+                WHERE image_id = OLD.image_id;
+                UPDATE images
+                SET posts = posts + 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = NEW.image_id)
+                WHERE image_id = NEW.image_id;
+            END IF;
         END
     """)
 
-    # Recreate original DELETE trigger
     op.execute("""
-        CREATE TRIGGER comments_after_delete
+        CREATE TRIGGER users_posts_increment
+        AFTER INSERT ON posts
+        FOR EACH ROW
+        UPDATE users SET posts = posts + 1 WHERE user_id = NEW.user_id
+    """)
+
+    op.execute("""
+        CREATE TRIGGER users_posts_decrement
         AFTER DELETE ON posts
         FOR EACH ROW
+        UPDATE users SET posts = posts - 1 WHERE user_id = OLD.user_id
+    """)
+
+    op.execute("""
+        CREATE TRIGGER users_posts_update
+        AFTER UPDATE ON posts
+        FOR EACH ROW
         BEGIN
-            UPDATE images SET posts = posts - 1 WHERE image_id = OLD.image_id;
-            UPDATE users SET posts = posts - 1 WHERE user_id = OLD.user_id;
+            IF OLD.user_id != NEW.user_id THEN
+                UPDATE users SET posts = posts - 1 WHERE user_id = OLD.user_id;
+                UPDATE users SET posts = posts + 1 WHERE user_id = NEW.user_id;
+            END IF;
         END
     """)
 

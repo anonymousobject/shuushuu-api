@@ -7,6 +7,7 @@ Create Date: 2025-12-17 21:44:39.693988
 Adds triggers to automatically maintain counter fields:
 - images.posts (comment count on image)
 - images.favorites (favorite count on image)
+- images.last_post (timestamp of most recent comment on image)
 - users.posts (comment count by user)
 - users.image_posts (image upload count by user)
 - users.favorites (favorite count by user)
@@ -49,7 +50,9 @@ def upgrade() -> None:
         CREATE TRIGGER images_posts_increment
         AFTER INSERT ON posts
         FOR EACH ROW
-        UPDATE images SET posts = posts + 1 WHERE image_id = NEW.image_id
+        UPDATE images
+        SET posts = posts + 1, last_post = NEW.date
+        WHERE image_id = NEW.image_id
     """)
 
     op.execute("DROP TRIGGER IF EXISTS images_posts_decrement")
@@ -57,7 +60,10 @@ def upgrade() -> None:
         CREATE TRIGGER images_posts_decrement
         AFTER DELETE ON posts
         FOR EACH ROW
-        UPDATE images SET posts = posts - 1 WHERE image_id = OLD.image_id
+        UPDATE images
+        SET posts = posts - 1,
+            last_post = (SELECT MAX(date) FROM posts WHERE image_id = OLD.image_id)
+        WHERE image_id = OLD.image_id
     """)
 
     op.execute("DROP TRIGGER IF EXISTS images_posts_update")
@@ -67,8 +73,14 @@ def upgrade() -> None:
         FOR EACH ROW
         BEGIN
             IF OLD.image_id != NEW.image_id THEN
-                UPDATE images SET posts = posts - 1 WHERE image_id = OLD.image_id;
-                UPDATE images SET posts = posts + 1 WHERE image_id = NEW.image_id;
+                UPDATE images
+                SET posts = posts - 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = OLD.image_id)
+                WHERE image_id = OLD.image_id;
+                UPDATE images
+                SET posts = posts + 1,
+                    last_post = (SELECT MAX(date) FROM posts WHERE image_id = NEW.image_id)
+                WHERE image_id = NEW.image_id;
             END IF;
         END
     """)
@@ -204,7 +216,7 @@ def upgrade() -> None:
     # ========================================
     # 7. INITIALIZE COUNTERS FOR EXISTING DATA
     # ========================================
-    # Images: posts and favorites
+    # Images: posts, favorites, and last_post
     op.execute("""
         UPDATE images i
         SET posts = (SELECT COUNT(*) FROM posts p WHERE p.image_id = i.image_id)
@@ -213,6 +225,11 @@ def upgrade() -> None:
     op.execute("""
         UPDATE images i
         SET favorites = (SELECT COUNT(*) FROM favorites f WHERE f.image_id = i.image_id)
+    """)
+
+    op.execute("""
+        UPDATE images i
+        SET last_post = (SELECT MAX(date) FROM posts p WHERE p.image_id = i.image_id)
     """)
 
     # Users: posts, image_posts, and favorites
