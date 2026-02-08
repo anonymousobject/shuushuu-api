@@ -1581,16 +1581,20 @@ async def upload_image(
     3. Check for duplicate (MD5 hash)
     4. Save image to storage (filename: YYYY-MM-DD-{image_id}.{ext})
     5. Extract image dimensions
-    6. Update image record with metadata
-    7. Link tags to image
-    8. Schedule thumbnail generation (background)
-    9. Return created image details
+    6. Check IQDB for near-duplicate images (unless confirm_similar=true)
+       - If matches found (>= IQDB_UPLOAD_THRESHOLD), return 409 with similar images
+       - Frontend displays matches for user confirmation, then retries with confirm_similar=true
+    7. Update image record with metadata
+    8. Link tags to image
+    9. Schedule thumbnail generation (background)
+    10. Return created image details
 
     Security:
     - Requires authentication
     - Validates file is actually an image using PIL (prevents malicious uploads)
     - Validates file type, size, and extension
     - Prevents duplicate images (MD5 check)
+    - Detects near-duplicate images via IQDB similarity (409 with confirmation flow)
 
     Filename Format:
     - Main image: YYYY-MM-DD-{image_id}.{ext} (e.g., 2025-11-15-1111881.jpeg)

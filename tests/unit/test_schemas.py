@@ -13,7 +13,6 @@ from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.image import (
     ImageBase,
     ImageResponse,
-    ImageUploadResponse,
     ImageUploadSimilarResponse,
     SimilarImageResult,
 )

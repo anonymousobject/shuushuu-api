@@ -249,24 +249,12 @@ class TestIQDBService:
 
 
 class TestIQDBUploadThreshold:
-    """Tests for IQDB upload duplicate detection threshold."""
+    """Tests configuration for IQDB upload duplicate detection threshold."""
 
-    def test_upload_threshold_filters_high_similarity(self):
-        """IQDB_UPLOAD_THRESHOLD filters results to near-duplicates only."""
+    def test_upload_threshold_config_for_near_duplicates(self):
+        """IQDB_UPLOAD_THRESHOLD is configured for near-duplicate detection."""
         from app.config import settings
 
-        # Simulate IQDB results at various similarity levels
-        all_results = [
-            {"image_id": 1, "score": 95.0},  # Above upload threshold
-            {"image_id": 2, "score": 91.0},  # Above upload threshold
-            {"image_id": 3, "score": 85.0},  # Below upload threshold
-            {"image_id": 4, "score": 60.0},  # Below upload threshold
-        ]
-
-        # Filter using the upload threshold (same logic as upload handler)
-        upload_duplicates = [
-            r for r in all_results if r["score"] >= settings.IQDB_UPLOAD_THRESHOLD
-        ]
-
-        assert len(upload_duplicates) == 2
-        assert all(r["score"] >= 90.0 for r in upload_duplicates)
+        # The upload duplicate detection should only treat very similar matches
+        # as duplicates, so the threshold must be high (e.g., >= 90).
+        assert settings.IQDB_UPLOAD_THRESHOLD >= 90.0
