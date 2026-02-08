@@ -26,6 +26,7 @@ def _create_mock_image(
     mock_image.width = 100
     mock_image.height = 100
     mock_image.caption = "Test"
+    mock_image.miscmeta = None
     mock_image.rating = 0.0
     mock_image.user_id = user_id
     mock_image.date_added = datetime.now()
