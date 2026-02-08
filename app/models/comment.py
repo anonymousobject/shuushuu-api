@@ -58,7 +58,7 @@ class Comments(CommentBase, table=True):
     - User relationships
 
     Internal fields (should NOT be exposed via public API):
-    - useragent, ip: Privacy-sensitive tracking
+    - ip: Privacy-sensitive tracking
     - last_updated, last_updated_user_id: Internal moderation
     - update_count: Internal metadata
 
@@ -121,7 +121,6 @@ class Comments(CommentBase, table=True):
     update_count: int = Field(default=0)
 
     # Internal tracking fields (privacy-sensitive)
-    useragent: str = Field(default="", max_length=255)
     ip: str = Field(default="", max_length=15)
 
     # Internal moderation fields

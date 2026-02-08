@@ -556,7 +556,7 @@ async def delete_comment(
 
     # Soft delete: Set deleted flag to True
     # This preserves conversation flow and reply threading
-    # Database trigger will automatically decrement post counts
+    # Database UPDATE trigger detects deleted flag change and adjusts counters
     comment.deleted = True
     comment.post_text = "[deleted]"  # Also update text for backwards compatibility
 
