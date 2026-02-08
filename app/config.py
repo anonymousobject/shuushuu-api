@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     IQDB_HOST: str = "localhost"
     IQDB_PORT: int = 5588
     IQDB_SIMILARITY_THRESHOLD: float = 50.0
+    IQDB_UPLOAD_THRESHOLD: float = 90.0
 
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60

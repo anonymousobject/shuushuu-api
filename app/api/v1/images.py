@@ -81,6 +81,7 @@ from app.schemas.image import (
     ImageTagItem,
     ImageTagsResponse,
     ImageUploadResponse,
+    ImageUploadSimilarResponse,
     SimilarImageResult,
     SimilarImagesResponse,
 )
@@ -106,6 +107,34 @@ def _get_client_ip(request: Request) -> str:
         # X-Forwarded-For can contain multiple IPs, first one is the client
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "0.0.0.0"
+
+
+async def _hydrate_similar_images(
+    iqdb_results: list[dict[str, int | float]],
+    db: AsyncSession,
+) -> list[SimilarImageResult]:
+    """Fetch full image data for IQDB results and build SimilarImageResult list."""
+    similar_ids = [r["image_id"] for r in iqdb_results]
+    images_result = await db.execute(
+        select(Images)
+        .options(
+            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+        )
+        .where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
+    )
+    images_by_id: dict[int, Images] = {
+        img.image_id: img  # type: ignore[misc]
+        for img in images_result.scalars().all()
+    }
+
+    similar: list[SimilarImageResult] = []
+    for r in sorted(iqdb_results, key=lambda x: x["score"], reverse=True):
+        img = images_by_id.get(int(r["image_id"]))
+        if img:
+            img_data = ImageResponse.model_validate(img).model_dump()
+            img_data["similarity_score"] = r["score"]
+            similar.append(SimilarImageResult(**img_data))
+    return similar
 
 
 @router.get("/", response_model=ImageDetailedListResponse, include_in_schema=False)
@@ -1046,30 +1075,7 @@ async def get_similar_images(
     if not similar_results:
         return SimilarImagesResponse(query_image_id=image_id, similar_images=[])
 
-    # Get full image details for similar images
-    similar_ids = [r["image_id"] for r in similar_results]
-
-    images_result = await db.execute(
-        select(Images)
-        .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
-        )
-        .where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
-    )
-    images: dict[int, Images] = {
-        img.image_id: img  # type: ignore[misc]
-        for img in images_result.scalars().all()
-    }
-
-    # Build response with similarity scores, ordered by score descending
-    similar_images = []
-    for r in sorted(similar_results, key=lambda x: x["score"], reverse=True):
-        img = images.get(int(r["image_id"]))
-        if img:
-            img_data = ImageResponse.model_validate(img).model_dump()
-            img_data["similarity_score"] = r["score"]
-            similar_images.append(SimilarImageResult(**img_data))
-
+    similar_images = await _hydrate_similar_images(similar_results, db)
     return SimilarImagesResponse(query_image_id=image_id, similar_images=similar_images)
 
 
@@ -1547,15 +1553,23 @@ async def unfavorite_image(
     }
 
 
-@router.post("/upload", response_model=ImageUploadResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/upload",
+    response_model=ImageUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={409: {"model": ImageUploadSimilarResponse, "description": "Similar images found"}},
+)
 async def upload_image(
     request: Request,
     current_user: VerifiedUser,
     file: Annotated[UploadFile, File(description="Image file to upload")],
     caption: Annotated[str, Form(max_length=35)] = "",
     tag_ids: Annotated[str, Form(description="Comma-separated tag IDs (e.g., '1,2,3')")] = "",
+    confirm_similar: Annotated[
+        bool, Form(description="Set to true to bypass IQDB similarity check")
+    ] = False,
     db: AsyncSession = Depends(get_db),
-) -> ImageUploadResponse:
+) -> ImageUploadResponse | JSONResponse:
     """
     Upload a new image with metadata and tags.
 
@@ -1567,16 +1581,20 @@ async def upload_image(
     3. Check for duplicate (MD5 hash)
     4. Save image to storage (filename: YYYY-MM-DD-{image_id}.{ext})
     5. Extract image dimensions
-    6. Update image record with metadata
-    7. Link tags to image
-    8. Schedule thumbnail generation (background)
-    9. Return created image details
+    6. Check IQDB for near-duplicate images (unless confirm_similar=true)
+       - If matches found (>= IQDB_UPLOAD_THRESHOLD), return 409 with similar images
+       - Frontend displays matches for user confirmation, then retries with confirm_similar=true
+    7. Update image record with metadata
+    8. Link tags to image
+    9. Schedule thumbnail generation (background)
+    10. Return created image details
 
     Security:
     - Requires authentication
     - Validates file is actually an image using PIL (prevents malicious uploads)
     - Validates file type, size, and extension
     - Prevents duplicate images (MD5 check)
+    - Detects near-duplicate images via IQDB similarity (409 with confirmation flow)
 
     Filename Format:
     - Main image: YYYY-MM-DD-{image_id}.{ext} (e.g., 2025-11-15-1111881.jpeg)
@@ -1658,16 +1676,25 @@ async def upload_image(
         date_prefix = datetime.now().strftime("%Y-%m-%d")
         filename = f"{date_prefix}-{image_id}"  # Store without extension
 
-        # Check IQDB for similar images (runs in main thread, ~100-300ms)
-        # Uses the main uploaded file for similarity check
-        similar_images = await check_iqdb_similarity(file_path, db)
-
-        # TODO: If similar_images has high-scoring matches:
-        # - Show them to user for confirmation (return 409 with list of matches)
-        # - Allow user to confirm upload anyway (add skip_similarity_check param)
-        # - Example: if similar_images and not skip_similarity_check:
-        #     raise HTTPException(409, {"matches": similar_images, "message": "Similar images found"})
-        # For now, we just check but don't block the upload
+        # Check IQDB for near-duplicate images unless user confirmed
+        if not confirm_similar:
+            iqdb_results = await check_iqdb_similarity(
+                file_path, db, threshold=settings.IQDB_UPLOAD_THRESHOLD
+            )
+            if iqdb_results:
+                # Hydrate IQDB results with full image data
+                similar = await _hydrate_similar_images(iqdb_results, db)
+                # Clean up temp record and file before returning 409
+                await db.rollback()
+                if file_path and file_path.exists():
+                    file_path.unlink()
+                return JSONResponse(
+                    status_code=status.HTTP_409_CONFLICT,
+                    content=ImageUploadSimilarResponse(
+                        message="Similar images found. Please confirm to proceed with upload.",
+                        similar_images=similar,
+                    ).model_dump(mode="json"),
+                )
 
         # Determine if medium/large variants should be created
         has_medium = 1 if (width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE) else 0

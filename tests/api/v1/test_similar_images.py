@@ -246,3 +246,15 @@ class TestIQDBService:
             Path("/nonexistent/path/image.jpg"), db_session
         )
         assert result == []
+
+
+class TestIQDBUploadThreshold:
+    """Tests configuration for IQDB upload duplicate detection threshold."""
+
+    def test_upload_threshold_config_for_near_duplicates(self):
+        """IQDB_UPLOAD_THRESHOLD is configured for near-duplicate detection."""
+        from app.config import settings
+
+        # The upload duplicate detection should only treat very similar matches
+        # as duplicates, so the threshold must be high (e.g., >= 90).
+        assert settings.IQDB_UPLOAD_THRESHOLD >= 90.0
