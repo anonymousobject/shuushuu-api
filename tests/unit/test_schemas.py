@@ -10,7 +10,13 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
-from app.schemas.image import ImageBase, ImageResponse
+from app.schemas.image import (
+    ImageBase,
+    ImageResponse,
+    ImageUploadResponse,
+    ImageUploadSimilarResponse,
+    SimilarImageResult,
+)
 from app.schemas.user import UserResponse, UserUpdate
 
 
@@ -96,6 +102,61 @@ class TestImageSchemas:
         image = ImageBase(**data)
         assert image.width > 0
         assert image.height > 0
+
+    def _make_image_response(self, **overrides) -> dict:
+        """Helper to build a valid ImageResponse dict."""
+        data = {
+            "image_id": 1,
+            "filename": "2025-01-01-1",
+            "ext": "jpg",
+            "md5_hash": "abc123",
+            "filesize": 1000,
+            "width": 100,
+            "height": 100,
+            "rating": 0.0,
+            "user_id": 1,
+            "date_added": "2025-01-01T00:00:00",
+            "status": 1,
+            "locked": 0,
+            "posts": 0,
+            "favorites": 0,
+            "bayesian_rating": 0.0,
+            "num_ratings": 0,
+            "medium": 0,
+            "large": 0,
+        }
+        data.update(overrides)
+        return data
+
+    def test_upload_similar_response_has_required_fields(self):
+        """Similar images conflict response has message and similar_images."""
+        similar = [
+            SimilarImageResult(**self._make_image_response(image_id=42), similarity_score=95.5),
+            SimilarImageResult(**self._make_image_response(image_id=99), similarity_score=91.0),
+        ]
+        resp = ImageUploadSimilarResponse(
+            message="Similar images found",
+            similar_images=similar,
+        )
+        assert resp.message == "Similar images found"
+        assert len(resp.similar_images) == 2
+        assert resp.similar_images[0].image_id == 42
+        assert resp.similar_images[0].similarity_score == 95.5
+
+    def test_upload_similar_response_serializes_to_json(self):
+        """Similar images response serializes correctly for frontend."""
+        similar = [
+            SimilarImageResult(**self._make_image_response(image_id=42), similarity_score=95.5),
+        ]
+        resp = ImageUploadSimilarResponse(
+            message="Similar images found",
+            similar_images=similar,
+        )
+        data = resp.model_dump(mode="json")
+        assert "message" in data
+        assert "similar_images" in data
+        assert data["similar_images"][0]["image_id"] == 42
+        assert data["similar_images"][0]["similarity_score"] == 95.5
 
 
 @pytest.mark.unit

@@ -280,3 +280,14 @@ class SimilarImagesResponse(BaseModel):
     similar_images: list[SimilarImageResult] = Field(
         description="List of similar images ordered by similarity score (highest first)"
     )
+
+
+class ImageUploadSimilarResponse(BaseModel):
+    """Schema for 409 response when similar images are found during upload.
+
+    Returned when IQDB detects near-duplicate images above IQDB_UPLOAD_THRESHOLD.
+    Frontend should display these to the user for confirmation before retrying.
+    """
+
+    message: str
+    similar_images: list[SimilarImageResult]

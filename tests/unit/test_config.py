@@ -1,6 +1,20 @@
 """Tests for config constants."""
 
-from app.config import TagAuditActionType
+from app.config import Settings, TagAuditActionType
+
+
+class TestIQDBConfig:
+    """Tests for IQDB configuration settings."""
+
+    def test_iqdb_upload_threshold_default(self) -> None:
+        """IQDB upload threshold defaults to 90.0."""
+        s = Settings()
+        assert s.IQDB_UPLOAD_THRESHOLD == 90.0
+
+    def test_iqdb_upload_threshold_higher_than_similarity(self) -> None:
+        """Upload threshold should be higher than general similarity threshold."""
+        s = Settings()
+        assert s.IQDB_UPLOAD_THRESHOLD > s.IQDB_SIMILARITY_THRESHOLD
 
 
 class TestTagAuditActionType:
