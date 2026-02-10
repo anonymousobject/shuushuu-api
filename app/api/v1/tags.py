@@ -30,6 +30,8 @@ from app.schemas.audit import (
 from app.schemas.common import UserSummary
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
+    BatchTagRequest,
+    BatchTagResponse,
     CharacterSourceLinkCreate,
     CharacterSourceLinkListResponse,
     CharacterSourceLinkResponse,
@@ -1297,6 +1299,32 @@ async def delete_tag_link(
 
     await db.delete(link)
     await db.commit()
+
+
+@router.post("/batch", response_model=BatchTagResponse)
+async def batch_tag_operation(
+    request: BatchTagRequest,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.IMAGE_TAG_ADD))],
+    db: AsyncSession = Depends(get_db),
+) -> BatchTagResponse:
+    """
+    Batch add tags to multiple images.
+
+    Applies the specified tags to the specified images. Skips invalid
+    pairs (missing image, missing tag, already tagged) and reports them
+    in the response.
+
+    Requires IMAGE_TAG_ADD permission.
+    """
+    from app.services.batch_tag import batch_add_tags
+
+    return await batch_add_tags(
+        tag_ids=request.tag_ids,
+        image_ids=request.image_ids,
+        user_id=current_user.id,
+        db=db,
+    )
 
 
 # =============================================================================

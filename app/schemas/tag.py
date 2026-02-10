@@ -3,8 +3,9 @@ Pydantic schemas for Tag endpoints
 """
 
 import re
+from enum import Enum as StdEnum
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.tag import TagBase
 from app.schemas.base import UTCDatetime
@@ -245,3 +246,39 @@ class CharacterSourceLinkWithTitles(CharacterSourceLinkResponse):
 
     character_title: str | None = None
     source_title: str | None = None
+
+
+class BatchTagAction(str, StdEnum):
+    """Supported batch tag actions."""
+
+    ADD = "add"
+
+
+class BatchTagRequest(BaseModel):
+    """Request schema for batch tag operations."""
+
+    action: BatchTagAction
+    tag_ids: list[int] = Field(min_length=1, max_length=5)
+    image_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class BatchTagResultItem(BaseModel):
+    """A single successful tag-image pair."""
+
+    image_id: int
+    tag_id: int
+
+
+class BatchTagSkippedItem(BaseModel):
+    """A single skipped tag-image pair with reason."""
+
+    image_id: int
+    tag_id: int
+    reason: str
+
+
+class BatchTagResponse(BaseModel):
+    """Response schema for batch tag operations."""
+
+    added: list[BatchTagResultItem]
+    skipped: list[BatchTagSkippedItem]
