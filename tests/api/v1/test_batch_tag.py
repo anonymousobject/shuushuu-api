@@ -51,7 +51,7 @@ async def _create_test_images(db_session: AsyncSession, user: Users, count: int)
             filename=f"batch-test-{i:03d}",
             ext="jpg",
             original_filename=f"batch{i}.jpg",
-            md5_hash=f"batch{i:028x}",
+            md5_hash=f"batch{i:027x}",
             filesize=100000,
             width=800,
             height=600,
