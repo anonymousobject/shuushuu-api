@@ -2,7 +2,7 @@
 
 ## Overview
 
-Add a batch endpoint for applying multiple tags to multiple images in a single API call. Users with the `IMAGE_TAG_ADD` permission (or admin) can tag up to 100 images with up to 5 tags at once.
+Add a batch endpoint for applying multiple tags to multiple images in a single API call. Users with the `IMAGE_TAG_ADD` permission can tag up to 100 images with up to 5 tags at once.
 
 ## Endpoint
 
@@ -26,7 +26,7 @@ Add a batch endpoint for applying multiple tags to multiple images in a single A
 
 The `action` field exists so we can add `"remove"` later without a new endpoint or breaking change.
 
-### Response (always 200)
+### Response (200 on success)
 
 ```json
 {
@@ -51,12 +51,18 @@ A fully-skipped batch is not an error; the caller gets an empty `added` list.
 
 ### Authorization
 
-Requires `IMAGE_TAG_ADD` permission or admin status. Returns 403 otherwise. No per-image ownership check.
+Requires `IMAGE_TAG_ADD` permission (via `require_permission` dependency, consistent with other tag endpoints). Returns 401 without authentication, 403 without permission. Admins are authorized if their group grants `IMAGE_TAG_ADD`. No per-image ownership check.
+
+### Error Responses
+
+- `401` - Not authenticated
+- `403` - Missing `IMAGE_TAG_ADD` permission
+- `422` - Validation error (empty lists, exceeds caps, invalid action)
 
 ## Processing Flow
 
 1. Validate request (Pydantic enforces caps and types)
-2. Check permission: `IMAGE_TAG_ADD` or admin. If neither, return 403.
+2. Check permission: `IMAGE_TAG_ADD` via `require_permission`. If missing, return 403.
 3. Resolve tag aliases: for each tag_id, resolve to canonical tag. If a tag does not exist, collect for skipped list.
 4. Fetch all requested images in one query: `SELECT image_id FROM images WHERE image_id IN (...)`. Missing IDs go to skipped list.
 5. Fetch existing tag links in one query: `SELECT image_id, tag_id FROM tag_links WHERE image_id IN (...) AND tag_id IN (...)`. These become `already_tagged` skips.
