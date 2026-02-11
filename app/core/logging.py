@@ -88,9 +88,9 @@ def configure_logging() -> None:
     )
 
     # Reduce noise from third-party libraries
-    # Keep uvicorn.access at INFO to see request logs in development
-    if settings.ENVIRONMENT != "development":
-        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # Suppress uvicorn access logs — structlog request_complete covers this with
+    # richer context (user_id, request_id, elapsed_ms)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 

@@ -3,6 +3,7 @@ FastAPI Application - Shuushuu API
 Modern backend for Shuushuu anime image board
 """
 
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ from app.core.logging import (
     set_request_context,
 )
 from app.core.permission_sync import sync_permissions
+from app.core.security import verify_access_token
 from app.tasks.queue import close_queue
 
 # Configure logging on module import
@@ -36,16 +38,35 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Generate unique request ID
         request_id = str(uuid.uuid4())
 
+        # Extract user_id from JWT if present (lightweight decode, no DB hit)
+        user_id = None
+        auth_header = request.headers.get("authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            user_id = verify_access_token(auth_header[7:])
+        if user_id is None:
+            token = request.cookies.get("access_token")
+            if token:
+                user_id = verify_access_token(token)
+
         # Set context for this request (will be included in all logs)
-        set_request_context(request_id)
+        set_request_context(request_id, user_id=user_id)
 
         # Add request ID to request state for access in endpoints
         request.state.request_id = request_id
 
         try:
+            start = time.monotonic()
             response = await call_next(request)
+            elapsed_ms = round((time.monotonic() - start) * 1000, 1)
             # Add request ID to response headers for debugging
             response.headers["X-Request-ID"] = request_id
+            logger.info(
+                "request_complete",
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                elapsed_ms=elapsed_ms,
+            )
             return response
         finally:
             # Clear context after request completes
@@ -77,8 +98,9 @@ app = FastAPI(
     title="Shuushuu API",
     description="Modern FastAPI backend for Shuushuu anime image board",
     version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
     lifespan=lifespan,
 )
 
@@ -117,7 +139,7 @@ async def root() -> dict[str, str]:
         "name": "Shuushuu API",
         "version": "2.0.0",
         "status": "running",
-        "docs": "/docs",
+        "docs": "/api/docs",
     }
 
 
