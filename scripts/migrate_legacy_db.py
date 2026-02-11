@@ -351,12 +351,56 @@ async def run_alembic_upgrade(project_root: Path, database_url: str) -> bool:
     return success
 
 
+def _build_mysql_cmd(db_config: dict[str, str]) -> list[str]:
+    """Build base mariadb CLI command from db config."""
+    host = db_config["host"]
+    if host == "mariadb":
+        host = "localhost"
+
+    cmd = [
+        "mariadb",
+        f"--host={host}",
+        f"--port={db_config['port']}",
+        f"--user={db_config['user']}",
+    ]
+
+    if db_config["password"]:
+        cmd.append(f"--password={db_config['password']}")
+
+    cmd.append(db_config["database"])
+    return cmd
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password with bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+# Test accounts to create in dev/test databases
+TEST_ACCOUNTS = [
+    {
+        "username": "test1",
+        "password": "shuutest1",
+        "email": "test1@shuushuu.com",
+        "admin": 0,
+        "group": None,
+    },
+    {
+        "username": "testadmin",
+        "password": "shuutestadmin",
+        "email": "testadmin@shuushuu.com",
+        "admin": 1,
+        "group": "mods",
+    },
+]
+
+
 async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> bool:
     """
-    Create a test user for development/test databases.
+    Create test users for development/test databases.
 
-    Only creates the user if the database name is in DEV_TEST_DATABASES.
-    Uses INSERT IGNORE to avoid errors if user already exists.
+    Only creates users if the database name is in DEV_TEST_DATABASES.
+    Uses INSERT IGNORE to avoid errors if users already exist.
 
     Args:
         db_config: Database connection parameters
@@ -367,66 +411,57 @@ async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> 
     """
     database_name = db_config["database"]
 
-    # Only create test user for dev/test databases
+    # Only create test users for dev/test databases
     if database_name not in DEV_TEST_DATABASES:
         print(f"Skipping test user creation (database '{database_name}' is not a dev/test database)")
         return True
 
-    print(f"Creating test user for database '{database_name}'...")
-
-    # Test user credentials
-    username = "test1"
-    password = "shuutest1"
-    email = "test1@shuushuu.com"
+    print(f"Creating test users for database '{database_name}'...")
 
     if dry_run:
-        print(f"  Would create user: {username}")
-        print(f"  Email: {email}")
-        print(f"  Password: {password}")
+        for account in TEST_ACCOUNTS:
+            role = f"admin, group={account['group']}" if account["admin"] else "regular user"
+            print(f"  Would create user: {account['username']} ({role})")
+            print(f"  Email: {account['email']}")
+            print(f"  Password: {account['password']}")
         return True
 
-    # Hash password with bcrypt
-    password_bytes = password.encode("utf-8")
-    salt = bcrypt.gensalt(rounds=12)
-    hashed_password = bcrypt.hashpw(password_bytes, salt).decode("utf-8")
+    mysql_cmd = _build_mysql_cmd(db_config)
 
-    # Replace Docker hostname 'mariadb' with 'localhost' when running from host
-    host = db_config["host"]
-    if host == "mariadb":
-        host = "localhost"
+    for account in TEST_ACCOUNTS:
+        hashed_password = _hash_password(account["password"])
 
-    # Build mysql command
-    mysql_cmd = [
-        "mariadb",
-        f"--host={host}",
-        f"--port={db_config['port']}",
-        f"--user={db_config['user']}",
-    ]
+        # Insert user (INSERT IGNORE to skip if exists)
+        # Note: images_per_page DB default is 10 but app default is 20, so we set it explicitly
+        sql = f"""
+            INSERT IGNORE INTO users (username, password, password_type, salt, email, active, email_verified, admin, images_per_page)
+            VALUES ('{account["username"]}', '{hashed_password}', 'bcrypt', '', '{account["email"]}', 1, 1, {account["admin"]}, 20);
+        """
 
-    if db_config["password"]:
-        mysql_cmd.append(f"--password={db_config['password']}")
+        # Add group assignment if specified
+        if account["group"]:
+            sql += f"""
+            INSERT IGNORE INTO user_groups (user_id, group_id)
+            SELECT u.user_id, g.group_id
+            FROM users u
+            JOIN `groups` g ON g.title = '{account["group"]}'
+            WHERE u.username = '{account["username"]}';
+            """
 
-    mysql_cmd.append(db_config["database"])
+        insert_cmd = mysql_cmd + ["-e", sql]
 
-    # SQL to insert test user (INSERT IGNORE to skip if exists)
-    # Using explicit column list to avoid issues with auto-increment and defaults
-    # Note: images_per_page DB default is 10 but app default is 20, so we set it explicitly
-    sql = f"""
-        INSERT IGNORE INTO users (username, password, password_type, salt, email, active, email_verified, images_per_page)
-        VALUES ('{username}', '{hashed_password}', 'bcrypt', '', '{email}', 1, 1, 20);
-    """
+        success = await run_command(
+            insert_cmd,
+            f"Create test user '{account['username']}'",
+        )
 
-    insert_cmd = mysql_cmd + ["-e", sql]
+        if success:
+            role = f"admin, group={account['group']}" if account["admin"] else "regular user"
+            print(f"  ✓ Test user '{account['username']}' created ({role}, password: {account['password']})")
+        else:
+            return False
 
-    success = await run_command(
-        insert_cmd,
-        f"Create test user '{username}'",
-    )
-
-    if success:
-        print(f"  ✓ Test user '{username}' created (password: {password})")
-
-    return success
+    return True
 
 
 async def stop_docker_services(project_root: Path) -> bool:
