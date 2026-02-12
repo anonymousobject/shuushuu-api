@@ -60,6 +60,7 @@ from app.services.avatar import (
     save_avatar,
     validate_avatar_upload,
 )
+from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.rate_limit import check_registration_rate_limit
 from app.services.turnstile import verify_turnstile_token
 from app.tasks.queue import enqueue_job
@@ -583,6 +584,7 @@ async def get_user_images(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
+    current_user: Users | None = Depends(get_optional_current_user),
 ) -> ImageDetailedListResponse:
     """
     Get all images uploaded by a specific user.
@@ -606,6 +608,18 @@ async def get_user_images(
         )
         .where(Images.user_id == user_id)  # type: ignore[arg-type]
     )
+
+    # Visibility filtering: anonymous see only public statuses, authenticated
+    # users also see their own images regardless of status
+    if current_user is not None:
+        query = query.where(
+            or_(
+                Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+            )
+        )
+    else:
+        query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -682,6 +696,7 @@ async def get_user_favorites(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
+    current_user: Users | None = Depends(get_optional_current_user),
 ) -> ImageDetailedListResponse:
     """
     Get all images favorited by a specific user.
@@ -703,6 +718,18 @@ async def get_user_favorites(
         .join(Favorites)
         .where(Favorites.user_id == user_id)  # type: ignore[arg-type]
     )
+
+    # Visibility filtering: anonymous see only public statuses, authenticated
+    # users also see their own images regardless of status
+    if current_user is not None:
+        query = query.where(
+            or_(
+                Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+            )
+        )
+    else:
+        query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())

@@ -929,6 +929,90 @@ class TestGetUserImages:
         response = await client.get("/api/v1/users/999999/images")
         assert response.status_code == 404
 
+    async def test_anonymous_cannot_see_non_public_images(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Anonymous users should only see public-status images (REPOST, ACTIVE, SPOILER)."""
+        user = Users(
+            username="imgvisuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="imgvis@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create images with various statuses
+        statuses = {
+            "active": 1,       # public
+            "repost": -1,      # public
+            "spoiler": 2,      # public
+            "review": -4,      # non-public
+            "inappropriate": -2,  # non-public
+            "other": 0,        # non-public
+        }
+        for name, status_val in statuses.items():
+            data = sample_image_data.copy()
+            data["filename"] = f"vis-{name}"
+            data["md5_hash"] = f"vis{name:0<24s}"
+            data["user_id"] = user.user_id
+            data["status"] = status_val
+            db_session.add(Images(**data))
+        await db_session.commit()
+
+        # Anonymous request - should only see 3 public images
+        response = await client.get(f"/api/v1/users/{user.user_id}/images")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3
+        returned_statuses = {img["status"] for img in data["images"]}
+        assert returned_statuses <= {-1, 1, 2}
+
+    async def test_owner_can_see_own_non_public_images(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Authenticated users should see their own images regardless of status."""
+        user = Users(
+            username="imgvisowner",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="imgvisowner@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create a public and a non-public image
+        for name, status_val in [("active", 1), ("review", -4)]:
+            data = sample_image_data.copy()
+            data["filename"] = f"own-{name}"
+            data["md5_hash"] = f"own{name:0<25s}"
+            data["user_id"] = user.user_id
+            data["status"] = status_val
+            db_session.add(Images(**data))
+        await db_session.commit()
+
+        # Login as the owner
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "imgvisowner", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Owner should see both images
+        response = await client.get(
+            f"/api/v1/users/{user.user_id}/images",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+
 
 @pytest.mark.api
 class TestGetUserFavorites:
@@ -969,6 +1053,52 @@ class TestGetUserFavorites:
         """Test getting favorites for non-existent user."""
         response = await client.get("/api/v1/users/999999/favorites")
         assert response.status_code == 404
+
+    async def test_anonymous_cannot_see_non_public_favorited_images(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Anonymous users should not see non-public images in favorites."""
+        user = Users(
+            username="favvisuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="favvis@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create one public and one non-public image
+        public_data = sample_image_data.copy()
+        public_data["filename"] = "favvis-public"
+        public_data["md5_hash"] = "favvispublic000000000000"
+        public_data["status"] = 1
+        public_img = Images(**public_data)
+        db_session.add(public_img)
+
+        hidden_data = sample_image_data.copy()
+        hidden_data["filename"] = "favvis-hidden"
+        hidden_data["md5_hash"] = "favvishidden000000000000"
+        hidden_data["status"] = -4  # REVIEW - non-public
+        hidden_img = Images(**hidden_data)
+        db_session.add(hidden_img)
+        await db_session.commit()
+        await db_session.refresh(public_img)
+        await db_session.refresh(hidden_img)
+
+        # User favorites both images
+        db_session.add(Favorites(user_id=user.user_id, image_id=public_img.image_id))
+        db_session.add(Favorites(user_id=user.user_id, image_id=hidden_img.image_id))
+        await db_session.commit()
+
+        # Anonymous request - should only see the public image
+        response = await client.get(f"/api/v1/users/{user.user_id}/favorites")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["status"] == 1
 
 
 @pytest.mark.api
