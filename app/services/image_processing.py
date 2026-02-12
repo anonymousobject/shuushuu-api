@@ -97,13 +97,13 @@ def _create_variant(
             original_size = img.size
 
             # Convert to sRGB for consistent web display
-            img = _convert_to_srgb(img)
+            img = _convert_to_srgb(img)  # type: ignore[assignment]
 
             # Convert RGBA to RGB for JPEG compatibility
             if img.mode in ("RGBA", "LA") and ext.lower() in ("jpg", "jpeg"):
                 background = Image.new("RGB", img.size, (255, 255, 255))
                 background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
-                img = background
+                img = background  # type: ignore[assignment]
 
             # Calculate variant size maintaining aspect ratio
             img.thumbnail(
@@ -287,14 +287,14 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
             original_size = img.size
 
             # Convert to sRGB for consistent web display
-            img = _convert_to_srgb(img)
+            img = _convert_to_srgb(img)  # type: ignore[assignment]
 
             # Ensure image is RGB (handle grayscale, palette, RGBA)
             if img.mode == "RGBA":
                 # Preserve alpha for WebP (it supports transparency)
                 pass
             elif img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
+                img = img.convert("RGB")  # type: ignore[assignment]
 
             # Calculate thumbnail size maintaining aspect ratio
             img.thumbnail(
@@ -307,7 +307,7 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
             # - radius: blur radius (1.0 is subtle)
             # - percent: strength (50 = gentle)
             # - threshold: minimum brightness change to sharpen (3 avoids noise)
-            img = img.filter(ImageFilter.UnsharpMask(radius=1.0, percent=50, threshold=3))
+            img = img.filter(ImageFilter.UnsharpMask(radius=1.0, percent=50, threshold=3))  # type: ignore[assignment]
 
             # Save thumbnail as WebP with quality setting
             img.save(

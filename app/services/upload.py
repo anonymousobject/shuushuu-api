@@ -102,7 +102,7 @@ async def save_uploaded_image(
             temp_path.unlink()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save image: {str(e)}",
+            detail="Failed to save image",
         ) from e
 
 
