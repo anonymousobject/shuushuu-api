@@ -1070,11 +1070,12 @@ class TestGetUserFavorites:
         await db_session.commit()
         await db_session.refresh(user)
 
-        # Create one public and one non-public image
+        # Create one public and one non-public image (owned by this user)
         public_data = sample_image_data.copy()
         public_data["filename"] = "favvis-public"
         public_data["md5_hash"] = "favvispublic000000000000"
         public_data["status"] = 1
+        public_data["user_id"] = user.user_id
         public_img = Images(**public_data)
         db_session.add(public_img)
 
@@ -1082,6 +1083,7 @@ class TestGetUserFavorites:
         hidden_data["filename"] = "favvis-hidden"
         hidden_data["md5_hash"] = "favvishidden000000000000"
         hidden_data["status"] = -4  # REVIEW - non-public
+        hidden_data["user_id"] = user.user_id
         hidden_img = Images(**hidden_data)
         db_session.add(hidden_img)
         await db_session.commit()
