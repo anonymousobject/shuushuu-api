@@ -74,8 +74,6 @@ services:
       - IQDB_HOST=iqdb
       # Prevent Python from writing pyc files and __pycache__ dirs
       - PYTHONDONTWRITEBYTECODE=1
-      # Required for aiomysql: getpass.getuser() needs a username (Python 3.13+ raises OSError without one)
-      - USER=app
     volumes:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
@@ -154,8 +152,6 @@ services:
       - IQDB_HOST=iqdb
       # Prevent Python from writing pyc files
       - PYTHONDONTWRITEBYTECODE=1
-      # Required for aiomysql: getpass.getuser() needs a username (Python 3.13+ raises OSError without one)
-      - USER=app
     volumes:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app

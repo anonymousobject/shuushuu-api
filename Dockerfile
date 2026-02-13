@@ -7,6 +7,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # Set working directory
 WORKDIR /app
 
+# aiomysql calls getpass.getuser() at import time; Python 3.13+ raises OSError
+# when running as a numeric UID without a /etc/passwd entry
+ENV USER=app
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
