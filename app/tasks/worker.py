@@ -4,7 +4,16 @@ ARQ worker configuration and job definitions.
 Run worker with: uv run arq app.tasks.worker.WorkerSettings
 """
 
+import asyncio
 from typing import Any
+
+# arq's Worker.__init__ calls asyncio.get_event_loop() which raises RuntimeError
+# in Python 3.14 when no event loop exists. Ensure one is available before arq runs.
+# https://github.com/python-arq/arq/issues/144
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 from arq.connections import RedisSettings
 from arq.cron import cron
