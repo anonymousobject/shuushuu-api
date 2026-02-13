@@ -54,6 +54,7 @@ dev = [
     "pre-commit>=3.5.0",
     # Type Stubs
     "types-redis>=4.6.0",
+    # Security / Auditing
     "pip-audit>=2.10.0",
 ]
 
