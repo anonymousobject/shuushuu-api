@@ -83,7 +83,7 @@ class Permission(str, Enum):
 
 
 # Module-level constant to avoid recreating dict on each property access
-_PERMISSION_DESCRIPTIONS: dict["Permission", str] = {
+_PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     # Tag management
     Permission.TAG_CREATE: "Create new tags",
     Permission.TAG_EDIT: "Edit existing tags",

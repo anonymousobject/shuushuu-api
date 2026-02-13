@@ -231,7 +231,7 @@ class Images(ImageBase, table=True):
     # - Set sa_relationship_kwargs={"lazy": "joined"} for commonly-needed data
     # - Or use "selectin" for better performance with multiple objects
     # - The relationship will NOT auto-serialize in Pydantic schemas (SQLModel behavior)
-    user: "Users" = Relationship(
+    user: Users = Relationship(
         sa_relationship_kwargs={
             # "lazy": "joined",  # Eagerly load user data with image
             "foreign_keys": "[Images.user_id]",
@@ -239,7 +239,7 @@ class Images(ImageBase, table=True):
     )
 
     # Tag links relationship (many-to-many through TagLinks)
-    tag_links: list["TagLinks"] = Relationship(
+    tag_links: list[TagLinks] = Relationship(
         sa_relationship_kwargs={
             "foreign_keys": "[TagLinks.image_id]",
         }

@@ -1,5 +1,5 @@
 # Dockerfile for Shuushuu API with uv
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Install uv from Astral's uv image (copy binaries into a directory on PATH)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/

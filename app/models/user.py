@@ -157,7 +157,7 @@ class Users(UserBase, table=True):
     bookmark: int | None = Field(default=None, foreign_key="images.image_id")
 
     # Relationship to UserGroups for eager loading groups
-    user_groups: list["UserGroups"] = Relationship(
+    user_groups: list[UserGroups] = Relationship(
         sa_relationship_kwargs={
             "primaryjoin": "Users.user_id == UserGroups.user_id",
             "foreign_keys": "[UserGroups.user_id]",

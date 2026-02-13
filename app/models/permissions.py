@@ -156,7 +156,7 @@ class UserGroups(UserGroupBase, table=True):
     __tablename__ = "user_groups"
 
     # Relationship to Groups (requires explicit eager loading via selectinload/joinedload)
-    group: "Groups" = Relationship(
+    group: Groups = Relationship(
         sa_relationship_kwargs={
             "foreign_keys": "[UserGroups.group_id]",
             "lazy": "raise",

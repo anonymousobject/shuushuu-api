@@ -288,7 +288,7 @@ class ImageStatusUpdate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def require_at_least_one_field(self) -> "ImageStatusUpdate":
+    def require_at_least_one_field(self) -> ImageStatusUpdate:
         """Require at least one of status or locked to be provided."""
         if self.status is None and self.locked is None:
             raise ValueError("At least one of 'status' or 'locked' must be provided")

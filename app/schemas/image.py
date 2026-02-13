@@ -147,7 +147,7 @@ class ImageDetailedResponse(ImageResponse):
         user_rating: int | None = None,
         prev_image_id: int | None = None,
         next_image_id: int | None = None,
-    ) -> "ImageDetailedResponse":
+    ) -> ImageDetailedResponse:
         """Create response from database model with relationships"""
         data = ImageResponse.model_validate(image).model_dump()
 

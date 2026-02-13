@@ -60,7 +60,7 @@ class BannerResponse(BaseModel):
         return self._image_url(self.right_image)
 
     @model_validator(mode="after")
-    def _validate_layout(self) -> "BannerResponse":
+    def _validate_layout(self) -> BannerResponse:
         """Ensure banner is either full-image OR three-part (all parts present)."""
 
         has_full = self.full_image is not None

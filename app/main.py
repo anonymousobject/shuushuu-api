@@ -74,7 +74,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Lifespan context manager for startup and shutdown events"""
     # Startup
     logger.info(

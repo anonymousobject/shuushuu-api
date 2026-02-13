@@ -17,12 +17,13 @@ Runs on every push and pull request to `main` and `dev` branches.
    - mypy type checking (continue-on-error: true)
 
 2. **Tests** - Full test suite with MySQL database
-   - Matrix strategy (Python 3.12)
+   - Matrix strategy (Python 3.14)
    - MariaDB 12 service container
    - pytest with verbose output
    - Test results artifacts
 
 3. **Security Scan** - Vulnerability scanning
+   - pip-audit package check
    - Trivy filesystem scanner
    - SARIF upload to GitHub Security tab
    - CRITICAL and HIGH severity only
