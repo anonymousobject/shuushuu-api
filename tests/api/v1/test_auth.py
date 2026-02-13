@@ -55,6 +55,9 @@ class TestLogin:
         # Check that refresh token cookie is set
         assert "refresh_token" in response.cookies
 
+        # Security: refresh token must NOT be in response body (HTTPOnly cookie only)
+        assert "refresh_token" not in data
+
     async def test_login_wrong_password(self, client: AsyncClient, db_session: AsyncSession):
         """Test login with incorrect password."""
         user = Users(
@@ -174,6 +177,10 @@ class TestRefresh:
         data = refresh_response.json()
         assert "access_token" in data
         assert data["token_type"] == "bearer"
+
+        # Security: refresh token must NOT be in response body (HTTPOnly cookie only)
+        assert "refresh_token" not in data
+        assert "refresh_token" in refresh_response.cookies
 
     async def test_refresh_without_token(self, client: AsyncClient):
         """Test refresh without a refresh token cookie."""

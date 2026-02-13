@@ -25,10 +25,6 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int = Field(..., description="Access token expiration time in seconds from now")
-    refresh_token: str | None = Field(
-        default=None,
-        description="Refresh token (included for SSR cookie forwarding, also set in HTTPOnly cookie)",
-    )
 
 
 class RefreshRequest(BaseModel):
