@@ -151,7 +151,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         key="refresh_token",
         value=refresh_token,
         httponly=True,  # Prevent JavaScript access (XSS protection)
-        secure=settings.ENVIRONMENT == "production",  # HTTPS only in production
+        secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
         samesite="strict",  # CSRF protection
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,  # seconds
     )
@@ -161,7 +161,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         key="access_token",
         value=access_token,
         httponly=True,  # Prevent JavaScript access (XSS protection)
-        secure=settings.ENVIRONMENT == "production",  # HTTPS only in production
+        secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
         samesite="strict",  # CSRF protection
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Match JWT expiration
     )
@@ -179,7 +179,7 @@ def _clear_auth_cookies(response: Response) -> None:
         key="refresh_token",
         path="/",
         httponly=True,
-        secure=settings.ENVIRONMENT == "production",
+        secure=settings.ENVIRONMENT != "development",
         samesite="strict",
     )
 
@@ -188,7 +188,7 @@ def _clear_auth_cookies(response: Response) -> None:
         key="access_token",
         path="/",
         httponly=True,
-        secure=settings.ENVIRONMENT == "production",
+        secure=settings.ENVIRONMENT != "development",
         samesite="strict",
     )
 
@@ -347,7 +347,6 @@ async def login(
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        refresh_token=refresh_token,
     )
 
 
@@ -509,7 +508,6 @@ async def refresh_token(
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        refresh_token=new_refresh_token,
     )
 
 
