@@ -5,7 +5,7 @@ import redis.asyncio as redis
 from app.config import settings
 
 
-async def get_redis() -> AsyncGenerator[redis.Redis, None]:  # type: ignore[type-arg]
+async def get_redis() -> AsyncGenerator[redis.Redis]:  # type: ignore[type-arg]
     """
     Dependency for getting async redis connection.
     """

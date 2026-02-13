@@ -75,7 +75,7 @@ class ReportCreate(BaseModel):
         return list(dict.fromkeys(v))
 
     @model_validator(mode="after")
-    def validate_tag_suggestions(self) -> "ReportCreate":
+    def validate_tag_suggestions(self) -> ReportCreate:
         """Validate tag suggestions are only for TAG_SUGGESTIONS category."""
         has_suggestions = self.suggested_tag_ids_add or self.suggested_tag_ids_remove
         if has_suggestions and self.category != ReportCategory.TAG_SUGGESTIONS:

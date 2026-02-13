@@ -130,7 +130,7 @@ class Comments(CommentBase, table=True):
     # Relationships
     # Load user info for displaying comment author
     # Specify foreign_keys since there are multiple FKs to Users table
-    user: "Users" = Relationship(
+    user: Users = Relationship(
         sa_relationship_kwargs={
             "foreign_keys": "[Comments.user_id]",
         }

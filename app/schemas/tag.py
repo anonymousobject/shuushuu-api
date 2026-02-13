@@ -142,7 +142,7 @@ class TagResponse(TagBase):
     # Legacy data: Run scripts/normalize_db_text.py to decode HTML entities.
 
     @model_validator(mode="after")
-    def set_is_alias(self) -> "TagResponse":
+    def set_is_alias(self) -> TagResponse:
         if self.alias_of is not None:
             self.is_alias = True
         return self
@@ -168,7 +168,7 @@ class TagWithStats(TagResponse):
     child_count: int = 0  # Number of child tags that inherit from this tag
     created_by: UserSummary | None = None  # User who created the tag
     date_added: UTCDatetime  # When the tag was created
-    links: list["TagExternalLinkResponse"] = []  # External links associated with this tag
+    links: list[TagExternalLinkResponse] = []  # External links associated with this tag
     # Character-source links
     sources: list[LinkedTag] = []  # For character tags: linked sources
     characters: list[LinkedTag] = []  # For source tags: linked characters

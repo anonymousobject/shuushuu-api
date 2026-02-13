@@ -93,7 +93,7 @@ class TagLinks(TagLinkBase, table=True):
     user_id: int | None = Field(default=None, foreign_key="users.user_id")
 
     # Relationship to tag
-    tag: "Tags" = Relationship(
+    tag: Tags = Relationship(
         sa_relationship_kwargs={
             "foreign_keys": "[TagLinks.tag_id]",
         }

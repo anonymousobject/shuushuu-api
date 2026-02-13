@@ -3,7 +3,7 @@ name = "shuushuu-api"
 version = "2.0.0"
 description = "Modern FastAPI backend for Shuushuu anime image board"
 # readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = {text = "GPL-3.0-or-later"}
 authors = [
     {name = "anonymous_object", email = "admin@e-shuushuu.net"}
@@ -66,7 +66,7 @@ packages = ["app"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"  # Updated to match requires-python
+target-version = "py314"  # Updated to match requires-python
 exclude = [
     ".git",
     ".venv",

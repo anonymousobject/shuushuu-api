@@ -171,7 +171,7 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def validate_smtp_tls_settings(self) -> "Settings":
+    def validate_smtp_tls_settings(self) -> Settings:
         """Validate that SMTP_TLS and SMTP_STARTTLS are not both enabled."""
         if self.SMTP_TLS and self.SMTP_STARTTLS:
             raise ValueError(
@@ -183,7 +183,7 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def set_default_banner_base_url(self) -> "Settings":
+    def set_default_banner_base_url(self) -> Settings:
         if not self.BANNER_BASE_URL:
             self.BANNER_BASE_URL = f"{self.IMAGE_BASE_URL}/images/banners"
         return self
