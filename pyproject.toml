@@ -48,14 +48,14 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.14.0",
-
     # Code Quality
     "ruff>=0.5.0",
     "mypy>=1.11.0",
     "pre-commit>=3.5.0",
-
     # Type Stubs
     "types-redis>=4.6.0",
+    # Security / Auditing
+    "pip-audit>=2.10.0",
 ]
 
 [build-system]
