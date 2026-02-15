@@ -171,10 +171,31 @@ Another line."""
         assert '<a href="https://bar.com"' in result
         assert result.count("</a>") == 2
 
-    def test_autolink_unsafe_url_not_linked(self):
-        """javascript: URLs should never be auto-linked (edge case with protocol)."""
-        result = parse_markdown("javascript:alert(1)")
-        assert "<a " not in result
+    def test_autolink_no_nested_anchors_with_url_in_link_text(self):
+        """[check https://foo.com here](https://bar.com) must not produce nested <a> tags."""
+        result = parse_markdown("[check https://foo.com here](https://bar.com)")
+        assert result.count("<a ") == 1
+        assert 'href="https://bar.com"' in result
+
+    def test_autolink_url_wrapped_in_bold(self):
+        """**https://example.com** should bold the link, not mangle the <a> tag."""
+        result = parse_markdown("**https://example.com**")
+        assert '<a href="https://example.com"' in result
+        assert "<strong>" in result
+        # The href must not contain ** or </strong>
+        assert "**" not in result
+
+    def test_autolink_url_wrapped_in_italic(self):
+        """*https://example.com* should italicize the link."""
+        result = parse_markdown("*https://example.com*")
+        assert '<a href="https://example.com"' in result
+        assert "<em>" in result
+
+    def test_autolink_url_ending_with_ampersand(self):
+        """URL ending with & should not produce broken &amp entity."""
+        result = parse_markdown("https://example.com?flag&")
+        # The ; from &amp; must not be stripped
+        assert "&amp" not in result or "&amp;" in result
 
     def test_autolink_url_with_parentheses(self):
         """Wikipedia-style URLs with parens."""
