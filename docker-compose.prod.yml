@@ -23,6 +23,7 @@ services:
     logging: *default-logging
 
   frontend:
+    # NOTE: Expects shuushuu-frontend repo at ../shuushuu-frontend (sibling directory)
     build:
       context: ../shuushuu-frontend
       dockerfile: Dockerfile
@@ -135,6 +136,7 @@ services:
       "
     depends_on:
       - nginx
+    restart: unless-stopped
     logging: *default-logging
 
 volumes:
