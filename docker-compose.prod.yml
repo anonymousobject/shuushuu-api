@@ -1,0 +1,150 @@
+# Production override - HTTPS with Let's Encrypt
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  # Disable local services not needed in production
+  mariadb:
+    profiles: [disabled]
+
+  adminer:
+    profiles: [disabled]
+
+  redis-commander:
+    profiles: [disabled]
+
+  redis:
+    container_name: shuushuu-redis-prod
+    logging: *default-logging
+
+  frontend:
+    build:
+      context: ../shuushuu-frontend
+      dockerfile: Dockerfile
+      args:
+        - PUBLIC_ENVIRONMENT=production
+        - PUBLIC_API_URL=http://nginx:8080
+        - PUBLIC_DEBUG=false
+        - PUBLIC_TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY}
+    container_name: shuushuu-frontend-prod
+    environment:
+      - PUBLIC_ENVIRONMENT=production
+      - PUBLIC_API_URL=http://nginx:8080
+      - STORAGE_PATH=${STORAGE_PATH}
+      - NODE_OPTIONS=--max-old-space-size=4096
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - default
+    logging: *default-logging
+
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/frontend-production.conf.template:/etc/nginx/conf.d/frontend.conf.template:ro
+      - ./docker/certbot/conf:/etc/letsencrypt:ro
+      - ./docker/certbot/www:/var/www/certbot:ro
+    environment:
+      - NGINX_HOST=${DOMAIN}
+      - NGINX_PORT=443
+    depends_on:
+      frontend:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  api:
+    container_name: shuushuu-api-prod
+    command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports: []
+    env_file: .env.prod
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/1
+      - IQDB_HOST=iqdb
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging: *default-logging
+
+  arq-worker:
+    container_name: shuushuu-arq-worker-prod
+    env_file: .env.prod
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/1
+      - IQDB_HOST=iqdb
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging: *default-logging
+
+  iqdb:
+    container_name: shuushuu-iqdb-prod
+    logging: *default-logging
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: shuushuu-certbot-prod
+    volumes:
+      - ./docker/certbot/conf:/etc/letsencrypt
+      - ./docker/certbot/www:/var/www/certbot
+    command: >
+      sh -c "
+      if [ -d /etc/letsencrypt/live ]; then
+        echo 'Certificates found. Starting renewal loop...'
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet || echo 'Renewal check completed'
+          sleep 12h
+        done
+      else
+        echo 'No certificates found in /etc/letsencrypt/live'
+        echo 'To generate certificates, run:'
+        echo '  docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm certbot certonly --webroot -w /var/www/certbot -d e-shuushuu.net'
+        echo 'Then restart the services.'
+        sleep infinity
+      fi
+      "
+    depends_on:
+      - nginx
+    logging: *default-logging
+
+volumes:
+  # Override generic volume names with prod-specific names for data isolation
+  mariadb_data:
+    name: mariadb_data_prod
+    driver: local
+  redis_data:
+    name: redis_data_prod
+    driver: local
+  iqdb_data:
+    name: iqdb_data_prod
+    driver: local
