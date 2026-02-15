@@ -27,6 +27,7 @@ This module provides security mechanisms for different types of user content:
 
 - **bold** and *italic*
 - [link text](url)
+- Bare URLs auto-linked (https://example.com → clickable link)
 - > blockquotes
 - Line breaks
 - BBCode-style [quote="user"]...[/quote]
@@ -190,6 +191,50 @@ def parse_markdown(text: str) -> str:
         return f'<a href="{escape(url)}" rel="nofollow noopener" target="_blank">{link_text}</a>'
 
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, text)
+
+    # Auto-link bare URLs (https://... or http://...)
+    # Runs AFTER explicit markdown links to avoid double-linking.
+    # To prevent nested <a> tags, we split text on existing anchor tags
+    # and only auto-link within non-anchor segments.
+    # Excludes * and _ so markdown bold/italic delimiters adjacent to URLs
+    # aren't consumed into the match.
+    _bare_url_re = re.compile(r"https?://[^\s<>\[\]*]+")
+
+    def replace_bare_url(match: re.Match[str]) -> str:
+        escaped_url = match.group(0)
+
+        # Work on unescaped URL for punctuation stripping and validation,
+        # since the text is already HTML-escaped (& → &amp;) at this point.
+        raw_url = escaped_url.replace("&amp;", "&")
+
+        # Strip trailing punctuation that's unlikely to be part of the URL
+        trailing = ""
+        while raw_url and raw_url[-1] in ".,!?;:":
+            trailing = raw_url[-1] + trailing
+            raw_url = raw_url[:-1]
+
+        # Handle unbalanced trailing parenthesis — strip ) only if no matching (
+        while raw_url.endswith(")") and raw_url.count("(") < raw_url.count(")"):
+            trailing = ")" + trailing
+            raw_url = raw_url[:-1]
+
+        # Defense-in-depth: the regex only matches http(s):// which is_safe_url
+        # always accepts, but this guard protects against future regex changes.
+        if not is_safe_url(raw_url):
+            return match.group(0)
+
+        # Re-escape the cleaned URL for safe use in href and display text
+        safe_url_html = escape(raw_url, quote=True)
+
+        return f'<a href="{safe_url_html}" rel="nofollow noopener" target="_blank">{safe_url_html}</a>{escape(trailing)}'
+
+    # Split on <a ...>...</a> spans to avoid auto-linking inside existing anchors
+    parts = re.split(r"(<a\s[^>]*>.*?</a>)", text)
+    for i, part in enumerate(parts):
+        # Only process segments that are NOT existing anchor tags
+        if not part.startswith("<a "):
+            parts[i] = _bare_url_re.sub(replace_bare_url, part)
+    text = "".join(parts)
 
     # Process bold **text**
     # Use negative lookbehind/lookahead to avoid matching single * meant for italic
