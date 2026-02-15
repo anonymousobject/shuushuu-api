@@ -101,6 +101,100 @@ Another line."""
         assert "<blockquote>" in result
         assert 'href="https://example.com"' in result
 
+    # --- Auto-linking raw URLs ---
+
+    def test_autolink_bare_https_url(self):
+        result = parse_markdown("Check https://example.com for details")
+        assert '<a href="https://example.com"' in result
+        assert ">https://example.com</a>" in result
+        assert 'rel="nofollow noopener"' in result
+
+    def test_autolink_bare_http_url(self):
+        result = parse_markdown("Visit http://example.com today")
+        assert '<a href="http://example.com"' in result
+        assert ">http://example.com</a>" in result
+
+    def test_autolink_url_with_path(self):
+        result = parse_markdown("See https://example.com/foo/bar")
+        assert '<a href="https://example.com/foo/bar"' in result
+
+    def test_autolink_url_with_query_string(self):
+        result = parse_markdown("https://example.com/search?q=test&page=2")
+        assert '<a href="https://example.com/search?q=test&amp;page=2"' in result
+
+    def test_autolink_url_with_fragment(self):
+        result = parse_markdown("https://example.com/page#section")
+        assert '<a href="https://example.com/page#section"' in result
+
+    def test_autolink_strips_trailing_period(self):
+        result = parse_markdown("Visit https://example.com.")
+        assert '<a href="https://example.com"' in result
+        assert ">https://example.com</a>." in result
+
+    def test_autolink_strips_trailing_comma(self):
+        result = parse_markdown("See https://example.com, then go")
+        assert '<a href="https://example.com"' in result
+        assert ">https://example.com</a>," in result
+
+    def test_autolink_strips_trailing_exclamation(self):
+        result = parse_markdown("Wow https://example.com!")
+        assert '<a href="https://example.com"' in result
+        assert ">https://example.com</a>!" in result
+
+    def test_autolink_does_not_double_link_explicit_markdown(self):
+        """Explicit [text](url) should not get auto-linked again."""
+        result = parse_markdown("[click here](https://example.com)")
+        assert result.count("</a>") == 1
+
+    def test_autolink_does_not_link_url_display_text_in_explicit_link(self):
+        """[https://example.com](https://other.com) - display URL shouldn't double-link."""
+        result = parse_markdown("[https://example.com](https://other.com)")
+        assert result.count("</a>") == 1
+        assert 'href="https://other.com"' in result
+
+    def test_autolink_youtube_url(self):
+        """Real-world case from image 1112025."""
+        result = parse_markdown("https://www.youtube.com/watch?v=QzahOY6liiI")
+        assert '<a href="https://www.youtube.com/watch?v=QzahOY6liiI"' in result
+
+    def test_autolink_eshuushuu_url_in_multiline(self):
+        """Real-world case from image 1112025."""
+        text = "https://e-shuushuu.net/image/827934/\nIt took him 10 years!"
+        result = parse_markdown(text)
+        assert '<a href="https://e-shuushuu.net/image/827934/"' in result
+        assert "It took him 10 years!" in result
+
+    def test_autolink_multiple_urls(self):
+        text = "Check https://foo.com and https://bar.com"
+        result = parse_markdown(text)
+        assert '<a href="https://foo.com"' in result
+        assert '<a href="https://bar.com"' in result
+        assert result.count("</a>") == 2
+
+    def test_autolink_unsafe_url_not_linked(self):
+        """javascript: URLs should never be auto-linked (edge case with protocol)."""
+        result = parse_markdown("javascript:alert(1)")
+        assert "<a " not in result
+
+    def test_autolink_url_with_parentheses(self):
+        """Wikipedia-style URLs with parens."""
+        result = parse_markdown("https://en.wikipedia.org/wiki/Foo_(bar)")
+        assert '<a href="https://en.wikipedia.org/wiki/Foo_(bar)"' in result
+
+    def test_autolink_url_at_line_start(self):
+        result = parse_markdown("https://example.com")
+        assert '<a href="https://example.com"' in result
+
+    def test_autolink_coexists_with_bold(self):
+        result = parse_markdown("**bold** and https://example.com")
+        assert "<strong>bold</strong>" in result
+        assert '<a href="https://example.com"' in result
+
+    def test_autolink_coexists_with_blockquote(self):
+        result = parse_markdown("> https://example.com")
+        assert "<blockquote>" in result
+        assert '<a href="https://example.com"' in result
+
     def test_nested_bold_italic_not_supported(self):
         # We don't support nested formatting like ***text***
         # This is acceptable for our use case

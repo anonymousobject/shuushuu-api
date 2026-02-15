@@ -27,6 +27,7 @@ This module provides security mechanisms for different types of user content:
 
 - **bold** and *italic*
 - [link text](url)
+- Bare URLs auto-linked (https://example.com → clickable link)
 - > blockquotes
 - Line breaks
 - BBCode-style [quote="user"]...[/quote]
@@ -190,6 +191,37 @@ def parse_markdown(text: str) -> str:
         return f'<a href="{escape(url)}" rel="nofollow noopener" target="_blank">{link_text}</a>'
 
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, text)
+
+    # Auto-link bare URLs (https://... or http://...)
+    # Runs AFTER explicit markdown links so we can skip URLs already in <a> tags.
+    # The regex matches URLs that are NOT preceded by href=" or ">
+    # (which would indicate they're already part of an anchor tag).
+    def replace_bare_url(match: re.Match[str]) -> str:
+        url = match.group(0)
+
+        # Strip trailing punctuation that's unlikely to be part of the URL
+        trailing = ""
+        while url and url[-1] in ".,!?;:":
+            trailing = url[-1] + trailing
+            url = url[:-1]
+
+        # Handle unbalanced trailing parenthesis — strip ) only if no matching (
+        while url.endswith(")") and url.count("(") < url.count(")"):
+            trailing = ")" + trailing
+            url = url[:-1]
+
+        # Unescape &amp; for URL validation, then re-escape for href
+        raw_url = url.replace("&amp;", "&")
+        if not is_safe_url(raw_url):
+            return match.group(0)
+
+        return f'<a href="{url}" rel="nofollow noopener" target="_blank">{url}</a>{trailing}'
+
+    text = re.sub(
+        r'(?<!=")(?<!">)https?://[^\s<>\[\]]+',
+        replace_bare_url,
+        text,
+    )
 
     # Process bold **text**
     # Use negative lookbehind/lookahead to avoid matching single * meant for italic
