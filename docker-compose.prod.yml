@@ -20,6 +20,7 @@ services:
 
   redis:
     container_name: shuushuu-redis-prod
+    ports: []  # Internal only in production
     logging: *default-logging
 
   frontend:
@@ -81,9 +82,9 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
+    # List form replaces base depends_on entirely (removes mariadb dependency)
     depends_on:
-      redis:
-        condition: service_healthy
+      - redis
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -100,9 +101,9 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
+    # List form replaces base depends_on entirely (removes mariadb dependency)
     depends_on:
-      redis:
-        condition: service_healthy
+      - redis
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -110,6 +111,7 @@ services:
 
   iqdb:
     container_name: shuushuu-iqdb-prod
+    ports: []  # Internal only in production
     logging: *default-logging
 
   certbot:

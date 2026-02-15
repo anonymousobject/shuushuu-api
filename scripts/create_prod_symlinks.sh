@@ -56,7 +56,12 @@ create_link() {
         if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
             return
         fi
-        # Remove existing file/symlink at destination before creating
+        # Refuse to overwrite real files (only replace symlinks)
+        if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+            echo "  WARNING: Skipping $dst — real file exists (not a symlink). Use rm manually if intended." >&2
+            return
+        fi
+        # Remove existing symlink at destination before creating
         rm -f "$dst"
         ln -s "$src" "$dst"
     fi
