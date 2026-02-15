@@ -177,6 +177,11 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    # Legacy PHP URL redirects (e-shuushuu.net/image/827934/ → /images/827934)
+    location ~ "^/image/([0-9]+)/?$" {
+        return 301 /images/$1;
+    }
+
     # Frontend - proxy to SvelteKit SSR server (production build in Docker)
     location / {
         proxy_pass http://frontend:3000;
