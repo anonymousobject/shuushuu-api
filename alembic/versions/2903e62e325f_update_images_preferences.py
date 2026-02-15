@@ -1,6 +1,6 @@
-"""update_default_images_per_page_15_to_20
+"""update_images_preferences
 
-Update users.images_per_page from 15 to 20 for all users who have the old default.
+Update users.images_per_page to 20 and for all users and set show_all_images default to True.
 
 Revision ID: 2903e62e325f
 Revises: 7998a5544aba
@@ -20,12 +20,13 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Update images_per_page from <= 15 to 20 for users with the old default."""
-    op.execute("UPDATE users SET images_per_page = 20 WHERE images_per_page <= 15")
+    """Update images_per_page to 20 for all users."""
+    op.execute("UPDATE users SET images_per_page = 20")
     op.execute("ALTER TABLE users ALTER COLUMN images_per_page SET DEFAULT 20")
+    op.execute("ALTER TABLE users ALTER COLUMN show_all_images SET DEFAULT TRUE")
 
 
 def downgrade() -> None:
-    """Revert images_per_page from 20 back to 15 for affected users."""
+    """Revert images_per_page to the previous default."""
     op.execute("ALTER TABLE users ALTER COLUMN images_per_page SET DEFAULT 10")
-    op.execute("UPDATE users SET images_per_page = 15 WHERE images_per_page = 20")
+    op.execute("ALTER TABLE users ALTER COLUMN show_all_images SET DEFAULT FALSE")
