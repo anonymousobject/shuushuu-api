@@ -4,7 +4,7 @@
 # Ensure bash is used for all commands (required for read -p in clean target)
 SHELL := /bin/bash
 
-.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend clean
+.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend clean
 
 # Capture extra arguments for logs commands (e.g., `make dev-logs api`)
 ARGS = $(filter-out $@,$(MAKECMDGOALS))
@@ -28,6 +28,15 @@ help:
 	@echo "  test-ps      Show running containers"
 	@echo "  test-build-frontend     Rebuild frontend image"
 	@echo ""
+	@echo "Production (HTTPS on e-shuushuu.net):"
+	@echo "  prod         Start production environment (foreground)"
+	@echo "  prod-up      Start production environment (background)"
+	@echo "  prod-down    Stop production environment"
+	@echo "  prod-logs    Follow all logs"
+	@echo "  prod-ps      Show running containers"
+	@echo "  prod-build   Build all production images"
+	@echo "  prod-build-frontend  Rebuild frontend image"
+	@echo ""
 	@echo "Other:"
 	@echo "  clean        Stop all and remove volumes (DESTRUCTIVE)"
 	@echo ""
@@ -39,6 +48,7 @@ help:
 # Dev uses .env by default (docker-compose's default behavior)
 COMPOSE_DEV = docker compose -f docker-compose.yml -f docker-compose.override.yml
 COMPOSE_TEST = docker compose -f docker-compose.yml -f docker-compose.test.yml --env-file .env.test
+COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod
 
 # Development targets
 dev:
@@ -75,12 +85,35 @@ test-ps:
 test-build-frontend:
 	$(COMPOSE_TEST) build --no-cache frontend
 
+# Production targets
+prod:
+	$(COMPOSE_PROD) up
+
+prod-up:
+	$(COMPOSE_PROD) up -d
+
+prod-down:
+	$(COMPOSE_PROD) down
+
+prod-logs:
+	$(COMPOSE_PROD) logs --tail 40 -f $(ARGS)
+
+prod-ps:
+	$(COMPOSE_PROD) ps
+
+prod-build:
+	$(COMPOSE_PROD) build
+
+prod-build-frontend:
+	$(COMPOSE_PROD) build --no-cache frontend
+
 # Cleanup (removes volumes - use with caution)
 clean:
 	@echo "This will stop containers and DELETE ALL DATA (volumes)."
 	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	$(COMPOSE_DEV) down -v 2>/dev/null || true
 	$(COMPOSE_TEST) down -v 2>/dev/null || true
+	$(COMPOSE_PROD) down -v 2>/dev/null || true
 
 # Catch-all to allow passing service names as arguments (e.g., `make dev-logs api`)
 %:
