@@ -262,6 +262,8 @@ async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
 
     # Build mysql import command with optimizations for large imports
     # Use 1GB for max-allowed-packet (in bytes)
+    # Strip LOCK/UNLOCK TABLES from dump to avoid locking conflicts with
+    # triggers or foreign keys that reference tables not in the current lock set.
     mysql_cmd = [
         "mariadb",
         f"--host={host}",
@@ -277,9 +279,9 @@ async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
     mysql_cmd = [arg for arg in mysql_cmd if arg is not None]
 
     # Build the full command with proper shell quoting
-    # Use stdin redirection for the SQL file
+    # Pipe through sed to strip LOCK/UNLOCK TABLES statements from the dump
     cmd_str = " ".join(f'"{arg}"' if " " in arg or ";" in arg else arg for arg in mysql_cmd)
-    import_cmd = f"{cmd_str} < {sql_file}"
+    import_cmd = f"sed '/^LOCK TABLES/d; /^UNLOCK TABLES/d' {sql_file} | {cmd_str}"
 
     success = await run_command(
         ["bash", "-c", import_cmd],

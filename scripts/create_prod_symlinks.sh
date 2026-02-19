@@ -5,25 +5,19 @@ set -euo pipefail
 # Links the new directory structure to existing PHP site image files
 #
 # Usage:
-#   SRC_BASE=/path/to/php/images ./scripts/create_prod_symlinks.sh           # Dry-run (preview)
-#   SRC_BASE=/path/to/php/images ./scripts/create_prod_symlinks.sh --apply   # Create symlinks
+#   ./scripts/create_prod_symlinks.sh           # Dry-run (preview)
+#   ./scripts/create_prod_symlinks.sh --apply   # Create symlinks
 #
 # Environment variables:
-#   SRC_BASE   - (required) Path to the PHP site's fullsize image directory
+#   SRC_BASE   - (optional) Source image directory, defaults to $DEST_BASE/fullsize
 #   DEST_BASE  - (optional) Destination directory, defaults to /shuushuu/images
 
 DEST_BASE="${DEST_BASE:-/shuushuu/images}"
+SRC_BASE="${SRC_BASE:-$DEST_BASE/fullsize}"
 DRY_RUN=1
 
 if [ "${1:-}" = "--apply" ]; then
     DRY_RUN=0
-fi
-
-# Validate SRC_BASE is set and exists
-if [ -z "${SRC_BASE:-}" ]; then
-    echo "ERROR: SRC_BASE must be set to the PHP site's image directory" >&2
-    echo "Usage: SRC_BASE=/path/to/images $0 [--apply]" >&2
-    exit 1
 fi
 
 if [ ! -d "$SRC_BASE" ]; then
@@ -83,18 +77,21 @@ done < <(find "$SRC_BASE" -maxdepth 1 -type f \
     ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
     -print0)
 
-# Flatten deactivated subdirectory into fullsize (if it exists)
-if [ -d "$SRC_BASE/deactivated" ]; then
-    echo "  (including deactivated/ images)"
-    while IFS= read -r -d '' f; do
-        base=$(basename "$f")
-        create_link "$f" "$DEST_BASE/fullsize/$base"
-        fullsize_count=$((fullsize_count + 1))
-    done < <(find "$SRC_BASE/deactivated" -type f \
-        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
-        ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
-        -print0)
-fi
+# Flatten deactivated subdirectories into fullsize
+# Check both SRC_BASE/deactivated (separate source) and DEST_BASE/fullsize/deactivated (in-tree)
+for deactivated_dir in "$SRC_BASE/deactivated" "$DEST_BASE/fullsize/deactivated"; do
+    if [ -d "$deactivated_dir" ]; then
+        echo "  (including $deactivated_dir images)"
+        while IFS= read -r -d '' f; do
+            base=$(basename "$f")
+            create_link "$f" "$DEST_BASE/fullsize/$base"
+            fullsize_count=$((fullsize_count + 1))
+        done < <(find "$deactivated_dir" -type f \
+            \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
+            ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
+            -print0)
+    fi
+done
 
 echo "  Count: $fullsize_count"
 echo ""
