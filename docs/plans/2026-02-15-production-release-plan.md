@@ -433,32 +433,56 @@ These are manual steps for the operator during the maintenance window. Documente
 
 Replace all `<PLACEHOLDER>` values in `.env.prod` with real credentials.
 
-**Step 2: Build Docker images**
+**Step 2: Re-sync image symlinks**
+
+Re-run the symlink script to ensure any images uploaded since the initial run are linked. The script is idempotent — existing symlinks are skipped.
+
+```bash
+SRC_BASE=/path/to/php/images ./scripts/create_prod_symlinks.sh --apply
+```
+
+**Step 3: Generate missing thumbnails**
+
+Generate WebP thumbnails for all images that don't have one yet.
+
+```bash
+uv run scripts/generate_thumbnails.py --missing-only --all
+```
+
+**Step 4: Prune inactive users**
+
+Remove users inactive for 180+ days (legacy PHP accounts with no activity).
+
+```bash
+uv run scripts/prune_inactive_users.py --days-inactive 180 --confirm
+```
+
+**Step 5: Build Docker images**
 
 ```bash
 make prod-build
 ```
 
-**Step 3: Start Docker stack**
+**Step 6: Start Docker stack**
 
 ```bash
 make prod-up
 ```
 
-**Step 4: Verify containers are running**
+**Step 7: Verify containers are running**
 
 ```bash
 make prod-ps
 ```
 
-**Step 5: Test API health on localhost**
+**Step 8: Test API health on localhost**
 
 ```bash
 curl -s http://127.0.0.1:8000/health
 ```
 Expected: JSON health response.
 
-**Step 6: Test frontend on localhost**
+**Step 9: Test frontend on localhost**
 
 ```bash
 curl -s http://127.0.0.1:3000/health
