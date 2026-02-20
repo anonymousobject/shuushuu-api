@@ -9,7 +9,7 @@ from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 class NewsCreate(BaseModel):
     """Schema for creating a news item."""
 
-    title: str = Field(max_length=128, description="News title")
+    title: str = Field(min_length=1, max_length=128, description="News title")
     news_text: str = Field(min_length=1, description="News content (plain text)")
 
     @field_validator("title", mode="before")
@@ -30,7 +30,7 @@ class NewsCreate(BaseModel):
 class NewsUpdate(BaseModel):
     """Schema for updating a news item. At least one field must be provided."""
 
-    title: str | None = Field(default=None, max_length=128, description="News title")
+    title: str | None = Field(default=None, min_length=1, max_length=128, description="News title")
     news_text: str | None = Field(default=None, description="News content (plain text)")
 
     @model_validator(mode="after")

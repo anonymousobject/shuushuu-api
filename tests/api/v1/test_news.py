@@ -25,46 +25,38 @@ async def news_item(db_session: AsyncSession) -> News:
     return item
 
 
-@pytest.fixture
-async def user_with_news_create(db_session: AsyncSession) -> tuple[Users, str]:
-    """Create a user with NEWS_CREATE permission and return (user, token)."""
+async def _user_with_permission(
+    db_session: AsyncSession, permission: Permission
+) -> tuple[Users, str]:
+    """Create user_id=2 with a given permission and return (user, token)."""
     user = await db_session.get(Users, 2)
     user.active = 1
-    perm = Perms(perm_id=100, title=Permission.NEWS_CREATE.value)
+    perm = Perms(title=permission.value, desc=permission.description)
     db_session.add(perm)
-    user_perm = UserPerms(user_id=user.user_id, perm_id=100, permvalue=1)
+    await db_session.flush()  # Get auto-generated perm_id
+    user_perm = UserPerms(user_id=user.user_id, perm_id=perm.perm_id, permvalue=1)
     db_session.add(user_perm)
     await db_session.commit()
     token = create_access_token(user.user_id)
     return user, token
+
+
+@pytest.fixture
+async def user_with_news_create(db_session: AsyncSession) -> tuple[Users, str]:
+    """Create a user with NEWS_CREATE permission and return (user, token)."""
+    return await _user_with_permission(db_session, Permission.NEWS_CREATE)
 
 
 @pytest.fixture
 async def user_with_news_edit(db_session: AsyncSession) -> tuple[Users, str]:
     """Create a user with NEWS_EDIT permission and return (user, token)."""
-    user = await db_session.get(Users, 2)
-    user.active = 1
-    perm = Perms(perm_id=101, title=Permission.NEWS_EDIT.value)
-    db_session.add(perm)
-    user_perm = UserPerms(user_id=user.user_id, perm_id=101, permvalue=1)
-    db_session.add(user_perm)
-    await db_session.commit()
-    token = create_access_token(user.user_id)
-    return user, token
+    return await _user_with_permission(db_session, Permission.NEWS_EDIT)
 
 
 @pytest.fixture
 async def user_with_news_delete(db_session: AsyncSession) -> tuple[Users, str]:
     """Create a user with NEWS_DELETE permission and return (user, token)."""
-    user = await db_session.get(Users, 2)
-    user.active = 1
-    perm = Perms(perm_id=102, title=Permission.NEWS_DELETE.value)
-    db_session.add(perm)
-    user_perm = UserPerms(user_id=user.user_id, perm_id=102, permvalue=1)
-    db_session.add(user_perm)
-    await db_session.commit()
-    token = create_access_token(user.user_id)
-    return user, token
+    return await _user_with_permission(db_session, Permission.NEWS_DELETE)
 
 
 @pytest.fixture
@@ -231,6 +223,37 @@ class TestUpdateNews:
         assert data["title"] == "Updated Title"
         assert data["news_text"] == "Test news content"  # unchanged
         assert data["edited"] is not None
+
+    async def test_update_news_text_only(
+        self, client: AsyncClient, news_item: News, user_with_news_edit: tuple[Users, str]
+    ):
+        """Update with only news_text preserves original title."""
+        _, token = user_with_news_edit
+        response = await client.put(
+            f"/api/v1/news/{news_item.news_id}",
+            json={"news_text": "Updated content"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "Test News"  # unchanged
+        assert data["news_text"] == "Updated content"
+        assert data["edited"] is not None
+
+    async def test_update_both_fields(
+        self, client: AsyncClient, news_item: News, user_with_news_edit: tuple[Users, str]
+    ):
+        """Update with both fields changes both."""
+        _, token = user_with_news_edit
+        response = await client.put(
+            f"/api/v1/news/{news_item.news_id}",
+            json={"title": "New Title", "news_text": "New content"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "New Title"
+        assert data["news_text"] == "New content"
 
     async def test_update_not_found(
         self, client: AsyncClient, user_with_news_edit: tuple[Users, str]

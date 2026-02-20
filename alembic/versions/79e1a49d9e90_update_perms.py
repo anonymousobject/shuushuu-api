@@ -88,7 +88,8 @@ def upgrade() -> None:
     """)
 
     # Grants new perms to admins and moderators groups
-    new_perms = ['image_tag_add', 'image_tag_remove', 'privmsg_view']
+    new_perms = ['image_tag_add', 'image_tag_remove', 'privmsg_view', 'news_create', 'news_edit', 'news_delete']
+
     for perm in new_perms:
         op.execute(f"""
             INSERT INTO group_perms (group_id, perm_id, permvalue)

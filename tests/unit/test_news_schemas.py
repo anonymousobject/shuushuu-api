@@ -50,6 +50,12 @@ class TestNewsCreate:
         with pytest.raises(ValidationError):
             NewsCreate(title="Title", news_text="   ")
 
+    def test_whitespace_only_title_rejected(self):
+        from app.schemas.news import NewsCreate
+
+        with pytest.raises(ValidationError):
+            NewsCreate(title="   ", news_text="content")
+
 
 class TestNewsUpdate:
     """Validate NewsUpdate schema."""
