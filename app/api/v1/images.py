@@ -343,9 +343,7 @@ async def list_images(
             # Apply NOT IN subquery
             query = query.where(
                 Images.image_id.notin_(  # type: ignore[union-attr]
-                    select(TagLinks.image_id).where(
-                        TagLinks.tag_id.in_(resolved_exclude_ids)  # type: ignore[attr-defined]
-                    )
+                    select(TagLinks.image_id).where(TagLinks.tag_id.in_(resolved_exclude_ids))  # type: ignore[call-overload,attr-defined]
                 )
             )
 
