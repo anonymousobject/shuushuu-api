@@ -451,6 +451,43 @@ class TestTagSearchValidation:
 
 
 @pytest.mark.api
+class TestExcludeTags:
+    """Tests for exclude_tags parameter on image search."""
+
+    async def test_exclude_tags_basic(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that exclude_tags filters out images with the excluded tag."""
+        # Create two images
+        image1 = Images(**{**sample_image_data, "filename": "excl1", "md5_hash": "a" * 32})
+        image2 = Images(**{**sample_image_data, "filename": "excl2", "md5_hash": "b" * 32})
+        db_session.add_all([image1, image2])
+        await db_session.flush()
+
+        # Create tags
+        tag_keep = Tags(title="mizugi", desc="Swimsuit", type=1)
+        tag_exclude = Tags(title="school mizugi", desc="School swimsuit", type=1)
+        db_session.add_all([tag_keep, tag_exclude])
+        await db_session.flush()
+
+        # image1 has both tags, image2 has only the keep tag
+        db_session.add(TagLinks(image_id=image1.image_id, tag_id=tag_keep.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=image1.image_id, tag_id=tag_exclude.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=image2.image_id, tag_id=tag_keep.tag_id, user_id=1))
+        await db_session.commit()
+
+        # Exclude the school mizugi tag — should only return image2
+        response = await client.get(f"/api/v1/images?exclude_tags={tag_exclude.tag_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        image_ids = [img["image_id"] for img in data["images"]]
+        assert image2.image_id in image_ids
+        assert image1.image_id not in image_ids
+
+
+@pytest.mark.api
 class TestTagHierarchySearch:
     """Tests for image search with tag hierarchy expansion.
 

@@ -172,6 +172,9 @@ async def list_images(
             "Omit for full hierarchy.",
         ),
     ] = None,
+    exclude_tags: Annotated[
+        str | None, Query(description="Comma-separated tag IDs to exclude (e.g., '4,5,6')")
+    ] = None,
     # Date filtering
     date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
     date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
@@ -315,6 +318,36 @@ async def list_images(
                         select(TagLinks.image_id).where(TagLinks.tag_id.in_(all_hierarchy_ids))  # type: ignore[call-overload,attr-defined]
                     )
                 )
+
+    # Exclude tag filtering (always exact match, no hierarchy expansion)
+    if exclude_tags:
+        exclude_tag_ids = [
+            int(tid.strip()) for tid in exclude_tags.split(",") if tid.strip().isdigit()
+        ]
+        if exclude_tag_ids:
+            # Enforce shared MAX_SEARCH_TAGS limit across include + exclude
+            include_count = len(tag_ids) if tags and tag_ids else 0
+            total_tag_count = include_count + len(exclude_tag_ids)
+            if total_tag_count > settings.MAX_SEARCH_TAGS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"You can only search for up to {settings.MAX_SEARCH_TAGS} tags at a time.",
+                )
+
+            # Resolve aliases (no hierarchy expansion)
+            resolved_exclude_ids: set[int] = set()
+            for etid in exclude_tag_ids:
+                _, resolved_etid = await resolve_tag_alias(db, etid)
+                resolved_exclude_ids.add(resolved_etid)
+
+            # Apply NOT IN subquery
+            query = query.where(
+                Images.image_id.notin_(  # type: ignore[union-attr]
+                    select(TagLinks.image_id).where(
+                        TagLinks.tag_id.in_(resolved_exclude_ids)  # type: ignore[attr-defined]
+                    )
+                )
+            )
 
     # Date filtering
     if date_from:
