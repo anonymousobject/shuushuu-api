@@ -62,6 +62,11 @@ class Permission(str, Enum):
     # Content moderation
     POST_EDIT = "post_edit"
 
+    # News management
+    NEWS_CREATE = "news_create"
+    NEWS_EDIT = "news_edit"
+    NEWS_DELETE = "news_delete"
+
     # Special permissions
     THEME_EDIT = "theme_edit"
     RATING_REVOKE = "rating_revoke"
@@ -104,6 +109,10 @@ _PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     Permission.PRIVMSG_VIEW: "View private messages",
     # Content moderation
     Permission.POST_EDIT: "Edit text posts and comments",
+    # News management
+    Permission.NEWS_CREATE: "Create news posts",
+    Permission.NEWS_EDIT: "Edit news posts",
+    Permission.NEWS_DELETE: "Delete news posts",
     # Special permissions
     Permission.THEME_EDIT: "Theme editor and scheduler access",
     Permission.RATING_REVOKE: "Revoke image rating rights",
