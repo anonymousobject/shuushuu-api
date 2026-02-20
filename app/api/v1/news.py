@@ -20,23 +20,23 @@ from app.schemas.news import NewsCreate, NewsListResponse, NewsResponse, NewsUpd
 router = APIRouter(prefix="/news", tags=["news"])
 
 
-def _news_with_username_query():
+def _news_with_username_query():  # type: ignore[no-untyped-def]
     """Base query selecting news fields plus username from users join."""
     return select(
         News,
-        Users.username,
+        Users.username,  # type: ignore[call-overload]
     ).join(Users, News.user_id == Users.user_id)
 
 
 def _to_response(news: News, username: str) -> NewsResponse:
     """Convert a News model + username into a NewsResponse."""
     return NewsResponse(
-        news_id=news.news_id,  # type: ignore[arg-type]
+        news_id=news.news_id,
         user_id=news.user_id,
         username=username,
         title=news.title,
         news_text=news.news_text,
-        date=news.date,  # type: ignore[arg-type]
+        date=news.date,
         edited=news.edited,
     )
 
@@ -55,8 +55,8 @@ async def list_news(
 
     # Fetch page
     query = (
-        _news_with_username_query()
-        .order_by(desc(News.news_id))
+        _news_with_username_query()  # type: ignore[no-untyped-call]
+        .order_by(desc(News.news_id))  # type: ignore[arg-type]
         .offset(pagination.offset)
         .limit(pagination.per_page)
     )
@@ -77,7 +77,9 @@ async def get_news(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> NewsResponse:
     """Get a single news item by ID."""
-    query = _news_with_username_query().where(News.news_id == news_id)
+    query = _news_with_username_query().where(  # type: ignore[no-untyped-call]
+        News.news_id == news_id
+    )
     result = await db.execute(query)
     row = result.one_or_none()
 
@@ -102,16 +104,14 @@ async def create_news(
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
 ) -> NewsResponse:
     """Create a news item. Requires NEWS_CREATE permission."""
-    if not await has_permission(
-        db,
-        current_user.user_id,
-        Permission.NEWS_CREATE,
-        redis_client,  # type: ignore[arg-type]
-    ):
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
+    if not await has_permission(db, current_user.user_id, Permission.NEWS_CREATE, redis_client):
         raise HTTPException(status_code=403, detail="NEWS_CREATE permission required")
 
     news = News(
-        user_id=current_user.user_id,  # type: ignore[assignment]
+        user_id=current_user.user_id,
         title=body.title,
         news_text=body.news_text,
     )
@@ -119,7 +119,7 @@ async def create_news(
     await db.commit()
     await db.refresh(news)
 
-    return _to_response(news, current_user.username)  # type: ignore[arg-type]
+    return _to_response(news, current_user.username)
 
 
 @router.put("/{news_id}", response_model=NewsResponse)
@@ -131,15 +131,15 @@ async def update_news(
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
 ) -> NewsResponse:
     """Update a news item. Requires NEWS_EDIT permission."""
-    if not await has_permission(
-        db,
-        current_user.user_id,
-        Permission.NEWS_EDIT,
-        redis_client,  # type: ignore[arg-type]
-    ):
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
+    if not await has_permission(db, current_user.user_id, Permission.NEWS_EDIT, redis_client):
         raise HTTPException(status_code=403, detail="NEWS_EDIT permission required")
 
-    result = await db.execute(select(News).where(News.news_id == news_id))
+    result = await db.execute(
+        select(News).where(News.news_id == news_id)  # type: ignore[arg-type]
+    )
     news = result.scalar_one_or_none()
 
     if not news:
@@ -154,7 +154,9 @@ async def update_news(
     await db.commit()
 
     # Re-fetch with username
-    query = _news_with_username_query().where(News.news_id == news_id)
+    query = _news_with_username_query().where(  # type: ignore[no-untyped-call]
+        News.news_id == news_id
+    )
     result = await db.execute(query)
     row = result.one()
     news, username = row
@@ -169,15 +171,15 @@ async def delete_news(
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
 ) -> None:
     """Delete a news item. Requires NEWS_DELETE permission."""
-    if not await has_permission(
-        db,
-        current_user.user_id,
-        Permission.NEWS_DELETE,
-        redis_client,  # type: ignore[arg-type]
-    ):
+    # Type narrowing for mypy - user_id is always set for authenticated users
+    assert current_user.user_id is not None
+
+    if not await has_permission(db, current_user.user_id, Permission.NEWS_DELETE, redis_client):
         raise HTTPException(status_code=403, detail="NEWS_DELETE permission required")
 
-    result = await db.execute(select(News).where(News.news_id == news_id))
+    result = await db.execute(
+        select(News).where(News.news_id == news_id)  # type: ignore[arg-type]
+    )
     news = result.scalar_one_or_none()
 
     if not news:
