@@ -13,6 +13,7 @@ from app.api.v1 import (
     history,
     images,
     meta,
+    news,
     permissions,
     privmsgs,
     tags,
@@ -35,6 +36,7 @@ router.include_router(favorites.router)
 router.include_router(comments.router)
 router.include_router(privmsgs.router)
 router.include_router(meta.router)
+router.include_router(news.router)
 router.include_router(permissions.router)
 
 __all__ = ["router"]
