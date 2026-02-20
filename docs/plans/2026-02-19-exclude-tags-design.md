@@ -17,7 +17,7 @@ exclude_tags: comma-separated tag IDs (e.g. "150,160")
 
 Example:
 ```
-GET /images?tags=100,200&exclude_tags=150&tags_mode=all
+GET /api/v1/images?tags=100,200&exclude_tags=150&tags_mode=all
 ```
 
 - Can be used alone or combined with `tags`

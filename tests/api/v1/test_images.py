@@ -648,6 +648,50 @@ class TestExcludeTags:
         data = response.json()
         assert data["total"] == 0
 
+    async def test_exclude_tags_no_hierarchy_expansion(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test that exclude_tags does NOT expand to child tags (exact match only)."""
+        image1 = Images(**{**sample_image_data, "filename": "hier1", "md5_hash": "4d" * 16})
+        image2 = Images(**{**sample_image_data, "filename": "hier2", "md5_hash": "5e" * 16})
+        db_session.add_all([image1, image2])
+        await db_session.flush()
+
+        # Create parent tag and child tag
+        parent_tag = Tags(title="mizugi", desc="Swimsuit", type=1)
+        db_session.add(parent_tag)
+        await db_session.flush()
+
+        child_tag = Tags(
+            title="school mizugi", desc="School swimsuit", type=1,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add(child_tag)
+        await db_session.flush()
+
+        # image1 has the child tag only, image2 has an unrelated tag
+        other_tag = Tags(title="ribbon", desc="Ribbon", type=1)
+        db_session.add(other_tag)
+        await db_session.flush()
+
+        db_session.add(TagLinks(image_id=image1.image_id, tag_id=child_tag.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=image2.image_id, tag_id=other_tag.tag_id, user_id=1))
+        await db_session.commit()
+
+        # Excluding the PARENT should NOT exclude image1 (which only has the child tag)
+        response = await client.get(f"/api/v1/images?exclude_tags={parent_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        image_ids = [img["image_id"] for img in data["images"]]
+        assert image1.image_id in image_ids, "Image with child tag should NOT be excluded"
+
+        # Excluding the CHILD directly should exclude image1
+        response = await client.get(f"/api/v1/images?exclude_tags={child_tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        image_ids = [img["image_id"] for img in data["images"]]
+        assert image1.image_id not in image_ids, "Image with child tag should be excluded"
+
 
 @pytest.mark.api
 class TestTagHierarchySearch:

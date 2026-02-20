@@ -218,7 +218,7 @@ async def list_images(
     **Supports:**
     - Pagination (page, per_page)
     - Sorting by any field
-    - Tag filtering (by ID, with ANY/ALL modes)
+    - Tag filtering (by ID, with ANY/ALL modes and tag exclusion)
     - Date range filtering
     - Size/dimension filtering
     - Rating and popularity filtering
@@ -236,6 +236,7 @@ async def list_images(
 
     **Examples:**
     - `/images?tags=1,2,3&tags_mode=all` - Images with ALL tags 1, 2, and 3
+    - `/images?tags=1&exclude_tags=2,3` - Images with tag 1 but NOT tags 2 or 3
     - `/images?min_width=1920&min_height=1080` - HD images only
     - `/images?date_from=2024-01-01&sort_by=favorites` - Images from 2024, sorted by popularity
     - `/images?user_id=5&min_rating=4.0` - High-rated images by user 5
@@ -277,6 +278,7 @@ async def list_images(
                 query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
     # Tag filtering
+    tag_ids: list[int] = []
     if tags:
         tag_ids = [int(tid.strip()) for tid in tags.split(",") if tid.strip().isdigit()]
         if len(tag_ids) > settings.MAX_SEARCH_TAGS:
@@ -326,8 +328,7 @@ async def list_images(
         ]
         if exclude_tag_ids:
             # Enforce shared MAX_SEARCH_TAGS limit across include + exclude
-            include_count = len(tag_ids) if tags and tag_ids else 0
-            total_tag_count = include_count + len(exclude_tag_ids)
+            total_tag_count = len(tag_ids) + len(exclude_tag_ids)
             if total_tag_count > settings.MAX_SEARCH_TAGS:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
