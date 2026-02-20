@@ -172,6 +172,9 @@ async def list_images(
             "Omit for full hierarchy.",
         ),
     ] = None,
+    exclude_tags: Annotated[
+        str | None, Query(description="Comma-separated tag IDs to exclude (e.g., '4,5,6')")
+    ] = None,
     # Date filtering
     date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
     date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
@@ -215,7 +218,7 @@ async def list_images(
     **Supports:**
     - Pagination (page, per_page)
     - Sorting by any field
-    - Tag filtering (by ID, with ANY/ALL modes)
+    - Tag filtering (by ID, with ANY/ALL modes and tag exclusion)
     - Date range filtering
     - Size/dimension filtering
     - Rating and popularity filtering
@@ -233,6 +236,7 @@ async def list_images(
 
     **Examples:**
     - `/images?tags=1,2,3&tags_mode=all` - Images with ALL tags 1, 2, and 3
+    - `/images?tags=1&exclude_tags=2,3` - Images with tag 1 but NOT tags 2 or 3
     - `/images?min_width=1920&min_height=1080` - HD images only
     - `/images?date_from=2024-01-01&sort_by=favorites` - Images from 2024, sorted by popularity
     - `/images?user_id=5&min_rating=4.0` - High-rated images by user 5
@@ -274,6 +278,7 @@ async def list_images(
                 query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
     # Tag filtering
+    tag_ids: list[int] = []
     if tags:
         tag_ids = [int(tid.strip()) for tid in tags.split(",") if tid.strip().isdigit()]
         if len(tag_ids) > settings.MAX_SEARCH_TAGS:
@@ -315,6 +320,33 @@ async def list_images(
                         select(TagLinks.image_id).where(TagLinks.tag_id.in_(all_hierarchy_ids))  # type: ignore[call-overload,attr-defined]
                     )
                 )
+
+    # Exclude tag filtering (always exact match, no hierarchy expansion)
+    if exclude_tags:
+        exclude_tag_ids = [
+            int(tid.strip()) for tid in exclude_tags.split(",") if tid.strip().isdigit()
+        ]
+        if exclude_tag_ids:
+            # Enforce shared MAX_SEARCH_TAGS limit across include + exclude
+            total_tag_count = len(tag_ids) + len(exclude_tag_ids)
+            if total_tag_count > settings.MAX_SEARCH_TAGS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"You can only search for up to {settings.MAX_SEARCH_TAGS} tags at a time.",
+                )
+
+            # Resolve aliases (no hierarchy expansion)
+            resolved_exclude_ids: set[int] = set()
+            for etid in exclude_tag_ids:
+                _, resolved_etid = await resolve_tag_alias(db, etid)
+                resolved_exclude_ids.add(resolved_etid)
+
+            # Apply NOT IN subquery
+            query = query.where(
+                Images.image_id.notin_(  # type: ignore[union-attr]
+                    select(TagLinks.image_id).where(TagLinks.tag_id.in_(resolved_exclude_ids))  # type: ignore[call-overload,attr-defined]
+                )
+            )
 
     # Date filtering
     if date_from:
