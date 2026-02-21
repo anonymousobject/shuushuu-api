@@ -916,6 +916,7 @@ class TestResetPassword:
         # Verify token fields are cleared
         await db_session.refresh(user)
         assert user.password_reset_token is None
+        assert user.password_reset_sent_at is None
         assert user.password_reset_expires_at is None
 
         # Verify can login with new password

@@ -110,7 +110,7 @@ class TestResetPasswordRequest:
         assert req.token == "abc123"
 
     def test_weak_password_rejected(self):
-        with pytest.raises(ValidationError, match="special character"):
+        with pytest.raises(ValidationError, match="uppercase letter"):
             ResetPasswordRequest(
                 email="user@example.com",
                 token="abc123",
