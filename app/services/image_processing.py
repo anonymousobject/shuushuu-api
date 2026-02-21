@@ -2,7 +2,6 @@
 Image processing utilities for validation, dimension extraction, and thumbnail generation.
 """
 
-import asyncio
 import hashlib
 from datetime import datetime
 from pathlib import Path as FilePath
@@ -29,23 +28,16 @@ async def _update_image_variant_field(image_id: int, field: str, value: int) -> 
         image_id: Image ID to update
         field: Field name ('medium' or 'large')
         value: Value to set (0 or 1)
-    """
-    try:
-        from app.models.image import Images
 
-        async with get_async_session() as db:
-            stmt = update(Images).where(Images.image_id == image_id).values(**{field: value})  # type: ignore[arg-type]
-            await db.execute(stmt)
-            await db.commit()
-    except Exception as e:
-        logger.error(
-            "failed_to_update_variant_field",
-            image_id=image_id,
-            field=field,
-            value=value,
-            error=str(e),
-            error_type=type(e).__name__,
-        )
+    Raises:
+        Exception: Propagates DB errors so the caller (ARQ job) can retry.
+    """
+    from app.models.image import Images
+
+    async with get_async_session() as db:
+        stmt = update(Images).where(Images.image_id == image_id).values(**{field: value})  # type: ignore[arg-type]
+        await db.execute(stmt)
+        await db.commit()
 
 
 def _create_variant(
@@ -57,7 +49,7 @@ def _create_variant(
     height: int,
     size_threshold: int,
     variant_type: str,
-) -> bool:
+) -> bool | None:
     """Create an image variant (medium or large) with size validation.
 
     Args:
@@ -71,7 +63,8 @@ def _create_variant(
         variant_type: Type of variant ('medium' or 'large')
 
     Returns:
-        True if variant was created and kept, False otherwise
+        True if variant was created and kept, False if not needed,
+        None if variant was deleted (larger than original) and DB needs updating.
     """
     # Check if image exceeds threshold
     if width <= size_threshold and height <= size_threshold:
@@ -136,12 +129,8 @@ def _create_variant(
                     original_file_size=original_file_size,
                     variant_file_size=variant_file_size,
                 )
-                # Update database to reflect that variant doesn't exist
-                # Note: asyncio.run() is safe here because this function runs in ARQ worker's
-                # thread pool where no event loop exists. asyncio.run() creates a new
-                # event loop in the thread for this async DB operation.
-                asyncio.run(_update_image_variant_field(image_id, variant_type, 0))
-                return False
+                # Signal caller to update DB (caller is async and can await)
+                return None
 
             logger.info(
                 f"{variant_type}_variant_generated",
@@ -336,7 +325,7 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
 
 def create_medium_variant(
     source_path: FilePath, image_id: int, ext: str, storage_path: str, width: int, height: int
-) -> bool:
+) -> bool | None:
     """Create medium-size variant if image is larger than MEDIUM_EDGE.
 
     Args:
@@ -348,7 +337,8 @@ def create_medium_variant(
         height: Original image height
 
     Returns:
-        True if medium variant was created, False otherwise
+        True if variant was created and kept, False if not needed,
+        None if variant was deleted (larger than original) and DB needs updating.
     """
     return _create_variant(
         source_path=source_path,
@@ -364,7 +354,7 @@ def create_medium_variant(
 
 def create_large_variant(
     source_path: FilePath, image_id: int, ext: str, storage_path: str, width: int, height: int
-) -> bool:
+) -> bool | None:
     """Create large-size variant if image is larger than LARGE_EDGE.
 
     Args:
@@ -376,7 +366,8 @@ def create_large_variant(
         height: Original image height
 
     Returns:
-        True if large variant was created, False otherwise
+        True if variant was created and kept, False if not needed,
+        None if variant was deleted (larger than original) and DB needs updating.
     """
     return _create_variant(
         source_path=source_path,
