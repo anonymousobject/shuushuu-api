@@ -4,7 +4,7 @@
 # Ensure bash is used for all commands (required for read -p in clean target)
 SHELL := /bin/bash
 
-.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-restart clean
+.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-restart prod-deploy clean
 
 # Capture extra arguments for logs commands (e.g., `make dev-logs api`)
 ARGS = $(filter-out $@,$(MAKECMDGOALS))
@@ -37,6 +37,7 @@ help:
 	@echo "  prod-build   Build all production images"
 	@echo "  prod-build-frontend  Rebuild frontend image"
 	@echo "  prod-restart Recreate service(s) (e.g., make prod-restart frontend)"
+	@echo "  prod-deploy  Build and recreate service(s) (e.g., make prod-deploy api frontend)"
 	@echo ""
 	@echo "Other:"
 	@echo "  clean        Stop all and remove volumes (DESTRUCTIVE)"
@@ -109,7 +110,11 @@ prod-build-frontend:
 	$(COMPOSE_PROD) build --no-cache frontend
 
 prod-restart:
-	$(COMPOSE_PROD) up -d $(ARGS)
+	$(COMPOSE_PROD) up -d --force-recreate $(ARGS)
+
+prod-deploy:
+	$(COMPOSE_PROD) build $(ARGS)
+	$(COMPOSE_PROD) up -d --force-recreate $(ARGS)
 
 # Cleanup (removes volumes - use with caution)
 clean:
