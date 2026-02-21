@@ -1324,29 +1324,36 @@ async def apply_tag_suggestions(
         if suggestion.suggestion_id in approved_ids:
             suggestion.accepted = True
 
+            # Resolve alias to canonical tag
+            tag_result = await db.execute(
+                select(Tags).where(Tags.tag_id == suggestion.tag_id)  # type: ignore[arg-type]
+            )
+            tag = tag_result.scalar_one_or_none()
+            resolved_tag_id = tag.alias_of if tag and tag.alias_of else suggestion.tag_id
+
             if suggestion.suggestion_type == 1:  # Add
-                if suggestion.tag_id not in existing_tag_ids:
-                    tag_link = TagLinks(image_id=report.image_id, tag_id=suggestion.tag_id)
+                if resolved_tag_id not in existing_tag_ids:
+                    tag_link = TagLinks(image_id=report.image_id, tag_id=resolved_tag_id)
                     db.add(tag_link)
                     db.add(
                         TagHistory(
                             image_id=report.image_id,
-                            tag_id=suggestion.tag_id,
+                            tag_id=resolved_tag_id,
                             action="a",
                             user_id=current_user.user_id,
                         )
                     )
-                    applied_tags.append(suggestion.tag_id)
-                    existing_tag_ids.add(suggestion.tag_id)
+                    applied_tags.append(resolved_tag_id)
+                    existing_tag_ids.add(resolved_tag_id)
                 else:
-                    already_present.append(suggestion.tag_id)
+                    already_present.append(resolved_tag_id)
 
             elif suggestion.suggestion_type == 2:  # Remove
-                if suggestion.tag_id in existing_tag_ids:
+                if resolved_tag_id in existing_tag_ids:
                     db.add(
                         TagHistory(
                             image_id=report.image_id,
-                            tag_id=suggestion.tag_id,
+                            tag_id=resolved_tag_id,
                             action="r",
                             user_id=current_user.user_id,
                         )
@@ -1354,13 +1361,13 @@ async def apply_tag_suggestions(
                     await db.execute(
                         delete(TagLinks).where(
                             TagLinks.image_id == report.image_id,  # type: ignore[arg-type]
-                            TagLinks.tag_id == suggestion.tag_id,  # type: ignore[arg-type]
+                            TagLinks.tag_id == resolved_tag_id,  # type: ignore[arg-type]
                         )
                     )
-                    removed_tags.append(suggestion.tag_id)
-                    existing_tag_ids.discard(suggestion.tag_id)
+                    removed_tags.append(resolved_tag_id)
+                    existing_tag_ids.discard(resolved_tag_id)
                 else:
-                    already_absent.append(suggestion.tag_id)
+                    already_absent.append(resolved_tag_id)
         else:
             suggestion.accepted = False
 

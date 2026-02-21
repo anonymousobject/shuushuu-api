@@ -119,9 +119,12 @@ async def link_tags_to_image(
             # Skip invalid tags silently (or raise error if preferred)
             continue
 
+        # Resolve alias to canonical tag
+        resolved_id = tag.alias_of if tag.alias_of else tag_id
+
         # Create tag link (database trigger automatically updates tags.usage_count)
         tag_link = TagLinks(
-            tag_id=tag_id,
+            tag_id=resolved_id,
             image_id=image_id,
             user_id=user_id,
         )
