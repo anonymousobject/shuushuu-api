@@ -430,6 +430,54 @@ class TestGetCurrentUserProfile:
         assert response.status_code == 200
         data = response.json()
         assert data["username"] == "currentuser"
+        assert data["unread_pm_count"] == 0
+
+    async def test_get_current_user_profile_unread_pm_count(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that /users/me includes unread_pm_count from privmsgs."""
+        from app.models.privmsg import Privmsgs
+
+        user = Users(
+            username="pmcountuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pmcount@example.com",
+            active=1,
+        )
+        sender = Users(
+            username="pmsender",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pmsender@example.com",
+            active=1,
+        )
+        db_session.add_all([user, sender])
+        await db_session.commit()
+        await db_session.refresh(user)
+        await db_session.refresh(sender)
+
+        # Add 2 unread + 1 read + 1 deleted PM
+        db_session.add(Privmsgs(from_user_id=sender.user_id, to_user_id=user.user_id, subject="Unread 1", viewed=0, to_del=0))
+        db_session.add(Privmsgs(from_user_id=sender.user_id, to_user_id=user.user_id, subject="Unread 2", viewed=0, to_del=0))
+        db_session.add(Privmsgs(from_user_id=sender.user_id, to_user_id=user.user_id, subject="Read", viewed=1, to_del=0))
+        db_session.add(Privmsgs(from_user_id=sender.user_id, to_user_id=user.user_id, subject="Deleted", viewed=0, to_del=1))
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "pmcountuser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["unread_pm_count"] == 2
 
     async def test_get_current_user_profile_unauthenticated(self, client: AsyncClient):
         """Test getting current user profile without authentication."""

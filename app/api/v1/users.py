@@ -39,7 +39,7 @@ from app.core.permission_cache import get_cached_user_permissions
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.core.security import get_password_hash, validate_password_strength
-from app.models import Favorites, Images, TagLinks, Users
+from app.models import Favorites, Images, Privmsgs, TagLinks, Users
 from app.models.permissions import UserGroups
 from app.models.user_suspension import UserSuspensions
 from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
@@ -168,9 +168,22 @@ async def get_current_user_profile(
     # Fetch user permissions (cached)
     permissions = await get_cached_user_permissions(db, redis_client, current_user_id)
 
-    # Convert to response model and add permissions
+    # Count unread PMs
+    unread_result = await db.execute(
+        select(func.count())
+        .select_from(Privmsgs)
+        .where(
+            Privmsgs.to_user_id == current_user_id,  # type: ignore[arg-type]
+            Privmsgs.viewed == 0,  # type: ignore[arg-type]
+            Privmsgs.to_del == 0,  # type: ignore[arg-type]
+        )
+    )
+    unread_pm_count = unread_result.scalar() or 0
+
+    # Convert to response model and add computed fields
     response = UserPrivateResponse.model_validate(user)
     response.permissions = sorted(permissions)
+    response.unread_pm_count = unread_pm_count
     return response
 
 

@@ -189,6 +189,7 @@ class UserPrivateResponse(UserResponse):
     permissions: list[
         str
     ] = []  # List of permission strings (e.g., ["image_tag_add", "tag_create"])
+    unread_pm_count: int = 0  # Number of unread private messages
 
     # Override maximgperday from UserResponse - always include for self
     maximgperday: int  # Max images allowed to upload per day
