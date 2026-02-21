@@ -25,6 +25,11 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        exclude: ^docker-compose(\.\w+)?\.ya?ml$
+      - id: check-yaml
+        name: check-docker-compose-yaml
+        args: [--unsafe]
+        files: ^docker-compose(\.\w+)?\.ya?ml$
       - id: check-added-large-files
         args: [--maxkb=1000]
       # - id: check-json
