@@ -2013,6 +2013,60 @@ class TestUpdateTag:
         assert response.status_code == 409
         assert "already exists" in response.json()["detail"].lower()
 
+    async def test_update_tag_allows_capitalization_fix(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that renaming a tag to fix capitalization is allowed."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admincapfix",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincapfix@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create tag with lowercase title
+        tag = Tags(title="some tag", desc="", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincapfix", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Fix capitalization
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json={"title": "Some Tag", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["title"] == "Some Tag"
+
 
 @pytest.mark.api
 class TestDeleteTag:
