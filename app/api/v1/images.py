@@ -1717,7 +1717,7 @@ async def upload_image(
         content_type=file.content_type,
     )
 
-    # Check upload rate limit and daily limit (skip for admins/moderators)
+    # Check upload rate limit and daily limit (skip for admins)
     if not current_user.admin:
         await check_upload_rate_limit(current_user.id, db, maximgperday=current_user.maximgperday)
 

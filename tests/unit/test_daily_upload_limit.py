@@ -127,6 +127,42 @@ class TestGetUploadsToday:
         assert await get_uploads_today(user1.user_id, db_session) == 2
         assert await get_uploads_today(user2.user_id, db_session) == 1
 
+    async def test_ignores_yesterdays_uploads(self, db_session: AsyncSession):
+        """Uploads from yesterday should not be counted toward today's total."""
+        user = Users(
+            username="yesterdayuploader",
+            password="hashed",
+            password_type="bcrypt",
+            salt="saltsalt12345678",
+            email="yesterdayuploader@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        yesterday = datetime.now() - timedelta(days=1)
+        for i in range(2):
+            db_session.add(
+                Images(
+                    filename=f"yesterday-{i}",
+                    ext="jpg",
+                    original_filename=f"yesterday-{i}.jpg",
+                    md5_hash=f"yesterdayhash{i}",
+                    filesize=1000,
+                    width=100,
+                    height=100,
+                    user_id=user.user_id,
+                    status=1,
+                    locked=0,
+                    date_added=yesterday,
+                )
+            )
+        await db_session.commit()
+
+        count = await get_uploads_today(user.user_id, db_session)
+        assert count == 0
+
 
 def _make_image(user_id: int, suffix: str) -> Images:
     """Create an Images instance with today's date but far enough back to avoid rate limit."""
@@ -222,3 +258,4 @@ class TestDailyLimitEnforcement:
         with pytest.raises(HTTPException) as exc_info:
             await check_upload_rate_limit(user.user_id, db_session, maximgperday=2)
         assert exc_info.value.status_code == 429
+        assert "daily upload limit" in exc_info.value.detail.lower()

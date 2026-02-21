@@ -2,7 +2,7 @@
 Image upload helpers for rate limiting, file saving, and tag linking.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path as FilePath
 
 from fastapi import HTTPException, UploadFile, status
@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 async def get_uploads_today(user_id: int, db: AsyncSession) -> int:
     """Count how many images a user has uploaded today."""
-    start_of_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
     result = await db.execute(
         select(func.count())
         .select_from(Images)
@@ -38,7 +38,7 @@ async def check_upload_rate_limit(
 
     Raises HTTPException if user uploaded too recently or has reached
     their daily upload limit.
-    Moderators/admins bypass this check.
+    Any bypass for admins or moderators must be implemented by the caller.
     """
     # Check daily upload limit
     if maximgperday is not None:
@@ -59,7 +59,7 @@ async def check_upload_rate_limit(
     last_upload = result.scalar_one_or_none()
 
     if last_upload:
-        elapsed = (datetime.now() - last_upload).total_seconds()
+        elapsed = (datetime.now(UTC).replace(tzinfo=None) - last_upload).total_seconds()
         if elapsed < settings.UPLOAD_DELAY_SECONDS:
             wait_time = int(settings.UPLOAD_DELAY_SECONDS - elapsed)
             raise HTTPException(
