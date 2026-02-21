@@ -4,8 +4,11 @@ Rating calculation service.
 Provides utilities for calculating and updating image rating statistics.
 """
 
+import json
 import logging
+from dataclasses import dataclass
 
+import redis.asyncio as redis
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,8 +16,70 @@ from app.models import ImageRatings, Images
 
 logger = logging.getLogger(__name__)
 
+# Cache key and TTL for global rating stats (C and m values for Bayesian calc).
+# These change negligibly per individual rating so a 5-minute TTL is fine.
+_GLOBAL_RATING_STATS_KEY = "rating:global_stats"
+_GLOBAL_RATING_STATS_TTL = 300
 
-async def recalculate_image_ratings(db: AsyncSession, image_id: int) -> None:
+
+@dataclass
+class RatingStats:
+    """Computed rating statistics for an image."""
+
+    average_rating: float
+    bayesian_rating: float
+    num_ratings: int
+
+
+async def _get_global_rating_stats(
+    db: AsyncSession,
+    redis_client: redis.Redis | None = None,  # type: ignore[type-arg]
+) -> tuple[float, float]:
+    """
+    Get global rating statistics (C and m) for Bayesian calculation.
+
+    Uses Redis cache when available to avoid full table scans on image_ratings.
+
+    Returns:
+        Tuple of (avg_ratings_per_image, global_avg_rating)
+    """
+    # Try cache first
+    if redis_client is not None:
+        cached = await redis_client.get(_GLOBAL_RATING_STATS_KEY)
+        if cached:
+            try:
+                data = json.loads(cached)
+                return float(data["c"]), float(data["m"])
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+    # Cache miss or no Redis — query database
+    avg_ratings_per_image_result = await db.execute(
+        select(
+            func.count(ImageRatings.user_id) / func.count(func.distinct(ImageRatings.image_id))  # type: ignore[arg-type]
+        )
+    )
+    avg_ratings_per_image = float(avg_ratings_per_image_result.scalar() or 10.0)
+
+    global_avg_rating_result = await db.execute(select(func.avg(ImageRatings.rating)))
+    global_avg_rating = float(global_avg_rating_result.scalar() or 5.0)
+
+    # Store in cache
+    if redis_client is not None:
+        await redis_client.setex(
+            _GLOBAL_RATING_STATS_KEY,
+            _GLOBAL_RATING_STATS_TTL,
+            json.dumps({"c": avg_ratings_per_image, "m": global_avg_rating}),
+        )
+
+    return avg_ratings_per_image, global_avg_rating
+
+
+async def recalculate_image_ratings(
+    db: AsyncSession,
+    image_id: int,
+    redis_client: redis.Redis | None = None,  # type: ignore[type-arg]
+) -> RatingStats:
     """
     Recalculate and update rating statistics for an image.
 
@@ -35,19 +100,9 @@ async def recalculate_image_ratings(db: AsyncSession, image_id: int) -> None:
     Args:
         db: Database session
         image_id: ID of the image to recalculate ratings for
+        redis_client: Optional Redis client for caching global stats
     """
-    # Get global statistics for Bayesian calculation
-    # C: Average number of ratings per image (confidence factor)
-    avg_ratings_per_image_result = await db.execute(
-        select(
-            func.count(ImageRatings.user_id) / func.count(func.distinct(ImageRatings.image_id))  # type: ignore[arg-type]
-        )
-    )
-    avg_ratings_per_image = float(avg_ratings_per_image_result.scalar() or 10.0)
-
-    # m: Global average rating across all ratings
-    global_avg_rating_result = await db.execute(select(func.avg(ImageRatings.rating)))
-    global_avg_rating = float(global_avg_rating_result.scalar() or 5.0)
+    avg_ratings_per_image, global_avg_rating = await _get_global_rating_stats(db, redis_client)
 
     # Get rating statistics for this specific image
     stats_result = await db.execute(
@@ -74,16 +129,24 @@ async def recalculate_image_ratings(db: AsyncSession, image_id: int) -> None:
     else:
         bayesian = 0.0
 
+    stats = RatingStats(
+        average_rating=float(avg_rating or 0),
+        bayesian_rating=bayesian,
+        num_ratings=count or 0,
+    )
+
     # Update image statistics
     await db.execute(
         update(Images)
         .where(Images.image_id == image_id)  # type: ignore[arg-type]
         .values(
-            num_ratings=count or 0,
-            rating=float(avg_rating or 0),
-            bayesian_rating=bayesian,
+            num_ratings=stats.num_ratings,
+            rating=stats.average_rating,
+            bayesian_rating=stats.bayesian_rating,
         )
     )
+
+    return stats
 
 
 async def schedule_rating_recalculation(image_id: int) -> None:
