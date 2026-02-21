@@ -2008,7 +2008,7 @@ class TestUpdateTag:
         response = await client.put(
             f"/api/v1/tags/{tag_to_rename.tag_id}",
             json={"title": "existing tag", "type": TagType.THEME},
-        headers={"Authorization": f"Bearer {access_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 409
         assert "already exists" in response.json()["detail"].lower()
