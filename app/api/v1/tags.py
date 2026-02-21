@@ -1020,7 +1020,7 @@ async def create_tag(
     existing_tag_result = await db.execute(
         select(Tags).where(Tags.title == tag_data.title).where(Tags.type == tag_data.type)  # type: ignore[arg-type]
     )
-    if existing_tag_result.scalar_one_or_none():
+    if existing_tag_result.first():
         raise HTTPException(status_code=409, detail="Tag already exists")
 
     # if inherited_from is set, ensure that tag exists
