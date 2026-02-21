@@ -73,6 +73,29 @@ class PasswordChangeRequest(BaseModel):
         return v
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Request schema for forgot password."""
+
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Request schema for password reset with token."""
+
+    email: EmailStr
+    token: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=255)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        """Validate new password strength."""
+        is_valid, error_message = validate_password_strength(v)
+        if not is_valid:
+            raise ValueError(error_message)
+        return v
+
+
 class MessageResponse(BaseModel):
     """Generic message response."""
 
