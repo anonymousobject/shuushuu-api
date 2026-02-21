@@ -1718,3 +1718,86 @@ class TestAdminApplyTagSuggestions:
         )
 
         assert response.status_code == 403
+
+    async def test_apply_tag_suggestions_creates_history_entries(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that applying tag suggestions creates TagHistory entries for auditing."""
+        from sqlalchemy import select as sql_select
+
+        from app.models.tag_history import TagHistory
+
+        admin, password = await create_auth_user(db_session, username="historytest1", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=3)
+        # Add first tag so we can test removal
+        await add_tag_to_image(db_session, image.image_id, tags[0].tag_id)
+        token = await login_user(client, admin.username, password)
+
+        # Create report with add and remove suggestions
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestions = []
+        # Remove tags[0]
+        s = ImageReportTagSuggestions(
+            report_id=report.report_id,
+            tag_id=tags[0].tag_id,
+            suggestion_type=2,  # remove
+        )
+        db_session.add(s)
+        suggestions.append(s)
+        # Add tags[1] and tags[2]
+        for tag in tags[1:3]:
+            s = ImageReportTagSuggestions(
+                report_id=report.report_id,
+                tag_id=tag.tag_id,
+                suggestion_type=1,  # add
+            )
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": [s.suggestion_id for s in suggestions]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["removed_tags"]) == 1
+        assert len(data["applied_tags"]) == 2
+
+        # Verify TagHistory entries were created
+        history_result = await db_session.execute(
+            sql_select(TagHistory).where(TagHistory.image_id == image.image_id)
+        )
+        history_entries = history_result.scalars().all()
+
+        # Should have 3 entries: 1 removal + 2 additions
+        assert len(history_entries) == 3
+
+        # Check removal entry
+        removals = [h for h in history_entries if h.action == "r"]
+        assert len(removals) == 1
+        assert removals[0].tag_id == tags[0].tag_id
+        assert removals[0].user_id == admin.user_id
+
+        # Check addition entries
+        additions = [h for h in history_entries if h.action == "a"]
+        assert len(additions) == 2
+        added_tag_ids = {h.tag_id for h in additions}
+        assert tags[1].tag_id in added_tag_ids
+        assert tags[2].tag_id in added_tag_ids
+        for h in additions:
+            assert h.user_id == admin.user_id
