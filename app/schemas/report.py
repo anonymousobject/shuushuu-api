@@ -230,6 +230,8 @@ class ReviewResponse(BaseModel):
     source_report_reason: str | None = None
     initiated_by: int | None
     initiated_by_username: str | None = None
+    closed_by: int | None = None
+    closed_by_username: str | None = None
     review_type: int
     review_type_label: str | None = None
     deadline: UTCDatetime

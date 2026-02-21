@@ -20,6 +20,7 @@ import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.config import (
     AdminActionType,
@@ -1578,15 +1579,18 @@ async def list_reviews(
 
     Requires REVIEW_VIEW permission.
     """
+    ClosedByUser = aliased(Users)
     query = (
         select(  # type: ignore[call-overload]
             ImageReviews,
             Users.username,
             ImageReports.category,
             ImageReports.reason_text,
+            ClosedByUser.username.label("closed_by_username"),  # type: ignore[attr-defined]
         )
         .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
         .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
+        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)  # type: ignore[arg-type]
     )
 
     if status_filter is not None:
@@ -1606,7 +1610,7 @@ async def list_reviews(
 
     # Build responses with vote counts
     items = []
-    for review, initiated_by_username, report_category, report_reason in rows:
+    for review, initiated_by_username, report_category, report_reason, closed_by_username in rows:
         # Get vote counts
         vote_result = await db.execute(
             select(
@@ -1621,6 +1625,7 @@ async def list_reviews(
 
         response = ReviewResponse.model_validate(review)
         response.initiated_by_username = initiated_by_username
+        response.closed_by_username = closed_by_username
         response.source_report_category = report_category
         if report_category is not None:
             response.source_report_category_label = ReportCategory.LABELS.get(
@@ -1651,15 +1656,18 @@ async def get_review(
 
     Requires REVIEW_VIEW permission.
     """
+    ClosedByUser = aliased(Users)
     result = await db.execute(
         select(  # type: ignore[call-overload]
             ImageReviews,
             Users.username,
             ImageReports.category,
             ImageReports.reason_text,
+            ClosedByUser.username.label("closed_by_username"),  # type: ignore[attr-defined]
         )
         .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
         .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
+        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)  # type: ignore[arg-type]
         .where(ImageReviews.review_id == review_id)
     )
     row = result.one_or_none()
@@ -1667,12 +1675,13 @@ async def get_review(
     if not row:
         raise HTTPException(status_code=404, detail="Review not found")
 
-    review, initiated_by_username, report_category, report_reason = row
+    review, initiated_by_username, report_category, report_reason, closed_by_username = row
 
     # Get votes with usernames
+    VoteUser = aliased(Users)
     votes_result = await db.execute(
-        select(ReviewVotes, Users.username)  # type: ignore[call-overload]
-        .outerjoin(Users, ReviewVotes.user_id == Users.user_id)
+        select(ReviewVotes, VoteUser.username)  # type: ignore[call-overload]
+        .outerjoin(VoteUser, ReviewVotes.user_id == VoteUser.user_id)  # type: ignore[arg-type]
         .where(ReviewVotes.review_id == review_id)
         .order_by(ReviewVotes.created_at)
     )
@@ -1692,6 +1701,7 @@ async def get_review(
 
     response = ReviewDetailResponse.model_validate(review)
     response.initiated_by_username = initiated_by_username
+    response.closed_by_username = closed_by_username
     response.source_report_category = report_category
     if report_category is not None:
         response.source_report_category_label = ReportCategory.LABELS.get(
@@ -1901,6 +1911,7 @@ async def close_review(
     review.status = ReviewStatus.CLOSED
     review.outcome = close_data.outcome
     review.closed_at = datetime.now(UTC)
+    review.closed_by = current_user.user_id
 
     # Apply outcome to image
     if close_data.outcome == ReviewOutcome.KEEP:
@@ -1930,6 +1941,7 @@ async def close_review(
     await db.refresh(review)
 
     response = ReviewResponse.model_validate(review)
+    response.closed_by_username = current_user.username
     response.vote_count = vote_count
     response.keep_votes = keep_votes
     response.remove_votes = remove_votes

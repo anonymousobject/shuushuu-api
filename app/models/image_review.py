@@ -48,6 +48,9 @@ class ImageReviewBase(SQLModel):
     # Whether the deadline has been extended
     extension_used: int = Field(default=0)
 
+    # Admin who closed the review early (NULL = automatic/deadline close)
+    closed_by: int | None = Field(default=None)
+
 
 class ImageReviews(ImageReviewBase, table=True):
     """
@@ -74,6 +77,7 @@ class ImageReviews(ImageReviewBase, table=True):
         Index("fk_image_reviews_image_id", "image_id"),
         Index("fk_image_reviews_source_report_id", "source_report_id"),
         Index("fk_image_reviews_initiated_by", "initiated_by"),
+        Index("fk_image_reviews_closed_by", "closed_by"),
         Index("idx_image_reviews_status", "status"),
         Index("idx_image_reviews_deadline", "deadline"),
     )
@@ -102,6 +106,16 @@ class ImageReviews(ImageReviewBase, table=True):
 
     # Admin who started the review
     initiated_by: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("users.user_id", ondelete="SET NULL", onupdate="CASCADE"),
+            nullable=True,
+        ),
+    )
+
+    # Admin who closed the review early (overrides base with FK)
+    closed_by: int | None = Field(
         default=None,
         sa_column=Column(
             Integer,
