@@ -207,6 +207,69 @@ If you didn't create an account, you can safely ignore this email.
     return await send_email(to=user.email, subject=subject, body=body, html=html)
 
 
+async def send_password_reset_email(user: Users, token: str) -> bool:
+    """
+    Send password reset link to user.
+
+    Args:
+        user: User object
+        token: Raw reset token (not hashed)
+
+    Returns:
+        True if email sent successfully, False otherwise
+    """
+    from urllib.parse import quote
+
+    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}&email={quote(user.email)}"
+
+    subject = "Reset your password"
+    body = f"""Hi {user.username},
+
+We received a request to reset your password. Click the link below:
+
+{reset_url}
+
+This link will expire in 1 hour.
+
+If you didn't request this, you can safely ignore this email. Your password will not change.
+"""
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; }}
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .button {{
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: #4CAF50;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Reset Your Password</h2>
+        <p>Hi {user.username},</p>
+        <p>We received a request to reset your password.</p>
+        <p><a href="{reset_url}" class="button">Reset Password</a></p>
+        <p>Or copy this link into your browser:</p>
+        <p><code>{reset_url}</code></p>
+        <p><small>This link will expire in 1 hour.</small></p>
+        <p><small>If you didn't request this, you can safely ignore this email.</small></p>
+    </div>
+</body>
+</html>
+"""
+
+    return await send_email(to=user.email, subject=subject, body=body, html=html)
+
+
 async def send_pm_notification_email(
     recipient: Users,
     sender_username: str,
