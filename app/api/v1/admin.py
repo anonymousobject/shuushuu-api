@@ -50,6 +50,7 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPe
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
 from app.models.tag import Tags
+from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.models.user_suspension import UserSuspensions
@@ -1327,6 +1328,14 @@ async def apply_tag_suggestions(
                 if suggestion.tag_id not in existing_tag_ids:
                     tag_link = TagLinks(image_id=report.image_id, tag_id=suggestion.tag_id)
                     db.add(tag_link)
+                    db.add(
+                        TagHistory(
+                            image_id=report.image_id,
+                            tag_id=suggestion.tag_id,
+                            action="a",
+                            user_id=current_user.user_id,
+                        )
+                    )
                     applied_tags.append(suggestion.tag_id)
                     existing_tag_ids.add(suggestion.tag_id)
                 else:
@@ -1334,6 +1343,14 @@ async def apply_tag_suggestions(
 
             elif suggestion.suggestion_type == 2:  # Remove
                 if suggestion.tag_id in existing_tag_ids:
+                    db.add(
+                        TagHistory(
+                            image_id=report.image_id,
+                            tag_id=suggestion.tag_id,
+                            action="r",
+                            user_id=current_user.user_id,
+                        )
+                    )
                     await db.execute(
                         delete(TagLinks).where(
                             TagLinks.image_id == report.image_id,  # type: ignore[arg-type]
