@@ -857,3 +857,194 @@ class TestForgotPassword:
         # Token should NOT be set for inactive user
         await db_session.refresh(user)
         assert user.password_reset_token is None
+
+
+@pytest.mark.api
+class TestResetPassword:
+    """Tests for POST /api/v1/auth/reset-password endpoint."""
+
+    async def _create_user_with_reset_token(self, db_session: AsyncSession) -> tuple[Users, str]:
+        """Helper: create a user and set a valid reset token. Returns (user, raw_token)."""
+        import hashlib
+        import secrets
+        from datetime import UTC, datetime, timedelta
+
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        user = Users(
+            username="resetuser",
+            password=get_password_hash("OldPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="reset@example.com",
+            active=1,
+            password_reset_token=token_hash,
+            password_reset_sent_at=datetime.now(UTC),
+            password_reset_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+        return user, raw_token
+
+    async def test_reset_password_success(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test successful password reset."""
+        user, raw_token = await self._create_user_with_reset_token(db_session)
+
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "reset@example.com",
+                "token": raw_token,
+                "new_password": "NewPassword456!",
+            },
+        )
+        assert response.status_code == 200
+
+        # Verify token fields are cleared
+        await db_session.refresh(user)
+        assert user.password_reset_token is None
+        assert user.password_reset_expires_at is None
+
+        # Verify can login with new password
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "resetuser", "password": "NewPassword456!"},
+        )
+        assert login_response.status_code == 200
+
+        # Verify old password no longer works
+        old_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "resetuser", "password": "OldPassword123!"},
+        )
+        assert old_login.status_code == 401
+
+    async def test_reset_password_invalid_token(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test reset with wrong token returns 400."""
+        await self._create_user_with_reset_token(db_session)
+
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "reset@example.com",
+                "token": "wrong_token",
+                "new_password": "NewPassword456!",
+            },
+        )
+        assert response.status_code == 400
+
+    async def test_reset_password_expired_token(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test reset with expired token returns 400."""
+        import hashlib
+        import secrets
+        from datetime import UTC, datetime, timedelta
+
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        user = Users(
+            username="expireduser",
+            password=get_password_hash("OldPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="expired@example.com",
+            active=1,
+            password_reset_token=token_hash,
+            password_reset_sent_at=datetime.now(UTC) - timedelta(hours=2),
+            password_reset_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "expired@example.com",
+                "token": raw_token,
+                "new_password": "NewPassword456!",
+            },
+        )
+        assert response.status_code == 400
+        assert "expired" in response.json()["detail"].lower()
+
+    async def test_reset_password_wrong_email(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test reset with wrong email returns 400."""
+        _user, raw_token = await self._create_user_with_reset_token(db_session)
+
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "wrong@example.com",
+                "token": raw_token,
+                "new_password": "NewPassword456!",
+            },
+        )
+        assert response.status_code == 400
+
+    async def test_reset_password_weak_password(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test reset with weak password returns 422 (schema validation)."""
+        _user, raw_token = await self._create_user_with_reset_token(db_session)
+
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "reset@example.com",
+                "token": raw_token,
+                "new_password": "weak",
+            },
+        )
+        assert response.status_code == 422
+
+    async def test_reset_password_revokes_sessions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that password reset revokes all refresh tokens."""
+        user, raw_token = await self._create_user_with_reset_token(db_session)
+
+        # Login to create a refresh token
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "resetuser", "password": "OldPassword123!"},
+        )
+        assert login_response.status_code == 200
+
+        # Verify refresh token exists
+        from sqlalchemy import func as sa_func
+
+        count_result = await db_session.execute(
+            select(sa_func.count()).select_from(RefreshTokens).where(
+                RefreshTokens.user_id == user.user_id
+            )
+        )
+        assert count_result.scalar() > 0
+
+        # Reset password
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "reset@example.com",
+                "token": raw_token,
+                "new_password": "NewPassword456!",
+            },
+        )
+        assert response.status_code == 200
+
+        # Verify refresh tokens are deleted
+        count_result = await db_session.execute(
+            select(sa_func.count()).select_from(RefreshTokens).where(
+                RefreshTokens.user_id == user.user_id
+            )
+        )
+        assert count_result.scalar() == 0

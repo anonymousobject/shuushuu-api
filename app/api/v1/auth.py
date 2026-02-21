@@ -39,6 +39,7 @@ from app.schemas.auth import (
     LoginRequest,
     MessageResponse,
     PasswordChangeRequest,
+    ResetPasswordRequest,
     TokenResponse,
 )
 from app.tasks.queue import enqueue_job
@@ -774,3 +775,73 @@ async def forgot_password(
     )
 
     return MessageResponse(message=generic_message)
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+async def reset_password(
+    request_data: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Reset password using email token from forgot-password flow.
+
+    Validates token, updates password, and revokes all sessions.
+    """
+    # Look up user by email
+    result = await db.execute(
+        select(Users).where(Users.email == request_data.email)  # type: ignore[arg-type]
+    )
+    user = result.scalar_one_or_none()
+
+    if not user or not user.password_reset_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    # Verify token matches
+    token_hash = hashlib.sha256(request_data.token.encode()).hexdigest()
+    if user.password_reset_token != token_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    # Check expiration
+    if not user.password_reset_expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    # Handle timezone-aware vs naive datetime comparison (same pattern as forgot-password)
+    expires_at = user.password_reset_expires_at
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    if expires_at < datetime.now(UTC).replace(tzinfo=None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset token has expired. Please request a new one.",
+        )
+
+    # Update password
+    user.password = get_password_hash(request_data.new_password)
+    user.password_type = "bcrypt"
+
+    # Clear reset fields
+    user.password_reset_token = None
+    user.password_reset_sent_at = None
+    user.password_reset_expires_at = None
+
+    # Revoke all refresh tokens
+    await db.execute(
+        delete(RefreshTokens).where(RefreshTokens.user_id == user.user_id)  # type: ignore[arg-type]
+    )
+
+    await db.commit()
+
+    logger.info("password_reset_complete", user_id=user.user_id, username=user.username)
+
+    return MessageResponse(
+        message="Password reset successfully. Please login with your new password."
+    )
