@@ -332,7 +332,7 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
 
 def create_medium_variant(
     source_path: FilePath, image_id: int, ext: str, storage_path: str, width: int, height: int
-) -> bool:
+) -> bool | None:
     """Create medium-size variant if image is larger than MEDIUM_EDGE.
 
     Args:
@@ -344,7 +344,8 @@ def create_medium_variant(
         height: Original image height
 
     Returns:
-        True if medium variant was created, False otherwise
+        True if variant was created and kept, False if not needed,
+        None if variant was deleted (larger than original) and DB needs updating.
     """
     return _create_variant(
         source_path=source_path,
@@ -360,7 +361,7 @@ def create_medium_variant(
 
 def create_large_variant(
     source_path: FilePath, image_id: int, ext: str, storage_path: str, width: int, height: int
-) -> bool:
+) -> bool | None:
     """Create large-size variant if image is larger than LARGE_EDGE.
 
     Args:
@@ -372,7 +373,8 @@ def create_large_variant(
         height: Original image height
 
     Returns:
-        True if large variant was created, False otherwise
+        True if variant was created and kept, False if not needed,
+        None if variant was deleted (larger than original) and DB needs updating.
     """
     return _create_variant(
         source_path=source_path,
