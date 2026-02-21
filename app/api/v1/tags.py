@@ -326,10 +326,11 @@ async def list_tags(
             # Additionally, strip special fulltext boolean operators from terms to prevent
             # unexpected behavior (e.g., "C++" becoming "+C++*" with extra operators).
             search_terms = search.split()
-            # Sanitize and tokenize terms to match MySQL/MariaDB fulltext behavior.
-            # First strip boolean operators, then split on word delimiters (hyphens,
-            # periods, etc.) the same way MySQL does. This ensures "deep-blue" becomes
-            # tokens ["deep", "blue"] matching how the indexed data is tokenized.
+            # Tokenize and sanitize terms to match MySQL/MariaDB fulltext behavior.
+            # First split on word delimiters (hyphens, periods, etc.) the same way
+            # MySQL does, then strip boolean operators from each token. This ensures
+            # "deep-blue" becomes tokens ["deep", "blue"] matching how the indexed
+            # data is tokenized.
             #
             # Filter out stopwords and tokens below minimum size to prevent query
             # failures (required stopwords cause the entire BOOLEAN MODE query to fail).
