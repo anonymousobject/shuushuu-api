@@ -3123,3 +3123,66 @@ class TestBookmarkPage:
         """Bookmark page endpoint requires authentication."""
         response = await client.get("/api/v1/images/bookmark/page")
         assert response.status_code == 401
+
+
+@pytest.mark.api
+class TestRateImage:
+    """Tests for POST /api/v1/images/{image_id}/rating endpoint."""
+
+    async def test_rate_returns_computed_stats(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Rating response includes average_rating, bayesian_rating, num_ratings."""
+        from app.core.security import create_access_token
+
+        user = await db_session.get(Users, 1)
+        user.active = 1
+
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        token = create_access_token(image.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/rating?rating=8",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["average_rating"] == 8.0
+        assert data["num_ratings"] == 1
+        assert "bayesian_rating" in data
+        assert isinstance(data["bayesian_rating"], float)
+
+    async def test_rate_update_recalculates(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Re-rating updates the computed stats."""
+        from app.core.security import create_access_token
+
+        user = await db_session.get(Users, 1)
+        user.active = 1
+
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        token = create_access_token(image.user_id)
+
+        # First rating
+        await client.post(
+            f"/api/v1/images/{image.image_id}/rating?rating=6",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        # Update rating
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/rating?rating=10",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["average_rating"] == 10.0
+        assert data["num_ratings"] == 1

@@ -92,7 +92,7 @@ from app.schemas.user import UserListResponse, UserResponse
 from app.services.image_processing import get_image_dimensions
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
-from app.services.rating import schedule_rating_recalculation
+from app.services.rating import recalculate_image_ratings
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
 
@@ -1478,18 +1478,20 @@ async def rate_image(
     rating: Annotated[int, Query(ge=1, le=10, description="Rating value (1-10)")],
     current_user: Annotated[Users, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+) -> dict[str, str | float | int]:
     """
     Rate an image (1-10 scale).
 
     Users can rate any image once. If they rate again, their previous rating is updated.
+    Returns the recalculated rating statistics for immediate UI update.
 
     Args:
         image_id: The image to rate
         rating: Rating value from 1 to 10
 
     Returns:
-        Success message indicating if rating was created or updated
+        Message and updated rating stats (average_rating, bayesian_rating, num_ratings)
     """
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
@@ -1521,13 +1523,19 @@ async def rate_image(
         db.add(new_rating)
         message = "Rating added successfully"
 
-    # Commit the rating first
+    # Flush so the recalculation query sees the new/updated rating
+    await db.flush()
+
+    # Recalculate and persist updated stats (global stats cached in Redis)
+    stats = await recalculate_image_ratings(db, image_id, redis_client)
     await db.commit()
 
-    # Schedule background recalculation (non-blocking)
-    await schedule_rating_recalculation(image_id)
-
-    return {"message": message}
+    return {
+        "message": message,
+        "average_rating": stats.average_rating,
+        "bayesian_rating": stats.bayesian_rating,
+        "num_ratings": stats.num_ratings,
+    }
 
 
 @router.post("/{image_id}/favorite", response_model=None)
