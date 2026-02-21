@@ -89,6 +89,7 @@ class Users(UserBase, table=True):
         Index("fk_bookmark", "bookmark"),
         Index("username", "username", unique=True),
         Index("idx_email_verification_token", "email_verification_token"),
+        Index("idx_password_reset_token", "password_reset_token"),
         Index("idx_user_posts", "posts"),
         Index("idx_user_image_posts", "image_posts"),
         Index("idx_user_favorites", "favorites"),
@@ -139,6 +140,11 @@ class Users(UserBase, table=True):
     email_verification_token: str | None = Field(default=None, max_length=64)
     email_verification_sent_at: datetime | None = Field(default=None)
     email_verification_expires_at: datetime | None = Field(default=None)
+
+    # Password reset
+    password_reset_token: str | None = Field(default=None, max_length=64)
+    password_reset_sent_at: datetime | None = Field(default=None)
+    password_reset_expires_at: datetime | None = Field(default=None)
 
     # User preferences (private)
     email_pm_pref: int = Field(default=1)

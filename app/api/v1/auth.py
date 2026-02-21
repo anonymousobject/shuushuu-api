@@ -9,6 +9,7 @@ This module provides endpoints for:
 """
 
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -35,9 +36,11 @@ from app.core.security import (
 from app.models.refresh_token import RefreshTokens
 from app.models.user import Users
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     LoginRequest,
     MessageResponse,
     PasswordChangeRequest,
+    ResetPasswordRequest,
     TokenResponse,
 )
 from app.tasks.queue import enqueue_job
@@ -717,3 +720,127 @@ async def resend_verification(
     await enqueue_job("send_verification_email_job", user_id=current_user.user_id, token=raw_token)
 
     return MessageResponse(message="Verification email sent! Check your inbox.")
+
+
+@router.post("/forgot-password", response_model=MessageResponse)
+async def forgot_password(
+    request_data: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Request a password reset email.
+
+    Always returns 200 with a generic message to prevent email enumeration.
+    """
+    generic_message = "If an account with that email exists, a password reset link has been sent."
+
+    # Look up user by email
+    result = await db.execute(
+        select(Users).where(Users.email == request_data.email)  # type: ignore[arg-type]
+    )
+    user = result.scalar_one_or_none()
+
+    # Silently do nothing if user not found or inactive
+    if not user or not user.active:
+        return MessageResponse(message=generic_message)
+
+    # Rate limit: 1 reset per 5 minutes
+    # Return generic 200 even when rate limited to prevent email enumeration
+    # (a 429 only for existing users would leak whether the email exists)
+    if user.password_reset_sent_at:
+        # Handle both timezone-aware (in-memory) and naive (from DB) datetimes
+        sent_at = user.password_reset_sent_at
+        if sent_at.tzinfo is not None:
+            sent_at = sent_at.replace(tzinfo=None)
+        time_since_last = datetime.now(UTC).replace(tzinfo=None) - sent_at
+        if time_since_last < timedelta(minutes=5):
+            return MessageResponse(message=generic_message)
+
+    # Generate token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    # Store hashed token + timestamps
+    user.password_reset_token = token_hash
+    user.password_reset_sent_at = datetime.now(UTC)
+    user.password_reset_expires_at = datetime.now(UTC) + timedelta(hours=1)
+    await db.commit()
+
+    # Queue email
+    await enqueue_job(
+        "send_password_reset_email_job",
+        user_id=user.user_id,
+        token=raw_token,
+    )
+
+    return MessageResponse(message=generic_message)
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+async def reset_password(
+    request_data: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Reset password using email token from forgot-password flow.
+
+    Validates token, updates password, and revokes all sessions.
+    """
+    # Look up user by email
+    result = await db.execute(
+        select(Users).where(Users.email == request_data.email)  # type: ignore[arg-type]
+    )
+    user = result.scalar_one_or_none()
+
+    if not user or not user.password_reset_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    # Verify token matches (constant-time comparison to prevent timing side-channels)
+    token_hash = hashlib.sha256(request_data.token.encode()).hexdigest()
+    if not hmac.compare_digest(user.password_reset_token, token_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    # Check expiration
+    if not user.password_reset_expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    # Handle timezone-aware vs naive datetime comparison (same pattern as forgot-password)
+    expires_at = user.password_reset_expires_at
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    if expires_at < datetime.now(UTC).replace(tzinfo=None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset token has expired. Please request a new one.",
+        )
+
+    # Update password
+    user.password = get_password_hash(request_data.new_password)
+    user.password_type = "bcrypt"
+
+    # Clear reset fields
+    user.password_reset_token = None
+    user.password_reset_sent_at = None
+    user.password_reset_expires_at = None
+
+    # Revoke all refresh tokens
+    await db.execute(
+        delete(RefreshTokens).where(RefreshTokens.user_id == user.user_id)  # type: ignore[arg-type]
+    )
+
+    await db.commit()
+
+    logger.info("password_reset_complete", user_id=user.user_id, username=user.username)
+
+    return MessageResponse(
+        message="Password reset successfully. Please login with your new password."
+    )

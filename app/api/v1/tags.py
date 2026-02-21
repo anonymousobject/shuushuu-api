@@ -1080,6 +1080,16 @@ async def update_tag(
 
     update_data = tag_data.model_dump(exclude_unset=True)
 
+    # Check for duplicate (title, type) combination
+    new_title = update_data.get("title", tag.title)
+    new_type = update_data.get("type", tag.type)
+    if new_title != tag.title or new_type != tag.type:
+        existing_result = await db.execute(
+            select(Tags).where(Tags.title == new_title).where(Tags.type == new_type)  # type: ignore[arg-type]
+        )
+        if existing_result.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Tag already exists")
+
     # Validate inheritedfrom_id and alias fields if present
     inheritedfrom_id = update_data.get("inheritedfrom_id")
     if inheritedfrom_id is not None:

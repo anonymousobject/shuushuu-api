@@ -1958,6 +1958,61 @@ class TestUpdateTag:
         )
         assert response.status_code == 403
 
+    async def test_update_tag_rejects_duplicate_title_and_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that renaming a tag to a (title, type) that already exists returns 409."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindupeupdate",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindupeupdate@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create two tags with different titles but same type
+        existing_tag = Tags(title="existing tag", desc="", type=TagType.THEME)
+        tag_to_rename = Tags(title="rename me", desc="", type=TagType.THEME)
+        db_session.add_all([existing_tag, tag_to_rename])
+        await db_session.commit()
+        await db_session.refresh(tag_to_rename)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindupeupdate", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to rename tag to existing (title, type) combo
+        response = await client.put(
+            f"/api/v1/tags/{tag_to_rename.tag_id}",
+            json={"title": "existing tag", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 409
+        assert "already exists" in response.json()["detail"].lower()
+
 
 @pytest.mark.api
 class TestDeleteTag:
