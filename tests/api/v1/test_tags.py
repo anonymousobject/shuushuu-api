@@ -91,6 +91,29 @@ class TestListTags:
         assert "C.C. Lemon" in titles
         assert "Regular Tag" not in titles
 
+    @pytest.mark.needs_commit
+    async def test_search_tags_with_hyphens(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test searching tags containing hyphens like 'Deep-Blue Series'.
+
+        MySQL fulltext treats hyphens as word delimiters, so "Deep-Blue" becomes
+        tokens "Deep" and "Blue". The search must tokenize the query the same way
+        so that "deep-blue" matches.
+        """
+        tag1 = Tags(title="Deep-Blue Series", desc="A series", type=TagType.THEME)
+        tag2 = Tags(title="Unrelated Tag", desc="Other", type=TagType.THEME)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "deep-blue" should find "Deep-Blue Series"
+        response = await client.get("/api/v1/tags?search=deep-blue")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "Deep-Blue Series" in titles
+
     async def test_filter_tags_by_type(
         self, client: AsyncClient, db_session: AsyncSession
     ):
