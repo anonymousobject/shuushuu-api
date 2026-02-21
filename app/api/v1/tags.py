@@ -1083,7 +1083,7 @@ async def update_tag(
     # Check for duplicate (title, type) combination
     new_title = update_data.get("title", tag.title)
     new_type = update_data.get("type", tag.type)
-    if new_title != tag.title or new_type != tag.type:
+    if (new_title or "").casefold() != (tag.title or "").casefold() or new_type != tag.type:
         existing_result = await db.execute(
             select(Tags)
             .where(Tags.title == new_title)  # type: ignore[arg-type]
