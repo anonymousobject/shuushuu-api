@@ -160,5 +160,10 @@ from app.api.v1.media import router as media_router  # noqa: E402
 # These serve image files with permission checks via X-Accel-Redirect
 app.include_router(media_router)
 
+from app.api.v1.iqdb_feed import router as iqdb_feed_router  # noqa: E402
+
+# Mount iqdb feed at root level so iqdb.org can crawl /image/index.xml
+app.include_router(iqdb_feed_router)
+
 # Note: Static images are served directly by nginx for better performance
 # See docker/nginx/frontend.conf.template for configuration
