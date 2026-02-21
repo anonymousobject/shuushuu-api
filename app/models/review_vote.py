@@ -49,8 +49,8 @@ class ReviewVotes(ReviewVoteBase, table=True):
     (before the review session system) may have review_id=NULL and only image_id set.
 
     Constraints:
-    - Unique on (review_id, user_id) WHERE review_id IS NOT NULL - for new votes
-    - Unique on (image_id, user_id) - for legacy votes (existing constraint)
+    - Unique on (review_id, user_id) WHERE review_id IS NOT NULL - one vote per review
+    - Non-unique index on (image_id, user_id) - for query performance
     """
 
     __tablename__ = "review_votes"
@@ -61,8 +61,9 @@ class ReviewVotes(ReviewVoteBase, table=True):
         # tables are created via SQLModel.metadata.create_all()
         Index("fk_review_votes_user_id", "user_id"),
         Index("fk_review_votes_review_id", "review_id"),
-        # Legacy unique constraint on (image_id, user_id)
-        Index("idx_review_votes_image_user", "image_id", "user_id", unique=True),
+        # Non-unique index on (image_id, user_id) for query performance.
+        # Uniqueness is enforced per-review via (review_id, user_id) partial index.
+        Index("idx_review_votes_image_user", "image_id", "user_id"),
         # Note: Partial unique index on (review_id, user_id) WHERE review_id IS NOT NULL
         # must be created in migration as SQLModel doesn't support partial indexes
     )
