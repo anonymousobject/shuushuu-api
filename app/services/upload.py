@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path as FilePath
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -17,13 +17,39 @@ from app.services.image_processing import calculate_md5, validate_image_file
 logger = get_logger(__name__)
 
 
-async def check_upload_rate_limit(user_id: int, db: AsyncSession) -> None:
-    """Check if user is uploading too quickly.
+async def get_uploads_today(user_id: int, db: AsyncSession) -> int:
+    """Count how many images a user has uploaded today."""
+    start_of_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    result = await db.execute(
+        select(func.count())
+        .select_from(Images)
+        .where(
+            Images.user_id == user_id,  # type: ignore[arg-type]
+            Images.date_added >= start_of_day,  # type: ignore[arg-type,operator]
+        )
+    )
+    return result.scalar() or 0
 
-    Raises HTTPException if user uploaded too recently.
+
+async def check_upload_rate_limit(
+    user_id: int, db: AsyncSession, *, maximgperday: int | None = None
+) -> None:
+    """Check if user is uploading too quickly or has hit their daily limit.
+
+    Raises HTTPException if user uploaded too recently or has reached
+    their daily upload limit.
     Moderators/admins bypass this check.
     """
-    # Get user's last upload timestamp
+    # Check daily upload limit
+    if maximgperday is not None:
+        uploads_today = await get_uploads_today(user_id, db)
+        if uploads_today >= maximgperday:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Daily upload limit of {maximgperday} reached",
+            )
+
+    # Check per-upload rate limit (minimum delay between uploads)
     result = await db.execute(
         select(Images.date_added)  # type: ignore[call-overload]
         .where(Images.user_id == user_id)
