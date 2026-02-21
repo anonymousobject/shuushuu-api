@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+from app.schemas.auth import ForgotPasswordRequest, ResetPasswordRequest
 from app.schemas.image import (
     ImageBase,
     ImageResponse,
@@ -352,3 +353,34 @@ class TestUserUpdateSchema:
         """Test maximgperday defaults to None when omitted."""
         update = UserUpdate(location="Tokyo")
         assert update.maximgperday is None
+
+
+@pytest.mark.unit
+class TestForgotPasswordRequest:
+    def test_valid_email(self):
+        req = ForgotPasswordRequest(email="user@example.com")
+        assert req.email == "user@example.com"
+
+    def test_invalid_email_rejected(self):
+        with pytest.raises(ValidationError):
+            ForgotPasswordRequest(email="not-an-email")
+
+
+@pytest.mark.unit
+class TestResetPasswordRequest:
+    def test_valid_request(self):
+        req = ResetPasswordRequest(
+            email="user@example.com",
+            token="abc123",
+            new_password="NewPassword123!",
+        )
+        assert req.email == "user@example.com"
+        assert req.token == "abc123"
+
+    def test_weak_password_rejected(self):
+        with pytest.raises(ValidationError, match="uppercase letter"):
+            ResetPasswordRequest(
+                email="user@example.com",
+                token="abc123",
+                new_password="weakpassword",
+            )
