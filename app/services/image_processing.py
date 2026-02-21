@@ -28,23 +28,16 @@ async def _update_image_variant_field(image_id: int, field: str, value: int) -> 
         image_id: Image ID to update
         field: Field name ('medium' or 'large')
         value: Value to set (0 or 1)
-    """
-    try:
-        from app.models.image import Images
 
-        async with get_async_session() as db:
-            stmt = update(Images).where(Images.image_id == image_id).values(**{field: value})  # type: ignore[arg-type]
-            await db.execute(stmt)
-            await db.commit()
-    except Exception as e:
-        logger.error(
-            "failed_to_update_variant_field",
-            image_id=image_id,
-            field=field,
-            value=value,
-            error=str(e),
-            error_type=type(e).__name__,
-        )
+    Raises:
+        Exception: Propagates DB errors so the caller (ARQ job) can retry.
+    """
+    from app.models.image import Images
+
+    async with get_async_session() as db:
+        stmt = update(Images).where(Images.image_id == image_id).values(**{field: value})  # type: ignore[arg-type]
+        await db.execute(stmt)
+        await db.commit()
 
 
 def _create_variant(
