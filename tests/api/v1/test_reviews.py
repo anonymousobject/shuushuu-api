@@ -353,6 +353,61 @@ class TestReviewVote:
         assert response.json()["vote"] == 0
         assert response.json()["comment"] == "Changed my mind"
 
+    async def test_vote_on_second_review_for_same_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test voting on a second review for an image that was previously reviewed."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_vote")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        # First review: create, vote, close
+        review1 = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=admin.user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+        )
+        db_session.add(review1)
+        await db_session.commit()
+        await db_session.refresh(review1)
+
+        response = await client.post(
+            f"/api/v1/admin/reviews/{review1.review_id}/vote",
+            json={"vote": 1, "comment": "Keep it"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        # Close the first review
+        review1.status = ReviewStatus.CLOSED
+        review1.outcome = ReviewOutcome.KEEP
+        await db_session.commit()
+
+        # Second review on the same image
+        review2 = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=admin.user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+        )
+        db_session.add(review2)
+        await db_session.commit()
+        await db_session.refresh(review2)
+
+        # Vote on the second review - should succeed, not 500
+        response = await client.post(
+            f"/api/v1/admin/reviews/{review2.review_id}/vote",
+            json={"vote": 0, "comment": "Remove this time"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["vote"] == 0
+        assert data["review_id"] == review2.review_id
+
     async def test_vote_on_closed_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
     ):
