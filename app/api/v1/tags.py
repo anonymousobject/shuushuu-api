@@ -326,25 +326,29 @@ async def list_tags(
             # Additionally, strip special fulltext boolean operators from terms to prevent
             # unexpected behavior (e.g., "C++" becoming "+C++*" with extra operators).
             search_terms = search.split()
-            # Sanitize terms first, then filter by stopwords and token validity.
-            # Order matters: we need to check stopwords and tokens AFTER sanitization.
-            # e.g., "+the+" becomes "the" (a stopword), and "C++" becomes "C" (too short).
+            # Tokenize and sanitize terms to match MySQL/MariaDB fulltext behavior.
+            # First split on word delimiters (hyphens, periods, etc.) the same way
+            # MySQL does, then strip boolean operators from each token. This ensures
+            # "deep-blue" becomes tokens ["deep", "blue"] matching how the indexed
+            # data is tokenized.
             #
-            # IMPORTANT: We check _has_valid_fulltext_tokens() to handle cases like "C.C."
-            # where the overall length >= 3, but MySQL tokenizes it into "C", "C" which
-            # are both below the minimum token size. Such terms should fall back to LIKE.
+            # Filter out stopwords and tokens below minimum size to prevent query
+            # failures (required stopwords cause the entire BOOLEAN MODE query to fail).
             valid_terms = []
             for term in search_terms:
-                sanitized = _sanitize_fulltext_term(term)
-                if not sanitized:
-                    continue
-                if sanitized.lower() in FULLTEXT_STOPWORDS:
-                    continue
-                # Check both overall length AND whether MySQL will produce valid tokens
-                if len(sanitized) >= FULLTEXT_MIN_TOKEN_SIZE and _has_valid_fulltext_tokens(
-                    sanitized
-                ):
-                    valid_terms.append(sanitized)
+                # Tokenize FIRST (split on delimiters like -, ., etc.) to match
+                # how MySQL tokenizes indexed data, THEN sanitize each token
+                # (strip boolean operators). Order matters: "-" is both a delimiter
+                # and a boolean operator, so tokenizing first preserves the split.
+                tokens = _get_fulltext_tokens(term)
+                for token in tokens:
+                    sanitized = _sanitize_fulltext_term(token)
+                    if not sanitized:
+                        continue
+                    if sanitized.lower() in FULLTEXT_STOPWORDS:
+                        continue
+                    if len(sanitized) >= FULLTEXT_MIN_TOKEN_SIZE:
+                        valid_terms.append(sanitized)
 
             if valid_terms:
                 # Build fulltext query with valid terms only
