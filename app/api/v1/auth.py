@@ -35,6 +35,7 @@ from app.core.security import (
 from app.models.refresh_token import RefreshTokens
 from app.models.user import Users
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     LoginRequest,
     MessageResponse,
     PasswordChangeRequest,
@@ -717,3 +718,59 @@ async def resend_verification(
     await enqueue_job("send_verification_email_job", user_id=current_user.user_id, token=raw_token)
 
     return MessageResponse(message="Verification email sent! Check your inbox.")
+
+
+@router.post("/forgot-password", response_model=MessageResponse)
+async def forgot_password(
+    request_data: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Request a password reset email.
+
+    Always returns 200 with a generic message to prevent email enumeration.
+    """
+    generic_message = "If an account with that email exists, a password reset link has been sent."
+
+    # Look up user by email
+    result = await db.execute(
+        select(Users).where(Users.email == request_data.email)  # type: ignore[arg-type]
+    )
+    user = result.scalar_one_or_none()
+
+    # Silently do nothing if user not found or inactive
+    if not user or not user.active:
+        return MessageResponse(message=generic_message)
+
+    # Rate limit: 1 reset per 5 minutes
+    if user.password_reset_sent_at:
+        # Handle both timezone-aware (in-memory) and naive (from DB) datetimes
+        sent_at = user.password_reset_sent_at
+        if sent_at.tzinfo is not None:
+            sent_at = sent_at.replace(tzinfo=None)
+        time_since_last = datetime.now(UTC).replace(tzinfo=None) - sent_at
+        if time_since_last < timedelta(minutes=5):
+            remaining_seconds = int((timedelta(minutes=5) - time_since_last).total_seconds())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {remaining_seconds} seconds before requesting another reset email",
+            )
+
+    # Generate token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    # Store hashed token + timestamps
+    user.password_reset_token = token_hash
+    user.password_reset_sent_at = datetime.now(UTC)
+    user.password_reset_expires_at = datetime.now(UTC) + timedelta(hours=1)
+    await db.commit()
+
+    # Queue email
+    await enqueue_job(
+        "send_password_reset_email_job",
+        user_id=user.user_id,
+        token=raw_token,
+    )
+
+    return MessageResponse(message=generic_message)

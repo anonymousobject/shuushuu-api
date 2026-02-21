@@ -760,3 +760,100 @@ class TestRefreshSuspensionCheck:
 
         assert response.status_code == 401
         assert "inactive" in response.json()["detail"].lower()
+
+
+@pytest.mark.api
+class TestForgotPassword:
+    """Tests for POST /api/v1/auth/forgot-password endpoint."""
+
+    async def test_forgot_password_valid_email(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test forgot password with valid email returns 200 and generic message."""
+        user = Users(
+            username="forgotuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="forgot@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        response = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "forgot@example.com"},
+        )
+        assert response.status_code == 200
+        assert "reset" in response.json()["message"].lower()
+
+        # Verify token was stored (hashed) in DB
+        await db_session.refresh(user)
+        assert user.password_reset_token is not None
+        assert user.password_reset_expires_at is not None
+
+    async def test_forgot_password_nonexistent_email(self, client: AsyncClient):
+        """Test forgot password with unknown email still returns 200 (no enumeration)."""
+        response = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "nobody@example.com"},
+        )
+        assert response.status_code == 200
+        assert "reset" in response.json()["message"].lower()
+
+    async def test_forgot_password_rate_limited(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test forgot password rate limits to 1 request per 5 minutes."""
+        user = Users(
+            username="ratelimituser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="ratelimit@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        # First request: should succeed
+        response1 = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "ratelimit@example.com"},
+        )
+        assert response1.status_code == 200
+
+        # Second request immediately: should be rate limited
+        response2 = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "ratelimit@example.com"},
+        )
+        assert response2.status_code == 429
+
+    async def test_forgot_password_inactive_user(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test forgot password for inactive user returns 200 but does nothing."""
+        user = Users(
+            username="inactiveuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="inactive@example.com",
+            active=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        response = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "inactive@example.com"},
+        )
+        assert response.status_code == 200
+
+        # Token should NOT be set for inactive user
+        await db_session.refresh(user)
+        assert user.password_reset_token is None
