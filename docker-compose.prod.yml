@@ -11,8 +11,16 @@ x-logging: &default-logging
 
 services:
   # Disable local services not needed in production
+  # Use entrypoint override instead of profiles to keep services "defined"
+  # (profiles makes them undefined, breaking depends_on merge from base)
   mariadb:
-    profiles: [disabled]
+    image: busybox:latest
+    entrypoint: ["sleep", "infinity"]
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      retries: 1
 
   adminer:
     profiles: [disabled]
@@ -22,7 +30,7 @@ services:
 
   redis:
     container_name: shuushuu-redis-prod
-    ports: []  # Internal only in production
+    ports: !override []  # Internal only in production
     logging: *default-logging
 
   frontend:
@@ -36,7 +44,7 @@ services:
         - PUBLIC_DEBUG=false
         - PUBLIC_TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY}
     container_name: shuushuu-frontend-prod
-    ports:
+    ports: !override
       - "127.0.0.1:3000:3000"
     environment:
       - PUBLIC_ENVIRONMENT=production
@@ -61,8 +69,9 @@ services:
 
   api:
     container_name: shuushuu-api-prod
+    user: "1003:1003"  # shuushuu user — matches storage directory ownership
     command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000
-    ports:
+    ports: !override
       - "127.0.0.1:8000:8000"
     env_file: .env.prod
     environment:
@@ -79,10 +88,13 @@ services:
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "fern:10.0.0.62"
     logging: *default-logging
 
   arq-worker:
     container_name: shuushuu-arq-worker-prod
+    user: "1003:1003"  # shuushuu user — matches storage directory ownership
+    ports: []
     env_file: .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -98,11 +110,12 @@ services:
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "fern:10.0.0.62"
     logging: *default-logging
 
   iqdb:
     container_name: shuushuu-iqdb-prod
-    ports: []  # Internal only in production
+    ports: !override []  # Internal only in production
     logging: *default-logging
 
   certbot:

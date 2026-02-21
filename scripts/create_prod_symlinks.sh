@@ -62,35 +62,48 @@ create_link() {
 }
 
 # ---------------------------------------------------------------------------
-# 1) Fullsize: all image files excluding medium, large, and thumb variants
+# 1) Fullsize: symlink files into DEST_BASE/fullsize/
 # ---------------------------------------------------------------------------
 echo "--- Fullsize ---"
 fullsize_count=0
 
-# Process main directory (non-recursive for the top level, but find handles it)
-while IFS= read -r -d '' f; do
-    base=$(basename "$f")
-    create_link "$f" "$DEST_BASE/fullsize/$base"
-    fullsize_count=$((fullsize_count + 1))
-done < <(find "$SRC_BASE" -maxdepth 1 -type f \
-    \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
-    ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
-    -print0)
+# Resolve paths to detect overlap (SRC_BASE == DEST_BASE/fullsize)
+resolved_src=$(cd "$SRC_BASE" && pwd -P)
+resolved_dst_fullsize=$(cd "$DEST_BASE/fullsize" 2>/dev/null && pwd -P || echo "")
+
+if [ "$resolved_src" = "$resolved_dst_fullsize" ]; then
+    echo "  (source is destination — skipping active files, they are already in place)"
+else
+    # Separate source: symlink all fullsize images into DEST_BASE/fullsize/
+    while IFS= read -r -d '' f; do
+        base=$(basename "$f")
+        create_link "$f" "$DEST_BASE/fullsize/$base"
+        fullsize_count=$((fullsize_count + 1))
+    done < <(find "$SRC_BASE" -maxdepth 1 -type f \
+        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
+        ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
+        -print0)
+fi
 
 # Flatten deactivated subdirectories into fullsize
 # Check both SRC_BASE/deactivated (separate source) and DEST_BASE/fullsize/deactivated (in-tree)
+deactivated_dirs_seen=""
 for deactivated_dir in "$SRC_BASE/deactivated" "$DEST_BASE/fullsize/deactivated"; do
-    if [ -d "$deactivated_dir" ]; then
-        echo "  (including $deactivated_dir images)"
-        while IFS= read -r -d '' f; do
-            base=$(basename "$f")
-            create_link "$f" "$DEST_BASE/fullsize/$base"
-            fullsize_count=$((fullsize_count + 1))
-        done < <(find "$deactivated_dir" -type f \
-            \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
-            ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
-            -print0)
-    fi
+    resolved_deactivated=$(cd "$deactivated_dir" 2>/dev/null && pwd -P || echo "")
+    # Skip if directory doesn't exist or was already processed
+    [ -z "$resolved_deactivated" ] && continue
+    echo "$deactivated_dirs_seen" | grep -qF "$resolved_deactivated" && continue
+    deactivated_dirs_seen="$deactivated_dirs_seen $resolved_deactivated"
+
+    echo "  (flattening $deactivated_dir)"
+    while IFS= read -r -d '' f; do
+        base=$(basename "$f")
+        create_link "$f" "$DEST_BASE/fullsize/$base"
+        fullsize_count=$((fullsize_count + 1))
+    done < <(find "$deactivated_dir" -type f \
+        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
+        ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
+        -print0)
 done
 
 echo "  Count: $fullsize_count"

@@ -58,7 +58,7 @@ async def find_inactive_users(
     - They have no image ratings
     - They have no tag history
     - They have no tag links
-    - If days_inactive specified: last_login_new is older than threshold
+    - If days_inactive specified: last_login is older than threshold
       (or NULL if never logged in)
 
     This uses a UNION-based approach to check for content across tables,
@@ -83,7 +83,7 @@ async def find_inactive_users(
         cutoff_date = datetime.now(UTC) - timedelta(days=days_inactive)
         print(f"\nInactivity threshold: {days_inactive} days (before {cutoff_date.date()})")
         cutoff_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
-        where_clauses += f" AND (u.last_login_new IS NULL OR u.last_login_new < '{cutoff_str}')"
+        where_clauses += f" AND (u.last_login IS NULL OR u.last_login < '{cutoff_str}')"
 
     # Use raw SQL with UNION to find users with content in ANY table
     # Much faster than LEFT JOINs with GROUP BY
@@ -93,7 +93,7 @@ async def find_inactive_users(
         SELECT DISTINCT u.user_id
         FROM users u
         WHERE u.image_posts = 0
-          {f"AND (u.last_login_new IS NULL OR u.last_login_new < :cutoff)" if days_inactive else ""}
+          {f"AND (u.last_login IS NULL OR u.last_login < :cutoff)" if days_inactive else ""}
           AND u.user_id NOT IN (
               SELECT DISTINCT user_id FROM posts WHERE user_id IS NOT NULL
               UNION
@@ -133,7 +133,7 @@ async def get_user_details(db: AsyncSession, user_ids: list[int]) -> list[tuple]
         return []
 
     stmt = (
-        select(Users.user_id, Users.username, Users.date_joined, Users.last_login_new)
+        select(Users.user_id, Users.username, Users.date_joined, Users.last_login)
         .where(Users.user_id.in_(user_ids))
         .order_by(Users.date_joined)
     )
@@ -158,16 +158,24 @@ async def delete_users(db: AsyncSession, user_ids: list[int]) -> int:
     if not user_ids:
         return 0
 
-    # Delete users (cascade deletes handle related records)
-    stmt = select(Users).where(Users.user_id.in_(user_ids))
-    result = await db.execute(stmt)
-    users_to_delete = result.scalars().all()
+    # Use raw SQL DELETE to let the database handle CASCADE/SET NULL
+    # ORM-based delete hits relationship issues with composite PKs (user_groups)
+    # Process in batches to avoid overly large IN clauses
+    batch_size = 1000
+    total_deleted = 0
+    for i in range(0, len(user_ids), batch_size):
+        batch = user_ids[i:i + batch_size]
+        placeholders = ",".join([":id_" + str(j) for j in range(len(batch))])
+        params = {f"id_{j}": uid for j, uid in enumerate(batch)}
+        # Delete from user_groups first (no CASCADE on this table)
+        await db.execute(text(f"DELETE FROM user_groups WHERE user_id IN ({placeholders})"), params)
+        result = await db.execute(text(f"DELETE FROM users WHERE user_id IN ({placeholders})"), params)
+        total_deleted += result.rowcount
+        await db.commit()
+        if (i // batch_size + 1) % 10 == 0:
+            print(f"  Progress: {total_deleted}/{len(user_ids)} deleted...")
 
-    for user in users_to_delete:
-        await db.delete(user)
-
-    await db.commit()
-    return len(users_to_delete)
+    return total_deleted
 
 
 async def main() -> None:
