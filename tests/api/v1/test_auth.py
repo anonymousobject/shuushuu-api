@@ -806,7 +806,7 @@ class TestForgotPassword:
     async def test_forgot_password_rate_limited(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test forgot password rate limits to 1 request per 5 minutes."""
+        """Test forgot password silently skips when rate limited (returns 200, no new token)."""
         user = Users(
             username="ratelimituser",
             password=get_password_hash("TestPassword123!"),
@@ -818,19 +818,28 @@ class TestForgotPassword:
         db_session.add(user)
         await db_session.commit()
 
-        # First request: should succeed
+        # First request: should succeed and set token
         response1 = await client.post(
             "/api/v1/auth/forgot-password",
             json={"email": "ratelimit@example.com"},
         )
         assert response1.status_code == 200
 
-        # Second request immediately: should be rate limited
+        # Capture the token from first request
+        await db_session.refresh(user)
+        first_token = user.password_reset_token
+
+        # Second request immediately: returns 200 (same generic message, no enumeration)
+        # but does NOT generate a new token
         response2 = await client.post(
             "/api/v1/auth/forgot-password",
             json={"email": "ratelimit@example.com"},
         )
-        assert response2.status_code == 429
+        assert response2.status_code == 200
+
+        # Token should be unchanged (rate limited, no new token generated)
+        await db_session.refresh(user)
+        assert user.password_reset_token == first_token
 
     async def test_forgot_password_inactive_user(
         self, client: AsyncClient, db_session: AsyncSession

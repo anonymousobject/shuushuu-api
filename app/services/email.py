@@ -220,6 +220,7 @@ async def send_password_reset_email(user: Users, token: str) -> bool:
     """
     from urllib.parse import quote
 
+    safe_username = html_escape.escape(user.username)
     reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}&email={quote(user.email)}"
 
     subject = "Reset your password"
@@ -255,7 +256,7 @@ If you didn't request this, you can safely ignore this email. Your password will
 <body>
     <div class="container">
         <h2>Reset Your Password</h2>
-        <p>Hi {user.username},</p>
+        <p>Hi {safe_username},</p>
         <p>We received a request to reset your password.</p>
         <p><a href="{reset_url}" class="button">Reset Password</a></p>
         <p>Or copy this link into your browser:</p>

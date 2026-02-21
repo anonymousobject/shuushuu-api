@@ -9,6 +9,7 @@ This module provides endpoints for:
 """
 
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -744,6 +745,8 @@ async def forgot_password(
         return MessageResponse(message=generic_message)
 
     # Rate limit: 1 reset per 5 minutes
+    # Return generic 200 even when rate limited to prevent email enumeration
+    # (a 429 only for existing users would leak whether the email exists)
     if user.password_reset_sent_at:
         # Handle both timezone-aware (in-memory) and naive (from DB) datetimes
         sent_at = user.password_reset_sent_at
@@ -751,11 +754,7 @@ async def forgot_password(
             sent_at = sent_at.replace(tzinfo=None)
         time_since_last = datetime.now(UTC).replace(tzinfo=None) - sent_at
         if time_since_last < timedelta(minutes=5):
-            remaining_seconds = int((timedelta(minutes=5) - time_since_last).total_seconds())
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Please wait {remaining_seconds} seconds before requesting another reset email",
-            )
+            return MessageResponse(message=generic_message)
 
     # Generate token
     raw_token = secrets.token_urlsafe(32)
@@ -799,9 +798,9 @@ async def reset_password(
             detail="Invalid or expired reset token",
         )
 
-    # Verify token matches
+    # Verify token matches (constant-time comparison to prevent timing side-channels)
     token_hash = hashlib.sha256(request_data.token.encode()).hexdigest()
-    if user.password_reset_token != token_hash:
+    if not hmac.compare_digest(user.password_reset_token, token_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
