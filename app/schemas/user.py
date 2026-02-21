@@ -207,6 +207,9 @@ class UserPrivateResponse(UserResponse):
     # Navigation
     bookmark: int | None  # Bookmarked image_id (for "continue where I left off")
 
+    # Computed at request time
+    uploads_remaining_today: int = 0  # How many more images the user can upload today
+
     @field_validator("email_verified", mode="before")
     @classmethod
     def convert_email_verified_to_bool(cls, v: int | bool) -> bool:
