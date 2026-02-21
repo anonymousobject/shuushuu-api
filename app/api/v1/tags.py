@@ -1085,7 +1085,7 @@ async def update_tag(
     new_type = update_data.get("type", tag.type)
     if new_title != tag.title or new_type != tag.type:
         existing_result = await db.execute(
-            select(Tags).where(Tags.title == new_title).where(Tags.type == new_type)
+            select(Tags).where(Tags.title == new_title).where(Tags.type == new_type)  # type: ignore[arg-type]
         )
         if existing_result.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Tag already exists")
