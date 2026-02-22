@@ -103,6 +103,8 @@ from app.schemas.report import (
     UnifiedReportListResponse,
     VoteResponse,
 )
+from app.services.rating import schedule_rating_recalculation
+from app.services.repost import migrate_repost_data
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -710,6 +712,8 @@ async def change_image_status(
     previous_status = image.status
     previous_locked = image.locked
 
+    migration_result: dict[str, int] = {}
+
     # Handle status change if provided
     if status_data.status is not None:
         # Handle repost status
@@ -734,6 +738,9 @@ async def change_image_status(
                     detail="Original image not found",
                 )
             image.replacement_id = status_data.replacement_id
+
+            # Migrate favorites, ratings, and tags to the original image
+            migration_result = await migrate_repost_data(image_id, status_data.replacement_id, db)
         else:
             # Clear replacement_id when not a repost
             image.replacement_id = None
@@ -768,12 +775,17 @@ async def change_image_status(
             "previous_locked": previous_locked,
             "new_locked": image.locked,
             "replacement_id": image.replacement_id,
+            **migration_result,
         },
     )
     db.add(action)
 
     await db.commit()
     await db.refresh(image)
+
+    # Schedule rating recalculation for original image after repost migration
+    if status_data.status == ImageStatus.REPOST and status_data.replacement_id:
+        await schedule_rating_recalculation(status_data.replacement_id)
 
     return ImageStatusResponse.model_validate(image)
 
