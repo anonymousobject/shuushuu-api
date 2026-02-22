@@ -42,7 +42,7 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
     await db.execute(
         text(
             "INSERT IGNORE INTO favorites (user_id, image_id, fav_date) "
-            "SELECT user_id, :original_id, NOW() FROM favorites "
+            "SELECT user_id, :original_id, fav_date FROM favorites "
             "WHERE image_id = :repost_id"
         ),
         {"original_id": original_id, "repost_id": repost_id},
@@ -86,8 +86,8 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
 
     await db.execute(
         text(
-            "INSERT IGNORE INTO image_ratings (user_id, image_id, rating) "
-            "SELECT user_id, :original_id, rating FROM image_ratings "
+            "INSERT IGNORE INTO image_ratings (user_id, image_id, rating, date) "
+            "SELECT user_id, :original_id, rating, date FROM image_ratings "
             "WHERE image_id = :repost_id"
         ),
         {"original_id": original_id, "repost_id": repost_id},

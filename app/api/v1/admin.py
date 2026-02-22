@@ -103,6 +103,7 @@ from app.schemas.report import (
     UnifiedReportListResponse,
     VoteResponse,
 )
+from app.services.rating import schedule_rating_recalculation
 from app.services.repost import migrate_repost_data
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -784,8 +785,6 @@ async def change_image_status(
 
     # Schedule rating recalculation for original image after repost migration
     if status_data.status == ImageStatus.REPOST and status_data.replacement_id:
-        from app.services.rating import schedule_rating_recalculation
-
         await schedule_rating_recalculation(status_data.replacement_id)
 
     return ImageStatusResponse.model_validate(image)

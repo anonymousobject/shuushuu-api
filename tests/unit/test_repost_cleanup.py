@@ -1,7 +1,5 @@
 """Tests for repost data migration service."""
 
-from datetime import UTC, datetime
-
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
