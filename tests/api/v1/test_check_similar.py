@@ -1,6 +1,7 @@
 """Tests for POST /api/v1/images/check-similar endpoint."""
 
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -73,6 +74,14 @@ def _make_similar_result(image_id: int, score: float) -> SimilarImageResult:
     )
 
 
+def _mock_create_thumbnail(source_path, image_id, ext, storage_path):
+    """Mock create_thumbnail that creates the expected thumb file."""
+    thumbs_dir = Path(storage_path) / "thumbs"
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
+    thumb_path = thumbs_dir / f"temp-{image_id}.webp"
+    thumb_path.write_bytes(b"fake thumb")
+
+
 @pytest.mark.api
 class TestCheckSimilar:
     """Tests for the check-similar endpoint."""
@@ -100,12 +109,14 @@ class TestCheckSimilar:
                 return_value=hydrated,
             ),
             patch("app.api.v1.images.validate_image_file"),
-            patch("app.api.v1.images.create_thumbnail"),
+            patch(
+                "app.api.v1.images.create_thumbnail",
+                side_effect=_mock_create_thumbnail,
+            ),
             patch(
                 "app.api.v1.images.check_similarity_rate_limit",
                 new_callable=AsyncMock,
             ),
-            patch("pathlib.Path.exists", return_value=True),
         ):
             response = await auth_client.post(
                 "/api/v1/images/check-similar",
@@ -129,12 +140,14 @@ class TestCheckSimilar:
                 return_value=[],
             ),
             patch("app.api.v1.images.validate_image_file"),
-            patch("app.api.v1.images.create_thumbnail"),
+            patch(
+                "app.api.v1.images.create_thumbnail",
+                side_effect=_mock_create_thumbnail,
+            ),
             patch(
                 "app.api.v1.images.check_similarity_rate_limit",
                 new_callable=AsyncMock,
             ),
-            patch("pathlib.Path.exists", return_value=True),
         ):
             response = await auth_client.post(
                 "/api/v1/images/check-similar",

@@ -165,17 +165,27 @@ async def check_similar_by_upload(
 
     temp_dir = tempfile.mkdtemp()
     try:
-        # Save uploaded file to temp location
-        temp_path = (
-            FilePath(temp_dir) / f"temp-0.{(file.filename or 'upload.jpg').rsplit('.', 1)[-1]}"
-        )
-        content = await file.read()
-        if len(content) > settings.MAX_IMAGE_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File too large. Maximum size is {settings.MAX_IMAGE_SIZE // (1024 * 1024)}MB",
-            )
-        temp_path.write_bytes(content)
+        # Derive safe extension from filename (avoid path traversal via user-controlled input)
+        original_suffix = FilePath(file.filename or "").suffix
+        safe_suffix = original_suffix if original_suffix else ".jpg"
+        temp_path = FilePath(temp_dir) / f"temp-0{safe_suffix}"
+
+        # Stream upload to disk in chunks while enforcing MAX_IMAGE_SIZE
+        max_size = settings.MAX_IMAGE_SIZE
+        chunk_size = 1024 * 1024  # 1 MB
+        total_size = 0
+        with temp_path.open("wb") as out_file:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > max_size:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"File too large. Maximum size is {max_size // (1024 * 1024)}MB",
+                    )
+                out_file.write(chunk)
 
         # Validate it's a real image
         validate_image_file(file, temp_path)
