@@ -151,7 +151,7 @@ async def check_similar_by_upload(
     file: Annotated[UploadFile, File(description="Image file to check for similarity")],
     current_user: Annotated[Users, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    redis_client: Annotated[redis.Redis, Depends(get_redis)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
     threshold: Annotated[
         float | None, Query(description="Minimum similarity score (0-100)", ge=0, le=100)
     ] = None,
@@ -161,7 +161,7 @@ async def check_similar_by_upload(
     Accepts a temporary image upload, queries IQDB for similar matches,
     and returns results. The uploaded image is not stored permanently.
     """
-    await check_similarity_rate_limit(current_user.user_id, redis_client)
+    await check_similarity_rate_limit(current_user.id, redis_client)
 
     temp_dir = tempfile.mkdtemp()
     try:
