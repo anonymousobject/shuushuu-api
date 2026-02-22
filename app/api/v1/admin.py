@@ -881,8 +881,14 @@ async def list_reports(
         total += image_total
 
         # Now select ImageReports rows plus the reporting user's username
-        query = select(ImageReports, Users.username)  # type: ignore[call-overload]
+        ReviewedByUser = aliased(Users)
+        query = select(  # type: ignore[call-overload]
+            ImageReports,
+            Users.username,
+            ReviewedByUser.username.label("reviewed_by_username"),  # type: ignore[attr-defined]
+        )
         query = query.join(Users, Users.user_id == ImageReports.user_id)
+        query = query.outerjoin(ReviewedByUser, ReviewedByUser.user_id == ImageReports.reviewed_by)  # type: ignore[arg-type]
         if status_filter is not None:
             query = query.where(ImageReports.status == status_filter)
         if category is not None:
@@ -896,7 +902,7 @@ async def list_reports(
         rows = result.all()
 
         # Collect report IDs to fetch tag suggestions
-        report_ids = [report.report_id for report, _ in rows]
+        report_ids = [report.report_id for report, _, _ in rows]
 
         # Fetch tag suggestions for all reports in one query
         suggestions_by_report: dict[int, list[TagSuggestion]] = {}
@@ -920,9 +926,10 @@ async def list_reports(
                     )
                 )
 
-        for report, username in rows:
+        for report, username, reviewed_by_username in rows:
             response = ReportResponse.model_validate(report)
             response.username = username
+            response.reviewed_by_username = reviewed_by_username
             if report.report_id in suggestions_by_report:
                 response.suggested_tags = suggestions_by_report[report.report_id]
             image_reports.append(response)
@@ -966,18 +973,22 @@ async def list_reports(
         result = await db.execute(query)
         comment_rows = result.all()
 
-        # Collect comment author user IDs to fetch usernames
+        # Collect user IDs to batch-fetch usernames (comment authors + reviewers)
         comment_author_ids = {
             row.comment_user_id for row in comment_rows if row.comment_user_id is not None
         }
-        author_usernames: dict[int, str] = {}
-        if comment_author_ids:
-            author_result = await db.execute(
+        reviewer_ids = {
+            row[0].reviewed_by for row in comment_rows if row[0].reviewed_by is not None
+        }
+        all_user_ids = comment_author_ids | reviewer_ids
+        user_usernames: dict[int, str] = {}
+        if all_user_ids:
+            user_result = await db.execute(
                 select(Users.user_id, Users.username).where(  # type: ignore[call-overload]
-                    Users.user_id.in_(comment_author_ids)  # type: ignore[union-attr]
+                    Users.user_id.in_(all_user_ids)  # type: ignore[union-attr]
                 )
             )
-            author_usernames = {row.user_id: row.username for row in author_result.all()}
+            user_usernames = {row.user_id: row.username for row in user_result.all()}
 
         for row in comment_rows:
             report = row[0]  # CommentReports object
@@ -992,7 +1003,7 @@ async def list_reports(
             if comment_user_id:
                 comment_author = UserSummary(
                     user_id=comment_user_id,
-                    username=author_usernames.get(comment_user_id, "Unknown"),
+                    username=user_usernames.get(comment_user_id, "Unknown"),
                 )
             comment_preview = post_text[:100] if post_text else None
 
@@ -1007,6 +1018,9 @@ async def list_reports(
                 status=report.status,
                 created_at=report.created_at,
                 reviewed_by=report.reviewed_by,
+                reviewed_by_username=user_usernames.get(report.reviewed_by)
+                if report.reviewed_by
+                else None,
                 reviewed_at=report.reviewed_at,
                 admin_notes=report.admin_notes,
                 comment_author=comment_author,

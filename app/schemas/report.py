@@ -97,6 +97,7 @@ class ReportResponse(BaseModel):
     status_label: str | None = None
     created_at: UTCDatetime
     reviewed_by: int | None
+    reviewed_by_username: str | None = None
     reviewed_at: UTCDatetimeOptional = None
     admin_notes: str | None = None
     suggested_tags: list[TagSuggestion] | None = None
