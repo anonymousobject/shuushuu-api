@@ -1,6 +1,6 @@
 """Tests for daily upload limit helpers and enforcement."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -59,7 +59,7 @@ class TestGetUploadsToday:
                 user_id=user.user_id,
                 status=1,
                 locked=0,
-                date_added=datetime.now(),
+                date_added=datetime.now(UTC).replace(tzinfo=None),
             )
             db_session.add(img)
         await db_session.commit()
@@ -104,7 +104,7 @@ class TestGetUploadsToday:
                     user_id=user1.user_id,
                     status=1,
                     locked=0,
-                    date_added=datetime.now(),
+                    date_added=datetime.now(UTC).replace(tzinfo=None),
                 )
             )
         db_session.add(
@@ -119,7 +119,7 @@ class TestGetUploadsToday:
                 user_id=user2.user_id,
                 status=1,
                 locked=0,
-                date_added=datetime.now(),
+                date_added=datetime.now(UTC).replace(tzinfo=None),
             )
         )
         await db_session.commit()
@@ -141,7 +141,7 @@ class TestGetUploadsToday:
         await db_session.commit()
         await db_session.refresh(user)
 
-        yesterday = datetime.now() - timedelta(days=1)
+        yesterday = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
         for i in range(2):
             db_session.add(
                 Images(
@@ -166,8 +166,10 @@ class TestGetUploadsToday:
 
 def _make_image(user_id: int, suffix: str) -> Images:
     """Create an Images instance with today's date but far enough back to avoid rate limit."""
-    # Use 1 hour ago so it's still "today" but won't trigger per-upload rate limit
-    earlier_today = datetime.now() - timedelta(hours=1)
+    # Use start of today + 1 minute (UTC) so it's always "today" and always in the past
+    start_of_today = datetime.now(UTC).replace(
+        hour=0, minute=1, second=0, microsecond=0, tzinfo=None
+    )
     return Images(
         filename=f"limit-{suffix}",
         ext="jpg",
@@ -179,7 +181,7 @@ def _make_image(user_id: int, suffix: str) -> Images:
         user_id=user_id,
         status=1,
         locked=0,
-        date_added=earlier_today,
+        date_added=start_of_today,
     )
 
 

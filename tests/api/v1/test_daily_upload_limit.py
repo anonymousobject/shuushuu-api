@@ -1,6 +1,6 @@
 """API tests for daily upload limit: uploads_remaining_today and 429 enforcement."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -41,7 +41,7 @@ def _make_image(user_id: int, suffix: str) -> Images:
         user_id=user_id,
         status=1,
         locked=0,
-        date_added=datetime.now(),
+        date_added=datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=None),
     )
 
 
