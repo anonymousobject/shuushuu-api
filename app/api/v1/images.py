@@ -195,8 +195,11 @@ async def check_similar_by_upload(
         thumb_path = FilePath(temp_dir) / "thumbs" / "temp-0.webp"
 
         if not thumb_path.exists():
-            logger.warning("check_similar_thumbnail_failed", user_id=current_user.user_id)
-            return SimilarImagesUploadResponse(similar_images=[])
+            logger.warning("check_similar_thumbnail_failed", user_id=current_user.id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate thumbnail for similarity check",
+            )
 
         # Query IQDB
         similar_results = await check_iqdb_similarity(thumb_path, db, threshold=threshold)
