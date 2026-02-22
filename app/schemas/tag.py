@@ -131,6 +131,7 @@ class TagResponse(TagBase):
     """Schema for tag response - what API returns"""
 
     tag_id: int
+    date_added: UTCDatetime | None = None
     alias_of: int | None = None
     alias_of_name: str | None = None
     is_alias: bool = False
