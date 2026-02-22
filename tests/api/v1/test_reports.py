@@ -517,6 +517,45 @@ class TestAdminReportsList:
         assert 4 in categories  # TAG_SUGGESTIONS
 
 
+    async def test_list_reports_includes_reviewed_by_username(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that reviewed reports include reviewed_by_username."""
+        admin, password = await create_auth_user(db_session, username="reviewer", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        token = await login_user(client, admin.username, password)
+
+        # Create and dismiss a report so it gets reviewed_by set
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/dismiss",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        # List dismissed reports and check reviewed_by_username
+        response = await client.get(
+            "/api/v1/admin/reports?status=2",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["image_reports"]) == 1
+        assert data["image_reports"][0]["reviewed_by"] == admin.user_id
+        assert data["image_reports"][0]["reviewed_by_username"] == admin.username
+
+
 @pytest.mark.api
 class TestAdminReportDismiss:
     """Tests for POST /api/v1/admin/reports/{report_id}/dismiss endpoint."""

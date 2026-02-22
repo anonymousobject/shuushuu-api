@@ -63,6 +63,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove closed_by column."""
-    op.drop_index("fk_image_reviews_closed_by", table_name="image_reviews")
     op.drop_constraint("fk_image_reviews_closed_by", "image_reviews", type_="foreignkey")
+    op.drop_index("fk_image_reviews_closed_by", table_name="image_reviews")
     op.drop_column("image_reviews", "closed_by")
