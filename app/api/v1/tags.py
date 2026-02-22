@@ -5,7 +5,7 @@ Tags API endpoints
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import asc, case, desc, func, or_, select, text
+from sqlalchemy import asc, case, delete, desc, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
@@ -1223,6 +1223,32 @@ async def update_tag(
                 user_id=current_user.user_id,
             )
             db.add(audit_entry)
+
+    # Migrate tag_links when alias is set
+    if tag.alias_of is not None and tag.alias_of != original_alias_of:
+        canonical_id = tag.alias_of
+
+        # Find images already linked to canonical tag (to avoid PK conflicts)
+        existing_result = await db.execute(
+            select(TagLinks.image_id).where(TagLinks.tag_id == canonical_id)  # type: ignore[call-overload]
+        )
+        existing_image_ids = {row[0] for row in existing_result}
+
+        # Delete alias tag_links that would conflict with existing canonical links
+        if existing_image_ids:
+            await db.execute(
+                delete(TagLinks).where(
+                    TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+                    TagLinks.image_id.in_(existing_image_ids),  # type: ignore[attr-defined]
+                )
+            )
+
+        # Move remaining alias tag_links to canonical tag
+        await db.execute(
+            update(TagLinks)
+            .where(TagLinks.tag_id == tag_id)  # type: ignore[arg-type]
+            .values(tag_id=canonical_id)
+        )
 
     db.add(tag)
     await db.commit()
