@@ -888,7 +888,7 @@ async def list_reports(
             ReviewedByUser.username.label("reviewed_by_username"),  # type: ignore[attr-defined]
         )
         query = query.join(Users, Users.user_id == ImageReports.user_id)
-        query = query.outerjoin(ReviewedByUser, ReviewedByUser.user_id == ImageReports.reviewed_by)  # type: ignore[arg-type]
+        query = query.outerjoin(ReviewedByUser, ReviewedByUser.user_id == ImageReports.reviewed_by)
         if status_filter is not None:
             query = query.where(ImageReports.status == status_filter)
         if category is not None:
@@ -1604,7 +1604,7 @@ async def list_reviews(
         )
         .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
         .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
-        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)  # type: ignore[arg-type]
+        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)
     )
 
     if status_filter is not None:
@@ -1681,7 +1681,7 @@ async def get_review(
         )
         .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
         .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
-        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)  # type: ignore[arg-type]
+        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)
         .where(ImageReviews.review_id == review_id)
     )
     row = result.one_or_none()
@@ -1695,7 +1695,7 @@ async def get_review(
     VoteUser = aliased(Users)
     votes_result = await db.execute(
         select(ReviewVotes, VoteUser.username)  # type: ignore[call-overload]
-        .outerjoin(VoteUser, ReviewVotes.user_id == VoteUser.user_id)  # type: ignore[arg-type]
+        .outerjoin(VoteUser, ReviewVotes.user_id == VoteUser.user_id)
         .where(ReviewVotes.review_id == review_id)
         .order_by(ReviewVotes.created_at)
     )
