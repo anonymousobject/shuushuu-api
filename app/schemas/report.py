@@ -170,6 +170,14 @@ class ReviewCreate(BaseModel):
         None, max_length=1000, description="Optional reason for starting the review"
     )
 
+    @field_validator("reason")
+    @classmethod
+    def sanitize_reason(cls, v: str | None) -> str | None:
+        """Sanitize review reason."""
+        if v is None:
+            return v
+        return v.strip() or None
+
 
 class ReviewVoteRequest(BaseModel):
     """Schema for casting a vote on a review."""
