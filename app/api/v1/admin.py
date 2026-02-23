@@ -1796,6 +1796,7 @@ async def create_review(
         deadline=deadline,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,
+        reason=review_data.reason,
     )
     db.add(review)
     await db.flush()
@@ -1806,7 +1807,11 @@ async def create_review(
         action_type=AdminActionType.REVIEW_START,
         review_id=review.review_id,
         image_id=image_id,
-        details={"previous_status": previous_status, "deadline_days": deadline_days},
+        details={
+            "previous_status": previous_status,
+            "deadline_days": deadline_days,
+            "reason": review_data.reason,
+        },
     )
     db.add(action)
 

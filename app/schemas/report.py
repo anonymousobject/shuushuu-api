@@ -166,6 +166,17 @@ class ReviewCreate(BaseModel):
     deadline_days: int | None = Field(
         None, ge=1, le=30, description="Days until voting deadline (default: 7)"
     )
+    reason: str | None = Field(
+        None, max_length=1000, description="Optional reason for starting the review"
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def sanitize_reason(cls, v: str | None) -> str | None:
+        """Sanitize review reason."""
+        if v is None:
+            return v
+        return v.strip() or None
 
 
 class ReviewVoteRequest(BaseModel):
@@ -229,6 +240,7 @@ class ReviewResponse(BaseModel):
     source_report_category: int | None = None
     source_report_category_label: str | None = None
     source_report_reason: str | None = None
+    reason: str | None = None
     initiated_by: int | None
     initiated_by_username: str | None = None
     closed_by: int | None = None
