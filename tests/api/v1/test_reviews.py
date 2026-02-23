@@ -220,6 +220,46 @@ class TestCreateReview:
         await db_session.refresh(image)
         assert image.status == ImageStatus.REVIEW
 
+    async def test_create_review_with_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a review with an optional reason."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        response = await client.post(
+            f"/api/v1/admin/images/{image.image_id}/review",
+            json={"deadline_days": 7, "reason": "Borderline content needs community input"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["reason"] == "Borderline content needs community input"
+
+    async def test_create_review_without_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a review without reason returns null."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        response = await client.post(
+            f"/api/v1/admin/images/{image.image_id}/review",
+            json={"deadline_days": 7},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["reason"] is None
+
     async def test_create_review_with_existing_open_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -752,6 +792,35 @@ class TestReviewDetail:
         assert len(data["votes"]) == 1
         assert data["votes"][0]["vote"] == 1
         assert data["votes"][0]["comment"] == "Keep it"
+
+    async def test_get_review_detail_includes_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that review detail response includes the reason field."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_view")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        review = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=admin.user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+            reason="Needs community review",
+        )
+        db_session.add(review)
+        await db_session.commit()
+        await db_session.refresh(review)
+
+        response = await client.get(
+            f"/api/v1/admin/reviews/{review.review_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["reason"] == "Needs community review"
 
     async def test_get_nonexistent_review(
         self, client: AsyncClient, db_session: AsyncSession

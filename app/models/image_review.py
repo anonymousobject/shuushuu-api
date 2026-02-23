@@ -48,6 +48,9 @@ class ImageReviewBase(SQLModel):
     # Whether the deadline has been extended
     extension_used: int = Field(default=0)
 
+    # Optional reason for starting the review (for direct reviews without a report)
+    reason: str | None = Field(default=None, max_length=1000)
+
     # Admin who closed the review early (NULL = automatic/deadline close)
     closed_by: int | None = Field(default=None)
 
