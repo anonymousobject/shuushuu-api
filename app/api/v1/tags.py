@@ -112,7 +112,7 @@ FULLTEXT_SPECIAL_CHARS = frozenset('+-~*"()><@')
 #
 # These split terms into separate tokens, which may result in tokens too short for fulltext.
 # e.g., "C.C." becomes ["C", "C"] which are both below min token size.
-FULLTEXT_WORD_DELIMITERS = frozenset(" \n\t;:!?.'\"`()[]{}|&/\\,-_=~")
+FULLTEXT_WORD_DELIMITERS = frozenset(" \n\t;:!?.'\"`()[]{}|&/\\,-=~")
 
 # Pre-computed translation table for efficient delimiter replacement (used by str.translate)
 _DELIMITER_TRANS_TABLE = str.maketrans(dict.fromkeys(FULLTEXT_WORD_DELIMITERS, " "))

@@ -1171,6 +1171,27 @@ class TestFuzzyTagSearch:
         for tag in data["tags"]:
             assert tag.get("is_alias") is False or tag.get("is_alias") is None
 
+    async def test_search_term_with_underscores(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that searching for terms containing underscores works correctly.
+
+        MySQL/MariaDB InnoDB FULLTEXT treats underscore as a word character (not a
+        delimiter), so 'yano_0o0' is indexed as a single token. Our Python-side
+        tokenizer must match this behavior to produce valid FULLTEXT queries.
+        """
+        tag = Tags(title="Yano (yano_0o0)", type=TagType.CHARACTER)
+        db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?search=yano_0o0")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] >= 1, "Search for 'yano_0o0' should find 'Yano (yano_0o0)'"
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "Yano (yano_0o0)" in titles
+
 
 
 @pytest.mark.api
