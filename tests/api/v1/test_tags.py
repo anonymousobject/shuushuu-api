@@ -2163,6 +2163,113 @@ class TestUpdateTag:
         alias_links = result.all()
         assert len(alias_links) == 0
 
+    async def test_setting_alias_updates_usage_counts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that usage_count is recalculated after alias migration.
+
+        When tag_links are migrated from alias to canonical via UPDATE, the
+        database triggers (INSERT/DELETE) don't fire. The application must
+        explicitly recalculate usage_count for both tags.
+        """
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminusagecount",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminusagecount@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create canonical tag and alias tag
+        canonical_tag = Tags(title="Henge Usage", desc="canonical", type=TagType.CHARACTER)
+        alias_tag = Tags(title="Zenra Usage", desc="alias", type=TagType.CHARACTER)
+        db_session.add_all([canonical_tag, alias_tag])
+        await db_session.commit()
+        await db_session.refresh(canonical_tag)
+        await db_session.refresh(alias_tag)
+
+        # Create images and link them to the alias tag
+        images = []
+        for i in range(3):
+            img = Images(
+                filename=f"usage-count-test-{i:03d}",
+                ext="jpg",
+                original_filename=f"test{i}.jpg",
+                md5_hash=f"{i:032d}",
+                filesize=1000,
+                width=100,
+                height=100,
+                rating=0.0,
+                user_id=admin.user_id,
+                status=1,
+            )
+            images.append(img)
+        db_session.add_all(images)
+        await db_session.commit()
+        for img in images:
+            await db_session.refresh(img)
+
+        # Link all 3 images to the alias tag (triggers increment alias usage_count to 3)
+        for img in images:
+            db_session.add(
+                TagLinks(tag_id=alias_tag.tag_id, image_id=img.image_id, user_id=admin.user_id)
+            )
+        await db_session.commit()
+
+        # Verify initial usage_counts via trigger
+        await db_session.refresh(alias_tag)
+        await db_session.refresh(canonical_tag)
+        assert alias_tag.usage_count == 3
+        assert canonical_tag.usage_count == 0
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminusagecount", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set alias_of on the alias tag — migrates tag_links to canonical
+        response = await client.put(
+            f"/api/v1/tags/{alias_tag.tag_id}",
+            json={"title": "Zenra Usage", "alias_of": canonical_tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Refresh to get updated values from DB
+        await db_session.refresh(canonical_tag)
+        await db_session.refresh(alias_tag)
+
+        # Canonical tag should now have usage_count == 3 (all links migrated to it)
+        assert canonical_tag.usage_count == 3, (
+            f"Canonical usage_count should be 3, got {canonical_tag.usage_count}"
+        )
+        # Alias tag should now have usage_count == 0 (all links moved away)
+        assert alias_tag.usage_count == 0, (
+            f"Alias usage_count should be 0, got {alias_tag.usage_count}"
+        )
+
     async def test_setting_alias_handles_duplicate_links(
         self, client: AsyncClient, db_session: AsyncSession
     ):

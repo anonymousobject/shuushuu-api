@@ -1250,6 +1250,16 @@ async def update_tag(
             .values(tag_id=canonical_id)
         )
 
+        # Recalculate usage_count for both tags since UPDATE doesn't fire
+        # the INSERT/DELETE triggers that normally maintain these counts
+        for tid in (canonical_id, tag_id):
+            count_result = await db.execute(
+                select(func.count()).where(TagLinks.tag_id == tid)  # type: ignore[arg-type]
+            )
+            await db.execute(
+                update(Tags).where(Tags.tag_id == tid).values(usage_count=count_result.scalar())  # type: ignore[arg-type]
+            )
+
     db.add(tag)
     await db.commit()
     await db.refresh(tag)
