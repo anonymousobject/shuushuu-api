@@ -359,7 +359,10 @@ class TestCreateCharacterSourceLink:
         )
 
         assert response.status_code == 400
-        assert "alias" in response.json()["detail"].lower()
+        detail = response.json()["detail"]
+        assert "alias" in detail.lower()
+        assert "Reimu Hakurei" in detail
+        assert "Hakurei Reimu" in detail
 
     async def test_create_link_rejects_alias_source_tag(
         self,
@@ -392,7 +395,10 @@ class TestCreateCharacterSourceLink:
         )
 
         assert response.status_code == 400
-        assert "alias" in response.json()["detail"].lower()
+        detail = response.json()["detail"]
+        assert "alias" in detail.lower()
+        assert "Touhou" in detail
+        assert "Touhou Project" in detail
 
 
 @pytest.mark.api
