@@ -3695,10 +3695,10 @@ class TestTagNameValidation:
         assert response.status_code == 200
         assert response.json()["title"] == "School Uniform"
 
-    async def test_valid_cjk_tag_name(
+    async def test_reject_cjk_tag_name(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that CJK characters (Japanese kanji, Chinese) are allowed."""
+        """Test that CJK characters (Japanese kanji, Chinese) are rejected."""
         perm = Perms(title="tag_create", desc="Create tags")
         db_session.add(perm)
         await db_session.commit()
@@ -3727,19 +3727,18 @@ class TestTagNameValidation:
         )
         access_token = login_response.json()["access_token"]
 
-        # Create tag with Japanese kanji
+        # CJK characters are not allowed (ASCII-only)
         response = await client.post(
             "/api/v1/tags",
             json={"title": "桜木花道", "type": TagType.CHARACTER},
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        assert response.status_code == 200
-        assert response.json()["title"] == "桜木花道"
+        assert response.status_code == 422
 
-    async def test_valid_hiragana_katakana_tag_name(
+    async def test_reject_hiragana_katakana_tag_name(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that Hiragana and Katakana are allowed."""
+        """Test that Hiragana and Katakana are rejected."""
         perm = Perms(title="tag_create", desc="Create tags")
         db_session.add(perm)
         await db_session.commit()
@@ -3768,26 +3767,26 @@ class TestTagNameValidation:
         )
         access_token = login_response.json()["access_token"]
 
-        # Create tag with hiragana
+        # Hiragana not allowed (ASCII-only)
         response = await client.post(
             "/api/v1/tags",
             json={"title": "ひらがな", "type": TagType.CHARACTER},
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 422
 
-        # Create tag with katakana (different word to avoid collation conflicts)
+        # Katakana not allowed (ASCII-only)
         response = await client.post(
             "/api/v1/tags",
             json={"title": "カタカナ", "type": TagType.CHARACTER},
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 422
 
-    async def test_valid_korean_tag_name(
+    async def test_reject_korean_tag_name(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that Korean Hangul is allowed."""
+        """Test that Korean Hangul is rejected."""
         perm = Perms(title="tag_create", desc="Create tags")
         db_session.add(perm)
         await db_session.commit()
@@ -3816,13 +3815,13 @@ class TestTagNameValidation:
         )
         access_token = login_response.json()["access_token"]
 
-        # Create tag with Korean
+        # Korean not allowed (ASCII-only)
         response = await client.post(
             "/api/v1/tags",
             json={"title": "한글태그", "type": TagType.CHARACTER},
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 422
 
     async def test_valid_punctuation_in_tag_name(
         self, client: AsyncClient, db_session: AsyncSession
@@ -4158,6 +4157,108 @@ class TestTagNameValidation:
         assert response.status_code == 200
         # The title should be normalized
         assert response.json()["title"] == "School Uniform"
+
+    async def test_reject_leading_bang_or_dash(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tags starting with ! or - are rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagleadingadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagleadingadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagleadingadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Tags starting with ! should be rejected
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "!foo", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Tags starting with - should be rejected
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "-foo", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # ! and - are fine in non-leading positions
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "foo-bar", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "foo!", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+    async def test_reject_backtick_in_tag_name(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that backtick character is rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="tagbacktickadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="tagbacktickadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "tagbacktickadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "foo`bar", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
 
     async def test_tag_update_validation(
         self, client: AsyncClient, db_session: AsyncSession
