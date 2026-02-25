@@ -239,11 +239,14 @@ async def validate_tag_relationships(
 
     Raises HTTPException(400) on validation failure.
     """
-    if inheritedfrom_id:
+    if inheritedfrom_id is not None:
         parent_result = await db.execute(select(Tags).where(Tags.tag_id == inheritedfrom_id))  # type: ignore[arg-type]
         parent_tag = parent_result.scalar_one_or_none()
         if not parent_tag:
-            raise HTTPException(status_code=400, detail="Parent tag does not exist")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Parent tag with id {inheritedfrom_id} does not exist",
+            )
         if parent_tag.alias_of is not None:
             # Look up the canonical tag for a helpful error message
             canonical_result = await db.execute(
@@ -262,12 +265,15 @@ async def validate_tag_relationships(
                 ),
             )
 
-    if alias_of:
+    if alias_of is not None:
         alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_of))  # type: ignore[arg-type]
         if not alias_result.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="Alias tag does not exist")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Alias tag with id {alias_of} does not exist",
+            )
 
-    if alias_of and tag_id is not None:
+    if alias_of is not None and tag_id is not None:
         # Check if this tag has children
         children_result = await db.execute(
             select(Tags.tag_id, Tags.title).where(Tags.inheritedfrom_id == tag_id)  # type: ignore[call-overload]
