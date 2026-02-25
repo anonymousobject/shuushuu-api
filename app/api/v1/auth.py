@@ -283,12 +283,17 @@ async def login(
         )
 
     # Check if account is locked
-    if user.lockout_until and user.lockout_until > datetime.now(UTC):
-        remaining_minutes = int((user.lockout_until - datetime.now(UTC)).total_seconds() / 60)
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail=f"Account locked due to too many failed login attempts. Try again in {remaining_minutes} minutes.",
-        )
+    if user.lockout_until:
+        if user.lockout_until > datetime.now(UTC):
+            remaining_minutes = int((user.lockout_until - datetime.now(UTC)).total_seconds() / 60)
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=f"Account locked due to too many failed login attempts. Try again in {remaining_minutes} minutes.",
+            )
+        else:
+            # Lockout expired — reset counter so user gets fresh attempts
+            user.failed_login_attempts = 0
+            user.lockout_until = None
 
     # Verify password (supports both bcrypt and legacy SHA1)
     password_valid = False

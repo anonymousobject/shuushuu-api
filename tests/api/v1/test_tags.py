@@ -91,6 +91,29 @@ class TestListTags:
         assert "C.C. Lemon" in titles
         assert "Regular Tag" not in titles
 
+    @pytest.mark.needs_commit
+    async def test_search_tags_with_hyphens(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test searching tags containing hyphens like 'Deep-Blue Series'.
+
+        MySQL fulltext treats hyphens as word delimiters, so "Deep-Blue" becomes
+        tokens "Deep" and "Blue". The search must tokenize the query the same way
+        so that "deep-blue" matches.
+        """
+        tag1 = Tags(title="Deep-Blue Series", desc="A series", type=TagType.THEME)
+        tag2 = Tags(title="Unrelated Tag", desc="Other", type=TagType.THEME)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+
+        # Search for "deep-blue" should find "Deep-Blue Series"
+        response = await client.get("/api/v1/tags?search=deep-blue")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "Deep-Blue Series" in titles
+
     async def test_filter_tags_by_type(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -1148,6 +1171,27 @@ class TestFuzzyTagSearch:
         for tag in data["tags"]:
             assert tag.get("is_alias") is False or tag.get("is_alias") is None
 
+    async def test_search_term_with_underscores(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that searching for terms containing underscores works correctly.
+
+        MySQL/MariaDB InnoDB FULLTEXT treats underscore as a word character (not a
+        delimiter), so 'yano_0o0' is indexed as a single token. Our Python-side
+        tokenizer must match this behavior to produce valid FULLTEXT queries.
+        """
+        tag = Tags(title="Yano (yano_0o0)", type=TagType.CHARACTER)
+        db_session.add(tag)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?search=yano_0o0")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] >= 1, "Search for 'yano_0o0' should find 'Yano (yano_0o0)'"
+        titles = {tag["title"] for tag in data["tags"]}
+        assert "Yano (yano_0o0)" in titles
+
 
 
 @pytest.mark.api
@@ -2060,7 +2104,7 @@ class TestUpdateTag:
         response = await client.put(
             f"/api/v1/tags/{tag_to_rename.tag_id}",
             json={"title": "existing tag", "type": TagType.THEME},
-        headers={"Authorization": f"Bearer {access_token}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 409
         assert "already exists" in response.json()["detail"].lower()
@@ -2118,6 +2162,315 @@ class TestUpdateTag:
         )
         assert response.status_code == 200
         assert response.json()["title"] == "Some Tag"
+
+
+    async def test_setting_alias_migrates_tag_links(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that when a tag is aliased, its existing tag_links are migrated to the canonical tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminalias",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminalias@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create canonical tag and alias tag
+        canonical_tag = Tags(title="Tobise Tomoe", desc="canonical", type=TagType.CHARACTER)
+        alias_tag = Tags(title="Tomoe Tobise", desc="alias", type=TagType.CHARACTER)
+        db_session.add_all([canonical_tag, alias_tag])
+        await db_session.commit()
+        await db_session.refresh(canonical_tag)
+        await db_session.refresh(alias_tag)
+
+        # Create images and link them to the alias tag
+        image1 = Images(
+            filename="alias-test-001",
+            ext="jpg",
+            original_filename="test1.jpg",
+            md5_hash="a" * 32,
+            filesize=1000,
+            width=100,
+            height=100,
+            rating=0.0,
+            user_id=admin.user_id,
+            status=1,
+        )
+        image2 = Images(
+            filename="alias-test-002",
+            ext="jpg",
+            original_filename="test2.jpg",
+            md5_hash="b" * 32,
+            filesize=1000,
+            width=100,
+            height=100,
+            rating=0.0,
+            user_id=admin.user_id,
+            status=1,
+        )
+        db_session.add_all([image1, image2])
+        await db_session.commit()
+        await db_session.refresh(image1)
+        await db_session.refresh(image2)
+
+        # Link images to the alias tag
+        link1 = TagLinks(tag_id=alias_tag.tag_id, image_id=image1.image_id, user_id=admin.user_id)
+        link2 = TagLinks(tag_id=alias_tag.tag_id, image_id=image2.image_id, user_id=admin.user_id)
+        db_session.add_all([link1, link2])
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminalias", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set alias_of on the alias tag
+        response = await client.put(
+            f"/api/v1/tags/{alias_tag.tag_id}",
+            json={"title": "Tomoe Tobise", "alias_of": canonical_tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Verify tag_links were migrated to canonical tag
+        result = await db_session.execute(
+            select(TagLinks).where(TagLinks.tag_id == canonical_tag.tag_id)
+        )
+        canonical_links = result.all()
+        assert len(canonical_links) == 2
+
+        # Verify no links remain on the alias tag
+        result = await db_session.execute(
+            select(TagLinks).where(TagLinks.tag_id == alias_tag.tag_id)
+        )
+        alias_links = result.all()
+        assert len(alias_links) == 0
+
+    async def test_setting_alias_updates_usage_counts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that usage_count is recalculated after alias migration.
+
+        When tag_links are migrated from alias to canonical via UPDATE, the
+        database triggers (INSERT/DELETE) don't fire. The application must
+        explicitly recalculate usage_count for both tags.
+        """
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminusagecount",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminusagecount@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create canonical tag and alias tag
+        canonical_tag = Tags(title="Henge Usage", desc="canonical", type=TagType.CHARACTER)
+        alias_tag = Tags(title="Zenra Usage", desc="alias", type=TagType.CHARACTER)
+        db_session.add_all([canonical_tag, alias_tag])
+        await db_session.commit()
+        await db_session.refresh(canonical_tag)
+        await db_session.refresh(alias_tag)
+
+        # Create images and link them to the alias tag
+        images = []
+        for i in range(3):
+            img = Images(
+                filename=f"usage-count-test-{i:03d}",
+                ext="jpg",
+                original_filename=f"test{i}.jpg",
+                md5_hash=f"{i:032d}",
+                filesize=1000,
+                width=100,
+                height=100,
+                rating=0.0,
+                user_id=admin.user_id,
+                status=1,
+            )
+            images.append(img)
+        db_session.add_all(images)
+        await db_session.commit()
+        for img in images:
+            await db_session.refresh(img)
+
+        # Link all 3 images to the alias tag (triggers increment alias usage_count to 3)
+        for img in images:
+            db_session.add(
+                TagLinks(tag_id=alias_tag.tag_id, image_id=img.image_id, user_id=admin.user_id)
+            )
+        await db_session.commit()
+
+        # Verify initial usage_counts via trigger
+        await db_session.refresh(alias_tag)
+        await db_session.refresh(canonical_tag)
+        assert alias_tag.usage_count == 3
+        assert canonical_tag.usage_count == 0
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminusagecount", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set alias_of on the alias tag — migrates tag_links to canonical
+        response = await client.put(
+            f"/api/v1/tags/{alias_tag.tag_id}",
+            json={"title": "Zenra Usage", "alias_of": canonical_tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Refresh to get updated values from DB
+        await db_session.refresh(canonical_tag)
+        await db_session.refresh(alias_tag)
+
+        # Canonical tag should now have usage_count == 3 (all links migrated to it)
+        assert canonical_tag.usage_count == 3, (
+            f"Canonical usage_count should be 3, got {canonical_tag.usage_count}"
+        )
+        # Alias tag should now have usage_count == 0 (all links moved away)
+        assert alias_tag.usage_count == 0, (
+            f"Alias usage_count should be 0, got {alias_tag.usage_count}"
+        )
+
+    async def test_setting_alias_handles_duplicate_links(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that migrating tag_links skips images already linked to the canonical tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminaliasdup",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaliasdup@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create canonical tag and alias tag
+        canonical_tag = Tags(title="Canonical Dup", desc="canonical", type=TagType.CHARACTER)
+        alias_tag = Tags(title="Alias Dup", desc="alias", type=TagType.CHARACTER)
+        db_session.add_all([canonical_tag, alias_tag])
+        await db_session.commit()
+        await db_session.refresh(canonical_tag)
+        await db_session.refresh(alias_tag)
+
+        # Create image
+        image = Images(
+            filename="alias-dup-test-001",
+            ext="jpg",
+            original_filename="test.jpg",
+            md5_hash="c" * 32,
+            filesize=1000,
+            width=100,
+            height=100,
+            rating=0.0,
+            user_id=admin.user_id,
+            status=1,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Link image to BOTH tags (simulating pre-existing canonical link)
+        link_canonical = TagLinks(
+            tag_id=canonical_tag.tag_id, image_id=image.image_id, user_id=admin.user_id
+        )
+        link_alias = TagLinks(
+            tag_id=alias_tag.tag_id, image_id=image.image_id, user_id=admin.user_id
+        )
+        db_session.add_all([link_canonical, link_alias])
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaliasdup", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set alias_of on the alias tag
+        response = await client.put(
+            f"/api/v1/tags/{alias_tag.tag_id}",
+            json={"title": "Alias Dup", "alias_of": canonical_tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Verify canonical tag has exactly 1 link (no duplicate)
+        result = await db_session.execute(
+            select(TagLinks).where(TagLinks.tag_id == canonical_tag.tag_id)
+        )
+        canonical_links = result.all()
+        assert len(canonical_links) == 1
+
+        # Verify alias tag has no links
+        result = await db_session.execute(
+            select(TagLinks).where(TagLinks.tag_id == alias_tag.tag_id)
+        )
+        alias_links = result.all()
+        assert len(alias_links) == 0
 
 
 @pytest.mark.api

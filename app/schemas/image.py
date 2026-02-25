@@ -275,6 +275,18 @@ class SimilarImagesResponse(BaseModel):
     )
 
 
+class SimilarImagesUploadResponse(BaseModel):
+    """Schema for similarity check by upload response.
+
+    Unlike SimilarImagesResponse, has no query_image_id since the
+    uploaded image is not stored in the database.
+    """
+
+    similar_images: list[SimilarImageResult] = Field(
+        description="List of similar images ordered by similarity score (highest first)"
+    )
+
+
 class ImageUploadSimilarResponse(BaseModel):
     """Schema for 409 response when similar images are found during upload.
 

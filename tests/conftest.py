@@ -202,10 +202,12 @@ def setup_test_database():
     # Get test user credentials (these can be overridden via environment)
     test_user = os.getenv("TEST_DB_USER", DEFAULT_TEST_DB_USER)
     test_password = os.getenv("TEST_DB_PASSWORD", DEFAULT_TEST_DB_PASSWORD)
+    test_host = os.getenv("TEST_DB_HOST", DEFAULT_TEST_DB_HOST)
+    test_port = os.getenv("TEST_DB_PORT", DEFAULT_TEST_DB_PORT)
 
     # Use root user to drop/create database (needs elevated privileges)
     admin_engine = create_engine(
-        f"mysql+pymysql://root:{root_password}@localhost:3306/mysql",
+        f"mysql+pymysql://root:{root_password}@{test_host}:{test_port}/mysql",
         isolation_level="AUTOCOMMIT",
     )
 

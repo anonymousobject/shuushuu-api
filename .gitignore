@@ -97,6 +97,9 @@ Thumbs.db
 /docker/data/
 /docker/volumes/
 
+# Production nginx config (contains server architecture details)
+docker/nginx/e-shuushuu.net.conf
+
 # Certbot - Let's Encrypt certificates and keys (DO NOT COMMIT!)
 /docker/certbot/conf/
 /docker/certbot/www/

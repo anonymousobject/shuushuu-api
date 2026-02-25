@@ -20,6 +20,7 @@ import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.config import (
     AdminActionType,
@@ -50,6 +51,7 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPe
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
 from app.models.tag import Tags
+from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.models.user_suspension import UserSuspensions
@@ -101,6 +103,8 @@ from app.schemas.report import (
     UnifiedReportListResponse,
     VoteResponse,
 )
+from app.services.rating import schedule_rating_recalculation
+from app.services.repost import migrate_repost_data
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -708,6 +712,8 @@ async def change_image_status(
     previous_status = image.status
     previous_locked = image.locked
 
+    migration_result: dict[str, int] = {}
+
     # Handle status change if provided
     if status_data.status is not None:
         # Handle repost status
@@ -732,6 +738,9 @@ async def change_image_status(
                     detail="Original image not found",
                 )
             image.replacement_id = status_data.replacement_id
+
+            # Migrate favorites, ratings, and tags to the original image
+            migration_result = await migrate_repost_data(image_id, status_data.replacement_id, db)
         else:
             # Clear replacement_id when not a repost
             image.replacement_id = None
@@ -766,12 +775,17 @@ async def change_image_status(
             "previous_locked": previous_locked,
             "new_locked": image.locked,
             "replacement_id": image.replacement_id,
+            **migration_result,
         },
     )
     db.add(action)
 
     await db.commit()
     await db.refresh(image)
+
+    # Schedule rating recalculation for original image after repost migration
+    if status_data.status == ImageStatus.REPOST and status_data.replacement_id:
+        await schedule_rating_recalculation(status_data.replacement_id)
 
     return ImageStatusResponse.model_validate(image)
 
@@ -879,8 +893,14 @@ async def list_reports(
         total += image_total
 
         # Now select ImageReports rows plus the reporting user's username
-        query = select(ImageReports, Users.username)  # type: ignore[call-overload]
+        ReviewedByUser = aliased(Users)
+        query = select(  # type: ignore[call-overload]
+            ImageReports,
+            Users.username,
+            ReviewedByUser.username.label("reviewed_by_username"),  # type: ignore[attr-defined]
+        )
         query = query.join(Users, Users.user_id == ImageReports.user_id)
+        query = query.outerjoin(ReviewedByUser, ReviewedByUser.user_id == ImageReports.reviewed_by)
         if status_filter is not None:
             query = query.where(ImageReports.status == status_filter)
         if category is not None:
@@ -894,7 +914,7 @@ async def list_reports(
         rows = result.all()
 
         # Collect report IDs to fetch tag suggestions
-        report_ids = [report.report_id for report, _ in rows]
+        report_ids = [report.report_id for report, _, _ in rows]
 
         # Fetch tag suggestions for all reports in one query
         suggestions_by_report: dict[int, list[TagSuggestion]] = {}
@@ -918,9 +938,10 @@ async def list_reports(
                     )
                 )
 
-        for report, username in rows:
+        for report, username, reviewed_by_username in rows:
             response = ReportResponse.model_validate(report)
             response.username = username
+            response.reviewed_by_username = reviewed_by_username
             if report.report_id in suggestions_by_report:
                 response.suggested_tags = suggestions_by_report[report.report_id]
             image_reports.append(response)
@@ -964,18 +985,22 @@ async def list_reports(
         result = await db.execute(query)
         comment_rows = result.all()
 
-        # Collect comment author user IDs to fetch usernames
+        # Collect user IDs to batch-fetch usernames (comment authors + reviewers)
         comment_author_ids = {
             row.comment_user_id for row in comment_rows if row.comment_user_id is not None
         }
-        author_usernames: dict[int, str] = {}
-        if comment_author_ids:
-            author_result = await db.execute(
+        reviewer_ids = {
+            row[0].reviewed_by for row in comment_rows if row[0].reviewed_by is not None
+        }
+        all_user_ids = comment_author_ids | reviewer_ids
+        user_usernames: dict[int, str] = {}
+        if all_user_ids:
+            user_result = await db.execute(
                 select(Users.user_id, Users.username).where(  # type: ignore[call-overload]
-                    Users.user_id.in_(comment_author_ids)  # type: ignore[union-attr]
+                    Users.user_id.in_(all_user_ids)  # type: ignore[union-attr]
                 )
             )
-            author_usernames = {row.user_id: row.username for row in author_result.all()}
+            user_usernames = {row.user_id: row.username for row in user_result.all()}
 
         for row in comment_rows:
             report = row[0]  # CommentReports object
@@ -990,7 +1015,7 @@ async def list_reports(
             if comment_user_id:
                 comment_author = UserSummary(
                     user_id=comment_user_id,
-                    username=author_usernames.get(comment_user_id, "Unknown"),
+                    username=user_usernames.get(comment_user_id, "Unknown"),
                 )
             comment_preview = post_text[:100] if post_text else None
 
@@ -1005,6 +1030,9 @@ async def list_reports(
                 status=report.status,
                 created_at=report.created_at,
                 reviewed_by=report.reviewed_by,
+                reviewed_by_username=user_usernames.get(report.reviewed_by)
+                if report.reviewed_by
+                else None,
                 reviewed_at=report.reviewed_at,
                 admin_notes=report.admin_notes,
                 comment_author=comment_author,
@@ -1323,27 +1351,50 @@ async def apply_tag_suggestions(
         if suggestion.suggestion_id in approved_ids:
             suggestion.accepted = True
 
+            # Resolve alias to canonical tag
+            tag_result = await db.execute(
+                select(Tags).where(Tags.tag_id == suggestion.tag_id)  # type: ignore[arg-type]
+            )
+            tag = tag_result.scalar_one_or_none()
+            resolved_tag_id = tag.alias_of if tag and tag.alias_of else suggestion.tag_id
+
             if suggestion.suggestion_type == 1:  # Add
-                if suggestion.tag_id not in existing_tag_ids:
-                    tag_link = TagLinks(image_id=report.image_id, tag_id=suggestion.tag_id)
+                if resolved_tag_id not in existing_tag_ids:
+                    tag_link = TagLinks(image_id=report.image_id, tag_id=resolved_tag_id)
                     db.add(tag_link)
-                    applied_tags.append(suggestion.tag_id)
-                    existing_tag_ids.add(suggestion.tag_id)
+                    db.add(
+                        TagHistory(
+                            image_id=report.image_id,
+                            tag_id=resolved_tag_id,
+                            action="a",
+                            user_id=current_user.user_id,
+                        )
+                    )
+                    applied_tags.append(resolved_tag_id)
+                    existing_tag_ids.add(resolved_tag_id)
                 else:
-                    already_present.append(suggestion.tag_id)
+                    already_present.append(resolved_tag_id)
 
             elif suggestion.suggestion_type == 2:  # Remove
-                if suggestion.tag_id in existing_tag_ids:
+                if resolved_tag_id in existing_tag_ids:
+                    db.add(
+                        TagHistory(
+                            image_id=report.image_id,
+                            tag_id=resolved_tag_id,
+                            action="r",
+                            user_id=current_user.user_id,
+                        )
+                    )
                     await db.execute(
                         delete(TagLinks).where(
                             TagLinks.image_id == report.image_id,  # type: ignore[arg-type]
-                            TagLinks.tag_id == suggestion.tag_id,  # type: ignore[arg-type]
+                            TagLinks.tag_id == resolved_tag_id,  # type: ignore[arg-type]
                         )
                     )
-                    removed_tags.append(suggestion.tag_id)
-                    existing_tag_ids.discard(suggestion.tag_id)
+                    removed_tags.append(resolved_tag_id)
+                    existing_tag_ids.discard(resolved_tag_id)
                 else:
-                    already_absent.append(suggestion.tag_id)
+                    already_absent.append(resolved_tag_id)
         else:
             suggestion.accepted = False
 
@@ -1554,15 +1605,18 @@ async def list_reviews(
 
     Requires REVIEW_VIEW permission.
     """
+    ClosedByUser = aliased(Users)
     query = (
         select(  # type: ignore[call-overload]
             ImageReviews,
             Users.username,
             ImageReports.category,
             ImageReports.reason_text,
+            ClosedByUser.username.label("closed_by_username"),  # type: ignore[attr-defined]
         )
         .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
         .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
+        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)
     )
 
     if status_filter is not None:
@@ -1582,7 +1636,7 @@ async def list_reviews(
 
     # Build responses with vote counts
     items = []
-    for review, initiated_by_username, report_category, report_reason in rows:
+    for review, initiated_by_username, report_category, report_reason, closed_by_username in rows:
         # Get vote counts
         vote_result = await db.execute(
             select(
@@ -1597,6 +1651,7 @@ async def list_reviews(
 
         response = ReviewResponse.model_validate(review)
         response.initiated_by_username = initiated_by_username
+        response.closed_by_username = closed_by_username
         response.source_report_category = report_category
         if report_category is not None:
             response.source_report_category_label = ReportCategory.LABELS.get(
@@ -1627,15 +1682,18 @@ async def get_review(
 
     Requires REVIEW_VIEW permission.
     """
+    ClosedByUser = aliased(Users)
     result = await db.execute(
         select(  # type: ignore[call-overload]
             ImageReviews,
             Users.username,
             ImageReports.category,
             ImageReports.reason_text,
+            ClosedByUser.username.label("closed_by_username"),  # type: ignore[attr-defined]
         )
         .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
         .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
+        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)
         .where(ImageReviews.review_id == review_id)
     )
     row = result.one_or_none()
@@ -1643,12 +1701,13 @@ async def get_review(
     if not row:
         raise HTTPException(status_code=404, detail="Review not found")
 
-    review, initiated_by_username, report_category, report_reason = row
+    review, initiated_by_username, report_category, report_reason, closed_by_username = row
 
     # Get votes with usernames
+    VoteUser = aliased(Users)
     votes_result = await db.execute(
-        select(ReviewVotes, Users.username)  # type: ignore[call-overload]
-        .outerjoin(Users, ReviewVotes.user_id == Users.user_id)
+        select(ReviewVotes, VoteUser.username)  # type: ignore[call-overload]
+        .outerjoin(VoteUser, ReviewVotes.user_id == VoteUser.user_id)
         .where(ReviewVotes.review_id == review_id)
         .order_by(ReviewVotes.created_at)
     )
@@ -1668,6 +1727,7 @@ async def get_review(
 
     response = ReviewDetailResponse.model_validate(review)
     response.initiated_by_username = initiated_by_username
+    response.closed_by_username = closed_by_username
     response.source_report_category = report_category
     if report_category is not None:
         response.source_report_category_label = ReportCategory.LABELS.get(
@@ -1736,6 +1796,7 @@ async def create_review(
         deadline=deadline,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,
+        reason=review_data.reason,
     )
     db.add(review)
     await db.flush()
@@ -1746,7 +1807,11 @@ async def create_review(
         action_type=AdminActionType.REVIEW_START,
         review_id=review.review_id,
         image_id=image_id,
-        details={"previous_status": previous_status, "deadline_days": deadline_days},
+        details={
+            "previous_status": previous_status,
+            "deadline_days": deadline_days,
+            "reason": review_data.reason,
+        },
     )
     db.add(action)
 
@@ -1877,6 +1942,7 @@ async def close_review(
     review.status = ReviewStatus.CLOSED
     review.outcome = close_data.outcome
     review.closed_at = datetime.now(UTC)
+    review.closed_by = current_user.user_id
 
     # Apply outcome to image
     if close_data.outcome == ReviewOutcome.KEEP:
@@ -1906,6 +1972,7 @@ async def close_review(
     await db.refresh(review)
 
     response = ReviewResponse.model_validate(review)
+    response.closed_by_username = current_user.username
     response.vote_count = vote_count
     response.keep_votes = keep_votes
     response.remove_votes = remove_votes

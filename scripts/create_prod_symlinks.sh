@@ -5,25 +5,19 @@ set -euo pipefail
 # Links the new directory structure to existing PHP site image files
 #
 # Usage:
-#   SRC_BASE=/path/to/php/images ./scripts/create_prod_symlinks.sh           # Dry-run (preview)
-#   SRC_BASE=/path/to/php/images ./scripts/create_prod_symlinks.sh --apply   # Create symlinks
+#   ./scripts/create_prod_symlinks.sh           # Dry-run (preview)
+#   ./scripts/create_prod_symlinks.sh --apply   # Create symlinks
 #
 # Environment variables:
-#   SRC_BASE   - (required) Path to the PHP site's fullsize image directory
+#   SRC_BASE   - (optional) Source image directory, defaults to $DEST_BASE/fullsize
 #   DEST_BASE  - (optional) Destination directory, defaults to /shuushuu/images
 
 DEST_BASE="${DEST_BASE:-/shuushuu/images}"
+SRC_BASE="${SRC_BASE:-$DEST_BASE/fullsize}"
 DRY_RUN=1
 
 if [ "${1:-}" = "--apply" ]; then
     DRY_RUN=0
-fi
-
-# Validate SRC_BASE is set and exists
-if [ -z "${SRC_BASE:-}" ]; then
-    echo "ERROR: SRC_BASE must be set to the PHP site's image directory" >&2
-    echo "Usage: SRC_BASE=/path/to/images $0 [--apply]" >&2
-    exit 1
 fi
 
 if [ ! -d "$SRC_BASE" ]; then
@@ -68,33 +62,49 @@ create_link() {
 }
 
 # ---------------------------------------------------------------------------
-# 1) Fullsize: all image files excluding medium, large, and thumb variants
+# 1) Fullsize: symlink files into DEST_BASE/fullsize/
 # ---------------------------------------------------------------------------
 echo "--- Fullsize ---"
 fullsize_count=0
 
-# Process main directory (non-recursive for the top level, but find handles it)
-while IFS= read -r -d '' f; do
-    base=$(basename "$f")
-    create_link "$f" "$DEST_BASE/fullsize/$base"
-    fullsize_count=$((fullsize_count + 1))
-done < <(find "$SRC_BASE" -maxdepth 1 -type f \
-    \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
-    ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
-    -print0)
+# Resolve paths to detect overlap (SRC_BASE == DEST_BASE/fullsize)
+resolved_src=$(cd "$SRC_BASE" && pwd -P)
+resolved_dst_fullsize=$(cd "$DEST_BASE/fullsize" 2>/dev/null && pwd -P || echo "")
 
-# Flatten deactivated subdirectory into fullsize (if it exists)
-if [ -d "$SRC_BASE/deactivated" ]; then
-    echo "  (including deactivated/ images)"
+if [ "$resolved_src" = "$resolved_dst_fullsize" ]; then
+    echo "  (source is destination — skipping active files, they are already in place)"
+else
+    # Separate source: symlink all fullsize images into DEST_BASE/fullsize/
     while IFS= read -r -d '' f; do
         base=$(basename "$f")
         create_link "$f" "$DEST_BASE/fullsize/$base"
         fullsize_count=$((fullsize_count + 1))
-    done < <(find "$SRC_BASE/deactivated" -type f \
+    done < <(find "$SRC_BASE" -maxdepth 1 -type f \
         \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
         ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
         -print0)
 fi
+
+# Flatten deactivated subdirectories into fullsize
+# Check both SRC_BASE/deactivated (separate source) and DEST_BASE/fullsize/deactivated (in-tree)
+deactivated_dirs_seen=""
+for deactivated_dir in "$SRC_BASE/deactivated" "$DEST_BASE/fullsize/deactivated"; do
+    resolved_deactivated=$(cd "$deactivated_dir" 2>/dev/null && pwd -P || echo "")
+    # Skip if directory doesn't exist or was already processed
+    [ -z "$resolved_deactivated" ] && continue
+    echo "$deactivated_dirs_seen" | grep -qF "$resolved_deactivated" && continue
+    deactivated_dirs_seen="$deactivated_dirs_seen $resolved_deactivated"
+
+    echo "  (flattening $deactivated_dir)"
+    while IFS= read -r -d '' f; do
+        base=$(basename "$f")
+        create_link "$f" "$DEST_BASE/fullsize/$base"
+        fullsize_count=$((fullsize_count + 1))
+    done < <(find "$deactivated_dir" -type f \
+        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) \
+        ! -iname '*medium*' ! -iname '*large*' ! -iname '*thumb*' \
+        -print0)
+done
 
 echo "  Count: $fullsize_count"
 echo ""

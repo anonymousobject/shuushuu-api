@@ -3,6 +3,8 @@ Images API endpoints
 """
 
 import math
+import shutil
+import tempfile
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
@@ -85,13 +87,19 @@ from app.schemas.image import (
     ImageUploadSimilarResponse,
     SimilarImageResult,
     SimilarImagesResponse,
+    SimilarImagesUploadResponse,
 )
 from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
 from app.schemas.tag import LinkedTag
 from app.schemas.user import UserListResponse, UserResponse
-from app.services.image_processing import get_image_dimensions
+from app.services.image_processing import (
+    create_thumbnail,
+    get_image_dimensions,
+    validate_image_file,
+)
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
+from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import recalculate_image_ratings
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
@@ -136,6 +144,77 @@ async def _hydrate_similar_images(
             img_data["similarity_score"] = r["score"]
             similar.append(SimilarImageResult(**img_data))
     return similar
+
+
+@router.post("/check-similar", response_model=SimilarImagesUploadResponse)
+async def check_similar_by_upload(
+    file: Annotated[UploadFile, File(description="Image file to check for similarity")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+    threshold: Annotated[
+        float | None, Query(description="Minimum similarity score (0-100)", ge=0, le=100)
+    ] = None,
+) -> SimilarImagesUploadResponse:
+    """Check an uploaded image for similar images in the database.
+
+    Accepts a temporary image upload, queries IQDB for similar matches,
+    and returns results. The uploaded image is not stored permanently.
+    """
+    await check_similarity_rate_limit(current_user.id, redis_client)
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Derive safe extension from filename (avoid path traversal via user-controlled input)
+        original_suffix = FilePath(file.filename or "").suffix
+        safe_suffix = original_suffix if original_suffix else ".jpg"
+        temp_path = FilePath(temp_dir) / f"temp-0{safe_suffix}"
+
+        # Stream upload to disk in chunks while enforcing MAX_IMAGE_SIZE
+        max_size = settings.MAX_IMAGE_SIZE
+        chunk_size = 1024 * 1024  # 1 MB
+        total_size = 0
+        with temp_path.open("wb") as out_file:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > max_size:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"File too large. Maximum size is {max_size // (1024 * 1024)}MB",
+                    )
+                out_file.write(chunk)
+
+        # Validate it's a real image
+        validate_image_file(file, temp_path)
+
+        # Generate temp thumbnail for IQDB query
+        create_thumbnail(temp_path, 0, temp_path.suffix.lstrip("."), temp_dir)
+        thumb_path = FilePath(temp_dir) / "thumbs" / "temp-0.webp"
+
+        if not thumb_path.exists():
+            logger.warning("check_similar_thumbnail_failed", user_id=current_user.id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate thumbnail for similarity check",
+            )
+
+        # Query IQDB
+        similar_results = await check_iqdb_similarity(thumb_path, db, threshold=threshold)
+
+        if not similar_results:
+            return SimilarImagesUploadResponse(similar_images=[])
+
+        similar_images = await _hydrate_similar_images(similar_results, db)
+        return SimilarImagesUploadResponse(similar_images=similar_images)
+
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except OSError:
+            logger.warning("check_similar_cleanup_failed", temp_dir=temp_dir)
 
 
 @router.get("/", response_model=ImageDetailedListResponse, include_in_schema=False)
@@ -1717,9 +1796,9 @@ async def upload_image(
         content_type=file.content_type,
     )
 
-    # Check upload rate limit (skip for admins/moderators)
+    # Check upload rate limit and daily limit (skip for admins)
     if not current_user.admin:
-        await check_upload_rate_limit(current_user.id, db)
+        await check_upload_rate_limit(current_user.id, db, maximgperday=current_user.maximgperday)
 
     # Get client IP address for logging
     client_ip = _get_client_ip(request)

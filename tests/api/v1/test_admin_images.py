@@ -6,14 +6,18 @@ These tests cover the PATCH /api/v1/admin/images/{image_id} endpoint.
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import AdminActionType, ImageStatus
 from app.core.security import get_password_hash
 from app.models.admin_action import AdminActions
+from app.models.favorite import Favorites
 from app.models.image import Images
+from app.models.image_rating import ImageRatings
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
+from app.models.tag import Tags
+from app.models.tag_link import TagLinks
 from app.models.user import Users
 
 
@@ -431,6 +435,100 @@ class TestImageStatusChangeAuditLog:
         assert action.details is not None
         assert action.details.get("new_status") == ImageStatus.REPOST
         assert action.details.get("replacement_id") == original_image_id
+
+    async def test_repost_migrates_favorites_ratings_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Marking as repost should migrate favorites, ratings, and tags to original."""
+        admin, admin_password = await create_admin_user(
+            db_session, username="repostadmin", email="repostadmin@example.com"
+        )
+        await grant_permission(db_session, admin.user_id, "image_edit")
+
+        user = await create_regular_user(
+            db_session, username="repostfan", email="repostfan@example.com"
+        )
+
+        original_image = await create_test_image(db_session, admin.user_id)
+        repost_image = Images(
+            user_id=admin.user_id,
+            filename="repost_migrate",
+            ext="jpg",
+            md5_hash="migrate123456789012345678901234",
+            status=ImageStatus.ACTIVE,
+        )
+        db_session.add(repost_image)
+        await db_session.commit()
+        await db_session.refresh(repost_image)
+
+        # Add data to repost
+        db_session.add(Favorites(user_id=user.user_id, image_id=repost_image.image_id))
+        db_session.add(ImageRatings(
+            user_id=user.user_id, image_id=repost_image.image_id, rating=8
+        ))
+        tag = Tags(title="repost test tag", type=1)
+        db_session.add(tag)
+        await db_session.flush()
+        db_session.add(TagLinks(
+            tag_id=tag.tag_id, image_id=repost_image.image_id, user_id=user.user_id
+        ))
+        repost_image.favorites = 1
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{repost_image.image_id}",
+            json={
+                "status": ImageStatus.REPOST,
+                "replacement_id": original_image.image_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+        # Verify data migrated to original
+        fav_result = await db_session.execute(
+            select(func.count()).select_from(Favorites).where(
+                Favorites.image_id == original_image.image_id
+            )
+        )
+        assert fav_result.scalar() == 1
+
+        rating_result = await db_session.execute(
+            select(func.count()).select_from(ImageRatings).where(
+                ImageRatings.image_id == original_image.image_id
+            )
+        )
+        assert rating_result.scalar() == 1
+
+        tag_result = await db_session.execute(
+            select(func.count()).select_from(TagLinks).where(
+                TagLinks.image_id == original_image.image_id
+            )
+        )
+        assert tag_result.scalar() == 1
+
+        # Verify repost is cleaned up
+        fav_result = await db_session.execute(
+            select(func.count()).select_from(Favorites).where(
+                Favorites.image_id == repost_image.image_id
+            )
+        )
+        assert fav_result.scalar() == 0
+
+        # Verify audit trail includes migration summary
+        action_result = await db_session.execute(
+            select(AdminActions).where(
+                AdminActions.image_id == repost_image.image_id,
+                AdminActions.action_type == AdminActionType.IMAGE_STATUS_CHANGE,
+            )
+        )
+        action = action_result.scalar_one()
+        assert action.details["favorites_moved"] == 1
+        assert action.details["ratings_moved"] == 1
+        assert action.details["tags_moved"] == 1
 
 
 @pytest.mark.api

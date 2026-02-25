@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     UPLOAD_DELAY_SECONDS: int = 30
     SEARCH_DELAY_SECONDS: int = 2
     MAX_SEARCH_TAGS: int = 5
+    SIMILARITY_CHECK_RATE_LIMIT: int = 5  # Max similarity checks per user per minute
     REGISTRATION_RATE_LIMIT: int = Field(
         default=5, description="Max registrations per IP per window"
     )

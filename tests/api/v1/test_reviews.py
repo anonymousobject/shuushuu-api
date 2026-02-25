@@ -220,6 +220,46 @@ class TestCreateReview:
         await db_session.refresh(image)
         assert image.status == ImageStatus.REVIEW
 
+    async def test_create_review_with_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a review with an optional reason."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        response = await client.post(
+            f"/api/v1/admin/images/{image.image_id}/review",
+            json={"deadline_days": 7, "reason": "Borderline content needs community input"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["reason"] == "Borderline content needs community input"
+
+    async def test_create_review_without_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a review without reason returns null."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        response = await client.post(
+            f"/api/v1/admin/images/{image.image_id}/review",
+            json={"deadline_days": 7},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["reason"] is None
+
     async def test_create_review_with_existing_open_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -353,6 +393,61 @@ class TestReviewVote:
         assert response.json()["vote"] == 0
         assert response.json()["comment"] == "Changed my mind"
 
+    async def test_vote_on_second_review_for_same_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test voting on a second review for an image that was previously reviewed."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_vote")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        # First review: create, vote, close
+        review1 = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=admin.user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+        )
+        db_session.add(review1)
+        await db_session.commit()
+        await db_session.refresh(review1)
+
+        response = await client.post(
+            f"/api/v1/admin/reviews/{review1.review_id}/vote",
+            json={"vote": 1, "comment": "Keep it"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        # Close the first review
+        review1.status = ReviewStatus.CLOSED
+        review1.outcome = ReviewOutcome.KEEP
+        await db_session.commit()
+
+        # Second review on the same image
+        review2 = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=admin.user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+        )
+        db_session.add(review2)
+        await db_session.commit()
+        await db_session.refresh(review2)
+
+        # Vote on the second review - should succeed, not 500
+        response = await client.post(
+            f"/api/v1/admin/reviews/{review2.review_id}/vote",
+            json={"vote": 0, "comment": "Remove this time"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["vote"] == 0
+        assert data["review_id"] == review2.review_id
+
     async def test_vote_on_closed_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -417,6 +512,8 @@ class TestReviewClose:
         assert data["status"] == ReviewStatus.CLOSED
         assert data["outcome"] == ReviewOutcome.KEEP
         assert data["outcome_label"] == "Keep"
+        assert data["closed_by"] == admin.user_id
+        assert data["closed_by_username"] == admin.username
 
         # Verify image status changed to ACTIVE
         await db_session.refresh(image)
@@ -455,6 +552,78 @@ class TestReviewClose:
         # Verify image status changed to INAPPROPRIATE
         await db_session.refresh(image)
         assert image.status == ImageStatus.INAPPROPRIATE
+
+    async def test_close_review_automatic_has_null_closed_by(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that reviews closed by the deadline job have closed_by=null."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_view")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        # Simulate a review closed by the background job (closed_by=None)
+        review = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=admin.user_id,
+            deadline=datetime.now(UTC) - timedelta(days=1),
+            status=ReviewStatus.CLOSED,
+            outcome=ReviewOutcome.KEEP,
+            closed_at=datetime.now(UTC),
+        )
+        db_session.add(review)
+        await db_session.commit()
+        await db_session.refresh(review)
+
+        response = await client.get(
+            f"/api/v1/admin/reviews/{review.review_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["closed_by"] is None
+        assert data["closed_by_username"] is None
+
+    async def test_close_review_shows_closed_by_in_list(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that list endpoint shows closed_by_username for early-closed reviews."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_close_early")
+        await grant_permission(db_session, admin.user_id, "review_view")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        image.status = ImageStatus.REVIEW
+        review = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=admin.user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+        )
+        db_session.add(review)
+        await db_session.commit()
+        await db_session.refresh(review)
+
+        # Close the review
+        await client.post(
+            f"/api/v1/admin/reviews/{review.review_id}/close",
+            json={"outcome": ReviewOutcome.KEEP},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        # Verify in list endpoint
+        response = await client.get(
+            "/api/v1/admin/reviews?status=1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) >= 1
+        closed_review = next(i for i in items if i["review_id"] == review.review_id)
+        assert closed_review["closed_by"] == admin.user_id
+        assert closed_review["closed_by_username"] == admin.username
 
     async def test_close_already_closed_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
@@ -623,6 +792,35 @@ class TestReviewDetail:
         assert len(data["votes"]) == 1
         assert data["votes"][0]["vote"] == 1
         assert data["votes"][0]["comment"] == "Keep it"
+
+    async def test_get_review_detail_includes_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that review detail response includes the reason field."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_view")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        review = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=admin.user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+            reason="Needs community review",
+        )
+        db_session.add(review)
+        await db_session.commit()
+        await db_session.refresh(review)
+
+        response = await client.get(
+            f"/api/v1/admin/reviews/{review.review_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["reason"] == "Needs community review"
 
     async def test_get_nonexistent_review(
         self, client: AsyncClient, db_session: AsyncSession
