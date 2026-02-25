@@ -100,7 +100,11 @@ async def run_command(cmd: list[str], description: str, cwd: Path | None = None,
         True if successful, False otherwise
     """
     print(f"Running: {description}")
-    print(f"Command: {' '.join(cmd)}\n")
+    safe_cmd = [
+        arg if not arg.startswith("--password=") else "--password=***"
+        for arg in cmd
+    ]
+    print(f"Command: {' '.join(safe_cmd)}\n")
 
     try:
         # Merge environment variables
@@ -249,7 +253,7 @@ async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
     import_cmd = (
         f"sed"
         f" -e '/^LOCK TABLES/d; /^UNLOCK TABLES/d'"
-        f" -e 's/ DEFINER=[^ ]* / /g'"
+        f" -e 's/ DEFINER[ ]*=[ ]*[^ ]*@[^ ]* / /g'"
         f" {sql_file} | {cmd_str}"
     )
 
