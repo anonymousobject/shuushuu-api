@@ -1024,7 +1024,7 @@ async def create_tag(
     existing_tag_result = await db.execute(
         select(Tags).where(Tags.title == tag_data.title).where(Tags.type == tag_data.type)  # type: ignore[arg-type]
     )
-    if existing_tag_result.scalar_one_or_none():
+    if existing_tag_result.first():
         raise HTTPException(status_code=409, detail="Tag already exists")
 
     # if inherited_from is set, ensure that tag exists
@@ -1087,11 +1087,14 @@ async def update_tag(
     # Check for duplicate (title, type) combination
     new_title = update_data.get("title", tag.title)
     new_type = update_data.get("type", tag.type)
-    if new_title != tag.title or new_type != tag.type:
+    if (new_title or "").casefold() != (tag.title or "").casefold() or new_type != tag.type:
         existing_result = await db.execute(
-            select(Tags).where(Tags.title == new_title).where(Tags.type == new_type)  # type: ignore[arg-type]
+            select(Tags)
+            .where(Tags.title == new_title)  # type: ignore[arg-type]
+            .where(Tags.type == new_type)
+            .where(Tags.tag_id != tag_id)  # type: ignore[arg-type]
         )
-        if existing_result.scalar_one_or_none():
+        if existing_result.first():
             raise HTTPException(status_code=409, detail="Tag already exists")
 
     # Validate inheritedfrom_id and alias fields if present
