@@ -1894,6 +1894,124 @@ class TestCreateTag:
         )
         assert response.status_code == 409
 
+    async def test_create_tag_rejects_alias_as_parent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that creating a tag with an alias tag as parent is rejected."""
+        # Create TAG_CREATE permission
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admin_alias_parent",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin_alias_parent@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_CREATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create canonical tag and alias tag
+        canonical = Tags(title="swimsuit", desc="", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="bathing suit", desc="", type=TagType.THEME, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_alias_parent", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to create a tag with the alias as parent
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "bikini",
+                "type": TagType.THEME,
+                "inheritedfrom_id": alias.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "alias" in detail.lower()
+        assert str(canonical.tag_id) in detail
+        assert "swimsuit" in detail
+
+    async def test_create_tag_with_canonical_parent_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that creating a tag with a canonical (non-alias) parent succeeds."""
+        # Create TAG_CREATE permission
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admin_canon_parent",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin_canon_parent@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create canonical parent tag (not an alias)
+        parent = Tags(title="swimsuit canon", desc="", type=TagType.THEME)
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_canon_parent", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Create child tag with canonical parent — should succeed
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "bikini canon",
+                "type": TagType.THEME,
+                "inheritedfrom_id": parent.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
 
 @pytest.mark.api
 class TestUpdateTag:
@@ -2057,6 +2175,200 @@ class TestUpdateTag:
         assert response.status_code == 409
         assert "already exists" in response.json()["detail"].lower()
 
+    async def test_update_tag_rejects_alias_as_parent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that setting an alias tag as parent via update is rejected."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admin_alias_parent_upd",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin_alias_parent_upd@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create canonical tag, alias tag, and a child tag
+        canonical = Tags(title="swimsuit upd", desc="", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="bathing suit upd", desc="", type=TagType.THEME, alias_of=canonical.tag_id)
+        child = Tags(title="bikini upd", desc="", type=TagType.THEME)
+        db_session.add_all([alias, child])
+        await db_session.commit()
+        await db_session.refresh(alias)
+        await db_session.refresh(child)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_alias_parent_upd", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to set the alias as parent of the child tag
+        response = await client.put(
+            f"/api/v1/tags/{child.tag_id}",
+            json={
+                "title": "bikini upd",
+                "type": TagType.THEME,
+                "inheritedfrom_id": alias.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "alias" in detail.lower()
+        assert str(canonical.tag_id) in detail
+        assert "swimsuit upd" in detail
+
+    async def test_update_tag_rejects_aliasing_parent_with_children(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that making a tag with children into an alias is rejected."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admin_parent_alias",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin_parent_alias@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create parent tag and child tags
+        parent = Tags(title="swimwear", desc="", type=TagType.THEME)
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        child1 = Tags(title="bikini child", desc="", type=TagType.THEME, inheritedfrom_id=parent.tag_id)
+        child2 = Tags(title="one-piece", desc="", type=TagType.THEME, inheritedfrom_id=parent.tag_id)
+        db_session.add_all([child1, child2])
+        await db_session.commit()
+        await db_session.refresh(child1)
+        await db_session.refresh(child2)
+
+        # Create another tag to alias to
+        alias_target = Tags(title="swimsuit target", desc="", type=TagType.THEME)
+        db_session.add(alias_target)
+        await db_session.commit()
+        await db_session.refresh(alias_target)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_parent_alias", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to make the parent tag an alias
+        response = await client.put(
+            f"/api/v1/tags/{parent.tag_id}",
+            json={
+                "title": "swimwear",
+                "type": TagType.THEME,
+                "alias_of": alias_target.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "children" in detail.lower()
+        assert "bikini child" in detail
+        assert "one-piece" in detail
+
+    async def test_update_tag_alias_without_children_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that a tag without children can be made into an alias."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admin_alias_ok",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin_alias_ok@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create two tags — no parent-child relationship
+        canonical = Tags(title="canon no kids", desc="", type=TagType.THEME)
+        childless = Tags(title="childless tag", desc="", type=TagType.THEME)
+        db_session.add_all([canonical, childless])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(childless)
+
+        # Login
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_alias_ok", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Make childless tag an alias — should succeed
+        response = await client.put(
+            f"/api/v1/tags/{childless.tag_id}",
+            json={
+                "title": "childless tag",
+                "type": TagType.THEME,
+                "alias_of": canonical.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
 
     async def test_setting_alias_migrates_tag_links(
         self, client: AsyncClient, db_session: AsyncSession
