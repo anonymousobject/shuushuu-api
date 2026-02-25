@@ -1461,6 +1461,21 @@ async def create_character_source_link(
             status_code=400,
             detail=f"character_tag_id must be a Character tag (type={TagType.CHARACTER}), got type={char_tag.type}",
         )
+    if char_tag.alias_of is not None:
+        canonical_result = await db.execute(
+            select(Tags).where(Tags.tag_id == char_tag.alias_of)  # type: ignore[arg-type]
+        )
+        canonical_tag = canonical_result.scalar_one_or_none()
+        canonical_name = canonical_tag.title if canonical_tag else "unknown"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot use alias tag as character. "
+                f"Tag '{char_tag.title}' (id: {link_data.character_tag_id}) is an alias of "
+                f"'{canonical_name}' (id: {char_tag.alias_of}). "
+                f"Use the canonical tag instead."
+            ),
+        )
 
     # Verify source tag exists and is type SOURCE
     source_result = await db.execute(
@@ -1473,6 +1488,21 @@ async def create_character_source_link(
         raise HTTPException(
             status_code=400,
             detail=f"source_tag_id must be a Source tag (type={TagType.SOURCE}), got type={source_tag.type}",
+        )
+    if source_tag.alias_of is not None:
+        canonical_result = await db.execute(
+            select(Tags).where(Tags.tag_id == source_tag.alias_of)  # type: ignore[arg-type]
+        )
+        canonical_tag = canonical_result.scalar_one_or_none()
+        canonical_name = canonical_tag.title if canonical_tag else "unknown"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot use alias tag as source. "
+                f"Tag '{source_tag.title}' (id: {link_data.source_tag_id}) is an alias of "
+                f"'{canonical_name}' (id: {source_tag.alias_of}). "
+                f"Use the canonical tag instead."
+            ),
         )
 
     # Create link
