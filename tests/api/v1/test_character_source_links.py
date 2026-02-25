@@ -328,6 +328,72 @@ class TestCreateCharacterSourceLink:
 
         assert response.status_code == 404
 
+    async def test_create_link_rejects_alias_character_tag(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        admin_user_with_tag_create: Users,
+        character_tag: Tags,
+        source_tag: Tags,
+    ):
+        """Test that alias character tags cannot be used in character-source links."""
+        # Create an alias character tag pointing to the canonical one
+        alias_char = Tags(
+            title="Reimu Hakurei",
+            type=TagType.CHARACTER,
+            alias_of=character_tag.tag_id,
+        )
+        db_session.add(alias_char)
+        await db_session.commit()
+        await db_session.refresh(alias_char)
+
+        access_token = await login_user(client, "cslink_admin", "AdminPassword123!")
+
+        response = await client.post(
+            "/api/v1/character-source-links",
+            json={
+                "character_tag_id": alias_char.tag_id,
+                "source_tag_id": source_tag.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 400
+        assert "alias" in response.json()["detail"].lower()
+
+    async def test_create_link_rejects_alias_source_tag(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        admin_user_with_tag_create: Users,
+        character_tag: Tags,
+        source_tag: Tags,
+    ):
+        """Test that alias source tags cannot be used in character-source links."""
+        # Create an alias source tag pointing to the canonical one
+        alias_source = Tags(
+            title="Touhou",
+            type=TagType.SOURCE,
+            alias_of=source_tag.tag_id,
+        )
+        db_session.add(alias_source)
+        await db_session.commit()
+        await db_session.refresh(alias_source)
+
+        access_token = await login_user(client, "cslink_admin", "AdminPassword123!")
+
+        response = await client.post(
+            "/api/v1/character-source-links",
+            json={
+                "character_tag_id": character_tag.tag_id,
+                "source_tag_id": alias_source.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 400
+        assert "alias" in response.json()["detail"].lower()
+
 
 @pytest.mark.api
 class TestListCharacterSourceLinks:

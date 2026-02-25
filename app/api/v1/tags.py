@@ -1461,6 +1461,11 @@ async def create_character_source_link(
             status_code=400,
             detail=f"character_tag_id must be a Character tag (type={TagType.CHARACTER}), got type={char_tag.type}",
         )
+    if char_tag.alias_of is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot use alias tag as character. Use the canonical tag instead.",
+        )
 
     # Verify source tag exists and is type SOURCE
     source_result = await db.execute(
@@ -1473,6 +1478,11 @@ async def create_character_source_link(
         raise HTTPException(
             status_code=400,
             detail=f"source_tag_id must be a Source tag (type={TagType.SOURCE}), got type={source_tag.type}",
+        )
+    if source_tag.alias_of is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot use alias tag as source. Use the canonical tag instead.",
         )
 
     # Create link
