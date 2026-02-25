@@ -223,6 +223,74 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int, max_depth: int = 10) 
     return [row[0] for row in result.fetchall()]
 
 
+async def validate_tag_relationships(
+    db: AsyncSession,
+    *,
+    tag_id: int | None,
+    inheritedfrom_id: int | None,
+    alias_of: int | None,
+) -> None:
+    """Validate parent/alias tag constraints.
+
+    Checks:
+    1. Parent tag exists and is not an alias
+    2. Alias tag exists
+    3. Tag being aliased has no children (update only, when tag_id is set)
+
+    Raises HTTPException(400) on validation failure.
+    """
+    if inheritedfrom_id is not None:
+        parent_result = await db.execute(select(Tags).where(Tags.tag_id == inheritedfrom_id))  # type: ignore[arg-type]
+        parent_tag = parent_result.scalar_one_or_none()
+        if not parent_tag:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Parent tag with id {inheritedfrom_id} does not exist",
+            )
+        if parent_tag.alias_of is not None:
+            # Look up the canonical tag for a helpful error message
+            canonical_result = await db.execute(
+                select(Tags).where(Tags.tag_id == parent_tag.alias_of)  # type: ignore[arg-type]
+            )
+            canonical_tag = canonical_result.scalar_one_or_none()
+            canonical_name = canonical_tag.title if canonical_tag else "unknown"
+            canonical_id = parent_tag.alias_of
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot use alias tag as parent. "
+                    f"Tag '{parent_tag.title}' (id: {inheritedfrom_id}) is an alias of "
+                    f"'{canonical_name}' (id: {canonical_id}). "
+                    f"Use the canonical tag as parent instead."
+                ),
+            )
+
+    if alias_of is not None:
+        alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_of))  # type: ignore[arg-type]
+        if not alias_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Alias tag with id {alias_of} does not exist",
+            )
+
+    if alias_of is not None and tag_id is not None:
+        # Check if this tag has children
+        children_result = await db.execute(
+            select(Tags.tag_id, Tags.title).where(Tags.inheritedfrom_id == tag_id)  # type: ignore[call-overload]
+        )
+        children = children_result.all()
+        if children:
+            child_list = ", ".join(f"'{title}' (id: {cid})" for cid, title in children)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot make a tag with children into an alias. "
+                    f"{len(children)} tag(s) inherit from this tag: {child_list}. "
+                    f"Reassign or remove child tags first."
+                ),
+            )
+
+
 @router.get("/", response_model=TagListResponse, include_in_schema=False)
 @router.get("", response_model=TagListResponse)
 async def list_tags(
@@ -1027,21 +1095,13 @@ async def create_tag(
     if existing_tag_result.first():
         raise HTTPException(status_code=409, detail="Tag already exists")
 
-    # if inherited_from is set, ensure that tag exists
-    if tag_data.inheritedfrom_id:
-        parent_tag_result = await db.execute(
-            select(Tags).where(Tags.tag_id == tag_data.inheritedfrom_id)  # type: ignore[arg-type]
-        )
-        if not parent_tag_result.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="Parent tag does not exist")
-
-    # if alias is set, ensure that tag exists
-    if tag_data.alias_of:
-        alias_tag_result = await db.execute(
-            select(Tags).where(Tags.tag_id == tag_data.alias_of)  # type: ignore[arg-type]
-        )
-        if not alias_tag_result.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="Alias tag does not exist")
+    # Validate parent and alias tag relationships
+    await validate_tag_relationships(
+        db,
+        tag_id=None,
+        inheritedfrom_id=tag_data.inheritedfrom_id,
+        alias_of=tag_data.alias_of,
+    )
 
     new_tag = Tags(
         title=tag_data.title,
@@ -1099,22 +1159,15 @@ async def update_tag(
 
     # Validate inheritedfrom_id and alias fields if present
     inheritedfrom_id = update_data.get("inheritedfrom_id")
-    if inheritedfrom_id is not None:
-        parent_result = await db.execute(select(Tags).where(Tags.tag_id == inheritedfrom_id))
-        parent_tag = parent_result.scalar_one_or_none()
-        if not parent_tag:
-            raise HTTPException(
-                status_code=400, detail=f"Parent tag with id {inheritedfrom_id} does not exist"
-            )
-
     alias_id = update_data.get("alias_of")
-    if alias_id is not None:
-        alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_id))
-        alias_tag = alias_result.scalar_one_or_none()
-        if not alias_tag:
-            raise HTTPException(
-                status_code=400, detail=f"Alias of tag with id {alias_id} does not exist"
-            )
+
+    # Validate parent and alias tag relationships
+    await validate_tag_relationships(
+        db,
+        tag_id=tag_id,
+        inheritedfrom_id=inheritedfrom_id,
+        alias_of=alias_id,
+    )
 
     # Update fields
     for key, value in update_data.items():
