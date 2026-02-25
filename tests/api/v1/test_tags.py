@@ -1894,6 +1894,58 @@ class TestCreateTag:
         )
         assert response.status_code == 409
 
+    async def test_create_duplicate_tag_with_preexisting_case_variants(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a duplicate tag when case variants already exist returns 409, not 500."""
+        # Create TAG_CREATE permission
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindupe3",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindupe3@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_CREATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create two case-variant tags (simulating legacy data)
+        db_session.add(Tags(title="Duplicate", desc="", type=TagType.THEME))
+        db_session.add(Tags(title="duplicate", desc="", type=TagType.THEME))
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindupe3", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to create another case variant - should get 409, not 500
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "DUPLICATE", "desc": "", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 409
+
     async def test_create_tag_rejects_alias_as_parent(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -2174,6 +2226,60 @@ class TestUpdateTag:
         )
         assert response.status_code == 409
         assert "already exists" in response.json()["detail"].lower()
+
+    async def test_update_tag_allows_capitalization_fix(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that renaming a tag to fix capitalization is allowed."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admincapfix",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincapfix@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create tag with lowercase title
+        tag = Tags(title="some tag", desc="", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincapfix", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Fix capitalization
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json={"title": "Some Tag", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["title"] == "Some Tag"
 
     async def test_update_tag_rejects_alias_as_parent(
         self, client: AsyncClient, db_session: AsyncSession

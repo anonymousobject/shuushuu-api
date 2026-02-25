@@ -240,14 +240,14 @@ async def validate_tag_relationships(
     Raises HTTPException(400) on validation failure.
     """
     if inheritedfrom_id:
-        parent_result = await db.execute(select(Tags).where(Tags.tag_id == inheritedfrom_id))
+        parent_result = await db.execute(select(Tags).where(Tags.tag_id == inheritedfrom_id))  # type: ignore[arg-type]
         parent_tag = parent_result.scalar_one_or_none()
         if not parent_tag:
             raise HTTPException(status_code=400, detail="Parent tag does not exist")
         if parent_tag.alias_of is not None:
             # Look up the canonical tag for a helpful error message
             canonical_result = await db.execute(
-                select(Tags).where(Tags.tag_id == parent_tag.alias_of)
+                select(Tags).where(Tags.tag_id == parent_tag.alias_of)  # type: ignore[arg-type]
             )
             canonical_tag = canonical_result.scalar_one_or_none()
             canonical_name = canonical_tag.title if canonical_tag else "unknown"
@@ -263,14 +263,14 @@ async def validate_tag_relationships(
             )
 
     if alias_of:
-        alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_of))
+        alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_of))  # type: ignore[arg-type]
         if not alias_result.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Alias tag does not exist")
 
     if alias_of and tag_id is not None:
         # Check if this tag has children
         children_result = await db.execute(
-            select(Tags.tag_id, Tags.title).where(Tags.inheritedfrom_id == tag_id)
+            select(Tags.tag_id, Tags.title).where(Tags.inheritedfrom_id == tag_id)  # type: ignore[call-overload]
         )
         children = children_result.all()
         if children:
@@ -1086,7 +1086,7 @@ async def create_tag(
     existing_tag_result = await db.execute(
         select(Tags).where(Tags.title == tag_data.title).where(Tags.type == tag_data.type)  # type: ignore[arg-type]
     )
-    if existing_tag_result.scalar_one_or_none():
+    if existing_tag_result.first():
         raise HTTPException(status_code=409, detail="Tag already exists")
 
     # Validate parent and alias tag relationships
@@ -1141,11 +1141,14 @@ async def update_tag(
     # Check for duplicate (title, type) combination
     new_title = update_data.get("title", tag.title)
     new_type = update_data.get("type", tag.type)
-    if new_title != tag.title or new_type != tag.type:
+    if (new_title or "").casefold() != (tag.title or "").casefold() or new_type != tag.type:
         existing_result = await db.execute(
-            select(Tags).where(Tags.title == new_title).where(Tags.type == new_type)  # type: ignore[arg-type]
+            select(Tags)
+            .where(Tags.title == new_title)  # type: ignore[arg-type]
+            .where(Tags.type == new_type)
+            .where(Tags.tag_id != tag_id)  # type: ignore[arg-type]
         )
-        if existing_result.scalar_one_or_none():
+        if existing_result.first():
             raise HTTPException(status_code=409, detail="Tag already exists")
 
     # Validate inheritedfrom_id and alias fields if present
