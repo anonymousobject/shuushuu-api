@@ -16,27 +16,9 @@ TAG_NAME_MIN_LENGTH = 2
 TAG_NAME_MAX_LENGTH = 150
 
 # Regex pattern for allowed characters in tag names:
-# - Latin letters (a-z, A-Z)
-# - Digits (0-9)
-# - CJK Unified Ideographs (U+4E00-9FFF) and Extension A (U+3400-4DBF)
-# - Hiragana (U+3040-309F)
-# - Katakana (U+30A0-30FF)
-# - Hangul Syllables (U+AC00-D7AF) and Jamo (U+1100-11FF)
-# - Basic punctuation: space, hyphen, period, apostrophe, colon, parentheses,
-#   exclamation, question mark, ampersand, forward slash, comma, underscore
-TAG_NAME_PATTERN = re.compile(
-    r"^["
-    r"a-zA-Z"  # Latin letters
-    r"0-9"  # Digits
-    r"\u4E00-\u9FFF"  # CJK Unified Ideographs
-    r"\u3400-\u4DBF"  # CJK Extension A
-    r"\u3040-\u309F"  # Hiragana
-    r"\u30A0-\u30FF"  # Katakana
-    r"\uAC00-\uD7AF"  # Hangul Syllables
-    r"\u1100-\u11FF"  # Hangul Jamo
-    r" \-\.\'\:\(\)\!\?\&\/\,\_"  # Allowed punctuation
-    r"]+$"
-)
+# All printable ASCII (U+0020 through U+007E) except backtick (`).
+# Tags cannot start with ! or -.
+TAG_NAME_PATTERN = re.compile(r"^(?![!\-])[\x20-\x5F\x61-\x7E]+$")
 
 
 def validate_tag_name(title: str) -> str:
@@ -47,7 +29,7 @@ def validate_tag_name(title: str) -> str:
     - Minimum length: 2 characters
     - Maximum length: 150 characters
     - Consecutive spaces normalized to single space
-    - Only allowed characters (Latin, digits, CJK, kana, hangul, basic punctuation)
+    - Only printable ASCII characters (no backticks, cannot start with ! or -)
 
     Args:
         title: The tag name to validate
@@ -76,7 +58,8 @@ def validate_tag_name(title: str) -> str:
     if not TAG_NAME_PATTERN.match(title):
         raise ValueError(
             "Tag name contains invalid characters. "
-            "Only letters, numbers, CJK characters, and basic punctuation are allowed."
+            "Only printable ASCII characters are allowed (no backticks). "
+            "Tag names cannot start with ! or -."
         )
 
     return title
