@@ -39,7 +39,7 @@ class BannerBase(SQLModel):
     size: BannerSize = Field(default=BannerSize.small)
 
     # Image paths (relative to banner directory)
-    full_image: str | None = Field(default=None, max_length=255)
+    full_image: str | None = Field(default=None, max_length=255, unique=True)
     left_image: str | None = Field(default=None, max_length=255)
     middle_image: str | None = Field(default=None, max_length=255)
     right_image: str | None = Field(default=None, max_length=255)
