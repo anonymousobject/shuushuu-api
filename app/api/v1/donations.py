@@ -31,18 +31,18 @@ async def monthly_donations(
 
     query = (
         select(
-            extract("year", Donations.date).label("year"),
-            extract("month", Donations.date).label("month"),
+            extract("year", Donations.date).label("year"),  # type: ignore[arg-type]
+            extract("month", Donations.date).label("month"),  # type: ignore[arg-type]
             func.sum(Donations.amount).label("total"),
         )
         .where(Donations.date >= cutoff)
         .group_by(
-            extract("year", Donations.date),
-            extract("month", Donations.date),
+            extract("year", Donations.date),  # type: ignore[arg-type]
+            extract("month", Donations.date),  # type: ignore[arg-type]
         )
         .order_by(
-            extract("year", Donations.date).desc(),
-            extract("month", Donations.date).desc(),
+            extract("year", Donations.date).desc(),  # type: ignore[arg-type]
+            extract("month", Donations.date).desc(),  # type: ignore[arg-type]
         )
     )
     result = await db.execute(query)
@@ -63,7 +63,7 @@ async def list_donations(
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> DonationListResponse:
     """List recent donations, newest first."""
-    query = select(Donations).order_by(desc(Donations.date)).limit(limit)
+    query = select(Donations).order_by(desc(Donations.date)).limit(limit)  # type: ignore[arg-type]
     result = await db.execute(query)
     rows = result.scalars().all()
 

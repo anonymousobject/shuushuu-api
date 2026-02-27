@@ -57,6 +57,7 @@ dev = [
     "types-redis>=4.6.0",
     # Security / Auditing
     "pip-audit>=2.10.0",
+    "types-python-dateutil>=2.9.0.20260124",
 ]
 
 [build-system]
