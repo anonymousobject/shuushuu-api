@@ -621,7 +621,7 @@ async def random_images_page(
     page = random.randint(1, total_pages)
 
     return RedirectResponse(
-        url=f"/api/v1/images?page={page}",
+        url=f"/?page={page}",
         status_code=status.HTTP_302_FOUND,
     )
 

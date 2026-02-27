@@ -36,7 +36,7 @@ class TestRandomImagesRedirect:
 
         assert response.status_code == 302
         location = response.headers["location"]
-        assert location.startswith("/api/v1/images?page=")
+        assert location.startswith("/?page=")
         page = int(location.split("page=")[1])
         assert 1 <= page <= 2
 
@@ -66,7 +66,7 @@ class TestRandomImagesRedirect:
 
         assert response.status_code == 302
         location = response.headers["location"]
-        assert location.startswith("/api/v1/images?page=")
+        assert location.startswith("/?page=")
         page = int(location.split("page=")[1])
         assert 1 <= page <= 2
 
