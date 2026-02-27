@@ -143,6 +143,7 @@ class UserResponse(UserBase):
     user_id: int
     date_joined: UTCDatetime
     last_login: UTCDatetimeOptional = None
+    last_active: UTCDatetimeOptional = None
     active: bool
     admin: bool
     groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
