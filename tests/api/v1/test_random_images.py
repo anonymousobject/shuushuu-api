@@ -77,14 +77,14 @@ class TestRandomImagesRedirect:
         test_user,
     ):
         """Test that anonymous users cannot see non-public images."""
-        # Create only non-public images (status=0 is not in PUBLIC_IMAGE_STATUSES)
+        # Create only non-public images (OTHER is not in PUBLIC_IMAGE_STATUSES)
         for i in range(5):
             img = Images(
                 filename=f"non_public_test_{i}",
                 ext="jpg",
                 width=100,
                 height=100,
-                status=0,
+                status=ImageStatus.OTHER,
                 user_id=test_user.user_id,
             )
             db_session.add(img)
