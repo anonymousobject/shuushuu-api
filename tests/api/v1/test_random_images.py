@@ -129,7 +129,7 @@ class TestRandomImagesRedirect:
             db_session.add(img)
         await db_session.commit()
 
-        access_token = create_access_token(user.id)
+        access_token = create_access_token(user.user_id)
 
         # Run multiple times to catch the case where random picks page 2
         # (which would be invalid if per_page=20 were used instead of 5)
