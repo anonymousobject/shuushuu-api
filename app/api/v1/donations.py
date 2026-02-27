@@ -40,7 +40,7 @@ async def monthly_donations(
             extract("month", Donations.date).label("month"),  # type: ignore[arg-type]
             func.sum(Donations.amount).label("total"),
         )
-        .where(Donations.date >= cutoff)
+        .where(Donations.date >= cutoff)  # type: ignore[arg-type]
         .group_by(
             extract("year", Donations.date),  # type: ignore[arg-type]
             extract("month", Donations.date),  # type: ignore[arg-type]
