@@ -13,6 +13,7 @@ from app.core.database import get_db
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models.misc import Donations
+from app.models.user import Users
 from app.schemas.donations import (
     DonationCreate,
     DonationListResponse,
@@ -69,11 +70,27 @@ async def list_donations(
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> DonationListResponse:
     """List recent donations, newest first."""
-    query = select(Donations).order_by(desc(Donations.date)).limit(limit)  # type: ignore[arg-type]
+    query = (
+        select(Donations, Users.username)  # type: ignore[call-overload]
+        .outerjoin(Users, Donations.user_id == Users.user_id)
+        .order_by(desc(Donations.date))  # type: ignore[arg-type]
+        .limit(limit)
+    )
     result = await db.execute(query)
-    rows = result.scalars().all()
+    rows = result.all()
 
-    return DonationListResponse(donations=[DonationResponse.model_validate(row) for row in rows])
+    return DonationListResponse(
+        donations=[
+            DonationResponse(
+                date=donation.date,
+                amount=donation.amount,
+                nick=donation.nick,
+                user_id=donation.user_id,
+                username=username,
+            )
+            for donation, username in rows
+        ]
+    )
 
 
 @router.post(
@@ -109,4 +126,9 @@ async def create_donation(
     await db.commit()
     await db.refresh(donation)
 
-    return DonationResponse.model_validate(donation)
+    return DonationResponse(
+        date=donation.date,
+        amount=donation.amount,  # type: ignore[arg-type]
+        nick=donation.nick,
+        user_id=donation.user_id,
+    )

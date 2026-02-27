@@ -91,8 +91,43 @@ class TestListDonations:
         assert "amount" in donation
         assert "nick" in donation
         assert "user_id" in donation
+        assert "username" in donation
         # id field should NOT be exposed
         assert "id" not in donation
+
+    async def test_username_resolved_when_user_exists(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Username is resolved from Users table when user_id matches a real user."""
+        # user_id=1 is "testuser" in the test DB
+        db_session.add(Donations(amount=10, user_id=1, nick="TestNick"))
+        await db_session.commit()
+
+        response = await client.get("/api/v1/donations")
+        data = response.json()
+        assert data["donations"][0]["username"] == "testuser"
+
+    async def test_username_null_when_no_user(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Username is null when user_id has no matching user."""
+        db_session.add(Donations(amount=10, user_id=0, nick="Anonymous"))
+        await db_session.commit()
+
+        response = await client.get("/api/v1/donations")
+        data = response.json()
+        assert data["donations"][0]["username"] is None
+
+    async def test_username_null_when_no_user_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Username is null when user_id is null."""
+        db_session.add(Donations(amount=10, nick="Anon"))
+        await db_session.commit()
+
+        response = await client.get("/api/v1/donations")
+        data = response.json()
+        assert data["donations"][0]["username"] is None
 
 
 @pytest.fixture

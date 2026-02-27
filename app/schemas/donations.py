@@ -30,8 +30,7 @@ class DonationResponse(BaseModel):
     amount: int
     nick: str | None
     user_id: int | None
-
-    model_config = {"from_attributes": True}
+    username: str | None = None
 
 
 class DonationListResponse(BaseModel):
