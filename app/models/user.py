@@ -118,6 +118,7 @@ class Users(UserBase, table=True):
     last_login: datetime | None = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
     )
+    last_active: datetime | None = Field(default=None)
 
     # Internal status fields
     active: int = Field(default=0)

@@ -301,6 +301,40 @@ class TestRefresh:
         refresh3_response = await client.post("/api/v1/auth/refresh")
         assert refresh3_response.status_code == 401
 
+    async def test_refresh_updates_last_active(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that token refresh updates the user's last_active timestamp."""
+        user = Users(
+            username="lastactiveuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="lastactive@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # last_active should be None initially
+        assert user.last_active is None
+
+        # Login to get tokens
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "lastactiveuser", "password": "TestPassword123!"},
+        )
+        assert login_response.status_code == 200
+
+        # Refresh token
+        refresh_response = await client.post("/api/v1/auth/refresh")
+        assert refresh_response.status_code == 200
+
+        # Verify last_active was updated
+        await db_session.refresh(user)
+        assert user.last_active is not None
+
 
 @pytest.mark.api
 class TestLogout:

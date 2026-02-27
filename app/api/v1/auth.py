@@ -347,8 +347,10 @@ async def login(
     # Set authentication cookies
     _set_auth_cookies(response, access_token, refresh_token)
 
-    # Update last login
-    user.last_login = datetime.now(UTC)
+    # Update last login and last active
+    now = datetime.now(UTC)
+    user.last_login = now
+    user.last_active = now
     await db.commit()
 
     return TokenResponse(
@@ -506,6 +508,9 @@ async def refresh_token(
     # Revoke old refresh token
     db_token.revoked = True
     db_token.revoked_at = datetime.now(UTC)
+
+    # Update last active timestamp
+    user.last_active = datetime.now(UTC)
 
     await db.commit()
 

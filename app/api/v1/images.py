@@ -585,15 +585,19 @@ async def list_images(
 
 @router.get("/random", include_in_schema=True)
 async def random_images_page(
-    per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
+    per_page: Annotated[int | None, Query(ge=1, le=100, description="Items per page")] = None,
     current_user: Users | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     """Redirect to a random page of images.
 
     Respects user visibility settings (show_all_images).
-    Returns 302 redirect to /api/v1/images?page=N.
+    Uses the authenticated user's images_per_page preference when per_page is not specified.
+    Returns 302 redirect to /?page=N.
     """
+    if per_page is None:
+        per_page = current_user.images_per_page if current_user else 20
+
     # Count visible images (same visibility logic as list_images with no filters)
     count_query = select(func.count()).select_from(Images)
 
