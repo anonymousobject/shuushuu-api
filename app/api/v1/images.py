@@ -593,7 +593,7 @@ async def random_images_page(
 
     Respects user visibility settings (show_all_images).
     Uses the authenticated user's images_per_page preference when per_page is not specified.
-    Returns 302 redirect to /api/v1/images?page=N.
+    Returns 302 redirect to /?page=N.
     """
     if per_page is None:
         per_page = current_user.images_per_page if current_user else 20
