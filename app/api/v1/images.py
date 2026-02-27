@@ -3,6 +3,7 @@ Images API endpoints
 """
 
 import math
+import random
 import shutil
 import tempfile
 from datetime import datetime
@@ -23,7 +24,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import and_, asc, delete, desc, func, or_, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -579,6 +580,49 @@ async def list_images(
             )
             for img in images
         ],
+    )
+
+
+@router.get("/random", include_in_schema=True)
+async def random_images_page(
+    per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
+    current_user: Users | None = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Redirect to a random page of images.
+
+    Respects user visibility settings (show_all_images).
+    Returns 302 redirect to /api/v1/images?page=N.
+    """
+    # Count visible images (same visibility logic as list_images with no filters)
+    count_query = select(func.count()).select_from(Images)
+
+    if current_user is not None and current_user.show_all_images == 1:
+        pass  # No status filter -- see all images
+    elif current_user is not None:
+        count_query = count_query.where(
+            or_(
+                Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+            )
+        )
+    else:
+        count_query = count_query.where(
+            Images.status.in_(PUBLIC_IMAGE_STATUSES)  # type: ignore[attr-defined]
+        )
+
+    result = await db.execute(count_query)
+    total = result.scalar() or 0
+
+    if total == 0:
+        raise HTTPException(status_code=404, detail="No images found")
+
+    total_pages = math.ceil(total / per_page)
+    page = random.randint(1, total_pages)
+
+    return RedirectResponse(
+        url=f"/?page={page}",
+        status_code=status.HTTP_302_FOUND,
     )
 
 
