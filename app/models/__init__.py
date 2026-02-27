@@ -33,6 +33,7 @@ from app.models.image_status_history import ImageStatusHistory
 # Utility models
 from app.models.misc import (
     Banners,
+    Donations,
     EvaTheme,
     Quicklinks,
     Tips,
@@ -89,6 +90,7 @@ __all__ = [
     "UserPerms",
     # Utility models
     "Banners",
+    "Donations",
     "EvaTheme",
     "Tips",
     "Quicklinks",
