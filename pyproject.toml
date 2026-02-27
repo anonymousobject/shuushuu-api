@@ -39,6 +39,7 @@ dependencies = [
     # "slowapi>=0.1.9",  # Rate limiting - for API throttling
     # "python-multipart>=0.0.20",  # Multipart form data - needed for image uploads
     "aiosmtplib>=5.0.0",
+    "python-dateutil>=2.9.0.post0",
 ]
 
 [dependency-groups]
