@@ -67,6 +67,9 @@ class Permission(str, Enum):
     NEWS_EDIT = "news_edit"
     NEWS_DELETE = "news_delete"
 
+    # Donation management
+    DONATIONS_CREATE = "donations_create"
+
     # Special permissions
     THEME_EDIT = "theme_edit"
     RATING_REVOKE = "rating_revoke"
@@ -113,6 +116,8 @@ _PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     Permission.NEWS_CREATE: "Create news posts",
     Permission.NEWS_EDIT: "Edit news posts",
     Permission.NEWS_DELETE: "Delete news posts",
+    # Donation management
+    Permission.DONATIONS_CREATE: "Create donation records",
     # Special permissions
     Permission.THEME_EDIT: "Theme editor and scheduler access",
     Permission.RATING_REVOKE: "Revoke image rating rights",
