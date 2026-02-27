@@ -19,8 +19,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add last_active column to users table."""
+    """Add last_active column to users table, backfilled from last_login."""
     op.add_column('users', sa.Column('last_active', sa.DateTime(), nullable=True))
+    op.execute("UPDATE users SET last_active = last_login WHERE last_login IS NOT NULL")
 
 
 def downgrade() -> None:
