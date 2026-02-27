@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import redis.asyncio as redis
-from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,8 +30,10 @@ async def monthly_donations(
     months: Annotated[int, Query(ge=1, le=24)] = 6,
 ) -> MonthlyDonationResponse:
     """Get donation totals grouped by month."""
-    cutoff = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    cutoff = cutoff - relativedelta(months=months - 1)
+    now = datetime.now(UTC)
+    # Subtract (months - 1) months using integer arithmetic to avoid dateutil dependency
+    total = now.year * 12 + now.month - (months - 1)
+    cutoff = datetime((total - 1) // 12, (total - 1) % 12 + 1, 1, tzinfo=UTC)
 
     query = (
         select(

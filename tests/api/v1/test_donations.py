@@ -2,8 +2,6 @@
 
 from datetime import datetime, timedelta
 
-from dateutil.relativedelta import relativedelta
-
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,9 +104,9 @@ async def monthly_donations(db_session: AsyncSession) -> None:
         Donations(date=now, amount=10, nick="A"),
         Donations(date=now - timedelta(days=1), amount=20, nick="B"),
         # Last month: 1 donation of 50
-        Donations(date=now - relativedelta(months=1), amount=50, nick="C"),
+        Donations(date=now - timedelta(days=31), amount=50, nick="C"),
         # 3 months ago: 1 donation of 100
-        Donations(date=now - relativedelta(months=3), amount=100, nick="D"),
+        Donations(date=now - timedelta(days=92), amount=100, nick="D"),
     ]
     for d in donations:
         db_session.add(d)
