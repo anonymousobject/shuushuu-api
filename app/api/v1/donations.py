@@ -3,14 +3,19 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
+import redis.asyncio as redis
 from dateutil.relativedelta import relativedelta
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import CurrentUser
 from app.core.database import get_db
+from app.core.permissions import Permission, has_permission
+from app.core.redis import get_redis
 from app.models.misc import Donations
 from app.schemas.donations import (
+    DonationCreate,
     DonationListResponse,
     DonationResponse,
     MonthlyDonationResponse,
@@ -68,3 +73,39 @@ async def list_donations(
     rows = result.scalars().all()
 
     return DonationListResponse(donations=[DonationResponse.model_validate(row) for row in rows])
+
+
+@router.post(
+    "/",
+    response_model=DonationResponse,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
+@router.post("", response_model=DonationResponse, status_code=status.HTTP_201_CREATED)
+async def create_donation(
+    body: DonationCreate,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+) -> DonationResponse:
+    """Create a donation record. Requires DONATIONS_CREATE permission."""
+    assert current_user.user_id is not None
+
+    if not await has_permission(
+        db, current_user.user_id, Permission.DONATIONS_CREATE, redis_client
+    ):
+        raise HTTPException(status_code=403, detail="DONATIONS_CREATE permission required")
+
+    donation = Donations(
+        amount=body.amount,
+        nick=body.nick,
+        user_id=body.user_id,
+    )
+    if body.date is not None:
+        donation.date = body.date
+
+    db.add(donation)
+    await db.commit()
+    await db.refresh(donation)
+
+    return DonationResponse.model_validate(donation)

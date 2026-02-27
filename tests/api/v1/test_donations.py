@@ -8,7 +8,11 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.permissions import Permission
+from app.core.security import create_access_token
 from app.models.misc import Donations
+from app.models.permissions import Perms, UserPerms
+from app.models.user import Users
 
 
 @pytest.fixture
@@ -175,3 +179,130 @@ class TestMonthlyDonations:
         assert "year" in entry
         assert "month" in entry
         assert "total" in entry
+
+
+async def _user_with_permission(
+    db_session: AsyncSession, permission: Permission
+) -> tuple[Users, str]:
+    """Create user_id=2 with a given permission and return (user, token)."""
+    user = await db_session.get(Users, 2)
+    user.active = 1
+    perm = Perms(title=permission.value, desc=permission.description)
+    db_session.add(perm)
+    await db_session.flush()
+    user_perm = UserPerms(user_id=user.user_id, perm_id=perm.perm_id, permvalue=1)
+    db_session.add(user_perm)
+    await db_session.commit()
+    token = create_access_token(user.user_id)
+    return user, token
+
+
+@pytest.fixture
+async def user_with_donations_create(db_session: AsyncSession) -> tuple[Users, str]:
+    """Create a user with DONATIONS_CREATE permission and return (user, token)."""
+    return await _user_with_permission(db_session, Permission.DONATIONS_CREATE)
+
+
+@pytest.fixture
+async def unprivileged_token(db_session: AsyncSession) -> str:
+    """Token for an authenticated user with no donations permissions."""
+    user = await db_session.get(Users, 3)
+    user.active = 1
+    await db_session.commit()
+    return create_access_token(user.user_id)
+
+
+class TestCreateDonation:
+    """POST /api/v1/donations"""
+
+    async def test_create_requires_auth(self, client: AsyncClient):
+        """Returns 401 without authentication."""
+        response = await client.post(
+            "/api/v1/donations", json={"amount": 10}
+        )
+        assert response.status_code == 401
+
+    async def test_create_requires_permission(
+        self, client: AsyncClient, unprivileged_token: str
+    ):
+        """Returns 403 without DONATIONS_CREATE permission."""
+        response = await client.post(
+            "/api/v1/donations",
+            json={"amount": 10},
+            headers={"Authorization": f"Bearer {unprivileged_token}"},
+        )
+        assert response.status_code == 403
+
+    async def test_create_minimal(
+        self, client: AsyncClient, user_with_donations_create: tuple[Users, str]
+    ):
+        """Creates donation with just amount, date defaults to now."""
+        _, token = user_with_donations_create
+        response = await client.post(
+            "/api/v1/donations",
+            json={"amount": 25},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["amount"] == 25
+        assert data["nick"] is None
+        assert data["user_id"] is None
+        assert data["date"] is not None
+
+    async def test_create_full(
+        self, client: AsyncClient, user_with_donations_create: tuple[Users, str]
+    ):
+        """Creates donation with all fields."""
+        _, token = user_with_donations_create
+        response = await client.post(
+            "/api/v1/donations",
+            json={"amount": 50, "nick": "Generous", "user_id": 123},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["amount"] == 50
+        assert data["nick"] == "Generous"
+        assert data["user_id"] == 123
+
+    async def test_create_validates_amount_required(
+        self, client: AsyncClient, user_with_donations_create: tuple[Users, str]
+    ):
+        """Returns 422 when amount is missing."""
+        _, token = user_with_donations_create
+        response = await client.post(
+            "/api/v1/donations",
+            json={"nick": "No Amount"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
+
+    async def test_create_validates_amount_positive(
+        self, client: AsyncClient, user_with_donations_create: tuple[Users, str]
+    ):
+        """Returns 422 when amount is zero or negative."""
+        _, token = user_with_donations_create
+        response = await client.post(
+            "/api/v1/donations",
+            json={"amount": 0},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
+
+    async def test_create_appears_in_list(
+        self, client: AsyncClient, user_with_donations_create: tuple[Users, str]
+    ):
+        """Created donation appears in the list endpoint."""
+        _, token = user_with_donations_create
+        await client.post(
+            "/api/v1/donations",
+            json={"amount": 99, "nick": "Visible"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        response = await client.get("/api/v1/donations")
+        data = response.json()
+        assert len(data["donations"]) == 1
+        assert data["donations"][0]["amount"] == 99
+        assert data["donations"][0]["nick"] == "Visible"
