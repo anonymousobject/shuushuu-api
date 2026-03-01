@@ -266,6 +266,11 @@ async def validate_tag_relationships(
             )
 
     if alias_of is not None:
+        if tag_id is not None and alias_of == tag_id:
+            raise HTTPException(
+                status_code=400,
+                detail="A tag cannot be an alias of itself",
+            )
         alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_of))  # type: ignore[arg-type]
         if not alias_result.scalar_one_or_none():
             raise HTTPException(
@@ -1315,6 +1320,28 @@ async def update_tag(
             await db.execute(
                 update(Tags).where(Tags.tag_id == tid).values(usage_count=count_result.scalar())  # type: ignore[arg-type]
             )
+
+        # Migrate external links from alias to canonical tag
+        existing_urls_result = await db.execute(
+            select(TagExternalLinks.url).where(TagExternalLinks.tag_id == canonical_id)  # type: ignore[call-overload]
+        )
+        existing_urls = {row[0] for row in existing_urls_result}
+
+        # Delete alias external links that would conflict (same URL on canonical)
+        if existing_urls:
+            await db.execute(
+                delete(TagExternalLinks).where(
+                    TagExternalLinks.tag_id == tag_id,  # type: ignore[arg-type]
+                    TagExternalLinks.url.in_(existing_urls),  # type: ignore[attr-defined]
+                )
+            )
+
+        # Move remaining alias external links to canonical tag
+        await db.execute(
+            update(TagExternalLinks)
+            .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+            .values(tag_id=canonical_id)
+        )
 
     db.add(tag)
     await db.commit()

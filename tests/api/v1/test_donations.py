@@ -1,6 +1,6 @@
 """Tests for donations API endpoints."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -130,18 +130,27 @@ class TestListDonations:
         assert data["donations"][0]["username"] is None
 
 
+def _month_offset(dt: datetime, months: int) -> datetime:
+    """Return a datetime shifted by the given number of months (negative = past)."""
+    total = dt.year * 12 + dt.month - 1 + months
+    year, month = divmod(total, 12)
+    month += 1
+    day = min(dt.day, 28)  # safe for all months
+    return dt.replace(year=year, month=month, day=day)
+
+
 @pytest.fixture
 async def monthly_donations(db_session: AsyncSession) -> None:
     """Create donations across several months."""
-    now = datetime.now()
+    now = datetime.now(UTC)
     donations = [
         # Current month: 2 donations totaling 30
-        Donations(date=now, amount=10, nick="A"),
-        Donations(date=now - timedelta(days=1), amount=20, nick="B"),
+        Donations(date=now.replace(day=1), amount=10, nick="A"),
+        Donations(date=now.replace(day=2), amount=20, nick="B"),
         # Last month: 1 donation of 50
-        Donations(date=now - timedelta(days=31), amount=50, nick="C"),
+        Donations(date=_month_offset(now, -1), amount=50, nick="C"),
         # 3 months ago: 1 donation of 100
-        Donations(date=now - timedelta(days=92), amount=100, nick="D"),
+        Donations(date=_month_offset(now, -3), amount=100, nick="D"),
     ]
     for d in donations:
         db_session.add(d)
