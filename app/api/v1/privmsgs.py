@@ -3,11 +3,12 @@ Privmsgs API endpoints
 """
 
 import re
+import uuid as uuid_mod
 from typing import Annotated, Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from sqlalchemy import and_, case, desc, func, or_, select
+from sqlalchemy import and_, case, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import PaginationParams
@@ -72,14 +73,42 @@ async def send_privmsg(
     Create a new private message.
     """
 
+    thread_id = privmsg.thread_id or str(uuid_mod.uuid4())
+
     new_privmsg = Privmsgs(
         from_user_id=current_user.user_id,
         to_user_id=privmsg.to_user_id,
         subject=privmsg.subject,
         text=privmsg.message,
+        thread_id=thread_id,
     )
 
     db.add(new_privmsg)
+
+    # If replying to an existing thread, reset the recipient's soft-delete flags
+    # so the thread reappears in their inbox
+    if privmsg.thread_id:
+        # Reset to_del for messages where recipient is the to_user
+        await db.execute(
+            update(Privmsgs)
+            .where(
+                Privmsgs.thread_id == thread_id,
+                Privmsgs.to_user_id == privmsg.to_user_id,
+                Privmsgs.to_del == 1,
+            )
+            .values(to_del=0)
+        )
+        # Reset from_del for messages where recipient was the sender
+        await db.execute(
+            update(Privmsgs)
+            .where(
+                Privmsgs.thread_id == thread_id,
+                Privmsgs.from_user_id == privmsg.to_user_id,
+                Privmsgs.from_del == 1,
+            )
+            .values(from_del=0)
+        )
+
     await db.commit()
     await db.refresh(new_privmsg)
 

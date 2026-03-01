@@ -172,3 +172,86 @@ class TestGetThreads:
         threads = response.json()["threads"]
         thread_ids = [t["thread_id"] for t in threads]
         assert thread_ids.index(t2) < thread_ids.index(t1)
+
+
+@pytest.mark.api
+class TestSendThreadedMessage:
+    """Tests for POST /api/v1/privmsgs with thread_id."""
+
+    async def test_send_new_message_creates_thread(self, client: AsyncClient, db_session: AsyncSession):
+        """Test sending a new message generates a thread_id."""
+        user_a = await create_user(db_session, "send_a", email_verified=True)
+        user_b = await create_user(db_session, "send_b", email_verified=True)
+
+        token = await login(client, "send_a")
+        response = await client.post(
+            "/api/v1/privmsgs",
+            json={"to_user_id": user_b.user_id, "subject": "New thread", "message": "Hello"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert "thread_id" in data
+        assert data["thread_id"] is not None
+        assert len(data["thread_id"]) == 36  # UUID format
+
+    async def test_reply_to_thread(self, client: AsyncClient, db_session: AsyncSession):
+        """Test replying to an existing thread uses the same thread_id."""
+        user_a = await create_user(db_session, "reply_a", email_verified=True)
+        user_b = await create_user(db_session, "reply_b", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        msg = Privmsgs(
+            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
+            subject="Original", text="First msg", thread_id=thread_id,
+        )
+        db_session.add(msg)
+        await db_session.commit()
+
+        token = await login(client, "reply_b")
+        response = await client.post(
+            "/api/v1/privmsgs",
+            json={
+                "to_user_id": user_a.user_id,
+                "subject": "Re: Original",
+                "message": "Reply",
+                "thread_id": thread_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["thread_id"] == thread_id
+
+    async def test_reply_resets_recipient_del_flag(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that replying to a left thread resets the recipient's del flag."""
+        user_a = await create_user(db_session, "reset_a", email_verified=True)
+        user_b = await create_user(db_session, "reset_b", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        msg = Privmsgs(
+            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
+            subject="Left", text="Old msg", thread_id=thread_id,
+            to_del=1,  # user_b left the thread
+        )
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        # user_a sends a new message in the thread
+        token = await login(client, "reset_a")
+        response = await client.post(
+            "/api/v1/privmsgs",
+            json={
+                "to_user_id": user_b.user_id,
+                "subject": "Re: Left",
+                "message": "I'm back",
+                "thread_id": thread_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+
+        # user_b's del flag on old messages should be reset
+        await db_session.refresh(msg)
+        assert msg.to_del == 0
