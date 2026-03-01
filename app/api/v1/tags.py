@@ -1318,7 +1318,7 @@ async def update_tag(
 
         # Migrate external links from alias to canonical tag
         existing_urls_result = await db.execute(
-            select(TagExternalLinks.url).where(TagExternalLinks.tag_id == canonical_id)
+            select(TagExternalLinks.url).where(TagExternalLinks.tag_id == canonical_id)  # type: ignore[call-overload]
         )
         existing_urls = {row[0] for row in existing_urls_result}
 
@@ -1327,7 +1327,7 @@ async def update_tag(
             await db.execute(
                 delete(TagExternalLinks).where(
                     TagExternalLinks.tag_id == tag_id,  # type: ignore[arg-type]
-                    TagExternalLinks.url.in_(existing_urls),  # type: ignore[union-attr]
+                    TagExternalLinks.url.in_(existing_urls),  # type: ignore[attr-defined]
                 )
             )
 
