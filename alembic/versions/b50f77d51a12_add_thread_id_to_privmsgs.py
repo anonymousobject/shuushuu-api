@@ -5,6 +5,7 @@ Revises: 92f9d7890c30
 Create Date: 2026-03-01 15:19:53.515328
 
 """
+import re
 import uuid
 from typing import Sequence
 
@@ -36,12 +37,7 @@ def upgrade() -> None:
     # Group by (normalized_subject, sorted user pair)
     threads: dict[tuple, str] = {}
     for privmsg_id, subject, from_uid, to_uid in rows:
-        normalized = subject or ""
-        while normalized.startswith("Re: ") or normalized.startswith("Re:"):
-            if normalized.startswith("Re: "):
-                normalized = normalized[4:]
-            elif normalized.startswith("Re:"):
-                normalized = normalized[3:]
+        normalized = re.sub(r'^(Re:\s*)+', '', subject or '', flags=re.IGNORECASE)
         normalized = normalized.strip().lower()
 
         user_pair = tuple(sorted([from_uid, to_uid]))
