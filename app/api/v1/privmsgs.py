@@ -2,11 +2,12 @@
 Privmsgs API endpoints
 """
 
-from typing import Annotated
+import re
+from typing import Annotated, Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from sqlalchemy import desc, func, select
+from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import PaginationParams
@@ -17,7 +18,13 @@ from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Privmsgs, Users
 from app.models.permissions import Groups, UserGroups
-from app.schemas.privmsg import PrivmsgCreate, PrivmsgMessage, PrivmsgMessages
+from app.schemas.privmsg import (
+    PrivmsgCreate,
+    PrivmsgMessage,
+    PrivmsgMessages,
+    ThreadList,
+    ThreadSummary,
+)
 from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/privmsgs", tags=["privmsgs"])
@@ -45,6 +52,11 @@ async def get_user_groups_map(db: AsyncSession, user_ids: list[int]) -> dict[int
             groups_map[user_id].append(group_title)
 
     return groups_map
+
+
+def _strip_re_prefix(subject: str) -> str:
+    """Strip leading 'Re: ' prefixes from a subject line."""
+    return re.sub(r"^(Re:\s*)+", "", subject, flags=re.IGNORECASE).strip()
 
 
 @router.post(
@@ -75,6 +87,161 @@ async def send_privmsg(
     await enqueue_job("send_pm_notification", privmsg_id=new_privmsg.privmsg_id)
 
     return PrivmsgMessage.model_validate(new_privmsg)
+
+
+@router.get("/threads", response_model=ThreadList)
+async def get_threads(
+    pagination: Annotated[PaginationParams, Depends()],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    filter: Annotated[Literal["all", "unread"], Query(description="Filter threads")] = "all",
+    db: AsyncSession = Depends(get_db),
+) -> ThreadList:
+    """
+    List conversation threads for the current user.
+
+    Returns one entry per thread, sorted by most recent message date (newest first).
+    Supports pagination and an optional filter query param (all or unread).
+    Excludes threads the user has left (soft-deleted).
+    """
+    assert current_user.user_id is not None
+    uid = current_user.user_id
+
+    # Determine other_user_id via CASE expression:
+    # If I sent the message, the other user is the recipient; otherwise it's the sender.
+    other_user_id_expr = case(
+        (Privmsgs.from_user_id == uid, Privmsgs.to_user_id),
+        else_=Privmsgs.from_user_id,
+    )
+
+    # Unread count: count messages TO the current user that are not viewed
+    unread_expr = func.sum(
+        case(
+            (and_(Privmsgs.to_user_id == uid, Privmsgs.viewed == 0), 1),
+            else_=0,
+        )
+    )
+
+    # Base filter: user is sender or recipient, and message not soft-deleted for them
+    user_filter = or_(
+        and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),
+        and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),
+    )
+
+    # Only include messages with a thread_id
+    thread_filter = Privmsgs.thread_id.isnot(None)  # type: ignore[union-attr]
+
+    # Aggregation query grouped by thread_id
+    thread_query = (
+        select(
+            Privmsgs.thread_id,
+            func.min(Privmsgs.subject).label("subject"),  # type: ignore[arg-type]
+            func.max(Privmsgs.date).label("latest_date"),  # type: ignore[arg-type]
+            func.count().label("message_count"),
+            unread_expr.label("unread_count"),
+            other_user_id_expr.label("other_user_id"),
+        )
+        .where(and_(user_filter, thread_filter))
+        .group_by(Privmsgs.thread_id, other_user_id_expr)
+        .order_by(desc("latest_date"))
+    )
+
+    # If filtering by unread, add HAVING clause
+    if filter == "unread":
+        thread_query = thread_query.having(unread_expr > 0)
+
+    # Count total threads
+    count_query = select(func.count()).select_from(thread_query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Paginate
+    thread_query = thread_query.offset(pagination.offset).limit(pagination.per_page)
+    result = await db.execute(thread_query)
+    thread_rows = result.all()
+
+    if not thread_rows:
+        return ThreadList(
+            total=total,
+            page=pagination.page,
+            per_page=pagination.per_page,
+            threads=[],
+        )
+
+    # Collect other user IDs and thread IDs for batch lookups
+    other_user_ids = list({row.other_user_id for row in thread_rows})
+    thread_ids = [row.thread_id for row in thread_rows]
+
+    # Fetch other user details (username, avatar)
+    user_result = await db.execute(
+        select(Users.user_id, Users.username, Users.avatar).where(Users.user_id.in_(other_user_ids))  # type: ignore[call-overload]
+    )
+    user_rows = user_result.all()
+    user_map: dict[int, tuple[str | None, str | None]] = {
+        row[0]: (row[1], row[2]) for row in user_rows
+    }
+
+    # Fetch groups for other users
+    groups_map = await get_user_groups_map(db, other_user_ids)
+
+    # Fetch latest message text per thread using a correlated subquery approach:
+    # For each thread, get the message with the max date.
+    # We use a single query with a window function to get the latest message per thread.
+    latest_msg_query = (
+        select(Privmsgs.thread_id, Privmsgs.text)
+        .where(
+            and_(
+                Privmsgs.thread_id.in_(thread_ids),  # type: ignore[union-attr]
+                or_(
+                    and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),
+                    and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),
+                ),
+            )
+        )
+        .order_by(Privmsgs.thread_id, desc(Privmsgs.date))  # type: ignore[arg-type]
+    )
+    latest_msg_result = await db.execute(latest_msg_query)
+    latest_msg_rows = latest_msg_result.all()
+
+    # Build a map of thread_id -> latest message text (first occurrence per thread_id due to ORDER BY)
+    latest_text_map: dict[str, str] = {}
+    for row in latest_msg_rows:
+        if row[0] not in latest_text_map:
+            latest_text_map[row[0]] = row[1] or ""
+
+    # Build thread summaries
+    threads: list[ThreadSummary] = []
+    for row in thread_rows:
+        username, avatar = user_map.get(row.other_user_id, (None, None))
+        avatar_url: str | None = None
+        if avatar:
+            avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{avatar}"
+
+        subject = _strip_re_prefix(row.subject or "")
+        preview_text = latest_text_map.get(row.thread_id, "")
+        if len(preview_text) > 80:
+            preview_text = preview_text[:80]
+
+        threads.append(
+            ThreadSummary(
+                thread_id=row.thread_id,
+                subject=subject,
+                other_user_id=row.other_user_id,
+                other_username=username,
+                other_avatar_url=avatar_url,
+                other_groups=groups_map.get(row.other_user_id, []),
+                latest_message_preview=preview_text,
+                latest_message_date=row.latest_date.isoformat() if row.latest_date else "",
+                unread_count=row.unread_count or 0,
+                message_count=row.message_count or 0,
+            )
+        )
+
+    return ThreadList(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        threads=threads,
+    )
 
 
 @router.get("/received", response_model=PrivmsgMessages)
