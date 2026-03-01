@@ -2476,6 +2476,50 @@ class TestUpdateTag:
         )
         assert response.status_code == 200
 
+    async def test_update_tag_rejects_self_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that a tag cannot be aliased to itself."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admin_selfalias",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin_selfalias@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        tag = Tags(title="Self Ref Tag", desc="", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_selfalias", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json={"title": "Self Ref Tag", "alias_of": tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "cannot be an alias of itself" in response.json()["detail"].lower()
+
     async def test_setting_alias_migrates_tag_links(
         self, client: AsyncClient, db_session: AsyncSession
     ):

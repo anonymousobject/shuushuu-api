@@ -266,6 +266,11 @@ async def validate_tag_relationships(
             )
 
     if alias_of is not None:
+        if tag_id is not None and alias_of == tag_id:
+            raise HTTPException(
+                status_code=400,
+                detail="A tag cannot be an alias of itself",
+            )
         alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_of))  # type: ignore[arg-type]
         if not alias_result.scalar_one_or_none():
             raise HTTPException(
