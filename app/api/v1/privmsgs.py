@@ -92,9 +92,9 @@ async def send_privmsg(
         await db.execute(
             update(Privmsgs)
             .where(
-                Privmsgs.thread_id == thread_id,
-                Privmsgs.to_user_id == privmsg.to_user_id,
-                Privmsgs.to_del == 1,
+                Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+                Privmsgs.to_user_id == privmsg.to_user_id,  # type: ignore[arg-type]
+                Privmsgs.to_del == 1,  # type: ignore[arg-type]
             )
             .values(to_del=0)
         )
@@ -102,9 +102,9 @@ async def send_privmsg(
         await db.execute(
             update(Privmsgs)
             .where(
-                Privmsgs.thread_id == thread_id,
-                Privmsgs.from_user_id == privmsg.to_user_id,
-                Privmsgs.from_del == 1,
+                Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+                Privmsgs.from_user_id == privmsg.to_user_id,  # type: ignore[arg-type]
+                Privmsgs.from_del == 1,  # type: ignore[arg-type]
             )
             .values(from_del=0)
         )
@@ -138,22 +138,22 @@ async def get_threads(
     # Determine other_user_id via CASE expression:
     # If I sent the message, the other user is the recipient; otherwise it's the sender.
     other_user_id_expr = case(
-        (Privmsgs.from_user_id == uid, Privmsgs.to_user_id),
+        (Privmsgs.from_user_id == uid, Privmsgs.to_user_id),  # type: ignore[arg-type]
         else_=Privmsgs.from_user_id,
     )
 
     # Unread count: count messages TO the current user that are not viewed
     unread_expr = func.sum(
         case(
-            (and_(Privmsgs.to_user_id == uid, Privmsgs.viewed == 0), 1),
+            (and_(Privmsgs.to_user_id == uid, Privmsgs.viewed == 0), 1),  # type: ignore[arg-type]
             else_=0,
         )
     )
 
     # Base filter: user is sender or recipient, and message not soft-deleted for them
     user_filter = or_(
-        and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),
-        and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),
+        and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),  # type: ignore[arg-type]
+        and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),  # type: ignore[arg-type]
     )
 
     # Only include messages with a thread_id
@@ -161,10 +161,10 @@ async def get_threads(
 
     # Aggregation query grouped by thread_id
     thread_query = (
-        select(
+        select(  # type: ignore[call-overload]
             Privmsgs.thread_id,
-            func.min(Privmsgs.subject).label("subject"),  # type: ignore[arg-type]
-            func.max(Privmsgs.date).label("latest_date"),  # type: ignore[arg-type]
+            func.min(Privmsgs.subject).label("subject"),
+            func.max(Privmsgs.date).label("latest_date"),
             func.count().label("message_count"),
             unread_expr.label("unread_count"),
             other_user_id_expr.label("other_user_id"),
@@ -202,7 +202,7 @@ async def get_threads(
 
     # Fetch other user details (username, avatar)
     user_result = await db.execute(
-        select(Users.user_id, Users.username, Users.avatar).where(Users.user_id.in_(other_user_ids))  # type: ignore[call-overload]
+        select(Users.user_id, Users.username, Users.avatar).where(Users.user_id.in_(other_user_ids))  # type: ignore[call-overload,union-attr]
     )
     user_rows = user_result.all()
     user_map: dict[int, tuple[str | None, str | None]] = {
@@ -216,13 +216,13 @@ async def get_threads(
     # For each thread, get the message with the max date.
     # We use a single query with a window function to get the latest message per thread.
     latest_msg_query = (
-        select(Privmsgs.thread_id, Privmsgs.text)
+        select(Privmsgs.thread_id, Privmsgs.text)  # type: ignore[call-overload]
         .where(
             and_(
                 Privmsgs.thread_id.in_(thread_ids),  # type: ignore[union-attr]
                 or_(
-                    and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),
-                    and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),
+                    and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),  # type: ignore[arg-type]
+                    and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),  # type: ignore[arg-type]
                 ),
             )
         )
@@ -292,7 +292,7 @@ async def get_thread_messages(
     # Check if thread exists
     exists_result = await db.execute(
         select(func.count()).select_from(
-            select(Privmsgs.privmsg_id).where(Privmsgs.thread_id == thread_id).subquery()
+            select(Privmsgs.privmsg_id).where(Privmsgs.thread_id == thread_id).subquery()  # type: ignore[arg-type]
         )
     )
     thread_count = exists_result.scalar() or 0
@@ -305,8 +305,8 @@ async def get_thread_messages(
         select(func.count()).select_from(
             select(Privmsgs.privmsg_id)
             .where(
-                Privmsgs.thread_id == thread_id,
-                or_(Privmsgs.from_user_id == uid, Privmsgs.to_user_id == uid),
+                Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+                or_(Privmsgs.from_user_id == uid, Privmsgs.to_user_id == uid),  # type: ignore[arg-type]
             )
             .subquery()
         )
@@ -323,9 +323,9 @@ async def get_thread_messages(
     await db.execute(
         update(Privmsgs)
         .where(
-            Privmsgs.thread_id == thread_id,
-            Privmsgs.to_user_id == uid,
-            Privmsgs.viewed == 0,
+            Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+            Privmsgs.to_user_id == uid,  # type: ignore[arg-type]
+            Privmsgs.viewed == 0,  # type: ignore[arg-type]
         )
         .values(viewed=1)
     )
@@ -336,8 +336,8 @@ async def get_thread_messages(
     # - User is sender and from_del == 0, OR
     # - User is recipient and to_del == 0
     visible_filter = or_(
-        and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),
-        and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),
+        and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),  # type: ignore[arg-type]
+        and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),  # type: ignore[arg-type]
     )
 
     # Alias for sender and recipient user joins
@@ -433,8 +433,8 @@ async def leave_thread(
         select(func.count()).select_from(
             select(Privmsgs.privmsg_id)
             .where(
-                Privmsgs.thread_id == thread_id,
-                or_(Privmsgs.from_user_id == uid, Privmsgs.to_user_id == uid),
+                Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+                or_(Privmsgs.from_user_id == uid, Privmsgs.to_user_id == uid),  # type: ignore[arg-type]
             )
             .subquery()
         )
@@ -451,8 +451,8 @@ async def leave_thread(
     await db.execute(
         update(Privmsgs)
         .where(
-            Privmsgs.thread_id == thread_id,
-            Privmsgs.from_user_id == uid,
+            Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+            Privmsgs.from_user_id == uid,  # type: ignore[arg-type]
         )
         .values(from_del=1)
     )
@@ -461,8 +461,8 @@ async def leave_thread(
     await db.execute(
         update(Privmsgs)
         .where(
-            Privmsgs.thread_id == thread_id,
-            Privmsgs.to_user_id == uid,
+            Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+            Privmsgs.to_user_id == uid,  # type: ignore[arg-type]
         )
         .values(to_del=1)
     )
@@ -470,9 +470,9 @@ async def leave_thread(
     # Hard-delete messages where both parties have left
     await db.execute(
         delete(Privmsgs).where(
-            Privmsgs.thread_id == thread_id,
-            Privmsgs.from_del == 1,
-            Privmsgs.to_del == 1,
+            Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+            Privmsgs.from_del == 1,  # type: ignore[arg-type]
+            Privmsgs.to_del == 1,  # type: ignore[arg-type]
         )
     )
 
