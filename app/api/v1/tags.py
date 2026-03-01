@@ -1316,6 +1316,28 @@ async def update_tag(
                 update(Tags).where(Tags.tag_id == tid).values(usage_count=count_result.scalar())  # type: ignore[arg-type]
             )
 
+        # Migrate external links from alias to canonical tag
+        existing_urls_result = await db.execute(
+            select(TagExternalLinks.url).where(TagExternalLinks.tag_id == canonical_id)
+        )
+        existing_urls = {row[0] for row in existing_urls_result}
+
+        # Delete alias external links that would conflict (same URL on canonical)
+        if existing_urls:
+            await db.execute(
+                delete(TagExternalLinks).where(
+                    TagExternalLinks.tag_id == tag_id,  # type: ignore[arg-type]
+                    TagExternalLinks.url.in_(existing_urls),  # type: ignore[union-attr]
+                )
+            )
+
+        # Move remaining alias external links to canonical tag
+        await db.execute(
+            update(TagExternalLinks)
+            .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+            .values(tag_id=canonical_id)
+        )
+
     db.add(tag)
     await db.commit()
     await db.refresh(tag)

@@ -2581,6 +2581,160 @@ class TestUpdateTag:
         alias_links = result.all()
         assert len(alias_links) == 0
 
+    async def test_setting_alias_migrates_external_links(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that when a tag is aliased, its external links are migrated to the canonical tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminextlink",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminextlink@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create canonical tag and alias tag
+        canonical_tag = Tags(title="Sakura Miko", desc="canonical", type=TagType.CHARACTER)
+        alias_tag = Tags(title="Miko Sakura", desc="alias", type=TagType.CHARACTER)
+        db_session.add_all([canonical_tag, alias_tag])
+        await db_session.commit()
+        await db_session.refresh(canonical_tag)
+        await db_session.refresh(alias_tag)
+
+        # Add external links to the alias tag
+        ext_link1 = TagExternalLinks(tag_id=alias_tag.tag_id, url="https://twitter.com/sakuramiko")
+        ext_link2 = TagExternalLinks(tag_id=alias_tag.tag_id, url="https://pixiv.net/users/999")
+        db_session.add_all([ext_link1, ext_link2])
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminextlink", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set alias_of on the alias tag
+        response = await client.put(
+            f"/api/v1/tags/{alias_tag.tag_id}",
+            json={"title": "Miko Sakura", "alias_of": canonical_tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Verify external links were migrated to canonical tag
+        result = await db_session.execute(
+            select(TagExternalLinks).where(TagExternalLinks.tag_id == canonical_tag.tag_id)
+        )
+        canonical_ext_links = result.all()
+        assert len(canonical_ext_links) == 2
+
+        # Verify no external links remain on the alias tag
+        result = await db_session.execute(
+            select(TagExternalLinks).where(TagExternalLinks.tag_id == alias_tag.tag_id)
+        )
+        alias_ext_links = result.all()
+        assert len(alias_ext_links) == 0
+
+    async def test_setting_alias_migrates_external_links_with_conflicts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that duplicate external links are handled when migrating during alias."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminextconf",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminextconf@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create canonical tag and alias tag
+        canonical_tag = Tags(title="Usada Pekora", desc="canonical", type=TagType.CHARACTER)
+        alias_tag = Tags(title="Pekora Usada", desc="alias", type=TagType.CHARACTER)
+        db_session.add_all([canonical_tag, alias_tag])
+        await db_session.commit()
+        await db_session.refresh(canonical_tag)
+        await db_session.refresh(alias_tag)
+
+        # Same URL exists on both tags (conflict scenario)
+        shared_url = "https://twitter.com/usadapekora"
+        unique_url = "https://pixiv.net/users/888"
+        ext_link_canonical = TagExternalLinks(tag_id=canonical_tag.tag_id, url=shared_url)
+        ext_link_alias_dup = TagExternalLinks(tag_id=alias_tag.tag_id, url=shared_url)
+        ext_link_alias_unique = TagExternalLinks(tag_id=alias_tag.tag_id, url=unique_url)
+        db_session.add_all([ext_link_canonical, ext_link_alias_dup, ext_link_alias_unique])
+        await db_session.commit()
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminextconf", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set alias_of on the alias tag
+        response = await client.put(
+            f"/api/v1/tags/{alias_tag.tag_id}",
+            json={"title": "Pekora Usada", "alias_of": canonical_tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Verify canonical tag has both URLs (no duplicates)
+        result = await db_session.execute(
+            select(TagExternalLinks).where(TagExternalLinks.tag_id == canonical_tag.tag_id)
+        )
+        canonical_ext_links = result.all()
+        canonical_urls = {row[0].url for row in canonical_ext_links}
+        assert canonical_urls == {shared_url, unique_url}
+
+        # Verify no external links remain on the alias tag
+        result = await db_session.execute(
+            select(TagExternalLinks).where(TagExternalLinks.tag_id == alias_tag.tag_id)
+        )
+        alias_ext_links = result.all()
+        assert len(alias_ext_links) == 0
+
     async def test_setting_alias_updates_usage_counts(
         self, client: AsyncClient, db_session: AsyncSession
     ):
