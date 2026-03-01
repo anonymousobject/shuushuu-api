@@ -349,3 +349,83 @@ class TestGetThreadMessages:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 404
+
+
+@pytest.mark.api
+class TestLeaveThread:
+    """Tests for DELETE /api/v1/privmsgs/threads/{thread_id} (leave conversation)."""
+
+    async def test_leave_thread_as_recipient(self, client: AsyncClient, db_session: AsyncSession):
+        """Test recipient leaving a thread soft-deletes all messages for them."""
+        user_a = await create_user(db_session, "leave_a", email_verified=True)
+        user_b = await create_user(db_session, "leave_b", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        msgs = []
+        for i in range(2):
+            msg = Privmsgs(
+                from_user_id=user_a.user_id, to_user_id=user_b.user_id,
+                subject="Leave test", text=f"Msg {i}", thread_id=thread_id,
+            )
+            db_session.add(msg)
+            msgs.append(msg)
+        await db_session.commit()
+        for m in msgs:
+            await db_session.refresh(m)
+
+        token = await login(client, "leave_b")
+        response = await client.delete(
+            f"/api/v1/privmsgs/threads/{thread_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 204
+
+        # Verify to_del is set for all messages
+        for m in msgs:
+            await db_session.refresh(m)
+            assert m.to_del == 1
+
+    async def test_leave_thread_as_sender(self, client: AsyncClient, db_session: AsyncSession):
+        """Test sender leaving a thread soft-deletes all messages for them."""
+        user_a = await create_user(db_session, "lsend_a", email_verified=True)
+        user_b = await create_user(db_session, "lsend_b", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        msg = Privmsgs(
+            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
+            subject="Leave send", text="Msg", thread_id=thread_id,
+        )
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        token = await login(client, "lsend_a")
+        response = await client.delete(
+            f"/api/v1/privmsgs/threads/{thread_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 204
+
+        await db_session.refresh(msg)
+        assert msg.from_del == 1
+
+    async def test_leave_thread_unauthorized(self, client: AsyncClient, db_session: AsyncSession):
+        """Test non-participant cannot leave a thread."""
+        user_a = await create_user(db_session, "lauth_a", email_verified=True)
+        user_b = await create_user(db_session, "lauth_b", email_verified=True)
+        outsider = await create_user(db_session, "lauth_out", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        msg = Privmsgs(
+            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
+            subject="Private", text="Secret", thread_id=thread_id,
+        )
+        db_session.add(msg)
+        await db_session.commit()
+
+        token = await login(client, "lauth_out")
+        response = await client.delete(
+            f"/api/v1/privmsgs/threads/{thread_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403

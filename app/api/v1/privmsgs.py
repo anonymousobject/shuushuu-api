@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from sqlalchemy import and_, case, desc, func, or_, select, update
+from sqlalchemy import and_, case, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import PaginationParams
@@ -410,6 +410,73 @@ async def get_thread_messages(
         per_page=len(messages),
         messages=messages,
     )
+
+
+@router.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def leave_thread(
+    thread_id: Annotated[str, Path(description="Thread ID to leave")],
+    current_user: VerifiedUser,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Leave a conversation thread (soft-delete all messages for the current user).
+
+    Sets from_del=1 for messages sent by this user in the thread, and to_del=1 for
+    messages received by this user. Hard-deletes any messages where both parties
+    have left (from_del=1 AND to_del=1).
+    """
+    assert current_user.user_id is not None
+    uid = current_user.user_id
+
+    # Verify user is a participant in the thread
+    participant_result = await db.execute(
+        select(func.count()).select_from(
+            select(Privmsgs.privmsg_id)
+            .where(
+                Privmsgs.thread_id == thread_id,
+                or_(Privmsgs.from_user_id == uid, Privmsgs.to_user_id == uid),
+            )
+            .subquery()
+        )
+    )
+    participant_count = participant_result.scalar() or 0
+
+    if participant_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to leave this thread",
+        )
+
+    # Set from_del=1 for messages sent by this user in the thread
+    await db.execute(
+        update(Privmsgs)
+        .where(
+            Privmsgs.thread_id == thread_id,
+            Privmsgs.from_user_id == uid,
+        )
+        .values(from_del=1)
+    )
+
+    # Set to_del=1 for messages received by this user in the thread
+    await db.execute(
+        update(Privmsgs)
+        .where(
+            Privmsgs.thread_id == thread_id,
+            Privmsgs.to_user_id == uid,
+        )
+        .values(to_del=1)
+    )
+
+    # Hard-delete messages where both parties have left
+    await db.execute(
+        delete(Privmsgs).where(
+            Privmsgs.thread_id == thread_id,
+            Privmsgs.from_del == 1,
+            Privmsgs.to_del == 1,
+        )
+    )
+
+    await db.commit()
 
 
 @router.get("/received", response_model=PrivmsgMessages)
