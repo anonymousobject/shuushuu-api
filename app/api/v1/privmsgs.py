@@ -273,6 +273,145 @@ async def get_threads(
     )
 
 
+@router.get("/threads/{thread_id}", response_model=PrivmsgMessages)
+async def get_thread_messages(
+    thread_id: Annotated[str, Path(description="Thread ID")],
+    current_user: VerifiedUser,
+    db: AsyncSession = Depends(get_db),
+) -> PrivmsgMessages:
+    """
+    Retrieve all messages in a conversation thread.
+
+    Verifies the current user is a participant (sender or recipient of any message
+    in the thread). Marks unread messages addressed to the current user as viewed.
+    Returns messages ordered chronologically (oldest first).
+    """
+    assert current_user.user_id is not None
+    uid = current_user.user_id
+
+    # Check if thread exists
+    exists_result = await db.execute(
+        select(func.count()).select_from(
+            select(Privmsgs.privmsg_id).where(Privmsgs.thread_id == thread_id).subquery()
+        )
+    )
+    thread_count = exists_result.scalar() or 0
+
+    if thread_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+
+    # Check if user is a participant in the thread
+    participant_result = await db.execute(
+        select(func.count()).select_from(
+            select(Privmsgs.privmsg_id)
+            .where(
+                Privmsgs.thread_id == thread_id,
+                or_(Privmsgs.from_user_id == uid, Privmsgs.to_user_id == uid),
+            )
+            .subquery()
+        )
+    )
+    participant_count = participant_result.scalar() or 0
+
+    if participant_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view this thread",
+        )
+
+    # Mark unread messages addressed to the current user as viewed
+    await db.execute(
+        update(Privmsgs)
+        .where(
+            Privmsgs.thread_id == thread_id,
+            Privmsgs.to_user_id == uid,
+            Privmsgs.viewed == 0,
+        )
+        .values(viewed=1)
+    )
+    await db.commit()
+
+    # Fetch all messages in thread, excluding soft-deleted ones for this user
+    # A message is visible if:
+    # - User is sender and from_del == 0, OR
+    # - User is recipient and to_del == 0
+    visible_filter = or_(
+        and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),
+        and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),
+    )
+
+    # Alias for sender and recipient user joins
+    SenderUser = Users.__table__.alias("sender_user")
+    RecipientUser = Users.__table__.alias("recipient_user")
+
+    query = (
+        select(
+            Privmsgs,
+            SenderUser.c.username.label("sender_username"),
+            SenderUser.c.avatar.label("sender_avatar"),
+            RecipientUser.c.username.label("recipient_username"),
+            RecipientUser.c.avatar.label("recipient_avatar"),
+        )
+        .join(SenderUser, Privmsgs.from_user_id == SenderUser.c.user_id, isouter=True)
+        .join(RecipientUser, Privmsgs.to_user_id == RecipientUser.c.user_id, isouter=True)
+        .where(Privmsgs.thread_id == thread_id, visible_filter)
+        .order_by(Privmsgs.date)  # type: ignore[arg-type]
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Collect all participant user IDs for group lookup
+    all_user_ids = set()
+    for row in rows:
+        msg: Privmsgs = row[0]
+        if msg.from_user_id:
+            all_user_ids.add(msg.from_user_id)
+        if msg.to_user_id:
+            all_user_ids.add(msg.to_user_id)
+
+    groups_map = await get_user_groups_map(db, list(all_user_ids))
+
+    messages: list[PrivmsgMessage] = []
+    for row in rows:
+        msg = row[0]
+        sender_username = row[1]
+        sender_avatar = row[2]
+        recipient_username = row[3]
+        recipient_avatar = row[4]
+
+        from_avatar_url: str | None = None
+        to_avatar_url: str | None = None
+        if sender_avatar:
+            from_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{sender_avatar}"
+        if recipient_avatar:
+            to_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{recipient_avatar}"
+
+        data = {
+            "privmsg_id": msg.privmsg_id,
+            "subject": msg.subject,
+            "text": msg.text,
+            "from_user_id": msg.from_user_id,
+            "to_user_id": msg.to_user_id,
+            "date": msg.date,
+            "viewed": msg.viewed,
+            "from_username": sender_username,
+            "to_username": recipient_username,
+            "from_avatar_url": from_avatar_url,
+            "to_avatar_url": to_avatar_url,
+            "from_groups": groups_map.get(msg.from_user_id, []),
+            "to_groups": groups_map.get(msg.to_user_id, []),
+        }
+        messages.append(PrivmsgMessage.model_validate(data))
+
+    return PrivmsgMessages(
+        total=len(messages),
+        page=1,
+        per_page=len(messages),
+        messages=messages,
+    )
+
+
 @router.get("/received", response_model=PrivmsgMessages)
 async def get_received_privmsgs(
     pagination: Annotated[PaginationParams, Depends()],

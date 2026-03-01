@@ -255,3 +255,97 @@ class TestSendThreadedMessage:
         # user_b's del flag on old messages should be reset
         await db_session.refresh(msg)
         assert msg.to_del == 0
+
+
+@pytest.mark.api
+class TestGetThreadMessages:
+    """Tests for GET /api/v1/privmsgs/threads/{thread_id} endpoint."""
+
+    async def test_get_thread_messages(self, client: AsyncClient, db_session: AsyncSession):
+        """Test getting all messages in a thread."""
+        user_a = await create_user(db_session, "tmsg_a", email_verified=True)
+        user_b = await create_user(db_session, "tmsg_b", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        now = datetime.now(UTC)
+
+        for i in range(3):
+            msg = Privmsgs(
+                from_user_id=user_a.user_id if i % 2 == 0 else user_b.user_id,
+                to_user_id=user_b.user_id if i % 2 == 0 else user_a.user_id,
+                subject="Chat" if i == 0 else "Re: Chat",
+                text=f"Message {i}",
+                thread_id=thread_id,
+                date=now + timedelta(minutes=i),
+                viewed=0,
+            )
+            db_session.add(msg)
+        await db_session.commit()
+
+        token = await login(client, "tmsg_a")
+        response = await client.get(
+            f"/api/v1/privmsgs/threads/{thread_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["messages"]) == 3
+        # Should be ordered chronologically (oldest first)
+        dates = [m["date"] for m in data["messages"]]
+        assert dates == sorted(dates)
+
+    async def test_get_thread_marks_as_read(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that opening a thread marks unread messages as viewed."""
+        user_a = await create_user(db_session, "tread_a", email_verified=True)
+        user_b = await create_user(db_session, "tread_b", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        msg = Privmsgs(
+            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
+            subject="Unread", text="Please read", thread_id=thread_id, viewed=0,
+        )
+        db_session.add(msg)
+        await db_session.commit()
+        await db_session.refresh(msg)
+
+        token = await login(client, "tread_a")
+        response = await client.get(
+            f"/api/v1/privmsgs/threads/{thread_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        # Check DB: message should now be viewed
+        await db_session.refresh(msg)
+        assert msg.viewed == 1
+
+    async def test_get_thread_unauthorized(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that a non-participant cannot view a thread."""
+        user_a = await create_user(db_session, "tauth_a", email_verified=True)
+        user_b = await create_user(db_session, "tauth_b", email_verified=True)
+        outsider = await create_user(db_session, "tauth_outsider", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        msg = Privmsgs(
+            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
+            subject="Private", text="Secret", thread_id=thread_id,
+        )
+        db_session.add(msg)
+        await db_session.commit()
+
+        token = await login(client, "tauth_outsider")
+        response = await client.get(
+            f"/api/v1/privmsgs/threads/{thread_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+
+    async def test_get_thread_not_found(self, client: AsyncClient, db_session: AsyncSession):
+        """Test 404 for nonexistent thread."""
+        user = await create_user(db_session, "t404_user", email_verified=True)
+        token = await login(client, "t404_user")
+        response = await client.get(
+            "/api/v1/privmsgs/threads/nonexistent-thread-id",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 404
