@@ -95,8 +95,6 @@ class Privmsgs(PrivmsgBase, table=True):
     from_del: int = Field(default=0)
     to_del: int = Field(default=0)
 
-    thread_id: str | None = Field(default=None, max_length=36)
-
     # Public timestamp
     date: datetime = Field(
         default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}

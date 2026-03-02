@@ -75,6 +75,33 @@ async def send_privmsg(
 
     thread_id = privmsg.thread_id or str(uuid_mod.uuid4())
 
+    # Validate client-supplied thread_id
+    if privmsg.thread_id:
+        thread_check = await db.execute(
+            select(func.count()).select_from(
+                select(Privmsgs.privmsg_id)  # type: ignore[call-overload]
+                .where(
+                    Privmsgs.thread_id == privmsg.thread_id,
+                    or_(
+                        and_(
+                            Privmsgs.from_user_id == current_user.user_id,  # type: ignore[arg-type]
+                            Privmsgs.to_user_id == privmsg.to_user_id,  # type: ignore[arg-type]
+                        ),
+                        and_(
+                            Privmsgs.from_user_id == privmsg.to_user_id,  # type: ignore[arg-type]
+                            Privmsgs.to_user_id == current_user.user_id,  # type: ignore[arg-type]
+                        ),
+                    ),
+                )
+                .subquery()
+            )
+        )
+        if (thread_check.scalar() or 0) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid thread_id",
+            )
+
     new_privmsg = Privmsgs(
         from_user_id=current_user.user_id,
         to_user_id=privmsg.to_user_id,
@@ -292,7 +319,9 @@ async def get_thread_messages(
     # Check if thread exists
     exists_result = await db.execute(
         select(func.count()).select_from(
-            select(Privmsgs.privmsg_id).where(Privmsgs.thread_id == thread_id).subquery()  # type: ignore[arg-type]
+            select(Privmsgs.privmsg_id)  # type: ignore[call-overload]
+            .where(Privmsgs.thread_id == thread_id)
+            .subquery()
         )
     )
     thread_count = exists_result.scalar() or 0
@@ -303,9 +332,9 @@ async def get_thread_messages(
     # Check if user is a participant in the thread
     participant_result = await db.execute(
         select(func.count()).select_from(
-            select(Privmsgs.privmsg_id)
+            select(Privmsgs.privmsg_id)  # type: ignore[call-overload]
             .where(
-                Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+                Privmsgs.thread_id == thread_id,
                 or_(Privmsgs.from_user_id == uid, Privmsgs.to_user_id == uid),  # type: ignore[arg-type]
             )
             .subquery()
@@ -341,8 +370,8 @@ async def get_thread_messages(
     )
 
     # Alias for sender and recipient user joins
-    SenderUser = Users.__table__.alias("sender_user")
-    RecipientUser = Users.__table__.alias("recipient_user")
+    SenderUser = Users.__table__.alias("sender_user")  # type: ignore[attr-defined]
+    RecipientUser = Users.__table__.alias("recipient_user")  # type: ignore[attr-defined]
 
     query = (
         select(
@@ -354,7 +383,7 @@ async def get_thread_messages(
         )
         .join(SenderUser, Privmsgs.from_user_id == SenderUser.c.user_id, isouter=True)
         .join(RecipientUser, Privmsgs.to_user_id == RecipientUser.c.user_id, isouter=True)
-        .where(Privmsgs.thread_id == thread_id, visible_filter)
+        .where(Privmsgs.thread_id == thread_id, visible_filter)  # type: ignore[arg-type]
         .order_by(Privmsgs.date)  # type: ignore[arg-type]
     )
 
@@ -431,9 +460,9 @@ async def leave_thread(
     # Verify user is a participant in the thread
     participant_result = await db.execute(
         select(func.count()).select_from(
-            select(Privmsgs.privmsg_id)
+            select(Privmsgs.privmsg_id)  # type: ignore[call-overload]
             .where(
-                Privmsgs.thread_id == thread_id,  # type: ignore[arg-type]
+                Privmsgs.thread_id == thread_id,
                 or_(Privmsgs.from_user_id == uid, Privmsgs.to_user_id == uid),  # type: ignore[arg-type]
             )
             .subquery()
