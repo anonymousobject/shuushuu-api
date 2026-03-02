@@ -37,6 +37,9 @@ class PrivmsgBase(SQLModel):
     from_user_id: int
     to_user_id: int
 
+    # Thread grouping
+    thread_id: str | None = Field(default=None, max_length=36)
+
     # Public timestamp
     date: datetime
 
@@ -77,6 +80,7 @@ class Privmsgs(PrivmsgBase, table=True):
         ),
         Index("fk_privmsgs_from_user_id", "from_user_id"),
         Index("fk_privmsgs_to_user_id", "to_user_id"),
+        Index("ix_privmsgs_thread_id", "thread_id"),
     )
 
     # Primary key

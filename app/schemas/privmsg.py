@@ -14,6 +14,7 @@ class PrivmsgCreate(BaseModel):
     to_user_id: int
     subject: str
     message: str
+    thread_id: str | None = None
 
     @field_validator("subject")
     @classmethod
@@ -77,3 +78,27 @@ class PrivmsgMessages(BaseModel):
     page: int
     per_page: int
     messages: list[PrivmsgMessage]
+
+
+class ThreadSummary(BaseModel):
+    """Schema for a conversation thread summary in the inbox."""
+
+    thread_id: str
+    subject: str
+    other_user_id: int
+    other_username: str | None = None
+    other_avatar_url: str | None = None
+    other_groups: list[str] = []
+    latest_message_preview: str
+    latest_message_date: str
+    unread_count: int
+    message_count: int
+
+
+class ThreadList(BaseModel):
+    """Schema for paginated thread list."""
+
+    total: int
+    page: int
+    per_page: int
+    threads: list[ThreadSummary]
