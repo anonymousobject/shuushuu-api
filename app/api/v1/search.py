@@ -9,12 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
 from app.core.database import get_db
-from app.core.logging import get_logger
 from app.models.tag import Tags
 from app.schemas.search import SearchResponse, TagSearchHit
 from app.services.search import SearchService
-
-logger = get_logger(__name__)
 
 router = APIRouter(prefix="/search", tags=["search"])
 

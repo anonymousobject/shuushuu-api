@@ -42,7 +42,7 @@ Write paths (tag create/update/delete)
 app/services/search.py
 ├── SearchService
 │   ├── __init__(client)                # Meilisearch client injection
-│   ├── search_tags(query, filters, limit) -> list[TagSearchResult]
+│   ├── search_tags(query, filters, limit) -> TagSearchResult
 │   ├── search_images(query, filters, limit) -> list[ImageSearchResult]
 │   ├── index_tag(tag)                  # Upsert single document
 │   ├── index_tags(tags)                # Bulk upsert
