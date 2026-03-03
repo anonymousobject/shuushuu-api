@@ -14,6 +14,7 @@ from app.schemas.tag import (
     BatchTagResultItem,
     BatchTagSkippedItem,
 )
+from app.services.search import sync_tag_to_search
 
 logger = get_logger(__name__)
 
@@ -139,5 +140,14 @@ async def batch_add_tags(
             "batch_tag_integrity_error", user_id=user_id, tag_ids=tag_ids, image_ids=image_ids
         )
         raise
+
+    # Sync affected tags to Meilisearch (usage_count updated by DB trigger)
+    for affected_tag_id in {item.tag_id for item in added}:
+        tag_result = await db.execute(
+            select(Tags).where(Tags.tag_id == affected_tag_id)  # type: ignore[arg-type]
+        )
+        tag = tag_result.scalar_one_or_none()
+        if tag:
+            await sync_tag_to_search(tag)
 
     return BatchTagResponse(added=added, skipped=skipped)

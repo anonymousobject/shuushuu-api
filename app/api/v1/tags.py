@@ -44,6 +44,7 @@ from app.schemas.tag import (
     TagWithStats,
 )
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
+from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -1120,6 +1121,8 @@ async def create_tag(
     await db.commit()
     await db.refresh(new_tag)
 
+    await sync_tag_to_search(new_tag)
+
     return TagResponse.model_validate(new_tag)
 
 
@@ -1347,6 +1350,8 @@ async def update_tag(
     await db.commit()
     await db.refresh(tag)
 
+    await sync_tag_to_search(tag)
+
     return TagResponse.model_validate(tag)
 
 
@@ -1368,6 +1373,8 @@ async def delete_tag(
 
     await db.delete(tag)
     await db.commit()
+
+    await sync_tag_delete_to_search(tag_id)
 
 
 @router.post("/{tag_id}/links", response_model=TagExternalLinkResponse, status_code=201)

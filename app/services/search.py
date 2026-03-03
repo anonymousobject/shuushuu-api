@@ -1,5 +1,7 @@
 """Search service for Meilisearch integration."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from meilisearch_python_sdk import AsyncClient
@@ -10,6 +12,52 @@ from app.models.tag import Tags
 logger = get_logger(__name__)
 
 TAGS_INDEX_NAME = "tags"
+
+# Module-level reference set during app lifespan
+_search_service: SearchService | None = None
+
+
+def set_search_service(service: SearchService | None) -> None:
+    """Set the module-level search service instance (called from lifespan)."""
+    global _search_service
+    _search_service = service
+
+
+def get_search_service_instance() -> SearchService | None:
+    """Get the current search service, or None if not initialized."""
+    return _search_service
+
+
+async def sync_tag_to_search(tag: Tags, *, service: SearchService | None = None) -> None:
+    """Sync a tag to Meilisearch. Fire-and-forget -- never raises.
+
+    Args:
+        tag: The tag to sync
+        service: SearchService instance, or None to use module-level default
+    """
+    svc = service or _search_service
+    if svc is None:
+        return
+    try:
+        await svc.index_tag(tag)
+    except Exception:
+        logger.warning("meilisearch_sync_failed", tag_id=tag.tag_id)
+
+
+async def sync_tag_delete_to_search(tag_id: int, *, service: SearchService | None = None) -> None:
+    """Remove a tag from Meilisearch. Fire-and-forget -- never raises.
+
+    Args:
+        tag_id: ID of the tag to remove
+        service: SearchService instance, or None to use module-level default
+    """
+    svc = service or _search_service
+    if svc is None:
+        return
+    try:
+        await svc.delete_tag(tag_id)
+    except Exception:
+        logger.warning("meilisearch_sync_delete_failed", tag_id=tag_id)
 
 
 @dataclass

@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from meilisearch_python_sdk import AsyncClient as MeilisearchClient
 
     from app.api.v1 import search as search_module
-    from app.services.search import SearchService, configure_tags_index
+    from app.services.search import SearchService, configure_tags_index, set_search_service
 
     meilisearch_client = None
     try:
@@ -104,6 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
         # Override the search endpoint's dependency
         search_module.get_search_service = lambda: search_service
+        set_search_service(search_service)
         logger.info("meilisearch_initialized", url=settings.MEILISEARCH_URL)
     except Exception:
         logger.warning("meilisearch_unavailable", url=settings.MEILISEARCH_URL)
@@ -112,6 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Shutdown
     logger.info("application_shutting_down")
+    set_search_service(None)
     if meilisearch_client:
         await meilisearch_client.aclose()
     await close_queue()  # Close arq pool
