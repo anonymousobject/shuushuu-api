@@ -43,6 +43,27 @@ async def sync_tag_to_search(tag: Tags, *, service: SearchService | None = None)
         logger.warning("meilisearch_sync_failed", tag_id=tag.tag_id, exc_info=True)
 
 
+async def sync_tags_to_search(tags: list[Tags], *, service: SearchService | None = None) -> None:
+    """Sync multiple tags to Meilisearch in a single call. Best-effort -- never raises.
+
+    Awaits the Meilisearch call but runs after the MySQL commit, so the
+    write path has already succeeded.
+
+    Args:
+        tags: The tags to sync
+        service: SearchService instance, or None to use module-level default
+    """
+    if not tags:
+        return
+    svc = service or _search_service
+    if svc is None:
+        return
+    try:
+        await svc.index_tags(tags)
+    except Exception:
+        logger.warning("meilisearch_bulk_sync_failed", count=len(tags), exc_info=True)
+
+
 async def sync_tag_delete_to_search(tag_id: int, *, service: SearchService | None = None) -> None:
     """Remove a tag from Meilisearch. Best-effort -- never raises.
 

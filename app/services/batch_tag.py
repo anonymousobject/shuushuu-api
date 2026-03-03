@@ -14,7 +14,7 @@ from app.schemas.tag import (
     BatchTagResultItem,
     BatchTagSkippedItem,
 )
-from app.services.search import sync_tag_to_search
+from app.services.search import sync_tags_to_search
 
 logger = get_logger(__name__)
 
@@ -147,7 +147,6 @@ async def batch_add_tags(
         tag_results = await db.execute(
             select(Tags).where(Tags.tag_id.in_(affected_tag_ids))  # type: ignore[union-attr]
         )
-        for tag in tag_results.scalars().all():
-            await sync_tag_to_search(tag)
+        await sync_tags_to_search(list(tag_results.scalars().all()))
 
     return BatchTagResponse(added=added, skipped=skipped)
