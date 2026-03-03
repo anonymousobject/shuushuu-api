@@ -51,7 +51,7 @@ async def search(
     # Fetch full tag records from MySQL, preserving Meilisearch order
     hits: list[TagSearchHit] = []
     if result.tag_ids:
-        query = select(Tags).where(Tags.tag_id.in_(result.tag_ids))
+        query = select(Tags).where(Tags.tag_id.in_(result.tag_ids))  # type: ignore[union-attr]
         db_result = await db.execute(query)
         tags_by_id = {tag.tag_id: tag for tag in db_result.scalars().all()}
 

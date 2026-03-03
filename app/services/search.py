@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from meilisearch_python_sdk import AsyncClient
 
@@ -68,7 +69,7 @@ class TagSearchResult:
     total: int
 
 
-def _tag_to_document(tag: Tags) -> dict:
+def _tag_to_document(tag: Tags) -> dict[str, Any]:
     """Convert a Tags model to a Meilisearch document."""
     return {
         "tag_id": tag.tag_id,
@@ -181,4 +182,4 @@ class SearchService:
             hits=len(tag_ids),
             total=results.estimated_total_hits,
         )
-        return TagSearchResult(tag_ids=tag_ids, total=results.estimated_total_hits)
+        return TagSearchResult(tag_ids=tag_ids, total=results.estimated_total_hits or 0)
