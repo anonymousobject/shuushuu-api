@@ -838,14 +838,21 @@ async def update_image(
     from app.services.repost import migrate_repost_data
 
     update_fields = image_data.model_dump(exclude_unset=True)
-    if not update_fields:
+    new_status = update_fields.pop("status", None)
+    replacement_id = update_fields.pop("replacement_id", None)
+
+    # replacement_id is only valid with status=REPOST
+    if replacement_id is not None and new_status != ImageStatus.REPOST:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="replacement_id is only valid when marking as repost",
+        )
+
+    if not update_fields and new_status is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No fields to update",
         )
-
-    new_status = update_fields.pop("status", None)
-    replacement_id = update_fields.pop("replacement_id", None)
 
     # Fetch image
     result = await db.execute(
@@ -915,7 +922,7 @@ async def update_image(
                     detail="An image cannot be a repost of itself",
                 )
             original_result = await db.execute(
-                select(Images).where(Images.image_id == replacement_id)  # type: ignore[arg-type]
+                select(Images).where(Images.image_id == replacement_id)
             )
             if not original_result.scalar_one_or_none():
                 raise HTTPException(
@@ -924,6 +931,9 @@ async def update_image(
                 )
             image.replacement_id = replacement_id
             await migrate_repost_data(image_id, replacement_id, db)
+        else:
+            # Clear replacement_id when not a repost
+            image.replacement_id = None
 
         previous_status = image.status
         image.status = new_status
@@ -944,6 +954,10 @@ async def update_image(
         setattr(image, field, value)
 
     await db.commit()
+
+    # Recalculate ratings for the original image after repost migration
+    if new_status == ImageStatus.REPOST and replacement_id:
+        await recalculate_image_ratings(db, replacement_id)
 
     # Re-fetch with relationships for response
     result = await db.execute(

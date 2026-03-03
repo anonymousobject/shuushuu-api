@@ -282,7 +282,7 @@ class TestImageOwnerStatusChange:
         repost = await create_image(
             db_session, owner.user_id, caption="repost img",
         )
-        # Need a unique md5 hash for the second image
+        # Use a different md5 hash for the second image to keep test data distinct
         repost.md5_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         await db_session.commit()
 
