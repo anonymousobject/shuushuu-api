@@ -24,11 +24,6 @@ def set_search_service(service: SearchService | None) -> None:
     _search_service = service
 
 
-def get_search_service_instance() -> SearchService | None:
-    """Get the current search service, or None if not initialized."""
-    return _search_service
-
-
 async def sync_tag_to_search(tag: Tags, *, service: SearchService | None = None) -> None:
     """Sync a tag to Meilisearch. Best-effort -- never raises.
 
@@ -96,7 +91,8 @@ async def configure_tags_index(client: AsyncClient) -> None:
     try:
         await client.create_index(TAGS_INDEX_NAME, primary_key="tag_id")
     except Exception:
-        pass  # Index may already exist
+        # Index may already exist; log for observability in case of real failures.
+        logger.debug("meilisearch_create_tags_index_failed", exc_info=True)
 
     index = client.index(TAGS_INDEX_NAME)
     await index.update_ranking_rules(

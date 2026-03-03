@@ -61,7 +61,7 @@ services:
     container_name: shuushuu-meilisearch
     environment:
       - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-dev_master_key}
-      - MEILI_ENV=${ENVIRONMENT:-development}
+      - MEILI_ENV=${MEILI_ENV:-development}
     ports:
       - "7700:7700"
     volumes:

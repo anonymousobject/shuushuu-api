@@ -176,7 +176,7 @@ Production uses `MEILI_ENV=production` and a strong master key.
 
 ### App Configuration
 
-New settings in `app/core/config.py`:
+New settings in `app/config.py`:
 
 ```python
 MEILISEARCH_URL: str = "http://meilisearch:7700"

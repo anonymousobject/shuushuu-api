@@ -35,7 +35,7 @@ def get_search_service() -> SearchService:
 async def search(
     q: Annotated[str, Query(min_length=1, max_length=200, description="Search query")],
     db: Annotated[AsyncSession, Depends(get_db)],
-    type: Annotated[int | None, Query(description="Filter by tag type")] = None,
+    type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     exclude_aliases: Annotated[bool, Query(description="Exclude alias tags")] = False,
     limit: Annotated[int, Query(ge=1, le=100, description="Max results")] = 20,
     offset: Annotated[int, Query(ge=0, description="Results to skip")] = 0,
@@ -49,7 +49,7 @@ async def search(
         q,
         limit=limit,
         offset=offset,
-        type_filter=type,
+        type_filter=type_id,
         exclude_aliases=exclude_aliases,
     )
 
