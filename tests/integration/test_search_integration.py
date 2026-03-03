@@ -16,7 +16,7 @@ from app.models.tag import Tags
 from app.services.search import SearchService, configure_tags_index
 
 MEILISEARCH_URL = os.getenv("MEILISEARCH_URL", "http://localhost:7700")
-MEILISEARCH_KEY = os.getenv("MEILI_MASTER_KEY", "dev_master_key")
+MEILISEARCH_KEY = os.getenv("MEILISEARCH_API_KEY") or os.getenv("MEILI_MASTER_KEY", "dev_master_key")
 
 # Use a test-specific index prefix to avoid colliding with dev data
 TEST_INDEX_NAME = "tags_test"
