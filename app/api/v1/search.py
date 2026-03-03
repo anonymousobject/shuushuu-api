@@ -3,8 +3,10 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.exceptions import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette import status
 
 from app.core.database import get_db
 from app.core.logging import get_logger
@@ -21,9 +23,12 @@ def get_search_service() -> SearchService:
     """Get the search service instance.
 
     This is overridden at startup once Meilisearch is initialized.
-    Raises RuntimeError if called before initialization.
+    Returns 503 if Meilisearch is not available.
     """
-    raise RuntimeError("SearchService not initialized")
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Search service is not available",
+    )
 
 
 @router.get("", response_model=SearchResponse)

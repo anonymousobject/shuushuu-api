@@ -142,12 +142,12 @@ async def batch_add_tags(
         raise
 
     # Sync affected tags to Meilisearch (usage_count updated by DB trigger)
-    for affected_tag_id in {item.tag_id for item in added}:
-        tag_result = await db.execute(
-            select(Tags).where(Tags.tag_id == affected_tag_id)  # type: ignore[arg-type]
+    affected_tag_ids = {item.tag_id for item in added}
+    if affected_tag_ids:
+        tag_results = await db.execute(
+            select(Tags).where(Tags.tag_id.in_(affected_tag_ids))  # type: ignore[union-attr]
         )
-        tag = tag_result.scalar_one_or_none()
-        if tag:
+        for tag in tag_results.scalars().all():
             await sync_tag_to_search(tag)
 
     return BatchTagResponse(added=added, skipped=skipped)

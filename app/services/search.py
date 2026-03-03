@@ -30,7 +30,10 @@ def get_search_service_instance() -> SearchService | None:
 
 
 async def sync_tag_to_search(tag: Tags, *, service: SearchService | None = None) -> None:
-    """Sync a tag to Meilisearch. Fire-and-forget -- never raises.
+    """Sync a tag to Meilisearch. Best-effort -- never raises.
+
+    Awaits the Meilisearch call but runs after the MySQL commit, so the
+    write path has already succeeded. Typically completes in <10ms.
 
     Args:
         tag: The tag to sync
@@ -42,11 +45,14 @@ async def sync_tag_to_search(tag: Tags, *, service: SearchService | None = None)
     try:
         await svc.index_tag(tag)
     except Exception:
-        logger.warning("meilisearch_sync_failed", tag_id=tag.tag_id)
+        logger.warning("meilisearch_sync_failed", tag_id=tag.tag_id, exc_info=True)
 
 
 async def sync_tag_delete_to_search(tag_id: int, *, service: SearchService | None = None) -> None:
-    """Remove a tag from Meilisearch. Fire-and-forget -- never raises.
+    """Remove a tag from Meilisearch. Best-effort -- never raises.
+
+    Awaits the Meilisearch call but runs after the MySQL commit, so the
+    write path has already succeeded. Typically completes in <10ms.
 
     Args:
         tag_id: ID of the tag to remove
@@ -58,7 +64,7 @@ async def sync_tag_delete_to_search(tag_id: int, *, service: SearchService | Non
     try:
         await svc.delete_tag(tag_id)
     except Exception:
-        logger.warning("meilisearch_sync_delete_failed", tag_id=tag_id)
+        logger.warning("meilisearch_sync_delete_failed", tag_id=tag_id, exc_info=True)
 
 
 @dataclass

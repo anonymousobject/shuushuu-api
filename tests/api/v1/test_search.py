@@ -229,6 +229,22 @@ class TestSearchEndpoint:
             exclude_aliases=False,
         )
 
+    async def test_search_returns_503_when_meilisearch_unavailable(
+        self,
+        app: FastAPI,
+    ):
+        """Without Meilisearch, the search endpoint returns 503."""
+        from httpx import ASGITransport
+
+        # No dependency override — default get_search_service raises HTTPException(503)
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            response = await ac.get("/api/v1/search", params={"q": "test"})
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Search service is not available"
+
     async def test_search_handles_missing_db_tags_gracefully(
         self,
         client_with_search: AsyncClient,

@@ -107,7 +107,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         set_search_service(search_service)
         logger.info("meilisearch_initialized", url=settings.MEILISEARCH_URL)
     except Exception:
-        logger.warning("meilisearch_unavailable", url=settings.MEILISEARCH_URL)
+        logger.warning(
+            "meilisearch_unavailable",
+            url=settings.MEILISEARCH_URL,
+            exc_info=True,
+        )
 
     yield
 
