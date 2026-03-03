@@ -1203,17 +1203,35 @@ async def delete_comment_via_report(
 async def dismiss_report(
     report_id: Annotated[int, Path(description="Report ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
     request_data: ReportDismissRequest | None = None,
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> MessageResponse:
     """
     Dismiss a report without taking action on the image.
 
     Optionally include admin_notes to document why the report was dismissed.
 
-    Requires REPORT_MANAGE permission.
+    Requires REPORT_MANAGE permission, or TAG_SUGGESTION_APPLY for TAG_SUGGESTIONS reports.
     """
+    from app.core.permissions import has_permission
+
+    has_report_manage = await has_permission(
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.REPORT_MANAGE,
+        redis_client,
+    )
+    has_tag_suggestion_apply = await has_permission(
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.TAG_SUGGESTION_APPLY,
+        redis_client,
+    )
+
+    if not has_report_manage and not has_tag_suggestion_apply:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
     result = await db.execute(
         select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
     )
@@ -1224,6 +1242,10 @@ async def dismiss_report(
 
     if report.status != ReportStatus.PENDING:
         raise HTTPException(status_code=400, detail="Report has already been processed")
+
+    # Taggers can only dismiss TAG_SUGGESTIONS reports
+    if not has_report_manage and report.category != ReportCategory.TAG_SUGGESTIONS:
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     # Mark all tag suggestions as rejected
     suggestions_result = await db.execute(

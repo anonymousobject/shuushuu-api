@@ -915,10 +915,10 @@ class TestReportPermissionDenials:
 
         assert response.status_code == 403
 
-    async def test_tagger_cannot_dismiss_report(
+    async def test_tagger_can_dismiss_tag_suggestion_report(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test user with only TAG_SUGGESTION_APPLY cannot dismiss reports."""
+        """Test user with TAG_SUGGESTION_APPLY can dismiss TAG_SUGGESTIONS reports."""
         tagger, password = await create_auth_user(db_session, username="tagger_dismiss1")
         await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
         image = await create_test_image(db_session, tagger.user_id)
@@ -928,6 +928,32 @@ class TestReportPermissionDenials:
             image_id=image.image_id,
             user_id=tagger.user_id,
             category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/dismiss",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["message"] == "Report dismissed successfully"
+
+    async def test_tagger_cannot_dismiss_non_tag_suggestion_report(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test user with only TAG_SUGGESTION_APPLY cannot dismiss non-TAG_SUGGESTIONS reports."""
+        tagger, password = await create_auth_user(db_session, username="tagger_dismiss2")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        image = await create_test_image(db_session, tagger.user_id)
+        token = await login_user(client, tagger.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=tagger.user_id,
+            category=1,  # REPOST
             status=ReportStatus.PENDING,
         )
         db_session.add(report)
