@@ -87,9 +87,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     async with AsyncSessionLocal() as db:
         await sync_permissions(db)
 
+    # Initialize Meilisearch search service
+    from meilisearch_python_sdk import AsyncClient as MeilisearchClient
+
+    from app.api.v1 import search as search_module
+    from app.services.search import SearchService, configure_tags_index
+
+    meilisearch_client = None
+    try:
+        meilisearch_client = MeilisearchClient(
+            url=settings.MEILISEARCH_URL,
+            api_key=settings.MEILISEARCH_API_KEY,
+        )
+        search_service = SearchService(meilisearch_client)
+        await configure_tags_index(meilisearch_client)
+
+        # Override the search endpoint's dependency
+        search_module.get_search_service = lambda: search_service
+        logger.info("meilisearch_initialized", url=settings.MEILISEARCH_URL)
+    except Exception:
+        logger.warning("meilisearch_unavailable", url=settings.MEILISEARCH_URL)
+
     yield
+
     # Shutdown
     logger.info("application_shutting_down")
+    if meilisearch_client:
+        await meilisearch_client.aclose()
     await close_queue()  # Close arq pool
 
 

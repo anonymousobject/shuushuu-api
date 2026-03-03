@@ -32,6 +32,35 @@ def _tag_to_document(tag: Tags) -> dict:
     }
 
 
+async def configure_tags_index(client: AsyncClient) -> None:
+    """Create and configure the tags index in Meilisearch.
+
+    Sets ranking rules, filterable attributes, and searchable attributes.
+    Idempotent — safe to call on every startup.
+    """
+    try:
+        await client.create_index(TAGS_INDEX_NAME, primary_key="tag_id")
+    except Exception:
+        pass  # Index may already exist
+
+    index = client.index(TAGS_INDEX_NAME)
+    await index.update_ranking_rules(
+        [
+            "words",
+            "typo",
+            "proximity",
+            "attribute",
+            "exactness",
+            "usage_count:desc",
+        ]
+    )
+    await index.update_filterable_attributes(["type", "alias_of"])
+    await index.update_searchable_attributes(["title", "desc"])
+    await index.update_sortable_attributes(["usage_count"])
+
+    logger.info("meilisearch_tags_index_configured")
+
+
 class SearchService:
     """Service for indexing and searching via Meilisearch."""
 
