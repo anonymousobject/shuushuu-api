@@ -937,7 +937,7 @@ async def update_image(
 
         previous_status = image.status
         image.status = new_status
-        image.status_user_id = current_user.user_id
+        image.status_user_id = current_user.id
         image.status_updated = datetime.now(UTC)
 
         # Log to status history
@@ -945,7 +945,7 @@ async def update_image(
             image_id=image_id,
             old_status=previous_status,
             new_status=new_status,
-            user_id=current_user.user_id,
+            user_id=current_user.id,
         )
         db.add(history)
 
@@ -958,6 +958,7 @@ async def update_image(
     # Recalculate ratings for the original image after repost migration
     if new_status == ImageStatus.REPOST and replacement_id:
         await recalculate_image_ratings(db, replacement_id)
+        await db.commit()
 
     # Re-fetch with relationships for response
     result = await db.execute(
