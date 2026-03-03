@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
     CACHE_TTL: int = 300  # 5 minutes
 
+    # Meilisearch
+    MEILISEARCH_URL: str = Field(default="http://localhost:7700")
+    MEILISEARCH_API_KEY: str | None = Field(default=None)
+
     # Task Queue - UPDATED to support multiple options
     TASK_QUEUE_TYPE: str = Field(
         default="background",  # Options: "background", "arq", "celery"
