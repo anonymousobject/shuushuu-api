@@ -6,7 +6,7 @@ import math
 import random
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
 from typing import Annotated
@@ -823,19 +823,29 @@ async def update_image(
     redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ImageDetailedResponse:
     """
-    Update image metadata (caption, miscmeta).
+    Update image metadata (caption, miscmeta) and/or owner status.
 
-    Can be used by:
+    Metadata can be updated by:
     - The image owner
     - Admin users
     - Users with IMAGE_EDIT_META permission
+
+    Status can be set to SPOILER (2) or REPOST (-1) by:
+    - The image owner (only when image is ACTIVE and not locked)
+
+    Repost requires replacement_id (the original image ID).
     """
+    from app.services.repost import migrate_repost_data
+
     update_fields = image_data.model_dump(exclude_unset=True)
     if not update_fields:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No fields to update",
         )
+
+    new_status = update_fields.pop("status", None)
+    replacement_id = update_fields.pop("replacement_id", None)
 
     # Fetch image
     result = await db.execute(
@@ -855,12 +865,81 @@ async def update_image(
             db, current_user.id, Permission.IMAGE_EDIT_META, redis_client
         )
 
-    if not is_owner and not is_admin and not has_edit_permission:
+    # Metadata fields require owner, admin, or IMAGE_EDIT_META
+    if update_fields and not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to edit this image",
         )
 
+    # Status changes require ownership
+    if new_status is not None:
+        if not is_owner:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to change this image's status",
+            )
+
+        # Owners can only set SPOILER or REPOST
+        allowed_statuses = {ImageStatus.SPOILER, ImageStatus.REPOST}
+        if new_status not in allowed_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Owners can only mark images as spoiler or repost",
+            )
+
+        # Image must be ACTIVE
+        if image.status != ImageStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only active images can have their status changed",
+            )
+
+        # Image must not be locked
+        if image.locked:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Locked images cannot have their status changed",
+            )
+
+        # Handle repost validation
+        if new_status == ImageStatus.REPOST:
+            if replacement_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="replacement_id is required when marking as repost",
+                )
+            if replacement_id == image_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="An image cannot be a repost of itself",
+                )
+            original_result = await db.execute(
+                select(Images).where(Images.image_id == replacement_id)  # type: ignore[arg-type]
+            )
+            if not original_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Original image not found",
+                )
+            image.replacement_id = replacement_id
+            await migrate_repost_data(image_id, replacement_id, db)
+
+        previous_status = image.status
+        image.status = new_status
+        image.status_user_id = current_user.user_id
+        image.status_updated = datetime.now(UTC)
+
+        # Log to status history
+        history = ImageStatusHistory(
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=new_status,
+            user_id=current_user.user_id,
+        )
+        db.add(history)
+
+    # Apply metadata updates
     for field, value in update_fields.items():
         setattr(image, field, value)
 

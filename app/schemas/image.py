@@ -51,10 +51,12 @@ class ImageCreate(ImageBase):
 
 
 class ImageUpdate(BaseModel):
-    """Schema for updating image metadata — all fields optional."""
+    """Schema for updating image metadata and owner status — all fields optional."""
 
     caption: str | None = None
     miscmeta: str | None = None
+    status: int | None = None
+    replacement_id: int | None = None
 
     @field_validator("caption")
     @classmethod
