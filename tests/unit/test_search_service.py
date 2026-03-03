@@ -116,3 +116,93 @@ class TestDeleteTag:
 
         index_mock = client.index(TAGS_INDEX_NAME)
         index_mock.delete_document.assert_awaited_once_with("42")
+
+
+@pytest.mark.unit
+class TestSearchTags:
+    """Tests for SearchService.search_tags."""
+
+    async def test_returns_tag_ids_in_order(self):
+        """search_tags returns tag IDs in Meilisearch relevance order."""
+        client = _make_mock_client()
+        service = SearchService(client)
+
+        index_mock = client.index(TAGS_INDEX_NAME)
+        index_mock.search.return_value = MagicMock(
+            hits=[
+                {"tag_id": 10, "title": "Sakura Kinomoto"},
+                {"tag_id": 20, "title": "Sakura"},
+            ],
+            estimated_total_hits=2,
+        )
+
+        result = await service.search_tags("sakura")
+
+        index_mock.search.assert_awaited_once()
+        assert result.tag_ids == [10, 20]
+        assert result.total == 2
+
+    async def test_passes_limit_and_offset(self):
+        """search_tags forwards limit and offset to Meilisearch."""
+        client = _make_mock_client()
+        service = SearchService(client)
+
+        index_mock = client.index(TAGS_INDEX_NAME)
+        index_mock.search.return_value = MagicMock(
+            hits=[],
+            estimated_total_hits=0,
+        )
+
+        await service.search_tags("test", limit=5, offset=10)
+
+        call_kwargs = index_mock.search.call_args
+        assert call_kwargs[1]["limit"] == 5
+        assert call_kwargs[1]["offset"] == 10
+
+    async def test_applies_type_filter(self):
+        """search_tags passes type filter to Meilisearch."""
+        client = _make_mock_client()
+        service = SearchService(client)
+
+        index_mock = client.index(TAGS_INDEX_NAME)
+        index_mock.search.return_value = MagicMock(
+            hits=[],
+            estimated_total_hits=0,
+        )
+
+        await service.search_tags("test", type_filter=TagType.ARTIST)
+
+        call_kwargs = index_mock.search.call_args
+        assert "type = 3" in call_kwargs[1]["filter"]
+
+    async def test_applies_exclude_aliases_filter(self):
+        """search_tags can exclude alias tags."""
+        client = _make_mock_client()
+        service = SearchService(client)
+
+        index_mock = client.index(TAGS_INDEX_NAME)
+        index_mock.search.return_value = MagicMock(
+            hits=[],
+            estimated_total_hits=0,
+        )
+
+        await service.search_tags("test", exclude_aliases=True)
+
+        call_kwargs = index_mock.search.call_args
+        assert "alias_of IS NULL" in call_kwargs[1]["filter"]
+
+    async def test_empty_query_returns_empty(self):
+        """search_tags with empty results returns empty list."""
+        client = _make_mock_client()
+        service = SearchService(client)
+
+        index_mock = client.index(TAGS_INDEX_NAME)
+        index_mock.search.return_value = MagicMock(
+            hits=[],
+            estimated_total_hits=0,
+        )
+
+        result = await service.search_tags("nonexistent")
+
+        assert result.tag_ids == []
+        assert result.total == 0
