@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # Initialize Meilisearch search service
     from meilisearch_python_sdk import AsyncClient as MeilisearchClient
 
-    from app.api.v1 import search as search_module
+    from app.api.v1.search import get_search_service
     from app.services.search import SearchService, configure_tags_index, set_search_service
 
     meilisearch_client = None
@@ -102,8 +102,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         search_service = SearchService(meilisearch_client)
         await configure_tags_index(meilisearch_client)
 
-        # Override the search endpoint's dependency
-        search_module.get_search_service = lambda: search_service
+        # Override the search endpoint's dependency via FastAPI's mechanism
+        app.dependency_overrides[get_search_service] = lambda: search_service
         set_search_service(search_service)
         logger.info("meilisearch_initialized", url=settings.MEILISEARCH_URL)
     except Exception:
@@ -113,6 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Shutdown
     logger.info("application_shutting_down")
+    app.dependency_overrides.pop(get_search_service, None)
     set_search_service(None)
     if meilisearch_client:
         await meilisearch_client.aclose()

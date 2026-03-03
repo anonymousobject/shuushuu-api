@@ -90,6 +90,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
+      - MEILISEARCH_URL=http://meilisearch:7700
+      - MEILISEARCH_API_KEY=${MEILI_MASTER_KEY:-dev_master_key}
       # Prevent Python from writing pyc files and __pycache__ dirs
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
@@ -168,6 +170,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
+      - MEILISEARCH_URL=http://meilisearch:7700
+      - MEILISEARCH_API_KEY=${MEILI_MASTER_KEY:-dev_master_key}
       # Prevent Python from writing pyc files
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
