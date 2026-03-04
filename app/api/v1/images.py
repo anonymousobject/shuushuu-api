@@ -1537,7 +1537,7 @@ async def add_tag_to_image(
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == resolved_tag_id))  # type: ignore[arg-type]
     updated_tag = tag_result.scalar_one_or_none()
     if updated_tag:
-        await sync_tag_to_search(updated_tag)
+        await sync_tag_to_search(updated_tag, db=db)
 
     return {"message": "Tag added successfully"}
 
@@ -1609,7 +1609,7 @@ async def remove_tag_from_image(
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
     updated_tag = tag_result.scalar_one_or_none()
     if updated_tag:
-        await sync_tag_to_search(updated_tag)
+        await sync_tag_to_search(updated_tag, db=db)
 
 
 @router.post("/{image_id}/rating", status_code=status.HTTP_201_CREATED)

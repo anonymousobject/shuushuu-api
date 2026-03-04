@@ -147,6 +147,6 @@ async def batch_add_tags(
         tag_results = await db.execute(
             select(Tags).where(Tags.tag_id.in_(affected_tag_ids))  # type: ignore[union-attr]
         )
-        await sync_tags_to_search(list(tag_results.scalars().all()))
+        await sync_tags_to_search(list(tag_results.scalars().all()), db=db)
 
     return BatchTagResponse(added=added, skipped=skipped)

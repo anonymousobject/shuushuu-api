@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.models.tag import Tags
-from app.services.search import SearchService, configure_tags_index
+from app.services.search import SearchService, _get_parent_usage_counts, configure_tags_index
 
 
 async def reindex_tags(batch_size: int = 1000) -> None:
@@ -40,7 +40,7 @@ async def reindex_tags(batch_size: int = 1000) -> None:
 
         async with AsyncSession(engine) as db:
             # Get total count
-            count_result = await db.execute(select(func.count(Tags.tag_id)))
+            count_result = await db.execute(select(func.count(Tags.tag_id)))  # type: ignore[arg-type]
             total = count_result.scalar() or 0
             print(f"Reindexing {total} tags...")
 
@@ -52,7 +52,7 @@ async def reindex_tags(batch_size: int = 1000) -> None:
             while offset < total:
                 result = await db.execute(
                     select(Tags)
-                    .order_by(Tags.tag_id)
+                    .order_by(Tags.tag_id)  # type: ignore[arg-type]
                     .offset(offset)
                     .limit(batch_size)
                 )
@@ -61,7 +61,8 @@ async def reindex_tags(batch_size: int = 1000) -> None:
                 if not tags:
                     break
 
-                await service.index_tags(tags)
+                parent_counts = await _get_parent_usage_counts(db, tags)
+                await service.index_tags(tags, parent_usage_counts=parent_counts)
                 indexed += len(tags)
                 offset += batch_size
                 print(f"  Indexed {indexed}/{total} tags...")

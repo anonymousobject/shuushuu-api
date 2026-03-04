@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from meilisearch_python_sdk import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.tag import Tags
@@ -24,7 +26,42 @@ def set_search_service(service: SearchService | None) -> None:
     _search_service = service
 
 
-async def sync_tag_to_search(tag: Tags, *, service: SearchService | None = None) -> None:
+async def _get_parent_usage_count(db: AsyncSession, alias_of: int) -> int | None:
+    """Look up a parent tag's usage_count. Returns None if not found."""
+    result = await db.execute(
+        select(Tags.usage_count).where(Tags.tag_id == alias_of)  # type: ignore[call-overload]
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_parent_usage_counts(db: AsyncSession, tags: list[Tags]) -> dict[int, int]:
+    """Look up parent usage_counts for all alias tags in a batch.
+
+    Returns a mapping of alias tag_id -> parent usage_count.
+    """
+    alias_tags = {tag.tag_id: tag.alias_of for tag in tags if tag.alias_of is not None}
+    if not alias_tags:
+        return {}
+    parent_ids = set(alias_tags.values())
+    result = await db.execute(
+        select(Tags.tag_id, Tags.usage_count).where(  # type: ignore[call-overload]
+            Tags.tag_id.in_(parent_ids)  # type: ignore[union-attr]
+        )
+    )
+    parent_counts: dict[int, int] = {row.tag_id: row.usage_count for row in result.all()}
+    return {
+        alias_id: parent_counts[parent_id]  # type: ignore[misc]
+        for alias_id, parent_id in alias_tags.items()
+        if parent_id in parent_counts
+    }
+
+
+async def sync_tag_to_search(
+    tag: Tags,
+    *,
+    db: AsyncSession | None = None,
+    service: SearchService | None = None,
+) -> None:
     """Sync a tag to Meilisearch. Best-effort -- never raises.
 
     Awaits the Meilisearch call but runs after the MySQL commit, so the
@@ -32,18 +69,27 @@ async def sync_tag_to_search(tag: Tags, *, service: SearchService | None = None)
 
     Args:
         tag: The tag to sync
+        db: Optional DB session for looking up parent usage_count on alias tags
         service: SearchService instance, or None to use module-level default
     """
     svc = service or _search_service
     if svc is None:
         return
     try:
-        await svc.index_tag(tag)
+        parent_usage_count = None
+        if tag.alias_of is not None and db is not None:
+            parent_usage_count = await _get_parent_usage_count(db, tag.alias_of)
+        await svc.index_tag(tag, parent_usage_count=parent_usage_count)
     except Exception:
         logger.warning("meilisearch_sync_failed", tag_id=tag.tag_id, exc_info=True)
 
 
-async def sync_tags_to_search(tags: list[Tags], *, service: SearchService | None = None) -> None:
+async def sync_tags_to_search(
+    tags: list[Tags],
+    *,
+    db: AsyncSession | None = None,
+    service: SearchService | None = None,
+) -> None:
     """Sync multiple tags to Meilisearch in a single call. Best-effort -- never raises.
 
     Awaits the Meilisearch call but runs after the MySQL commit, so the
@@ -51,6 +97,7 @@ async def sync_tags_to_search(tags: list[Tags], *, service: SearchService | None
 
     Args:
         tags: The tags to sync
+        db: Optional DB session for looking up parent usage_counts on alias tags
         service: SearchService instance, or None to use module-level default
     """
     if not tags:
@@ -59,7 +106,10 @@ async def sync_tags_to_search(tags: list[Tags], *, service: SearchService | None
     if svc is None:
         return
     try:
-        await svc.index_tags(tags)
+        parent_counts = None
+        if db is not None:
+            parent_counts = await _get_parent_usage_counts(db, tags)
+        await svc.index_tags(tags, parent_usage_counts=parent_counts)
     except Exception:
         logger.warning("meilisearch_bulk_sync_failed", count=len(tags), exc_info=True)
 
@@ -91,14 +141,23 @@ class TagSearchResult:
     total: int
 
 
-def _tag_to_document(tag: Tags) -> dict[str, Any]:
-    """Convert a Tags model to a Meilisearch document."""
+def _tag_to_document(tag: Tags, *, parent_usage_count: int | None = None) -> dict[str, Any]:
+    """Convert a Tags model to a Meilisearch document.
+
+    Args:
+        tag: The tag to convert.
+        parent_usage_count: If provided and the tag is an alias, use this
+            instead of the tag's own usage_count for ranking purposes.
+    """
+    usage_count = tag.usage_count
+    if tag.alias_of is not None and parent_usage_count is not None:
+        usage_count = parent_usage_count
     return {
         "tag_id": tag.tag_id,
         "title": tag.title,
         "desc": tag.desc,
         "type": tag.type,
-        "usage_count": tag.usage_count,
+        "usage_count": usage_count,
         "alias_of": tag.alias_of,
     }
 
@@ -139,18 +198,33 @@ class SearchService:
     def __init__(self, client: AsyncClient) -> None:
         self.client = client
 
-    async def index_tag(self, tag: Tags) -> None:
+    async def index_tag(self, tag: Tags, *, parent_usage_count: int | None = None) -> None:
         """Index or update a single tag in Meilisearch."""
-        doc = _tag_to_document(tag)
+        doc = _tag_to_document(tag, parent_usage_count=parent_usage_count)
         index = self.client.index(TAGS_INDEX_NAME)
         await index.add_documents([doc])
         logger.debug("meilisearch_tag_indexed", tag_id=tag.tag_id)
 
-    async def index_tags(self, tags: list[Tags]) -> None:
-        """Bulk index multiple tags in Meilisearch."""
+    async def index_tags(
+        self,
+        tags: list[Tags],
+        *,
+        parent_usage_counts: dict[int, int] | None = None,
+    ) -> None:
+        """Bulk index multiple tags in Meilisearch.
+
+        Args:
+            tags: Tags to index.
+            parent_usage_counts: Optional mapping of tag_id -> parent usage_count
+                for alias tags, so they rank by parent popularity.
+        """
         if not tags:
             return
-        docs = [_tag_to_document(tag) for tag in tags]
+        counts = parent_usage_counts or {}
+        docs = [
+            _tag_to_document(tag, parent_usage_count=counts.get(tag.tag_id))  # type: ignore[arg-type]
+            for tag in tags
+        ]
         index = self.client.index(TAGS_INDEX_NAME)
         await index.add_documents(docs)
         logger.debug("meilisearch_tags_indexed", count=len(docs))

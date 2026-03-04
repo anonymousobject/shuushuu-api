@@ -6,7 +6,7 @@ import pytest
 
 from app.config import TagType
 from app.models.tag import Tags
-from app.services.search import SearchService
+from app.services.search import SearchService, _tag_to_document
 
 TAGS_INDEX_NAME = "tags"
 
@@ -74,6 +74,29 @@ class TestIndexTag:
         index_mock = client.index(TAGS_INDEX_NAME)
         docs = index_mock.add_documents.call_args[0][0]
         assert docs[0]["alias_of"] == 99
+
+
+@pytest.mark.unit
+class TestTagToDocument:
+    """Tests for _tag_to_document helper."""
+
+    def test_alias_tag_uses_parent_usage_count(self):
+        """Alias tags should use the parent's usage_count for ranking."""
+        alias_tag = _make_tag(tag_id=10, alias_of=99, usage_count=0)
+        doc = _tag_to_document(alias_tag, parent_usage_count=4545)
+        assert doc["usage_count"] == 4545
+
+    def test_non_alias_tag_uses_own_usage_count(self):
+        """Non-alias tags use their own usage_count."""
+        tag = _make_tag(tag_id=10, usage_count=42)
+        doc = _tag_to_document(tag)
+        assert doc["usage_count"] == 42
+
+    def test_alias_tag_without_parent_count_uses_own(self):
+        """If parent_usage_count not provided, alias uses its own count."""
+        alias_tag = _make_tag(tag_id=10, alias_of=99, usage_count=0)
+        doc = _tag_to_document(alias_tag)
+        assert doc["usage_count"] == 0
 
 
 @pytest.mark.unit

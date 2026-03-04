@@ -1121,7 +1121,7 @@ async def create_tag(
     await db.commit()
     await db.refresh(new_tag)
 
-    await sync_tag_to_search(new_tag)
+    await sync_tag_to_search(new_tag, db=db)
 
     return TagResponse.model_validate(new_tag)
 
@@ -1350,7 +1350,7 @@ async def update_tag(
     await db.commit()
     await db.refresh(tag)
 
-    await sync_tag_to_search(tag)
+    await sync_tag_to_search(tag, db=db)
 
     return TagResponse.model_validate(tag)
 
