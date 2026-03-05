@@ -2065,6 +2065,113 @@ class TestCreateTag:
         )
         assert response.status_code == 200
 
+    async def test_create_tag_rejects_cross_type_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a tag with alias_of pointing to a different type is rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admin_cross_create",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincrosscreate@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create a source tag to be the alias target
+        source = Tags(title="Target Source", desc="source", type=TagType.SOURCE)
+        db_session.add(source)
+        await db_session.commit()
+        await db_session.refresh(source)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_cross_create", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to create a CHARACTER tag aliased to a SOURCE tag
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "Cross Type Alias",
+                "type": TagType.CHARACTER,
+                "alias_of": source.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "different type" in response.json()["detail"]
+
+    async def test_create_tag_rejects_alias_to_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a tag aliased to another alias is rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admin_chain_create",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminchaincreate@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        canonical = Tags(title="Canonical Tag", desc="canonical", type=TagType.CHARACTER)
+        alias = Tags(title="Alias Tag", desc="alias", type=TagType.CHARACTER, alias_of=None)
+        db_session.add_all([canonical, alias])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(alias)
+
+        # Make alias point to canonical
+        alias.alias_of = canonical.tag_id
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_chain_create", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to create a new tag aliased to the alias (chain)
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "Chain Alias",
+                "type": TagType.CHARACTER,
+                "alias_of": alias.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "itself an alias" in response.json()["detail"]
+
 
 @pytest.mark.api
 class TestUpdateTag:
@@ -3313,6 +3420,61 @@ class TestUpdateTag:
         )
         alias_links = result.scalars().all()
         assert len(alias_links) == 0
+
+    async def test_setting_alias_rejects_alias_chain(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that aliasing to a tag that is itself an alias is rejected."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminchain",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminchain@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        canonical = Tags(title="Chain Canonical", desc="canonical", type=TagType.CHARACTER)
+        middle_alias = Tags(title="Chain Middle", desc="alias", type=TagType.CHARACTER)
+        new_tag = Tags(title="Chain New", desc="new", type=TagType.CHARACTER)
+        db_session.add_all([canonical, middle_alias, new_tag])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(middle_alias)
+        await db_session.refresh(new_tag)
+
+        # Make middle_alias point to canonical
+        middle_alias.alias_of = canonical.tag_id
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminchain", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to alias new_tag to middle_alias (creating a chain)
+        response = await client.put(
+            f"/api/v1/tags/{new_tag.tag_id}",
+            json={"title": "Chain New", "alias_of": middle_alias.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "itself an alias" in response.json()["detail"]
+        assert str(canonical.tag_id) in response.json()["detail"]
 
     async def test_setting_alias_rejects_cross_type(
         self, client: AsyncClient, db_session: AsyncSession

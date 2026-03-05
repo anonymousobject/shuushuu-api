@@ -279,6 +279,23 @@ async def validate_tag_relationships(
                 status_code=400,
                 detail=f"Alias tag with id {alias_of} does not exist",
             )
+        if alias_tag.alias_of is not None:
+            # Resolve to the canonical tag for a helpful error message
+            canonical_result = await db.execute(
+                select(Tags).where(Tags.tag_id == alias_tag.alias_of)  # type: ignore[arg-type]
+            )
+            canonical_tag = canonical_result.scalar_one_or_none()
+            canonical_name = canonical_tag.title if canonical_tag else "unknown"
+            canonical_id_val = alias_tag.alias_of
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot alias to a tag that is itself an alias. "
+                    f"Tag '{alias_tag.title}' (id: {alias_of}) is an alias of "
+                    f"'{canonical_name}' (id: {canonical_id_val}). "
+                    f"Use the canonical tag as alias target instead."
+                ),
+            )
         if tag_type is not None and alias_tag.type != tag_type:
             raise HTTPException(
                 status_code=400,
