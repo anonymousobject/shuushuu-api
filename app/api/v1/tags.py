@@ -1343,6 +1343,50 @@ async def update_tag(
             .values(tag_id=canonical_id)
         )
 
+        # Migrate character-source links where aliased tag appears as source
+        existing_cs_source = await db.execute(
+            select(CharacterSourceLinks.character_tag_id).where(
+                CharacterSourceLinks.source_tag_id == canonical_id  # type: ignore[arg-type]
+            )
+        )
+        existing_cs_source_char_ids = {row[0] for row in existing_cs_source}
+
+        if existing_cs_source_char_ids:
+            await db.execute(
+                delete(CharacterSourceLinks).where(
+                    CharacterSourceLinks.source_tag_id == tag_id,  # type: ignore[arg-type]
+                    CharacterSourceLinks.character_tag_id.in_(existing_cs_source_char_ids),  # type: ignore[attr-defined]
+                )
+            )
+
+        await db.execute(
+            update(CharacterSourceLinks)
+            .where(CharacterSourceLinks.source_tag_id == tag_id)  # type: ignore[arg-type]
+            .values(source_tag_id=canonical_id)
+        )
+
+        # Migrate character-source links where aliased tag appears as character
+        existing_cs_char = await db.execute(
+            select(CharacterSourceLinks.source_tag_id).where(
+                CharacterSourceLinks.character_tag_id == canonical_id  # type: ignore[arg-type]
+            )
+        )
+        existing_cs_char_source_ids = {row[0] for row in existing_cs_char}
+
+        if existing_cs_char_source_ids:
+            await db.execute(
+                delete(CharacterSourceLinks).where(
+                    CharacterSourceLinks.character_tag_id == tag_id,  # type: ignore[arg-type]
+                    CharacterSourceLinks.source_tag_id.in_(existing_cs_char_source_ids),  # type: ignore[attr-defined]
+                )
+            )
+
+        await db.execute(
+            update(CharacterSourceLinks)
+            .where(CharacterSourceLinks.character_tag_id == tag_id)  # type: ignore[arg-type]
+            .values(character_tag_id=canonical_id)
+        )
+
     db.add(tag)
     await db.commit()
     await db.refresh(tag)

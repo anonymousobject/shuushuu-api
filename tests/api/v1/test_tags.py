@@ -21,6 +21,7 @@ from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_link import TagLinks
 from app.models.user import Users
@@ -2980,6 +2981,249 @@ class TestUpdateTag:
             select(TagLinks).where(TagLinks.tag_id == alias_tag.tag_id)
         )
         alias_links = result.all()
+        assert len(alias_links) == 0
+
+
+    async def test_setting_alias_migrates_character_source_links_for_source(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that character-source links are migrated when a source tag is aliased."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincslink",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincslink@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create source tags (canonical and alias) and a character tag
+        canonical_source = Tags(title="Touhou Project", desc="canonical", type=TagType.SOURCE)
+        alias_source = Tags(title="Touhou", desc="alias", type=TagType.SOURCE)
+        character = Tags(title="Hakurei Reimu", desc="character", type=TagType.CHARACTER)
+        db_session.add_all([canonical_source, alias_source, character])
+        await db_session.commit()
+        await db_session.refresh(canonical_source)
+        await db_session.refresh(alias_source)
+        await db_session.refresh(character)
+
+        # Link character to the alias source
+        link = CharacterSourceLinks(
+            character_tag_id=character.tag_id,
+            source_tag_id=alias_source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Login and set alias
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincslink", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.put(
+            f"/api/v1/tags/{alias_source.tag_id}",
+            json={"title": "Touhou", "alias_of": canonical_source.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Verify character-source link was migrated to canonical source
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.source_tag_id == canonical_source.tag_id
+            )
+        )
+        canonical_links = result.scalars().all()
+        assert len(canonical_links) == 1
+        assert canonical_links[0].character_tag_id == character.tag_id
+
+        # Verify no links remain on alias source
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.source_tag_id == alias_source.tag_id
+            )
+        )
+        alias_links = result.scalars().all()
+        assert len(alias_links) == 0
+
+    async def test_setting_alias_migrates_character_source_links_for_character(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that character-source links are migrated when a character tag is aliased."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincschar",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincschar@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create character tags (canonical and alias) and a source tag
+        canonical_char = Tags(title="Sakura Miko Canon", desc="canonical", type=TagType.CHARACTER)
+        alias_char = Tags(title="Miko Sakura Alt", desc="alias", type=TagType.CHARACTER)
+        source = Tags(title="Hololive", desc="source", type=TagType.SOURCE)
+        db_session.add_all([canonical_char, alias_char, source])
+        await db_session.commit()
+        await db_session.refresh(canonical_char)
+        await db_session.refresh(alias_char)
+        await db_session.refresh(source)
+
+        # Link alias character to source
+        link = CharacterSourceLinks(
+            character_tag_id=alias_char.tag_id,
+            source_tag_id=source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Login and set alias
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincschar", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.put(
+            f"/api/v1/tags/{alias_char.tag_id}",
+            json={"title": "Miko Sakura Alt", "alias_of": canonical_char.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Verify character-source link was migrated to canonical character
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == canonical_char.tag_id
+            )
+        )
+        canonical_links = result.scalars().all()
+        assert len(canonical_links) == 1
+        assert canonical_links[0].source_tag_id == source.tag_id
+
+        # Verify no links remain on alias character
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == alias_char.tag_id
+            )
+        )
+        alias_links = result.scalars().all()
+        assert len(alias_links) == 0
+
+    async def test_setting_alias_migrates_character_source_links_with_conflicts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that duplicate character-source links are handled during alias migration."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincsconf",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincsconf@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create tags
+        canonical_source = Tags(title="Fate Series", desc="canonical", type=TagType.SOURCE)
+        alias_source = Tags(title="Fate", desc="alias", type=TagType.SOURCE)
+        char_shared = Tags(title="Saber", desc="shared char", type=TagType.CHARACTER)
+        char_unique = Tags(title="Archer", desc="unique char", type=TagType.CHARACTER)
+        db_session.add_all([canonical_source, alias_source, char_shared, char_unique])
+        await db_session.commit()
+        for tag in [canonical_source, alias_source, char_shared, char_unique]:
+            await db_session.refresh(tag)
+
+        # Same character linked to both canonical and alias source (conflict)
+        link_canonical = CharacterSourceLinks(
+            character_tag_id=char_shared.tag_id,
+            source_tag_id=canonical_source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        link_alias_dup = CharacterSourceLinks(
+            character_tag_id=char_shared.tag_id,
+            source_tag_id=alias_source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        # Unique character only on alias
+        link_alias_unique = CharacterSourceLinks(
+            character_tag_id=char_unique.tag_id,
+            source_tag_id=alias_source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        db_session.add_all([link_canonical, link_alias_dup, link_alias_unique])
+        await db_session.commit()
+
+        # Login and set alias
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincsconf", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.put(
+            f"/api/v1/tags/{alias_source.tag_id}",
+            json={"title": "Fate", "alias_of": canonical_source.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Canonical source should have both characters (Saber + Archer), no duplicates
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.source_tag_id == canonical_source.tag_id
+            )
+        )
+        canonical_links = result.scalars().all()
+        canonical_char_ids = {link.character_tag_id for link in canonical_links}
+        assert canonical_char_ids == {char_shared.tag_id, char_unique.tag_id}
+
+        # No links remain on alias source
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.source_tag_id == alias_source.tag_id
+            )
+        )
+        alias_links = result.scalars().all()
         assert len(alias_links) == 0
 
 
