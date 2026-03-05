@@ -105,6 +105,7 @@ from app.schemas.report import (
 )
 from app.services.rating import schedule_rating_recalculation
 from app.services.repost import migrate_repost_data
+from app.services.review_jobs import check_early_close
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -1906,6 +1907,11 @@ async def vote_on_review(
     db.add(action)
 
     await db.commit()
+
+    # Check if vote margin triggers early close
+    await check_early_close(db, review)
+    await db.commit()
+
     await db.refresh(vote)
 
     response = VoteResponse.model_validate(vote)

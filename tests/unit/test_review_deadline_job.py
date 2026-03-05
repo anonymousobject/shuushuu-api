@@ -22,6 +22,7 @@ from app.models.review_vote import ReviewVotes
 from app.models.user import Users
 from app.services.review_jobs import (
     _get_vote_counts,
+    check_early_close,
     check_review_deadlines,
     prune_admin_actions,
 )
@@ -487,3 +488,132 @@ class TestHelperFunctions:
 
         assert counts.get(1, 0) == 0
         assert counts.get(0, 0) == 0
+
+
+@pytest.mark.asyncio
+class TestEarlyClose:
+    """Tests for early close when vote margin is reached."""
+
+    async def test_early_close_keep_margin_met(self, db_session: AsyncSession):
+        """3 keep, 0 remove (margin=3) -> close with outcome=KEEP."""
+        image = await create_test_image(db_session)
+        review = await create_test_review(
+            db_session, image.image_id, deadline_offset_days=7  # Not expired
+        )
+        await add_votes(db_session, review.review_id, keep_count=3, remove_count=0)  # type: ignore[arg-type]
+
+        closed = await check_early_close(db_session, review)
+        await db_session.commit()
+
+        await db_session.refresh(review)
+        await db_session.refresh(image)
+
+        assert closed is True
+        assert review.status == ReviewStatus.CLOSED
+        assert review.outcome == ReviewOutcome.KEEP
+        assert image.status == ImageStatus.ACTIVE
+
+    async def test_early_close_remove_margin_met(self, db_session: AsyncSession):
+        """0 keep, 3 remove (margin=3) -> close with outcome=REMOVE."""
+        image = await create_test_image(db_session)
+        review = await create_test_review(
+            db_session, image.image_id, deadline_offset_days=7
+        )
+        await add_votes(db_session, review.review_id, keep_count=0, remove_count=3)  # type: ignore[arg-type]
+
+        closed = await check_early_close(db_session, review)
+        await db_session.commit()
+
+        await db_session.refresh(review)
+        await db_session.refresh(image)
+
+        assert closed is True
+        assert review.status == ReviewStatus.CLOSED
+        assert review.outcome == ReviewOutcome.REMOVE
+        assert image.status == ImageStatus.INAPPROPRIATE
+
+    async def test_early_close_margin_not_met(self, db_session: AsyncSession):
+        """2 keep, 1 remove (margin=1, needs 3) -> stays open."""
+        image = await create_test_image(db_session)
+        review = await create_test_review(
+            db_session, image.image_id, deadline_offset_days=7
+        )
+        await add_votes(db_session, review.review_id, keep_count=2, remove_count=1)  # type: ignore[arg-type]
+
+        closed = await check_early_close(db_session, review)
+
+        await db_session.refresh(review)
+
+        assert closed is False
+        assert review.status == ReviewStatus.OPEN
+
+    async def test_early_close_tie(self, db_session: AsyncSession):
+        """3 keep, 3 remove (margin=0) -> stays open."""
+        image = await create_test_image(db_session)
+        review = await create_test_review(
+            db_session, image.image_id, deadline_offset_days=7
+        )
+        await add_votes(db_session, review.review_id, keep_count=3, remove_count=3)  # type: ignore[arg-type]
+
+        closed = await check_early_close(db_session, review)
+
+        await db_session.refresh(review)
+
+        assert closed is False
+        assert review.status == ReviewStatus.OPEN
+
+    async def test_early_close_large_margin_keep(self, db_session: AsyncSession):
+        """5 keep, 2 remove (margin=3) -> close with KEEP."""
+        image = await create_test_image(db_session)
+        review = await create_test_review(
+            db_session, image.image_id, deadline_offset_days=7
+        )
+        await add_votes(db_session, review.review_id, keep_count=5, remove_count=2)  # type: ignore[arg-type]
+
+        closed = await check_early_close(db_session, review)
+        await db_session.commit()
+
+        await db_session.refresh(review)
+        await db_session.refresh(image)
+
+        assert closed is True
+        assert review.outcome == ReviewOutcome.KEEP
+        assert image.status == ImageStatus.ACTIVE
+
+    async def test_early_close_creates_audit_log(self, db_session: AsyncSession):
+        """Early close creates an audit log entry with reason 'early_close_margin'."""
+        from sqlalchemy import select
+
+        image = await create_test_image(db_session)
+        review = await create_test_review(
+            db_session, image.image_id, deadline_offset_days=7
+        )
+        await add_votes(db_session, review.review_id, keep_count=3, remove_count=0)  # type: ignore[arg-type]
+
+        await check_early_close(db_session, review)
+        await db_session.commit()
+
+        stmt = select(AdminActions).where(
+            AdminActions.review_id == review.review_id,
+            AdminActions.action_type == AdminActionType.REVIEW_CLOSE,
+        )
+        result = await db_session.execute(stmt)
+        action = result.scalar_one_or_none()
+
+        assert action is not None
+        assert action.details["reason"] == "early_close_margin"
+        assert action.details["automatic"] is True
+
+    async def test_early_close_no_votes(self, db_session: AsyncSession):
+        """0 votes -> stays open."""
+        image = await create_test_image(db_session)
+        review = await create_test_review(
+            db_session, image.image_id, deadline_offset_days=7
+        )
+
+        closed = await check_early_close(db_session, review)
+
+        await db_session.refresh(review)
+
+        assert closed is False
+        assert review.status == ReviewStatus.OPEN
