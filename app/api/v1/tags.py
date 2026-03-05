@@ -227,6 +227,7 @@ async def validate_tag_relationships(
     db: AsyncSession,
     *,
     tag_id: int | None,
+    tag_type: int | None = None,
     inheritedfrom_id: int | None,
     alias_of: int | None,
 ) -> None:
@@ -272,10 +273,20 @@ async def validate_tag_relationships(
                 detail="A tag cannot be an alias of itself",
             )
         alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_of))  # type: ignore[arg-type]
-        if not alias_result.scalar_one_or_none():
+        alias_tag = alias_result.scalar_one_or_none()
+        if not alias_tag:
             raise HTTPException(
                 status_code=400,
                 detail=f"Alias tag with id {alias_of} does not exist",
+            )
+        if tag_type is not None and alias_tag.type != tag_type:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot alias to a tag of a different type. "
+                    f"Tag type is {tag_type}, but target '{alias_tag.title}' "
+                    f"(id: {alias_of}) has type {alias_tag.type}."
+                ),
             )
 
     if alias_of is not None and tag_id is not None:
@@ -1104,6 +1115,7 @@ async def create_tag(
     await validate_tag_relationships(
         db,
         tag_id=None,
+        tag_type=tag_data.type,
         inheritedfrom_id=tag_data.inheritedfrom_id,
         alias_of=tag_data.alias_of,
     )
@@ -1170,6 +1182,7 @@ async def update_tag(
     await validate_tag_relationships(
         db,
         tag_id=tag_id,
+        tag_type=new_type,
         inheritedfrom_id=inheritedfrom_id,
         alias_of=alias_id,
     )
@@ -1343,49 +1356,50 @@ async def update_tag(
             .values(tag_id=canonical_id)
         )
 
-        # Migrate character-source links where aliased tag appears as source
-        existing_cs_source = await db.execute(
-            select(CharacterSourceLinks.character_tag_id).where(  # type: ignore[call-overload]
-                CharacterSourceLinks.source_tag_id == canonical_id
-            )
-        )
-        existing_cs_source_char_ids = {row[0] for row in existing_cs_source}
-
-        if existing_cs_source_char_ids:
-            await db.execute(
-                delete(CharacterSourceLinks).where(
-                    CharacterSourceLinks.source_tag_id == tag_id,  # type: ignore[arg-type]
-                    CharacterSourceLinks.character_tag_id.in_(existing_cs_source_char_ids),  # type: ignore[attr-defined]
+        # Migrate character-source links (guarded by tag type)
+        if tag.type == TagType.SOURCE:
+            existing_cs_source = await db.execute(
+                select(CharacterSourceLinks.character_tag_id).where(  # type: ignore[call-overload]
+                    CharacterSourceLinks.source_tag_id == canonical_id
                 )
             )
+            existing_cs_source_char_ids = {row[0] for row in existing_cs_source}
 
-        await db.execute(
-            update(CharacterSourceLinks)
-            .where(CharacterSourceLinks.source_tag_id == tag_id)  # type: ignore[arg-type]
-            .values(source_tag_id=canonical_id)
-        )
+            if existing_cs_source_char_ids:
+                await db.execute(
+                    delete(CharacterSourceLinks).where(
+                        CharacterSourceLinks.source_tag_id == tag_id,  # type: ignore[arg-type]
+                        CharacterSourceLinks.character_tag_id.in_(existing_cs_source_char_ids),  # type: ignore[attr-defined]
+                    )
+                )
 
-        # Migrate character-source links where aliased tag appears as character
-        existing_cs_char = await db.execute(
-            select(CharacterSourceLinks.source_tag_id).where(  # type: ignore[call-overload]
-                CharacterSourceLinks.character_tag_id == canonical_id
-            )
-        )
-        existing_cs_char_source_ids = {row[0] for row in existing_cs_char}
-
-        if existing_cs_char_source_ids:
             await db.execute(
-                delete(CharacterSourceLinks).where(
-                    CharacterSourceLinks.character_tag_id == tag_id,  # type: ignore[arg-type]
-                    CharacterSourceLinks.source_tag_id.in_(existing_cs_char_source_ids),  # type: ignore[attr-defined]
+                update(CharacterSourceLinks)
+                .where(CharacterSourceLinks.source_tag_id == tag_id)  # type: ignore[arg-type]
+                .values(source_tag_id=canonical_id)
+            )
+
+        elif tag.type == TagType.CHARACTER:
+            existing_cs_char = await db.execute(
+                select(CharacterSourceLinks.source_tag_id).where(  # type: ignore[call-overload]
+                    CharacterSourceLinks.character_tag_id == canonical_id
                 )
             )
+            existing_cs_char_source_ids = {row[0] for row in existing_cs_char}
 
-        await db.execute(
-            update(CharacterSourceLinks)
-            .where(CharacterSourceLinks.character_tag_id == tag_id)  # type: ignore[arg-type]
-            .values(character_tag_id=canonical_id)
-        )
+            if existing_cs_char_source_ids:
+                await db.execute(
+                    delete(CharacterSourceLinks).where(
+                        CharacterSourceLinks.character_tag_id == tag_id,  # type: ignore[arg-type]
+                        CharacterSourceLinks.source_tag_id.in_(existing_cs_char_source_ids),  # type: ignore[attr-defined]
+                    )
+                )
+
+            await db.execute(
+                update(CharacterSourceLinks)
+                .where(CharacterSourceLinks.character_tag_id == tag_id)  # type: ignore[arg-type]
+                .values(character_tag_id=canonical_id)
+            )
 
     db.add(tag)
     await db.commit()
