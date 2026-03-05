@@ -274,11 +274,19 @@ async def check_early_close(db: AsyncSession, review: ImageReviews) -> bool:
     Returns:
         True if the review was closed, False otherwise
     """
+    # Re-read review to guard against concurrent close by another request/job
+    await db.refresh(review)
+    if review.status != ReviewStatus.OPEN:
+        return False
+
     vote_counts = await _get_vote_counts(db, review.review_id)  # type: ignore[arg-type]
     keep_votes = vote_counts.get(1, 0)
     remove_votes = vote_counts.get(0, 0)
-    margin = abs(keep_votes - remove_votes)
 
+    if keep_votes == remove_votes:
+        return False
+
+    margin = abs(keep_votes - remove_votes)
     if margin < settings.REVIEW_EARLY_CLOSE_MARGIN:
         return False
 

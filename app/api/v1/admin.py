@@ -1906,12 +1906,12 @@ async def vote_on_review(
     )
     db.add(action)
 
-    await db.commit()
+    await db.flush()
 
     # Check if vote margin triggers early close
     await check_early_close(db, review)
-    await db.commit()
 
+    await db.commit()
     await db.refresh(vote)
 
     response = VoteResponse.model_validate(vote)
