@@ -448,6 +448,142 @@ class TestReviewVote:
         assert data["vote"] == 0
         assert data["review_id"] == review2.review_id
 
+    async def test_vote_triggers_early_close_keep(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that voting triggers early close when margin is reached (keep)."""
+        # Create 3 voters with review_vote permission
+        voters = []
+        for i in range(3):
+            user, pw = await create_auth_user(
+                db_session, username=f"voter{i}", email=f"voter{i}@example.com", admin=True
+            )
+            await grant_permission(db_session, user.user_id, "review_vote")
+            token = await login_user(client, user.username, pw)
+            voters.append((user, token))
+
+        image = await create_test_image(db_session, voters[0][0].user_id)
+        image.status = ImageStatus.REVIEW
+        review = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=voters[0][0].user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+        )
+        db_session.add(review)
+        await db_session.commit()
+        await db_session.refresh(review)
+
+        # First 2 votes: should NOT close yet (margin=2, need 3)
+        for i in range(2):
+            response = await client.post(
+                f"/api/v1/admin/reviews/{review.review_id}/vote",
+                json={"vote": 1},
+                headers={"Authorization": f"Bearer {voters[i][1]}"},
+            )
+            assert response.status_code == 200
+
+        await db_session.refresh(review)
+        assert review.status == ReviewStatus.OPEN
+
+        # 3rd vote: should trigger early close (margin=3)
+        response = await client.post(
+            f"/api/v1/admin/reviews/{review.review_id}/vote",
+            json={"vote": 1},
+            headers={"Authorization": f"Bearer {voters[2][1]}"},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(review)
+        await db_session.refresh(image)
+        assert review.status == ReviewStatus.CLOSED
+        assert review.outcome == ReviewOutcome.KEEP
+        assert image.status == ImageStatus.ACTIVE
+
+    async def test_vote_triggers_early_close_remove(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that voting triggers early close when margin is reached (remove)."""
+        voters = []
+        for i in range(3):
+            user, pw = await create_auth_user(
+                db_session, username=f"remvoter{i}", email=f"remvoter{i}@example.com", admin=True
+            )
+            await grant_permission(db_session, user.user_id, "review_vote")
+            token = await login_user(client, user.username, pw)
+            voters.append((user, token))
+
+        image = await create_test_image(db_session, voters[0][0].user_id)
+        image.status = ImageStatus.REVIEW
+        review = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=voters[0][0].user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+        )
+        db_session.add(review)
+        await db_session.commit()
+        await db_session.refresh(review)
+
+        # 3 remove votes
+        for i in range(3):
+            await client.post(
+                f"/api/v1/admin/reviews/{review.review_id}/vote",
+                json={"vote": 0},
+                headers={"Authorization": f"Bearer {voters[i][1]}"},
+            )
+
+        await db_session.refresh(review)
+        await db_session.refresh(image)
+        assert review.status == ReviewStatus.CLOSED
+        assert review.outcome == ReviewOutcome.REMOVE
+        assert image.status == ImageStatus.INAPPROPRIATE
+
+    async def test_vote_no_early_close_when_margin_not_met(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that voting does NOT trigger early close when margin is insufficient."""
+        voters = []
+        for i in range(3):
+            user, pw = await create_auth_user(
+                db_session, username=f"mixvoter{i}", email=f"mixvoter{i}@example.com", admin=True
+            )
+            await grant_permission(db_session, user.user_id, "review_vote")
+            token = await login_user(client, user.username, pw)
+            voters.append((user, token))
+
+        image = await create_test_image(db_session, voters[0][0].user_id)
+        image.status = ImageStatus.REVIEW
+        review = ImageReviews(
+            image_id=image.image_id,
+            initiated_by=voters[0][0].user_id,
+            deadline=datetime.now(UTC) + timedelta(days=7),
+            status=ReviewStatus.OPEN,
+        )
+        db_session.add(review)
+        await db_session.commit()
+        await db_session.refresh(review)
+
+        # 2 keep, 1 remove -> margin=1, not enough
+        await client.post(
+            f"/api/v1/admin/reviews/{review.review_id}/vote",
+            json={"vote": 1},
+            headers={"Authorization": f"Bearer {voters[0][1]}"},
+        )
+        await client.post(
+            f"/api/v1/admin/reviews/{review.review_id}/vote",
+            json={"vote": 1},
+            headers={"Authorization": f"Bearer {voters[1][1]}"},
+        )
+        await client.post(
+            f"/api/v1/admin/reviews/{review.review_id}/vote",
+            json={"vote": 0},
+            headers={"Authorization": f"Bearer {voters[2][1]}"},
+        )
+
+        await db_session.refresh(review)
+        assert review.status == ReviewStatus.OPEN
+
     async def test_vote_on_closed_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
     ):
