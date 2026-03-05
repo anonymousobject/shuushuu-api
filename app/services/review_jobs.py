@@ -260,6 +260,41 @@ async def _extend_review(db: AsyncSession, review: ImageReviews) -> None:
     )
 
 
+async def check_early_close(db: AsyncSession, review: ImageReviews) -> bool:
+    """
+    Check if a review should be closed early based on vote margin.
+
+    Called after each vote is cast. If one side leads by at least
+    REVIEW_EARLY_CLOSE_MARGIN votes, the review is closed immediately.
+
+    Args:
+        db: Database session
+        review: The review to check
+
+    Returns:
+        True if the review was closed, False otherwise
+    """
+    # Re-read review to guard against concurrent close by another request/job
+    await db.refresh(review)
+    if review.status != ReviewStatus.OPEN:
+        return False
+
+    vote_counts = await _get_vote_counts(db, review.review_id)  # type: ignore[arg-type]
+    keep_votes = vote_counts.get(1, 0)
+    remove_votes = vote_counts.get(0, 0)
+
+    if keep_votes == remove_votes:
+        return False
+
+    margin = abs(keep_votes - remove_votes)
+    if margin < settings.REVIEW_EARLY_CLOSE_MARGIN:
+        return False
+
+    outcome = ReviewOutcome.KEEP if keep_votes > remove_votes else ReviewOutcome.REMOVE
+    await _close_review(db, review, outcome, "early_close_margin")
+    return True
+
+
 async def prune_admin_actions(
     db: AsyncSession,
     retention_years: int = 2,
