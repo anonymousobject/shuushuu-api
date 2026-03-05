@@ -1345,8 +1345,8 @@ async def update_tag(
 
         # Migrate character-source links where aliased tag appears as source
         existing_cs_source = await db.execute(
-            select(CharacterSourceLinks.character_tag_id).where(
-                CharacterSourceLinks.source_tag_id == canonical_id  # type: ignore[arg-type]
+            select(CharacterSourceLinks.character_tag_id).where(  # type: ignore[call-overload]
+                CharacterSourceLinks.source_tag_id == canonical_id
             )
         )
         existing_cs_source_char_ids = {row[0] for row in existing_cs_source}
@@ -1367,8 +1367,8 @@ async def update_tag(
 
         # Migrate character-source links where aliased tag appears as character
         existing_cs_char = await db.execute(
-            select(CharacterSourceLinks.source_tag_id).where(
-                CharacterSourceLinks.character_tag_id == canonical_id  # type: ignore[arg-type]
+            select(CharacterSourceLinks.source_tag_id).where(  # type: ignore[call-overload]
+                CharacterSourceLinks.character_tag_id == canonical_id
             )
         )
         existing_cs_char_source_ids = {row[0] for row in existing_cs_char}
