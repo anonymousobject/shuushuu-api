@@ -2,15 +2,18 @@
 Tests for image processing utilities.
 """
 
+import io
 import tempfile
 from pathlib import Path
 from datetime import datetime
+from unittest.mock import MagicMock
 
 import pytest
+from fastapi import HTTPException
 from PIL import Image
 
 from app.config import settings
-from app.services.image_processing import create_large_variant, create_medium_variant
+from app.services.image_processing import create_large_variant, create_medium_variant, validate_image_file
 
 
 @pytest.fixture
@@ -293,3 +296,84 @@ class TestFileSizeValidation:
             # Variant was deleted or not created
             # In this case, result should be False
             assert result is False
+
+
+class TestValidateImageFile:
+    """Tests for validate_image_file function."""
+
+    def _make_upload_file(self, content_type: str = "image/jpeg", filename: str = "test.jpg") -> MagicMock:
+        mock = MagicMock()
+        mock.content_type = content_type
+        mock.filename = filename
+        return mock
+
+    def test_valid_jpeg_passes(self):
+        """A complete, valid JPEG should pass validation."""
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            img = Image.new("RGB", (100, 100), color="red")
+            img.save(f.name, format="JPEG")
+            path = Path(f.name)
+
+        try:
+            validate_image_file(self._make_upload_file(), path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_valid_png_passes(self):
+        """A complete, valid PNG should pass validation."""
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            img = Image.new("RGB", (100, 100), color="blue")
+            img.save(f.name, format="PNG")
+            path = Path(f.name)
+
+        try:
+            validate_image_file(self._make_upload_file(content_type="image/png", filename="test.png"), path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_truncated_jpeg_rejected(self):
+        """A truncated JPEG (missing bytes at end) must be rejected."""
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            img = Image.new("RGB", (200, 200), color="green")
+            img.save(f.name, format="JPEG")
+            path = Path(f.name)
+
+        try:
+            # Truncate by removing last 100 bytes
+            data = path.read_bytes()
+            path.write_bytes(data[:-100])
+
+            with pytest.raises(HTTPException) as exc_info:
+                validate_image_file(self._make_upload_file(), path)
+            assert exc_info.value.status_code == 400
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_non_image_content_type_rejected(self):
+        """A file with non-image content type must be rejected."""
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            path = Path(f.name)
+            path.write_bytes(b"not an image")
+
+        try:
+            with pytest.raises(HTTPException) as exc_info:
+                validate_image_file(self._make_upload_file(content_type="text/plain"), path)
+            assert exc_info.value.status_code == 400
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_disallowed_extension_rejected(self):
+        """A file with a disallowed extension must be rejected."""
+        with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            with pytest.raises(HTTPException) as exc_info:
+                validate_image_file(
+                    self._make_upload_file(content_type="image/gif", filename="test.gif"),
+                    path,
+                    allowed_extensions={".jpg", ".png"},
+                )
+            assert exc_info.value.status_code == 400
+        finally:
+            path.unlink(missing_ok=True)
