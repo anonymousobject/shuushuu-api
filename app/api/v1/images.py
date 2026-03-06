@@ -102,6 +102,7 @@ from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
 from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import recalculate_image_ratings
+from app.services.search import sync_tag_to_search
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
 
@@ -1626,6 +1627,12 @@ async def add_tag_to_image(
 
     await db.commit()
 
+    # Re-fetch tag to get updated usage_count (maintained by DB trigger)
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == resolved_tag_id))  # type: ignore[arg-type]
+    updated_tag = tag_result.scalar_one_or_none()
+    if updated_tag:
+        await sync_tag_to_search(updated_tag, db=db)
+
     return {"message": "Tag added successfully"}
 
 
@@ -1691,6 +1698,12 @@ async def remove_tag_from_image(
         )
     )
     await db.commit()
+
+    # Re-fetch tag to get updated usage_count (maintained by DB trigger)
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    updated_tag = tag_result.scalar_one_or_none()
+    if updated_tag:
+        await sync_tag_to_search(updated_tag, db=db)
 
 
 @router.post("/{image_id}/rating", status_code=status.HTTP_201_CREATED)
