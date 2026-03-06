@@ -2,7 +2,6 @@
 Tests for image processing utilities.
 """
 
-import io
 import tempfile
 from pathlib import Path
 from datetime import datetime

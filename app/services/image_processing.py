@@ -211,8 +211,8 @@ def validate_image_file(
     # img.load() decodes all pixel data, catching truncated/corrupted files.
     # img.verify() only checks headers and would miss truncated uploads.
     try:
-        img = Image.open(file_path)
-        img.load()
+        with Image.open(file_path) as img:
+            img.load()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
