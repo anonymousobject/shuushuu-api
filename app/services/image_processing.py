@@ -207,11 +207,12 @@ def validate_image_file(
                 detail=f"File extension {ext} not allowed. Allowed: {', '.join(sorted(allowed_extensions))}",
             )
 
-    # CRITICAL: Verify file is actually an image by attempting to open it with PIL
-    # This prevents uploading malicious files with fake extensions/content-types
+    # CRITICAL: Verify file is actually an image by fully decoding it with PIL.
+    # img.load() decodes all pixel data, catching truncated/corrupted files.
+    # img.verify() only checks headers and would miss truncated uploads.
     try:
         with Image.open(file_path) as img:
-            img.verify()  # Verify it's a valid image
+            img.load()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
