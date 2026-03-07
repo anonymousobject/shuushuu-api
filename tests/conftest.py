@@ -10,7 +10,7 @@ import os
 # pydantic-settings loads ENVIRONMENT from .env (env_file="*.env"), which may be
 # "production" on this server. System env vars take priority over .env, so setting
 # this before any app imports ensures test cookies work over plain http://test.
-os.environ["ENVIRONMENT"] = "development"
+os.environ.setdefault("ENVIRONMENT", "development")
 
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -238,11 +239,10 @@ def setup_test_database():
             )
             conn.execute(text("FLUSH PRIVILEGES"))
         admin_engine.dispose()
-    except Exception as e:
-        # Root access is not available on all servers; drop_all/create_all below
-        # handles schema reset instead. Print a note so it's visible if something
-        # unexpected goes wrong (wrong host/port would also surface here).
-        print(f"\n[conftest] Root DB setup skipped: {type(e).__name__}: {e}")
+    except OperationalError as e:
+        # Root access not available on this server (access denied or connection refused).
+        # drop_all/create_all below handles schema reset instead.
+        print(f"\n[conftest] Root DB setup skipped (root not available): {e}")
 
     # Create tables using SQLAlchemy metadata (sync engine)
     # Note: SQLModel doesn't support database triggers natively, so we create tables first,

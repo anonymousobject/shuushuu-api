@@ -88,6 +88,31 @@ async def test_create_variant_job_sets_none_when_not_needed():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_create_variant_job_retries_on_failure():
+    """Variant job raises Retry when _create_variant raises an exception."""
+    from arq import Retry
+
+    ctx = {"job_try": 1}
+
+    with patch(
+        "app.services.image_processing._create_variant",
+        side_effect=Exception("PIL error"),
+    ):
+        with pytest.raises(Retry):
+            await create_variant_job(
+                ctx,
+                image_id=42,
+                source_path="/test/image.jpg",
+                ext="jpg",
+                storage_path="/test/storage",
+                width=2000,
+                height=1500,
+                variant_type="medium",
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_create_thumbnail_job_retry_on_failure():
     """Test thumbnail job retries on failure."""
     from arq import Retry
