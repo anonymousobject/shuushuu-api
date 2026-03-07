@@ -61,7 +61,7 @@ from app.models import (
     Tags,
     Users,
 )
-from app.models.image import ImageSortBy
+from app.models.image import ImageSortBy, VariantStatus
 from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import UserGroups
 from app.schemas.audit import (
@@ -2027,9 +2027,17 @@ async def upload_image(
                     ).model_dump(mode="json"),
                 )
 
-        # Determine if medium/large variants should be created
-        has_medium = 1 if (width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE) else 0
-        has_large = 1 if (width > settings.LARGE_EDGE or height > settings.LARGE_EDGE) else 0
+        # Determine variant generation status for medium/large
+        medium_status = (
+            VariantStatus.PENDING
+            if (width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE)
+            else VariantStatus.NONE
+        )
+        large_status = (
+            VariantStatus.PENDING
+            if (width > settings.LARGE_EDGE or height > settings.LARGE_EDGE)
+            else VariantStatus.NONE
+        )
 
         # Update temporary record with actual data
         temp_image.filename = filename
@@ -2039,8 +2047,8 @@ async def upload_image(
         temp_image.width = width
         temp_image.height = height
         temp_image.total_pixels = total_pixels
-        temp_image.medium = has_medium
-        temp_image.large = has_large
+        temp_image.medium = medium_status
+        temp_image.large = large_status
         temp_image.caption = caption
         temp_image.miscmeta = miscmeta
 
@@ -2080,7 +2088,7 @@ async def upload_image(
         logger.debug("thumbnail_job_enqueued", image_id=image_id)
 
         # Schedule medium variant generation if needed
-        if has_medium:
+        if medium_status:
             await enqueue_job(
                 "create_variant_job",
                 image_id=image_id,
@@ -2093,7 +2101,7 @@ async def upload_image(
             )
 
         # Schedule large variant generation if needed
-        if has_large:
+        if large_status:
             await enqueue_job(
                 "create_variant_job",
                 image_id=image_id,

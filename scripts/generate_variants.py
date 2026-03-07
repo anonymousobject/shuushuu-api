@@ -31,6 +31,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from app.models.image import VariantStatus
+
 
 def process_variant_worker(
     args: tuple[int, str, str, str, int, int, str, bool, bool],
@@ -143,10 +145,21 @@ def get_images_needing_variants(
         try:
             async with engine.connect() as conn:
                 if all_images:
-                    query = "SELECT image_id, filename, ext, width, height, medium, `large` FROM images WHERE medium = 1 OR `large` = 1 ORDER BY image_id"
+                    # Process every image record regardless of variant status
+                    query = (
+                        "SELECT image_id, filename, ext, width, height, medium, `large` "
+                        "FROM images ORDER BY image_id"
+                    )
                 else:
-                    query = "SELECT image_id, filename, ext, width, height, medium, `large` FROM images WHERE medium = 1 OR `large` = 1 ORDER BY image_id"
-
+                    # Include READY and PENDING images — PENDING means a variant was queued
+                    # but may not have been generated (e.g. after a worker restart).
+                    ready = VariantStatus.READY.value
+                    pending = VariantStatus.PENDING.value
+                    query = (
+                        "SELECT image_id, filename, ext, width, height, medium, `large` "
+                        f"FROM images WHERE medium IN ({ready}, {pending}) OR `large` IN ({ready}, {pending}) "
+                        "ORDER BY image_id"
+                    )
                 result = await conn.execute(text(query))
                 return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in result.fetchall()]
         finally:

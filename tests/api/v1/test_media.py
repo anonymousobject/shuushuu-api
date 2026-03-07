@@ -8,7 +8,7 @@ from app.api.v1.media import get_extension_from_filename, parse_image_id_from_fi
 from app.config import ImageStatus
 from app.core.permissions import Permission
 from app.core.security import create_access_token
-from app.models.image import Images
+from app.models.image import Images, VariantStatus
 from app.models.permissions import Perms, UserPerms
 from app.models.user import Users
 
@@ -339,6 +339,46 @@ class TestServeMediumEndpoint:
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
 
+    @pytest.fixture
+    async def image_with_medium_pending(self, db_session: AsyncSession):
+        """Create a public image with medium variant pending generation."""
+        image = Images(
+            image_id=403,
+            filename="2026-01-02-403",
+            ext="png",
+            md5_hash="pendingmedium123",
+            filesize=5000,
+            width=1920,
+            height=1080,
+            user_id=1,
+            status=ImageStatus.ACTIVE,
+            medium=VariantStatus.PENDING,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        return image
+
+    async def test_medium_pending_returns_fullsize_xaccel(
+        self, client: AsyncClient, image_with_medium_pending: Images
+    ):
+        """Medium endpoint falls back to fullsize while variant is pending generation."""
+        response = await client.get(f"/medium/2026-01-02-{image_with_medium_pending.image_id}.png")
+        assert response.status_code == 200
+        assert "X-Accel-Redirect" in response.headers
+        assert (
+            f"/internal/fullsize/{image_with_medium_pending.filename}.png"
+            in response.headers["X-Accel-Redirect"]
+        )
+
+    async def test_medium_pending_returns_no_store_cache_control(
+        self, client: AsyncClient, image_with_medium_pending: Images
+    ):
+        """Medium endpoint sets Cache-Control: no-store while variant is pending."""
+        response = await client.get(f"/medium/2026-01-02-{image_with_medium_pending.image_id}.png")
+        assert response.status_code == 200
+        assert response.headers.get("Cache-Control") == "no-store"
+
 
 class TestServeLargeEndpoint:
     """Tests for GET /large/{filename} endpoint."""
@@ -442,6 +482,46 @@ class TestServeLargeEndpoint:
         )
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
+
+    @pytest.fixture
+    async def image_with_large_pending(self, db_session: AsyncSession):
+        """Create a public image with large variant pending generation."""
+        image = Images(
+            image_id=503,
+            filename="2026-01-02-503",
+            ext="jpeg",
+            md5_hash="pendinglarge123",
+            filesize=10000,
+            width=4000,
+            height=3000,
+            user_id=1,
+            status=ImageStatus.ACTIVE,
+            large=VariantStatus.PENDING,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        return image
+
+    async def test_large_pending_returns_fullsize_xaccel(
+        self, client: AsyncClient, image_with_large_pending: Images
+    ):
+        """Large endpoint falls back to fullsize while variant is pending generation."""
+        response = await client.get(f"/large/2026-01-02-{image_with_large_pending.image_id}.jpeg")
+        assert response.status_code == 200
+        assert "X-Accel-Redirect" in response.headers
+        assert (
+            f"/internal/fullsize/{image_with_large_pending.filename}.jpeg"
+            in response.headers["X-Accel-Redirect"]
+        )
+
+    async def test_large_pending_returns_no_store_cache_control(
+        self, client: AsyncClient, image_with_large_pending: Images
+    ):
+        """Large endpoint sets Cache-Control: no-store while variant is pending."""
+        response = await client.get(f"/large/2026-01-02-{image_with_large_pending.image_id}.jpeg")
+        assert response.status_code == 200
+        assert response.headers.get("Cache-Control") == "no-store"
 
 
 class TestVisibilityMatrix:

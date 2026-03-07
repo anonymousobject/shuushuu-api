@@ -5,6 +5,13 @@ This file provides common fixtures for all tests.
 """
 
 import os
+
+# Force development mode so cookies are not marked Secure.
+# pydantic-settings loads ENVIRONMENT from .env (env_file="*.env"), which may be
+# "production" on this server. System env vars take priority over .env, so setting
+# this before any app imports ensures test cookies work over plain http://test.
+os.environ.setdefault("ENVIRONMENT", "development")
+
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -14,6 +21,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -205,36 +213,36 @@ def setup_test_database():
     test_host = os.getenv("TEST_DB_HOST", DEFAULT_TEST_DB_HOST)
     test_port = os.getenv("TEST_DB_PORT", DEFAULT_TEST_DB_PORT)
 
-    # Use root user to drop/create database (needs elevated privileges)
-    admin_engine = create_engine(
-        f"mysql+pymysql://root:{root_password}@{test_host}:{test_port}/mysql",
-        isolation_level="AUTOCOMMIT",
-    )
-
-    # Extract database name from test URL for operations
+    # When root credentials are available (local dev / CI), drop and recreate the database
+    # for a completely clean slate. On servers where root is unavailable, this is skipped
+    # and drop_all/create_all below handles schema reset instead.
     test_db_name = os.getenv("TEST_DB_NAME", DEFAULT_TEST_DB_NAME)
-
-    with admin_engine.connect() as conn:
-        # Drop and recreate test database
-        conn.execute(text(f"DROP DATABASE IF EXISTS {test_db_name}"))
-        conn.execute(
-            text(f"CREATE DATABASE {test_db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+    try:
+        admin_engine = create_engine(
+            f"mysql+pymysql://root:{root_password}@{test_host}:{test_port}/mysql",
+            isolation_level="AUTOCOMMIT",
         )
-
-        # Create test user if it doesn't exist
-        conn.execute(
-            text("CREATE USER IF NOT EXISTS :username@'%' IDENTIFIED BY :password"),
-            {"username": test_user, "password": test_password},
-        )
-
-        # Grant permissions to test user on test database
-        conn.execute(
-            text(f"GRANT ALL PRIVILEGES ON {test_db_name}.* TO :username@'%'"),
-            {"username": test_user},
-        )
-        conn.execute(text("FLUSH PRIVILEGES"))
-
-    admin_engine.dispose()
+        with admin_engine.connect() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS {test_db_name}"))
+            conn.execute(
+                text(
+                    f"CREATE DATABASE {test_db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                )
+            )
+            conn.execute(
+                text("CREATE USER IF NOT EXISTS :username@'%' IDENTIFIED BY :password"),
+                {"username": test_user, "password": test_password},
+            )
+            conn.execute(
+                text(f"GRANT ALL PRIVILEGES ON {test_db_name}.* TO :username@'%'"),
+                {"username": test_user},
+            )
+            conn.execute(text("FLUSH PRIVILEGES"))
+        admin_engine.dispose()
+    except OperationalError as e:
+        # Root access not available on this server (access denied or connection refused).
+        # drop_all/create_all below handles schema reset instead.
+        print(f"\n[conftest] Root DB setup skipped (root not available): {e}")
 
     # Create tables using SQLAlchemy metadata (sync engine)
     # Note: SQLModel doesn't support database triggers natively, so we create tables first,
