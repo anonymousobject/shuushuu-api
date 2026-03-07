@@ -1,5 +1,6 @@
 """Image processing background jobs for arq worker."""
 
+import asyncio
 from pathlib import Path as FilePath
 from typing import Any
 
@@ -104,16 +105,16 @@ async def create_variant_job(
             _update_image_variant_field,
         )
 
-        result = _create_variant(
+        size_threshold = settings.MEDIUM_EDGE if variant_type == "medium" else settings.LARGE_EDGE
+        result = await asyncio.to_thread(
+            _create_variant,
             source_path=FilePath(source_path),
             image_id=image_id,
             ext=ext,
             storage_path=storage_path,
             width=width,
             height=height,
-            size_threshold=settings.MEDIUM_EDGE
-            if variant_type == "medium"
-            else settings.LARGE_EDGE,
+            size_threshold=size_threshold,
             variant_type=variant_type,
         )
 

@@ -238,8 +238,11 @@ def setup_test_database():
             )
             conn.execute(text("FLUSH PRIVILEGES"))
         admin_engine.dispose()
-    except Exception:
-        pass  # Root not available; drop_all/create_all below handles schema reset
+    except Exception as e:
+        # Root access is not available on all servers; drop_all/create_all below
+        # handles schema reset instead. Print a note so it's visible if something
+        # unexpected goes wrong (wrong host/port would also surface here).
+        print(f"\n[conftest] Root DB setup skipped: {type(e).__name__}: {e}")
 
     # Create tables using SQLAlchemy metadata (sync engine)
     # Note: SQLModel doesn't support database triggers natively, so we create tables first,

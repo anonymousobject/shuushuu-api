@@ -142,10 +142,20 @@ def get_images_needing_variants(
         engine = create_async_engine(settings.DATABASE_URL, echo=False)
         try:
             async with engine.connect() as conn:
-                # Include READY (1) and PENDING (2) images — PENDING means a variant
-                # was queued but may not have been generated (e.g. after a worker restart).
-                query = "SELECT image_id, filename, ext, width, height, medium, `large` FROM images WHERE medium IN (1, 2) OR `large` IN (1, 2) ORDER BY image_id"
-
+                if all_images:
+                    # Process every image record regardless of variant status
+                    query = (
+                        "SELECT image_id, filename, ext, width, height, medium, `large` "
+                        "FROM images ORDER BY image_id"
+                    )
+                else:
+                    # Include READY (1) and PENDING (2) images — PENDING means a variant
+                    # was queued but may not have been generated (e.g. after a worker restart).
+                    query = (
+                        "SELECT image_id, filename, ext, width, height, medium, `large` "
+                        "FROM images WHERE medium IN (1, 2) OR `large` IN (1, 2) "
+                        "ORDER BY image_id"
+                    )
                 result = await conn.execute(text(query))
                 return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in result.fetchall()]
         finally:

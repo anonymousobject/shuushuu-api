@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path as FilePath
 from unittest.mock import AsyncMock, Mock, patch
 
+from app.models.image import VariantStatus
 from app.tasks.image_jobs import create_thumbnail_job, create_variant_job
 
 
@@ -32,7 +33,7 @@ async def test_create_thumbnail_job_success():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_create_variant_job_sets_ready_on_success():
-    """Variant job updates DB to READY (1) when variant is created successfully."""
+    """Variant job updates DB to READY when variant is created successfully."""
     ctx = {"job_try": 1}
 
     with (
@@ -54,13 +55,13 @@ async def test_create_variant_job_sets_ready_on_success():
 
     assert result["success"] is True
     assert result["created"] is True
-    mock_update.assert_called_once_with(42, "medium", 1)
+    mock_update.assert_called_once_with(42, "medium", VariantStatus.READY)
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_create_variant_job_sets_none_when_not_needed():
-    """Variant job updates DB to NONE (0) when image is too small for a variant."""
+    """Variant job updates DB to NONE when image is too small for a variant."""
     ctx = {"job_try": 1}
 
     with (
@@ -82,7 +83,7 @@ async def test_create_variant_job_sets_none_when_not_needed():
 
     assert result["success"] is True
     assert result["created"] is False
-    mock_update.assert_called_once_with(42, "medium", 0)
+    mock_update.assert_called_once_with(42, "medium", VariantStatus.NONE)
 
 
 @pytest.mark.unit
