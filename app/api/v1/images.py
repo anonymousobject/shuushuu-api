@@ -61,7 +61,7 @@ from app.models import (
     Tags,
     Users,
 )
-from app.models.image import ImageSortBy
+from app.models.image import ImageSortBy, VariantStatus
 from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import UserGroups
 from app.schemas.audit import (
@@ -2028,8 +2028,16 @@ async def upload_image(
                 )
 
         # Determine if medium/large variants should be created
-        has_medium = 1 if (width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE) else 0
-        has_large = 1 if (width > settings.LARGE_EDGE or height > settings.LARGE_EDGE) else 0
+        has_medium = (
+            VariantStatus.PENDING
+            if (width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE)
+            else VariantStatus.NONE
+        )
+        has_large = (
+            VariantStatus.PENDING
+            if (width > settings.LARGE_EDGE or height > settings.LARGE_EDGE)
+            else VariantStatus.NONE
+        )
 
         # Update temporary record with actual data
         temp_image.filename = filename

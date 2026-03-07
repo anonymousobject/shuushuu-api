@@ -98,6 +98,7 @@ async def create_variant_job(
     bind_context(task=f"{variant_type}_variant_generation", image_id=image_id)
 
     try:
+        from app.models.image import VariantStatus
         from app.services.image_processing import (
             _create_variant,
             _update_image_variant_field,
@@ -116,9 +117,12 @@ async def create_variant_job(
             variant_type=variant_type,
         )
 
-        # None means variant was deleted (larger than original) — update DB
-        if result is None:
-            await _update_image_variant_field(image_id, variant_type, 0)
+        if result is True:
+            # Variant created successfully — mark as ready
+            await _update_image_variant_field(image_id, variant_type, VariantStatus.READY)
+        else:
+            # Variant not needed (too small) or deleted (larger than original) — mark as none
+            await _update_image_variant_field(image_id, variant_type, VariantStatus.NONE)
 
         created = result is True
         logger.info(f"{variant_type}_variant_job_completed", image_id=image_id, created=created)
