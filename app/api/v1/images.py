@@ -128,7 +128,12 @@ async def _hydrate_similar_images(
     images_result = await db.execute(
         select(Images)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            )
         )
         .where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
     )
@@ -1074,6 +1079,7 @@ async def get_image_tag_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
@@ -1158,6 +1164,7 @@ async def get_image_status_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
@@ -1274,7 +1281,14 @@ async def search_by_hash(
     """
     result = await db.execute(
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))  # type: ignore[arg-type]
+        .options(
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            )
+        )
         .where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
     )
     images = result.scalars().all()
@@ -1415,7 +1429,14 @@ async def get_bookmark_image(
 
     result = await db.execute(
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))  # type: ignore[arg-type]
+        .options(
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            )
+        )
         .where(Images.image_id == current_user.bookmark)  # type: ignore[arg-type]
     )
     image = result.scalar_one_or_none()

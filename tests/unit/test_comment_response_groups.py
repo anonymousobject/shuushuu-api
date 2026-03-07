@@ -31,6 +31,7 @@ def _create_mock_comment(
     mock_user.user_id = user_id
     mock_user.username = username
     mock_user.avatar = None
+    mock_user.user_title = None
     mock_user.groups = groups if groups is not None else []
     mock_comment.user = mock_user
 
