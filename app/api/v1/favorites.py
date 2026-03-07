@@ -47,10 +47,13 @@ async def get_favorite_images(
     query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(
-                Users.user_id, Users.username, Users.avatar, Users.user_title
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
             )
-        )  # type: ignore[arg-type]
+        )
         .join(Favorites)
         .where(Favorites.user_id == user_id)  # type: ignore[arg-type]
     )

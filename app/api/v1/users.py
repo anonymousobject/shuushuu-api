@@ -621,9 +621,12 @@ async def get_user_images(
     query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(
-                Users.user_id, Users.username, Users.avatar, Users.user_title
-            ),  # type: ignore[arg-type]
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            ),
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
         .where(Images.user_id == user_id)  # type: ignore[arg-type]
@@ -732,9 +735,12 @@ async def get_user_favorites(
     query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(
-                Users.user_id, Users.username, Users.avatar, Users.user_title
-            ),  # type: ignore[arg-type]
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            ),
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
         .join(Favorites)
