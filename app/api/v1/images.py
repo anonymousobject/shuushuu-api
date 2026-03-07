@@ -128,7 +128,9 @@ async def _hydrate_similar_images(
     images_result = await db.execute(
         select(Images)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+            selectinload(Images.user).load_only(
+                Users.user_id, Users.username, Users.avatar, Users.user_title
+            )  # type: ignore[arg-type]
         )
         .where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
     )
@@ -1074,6 +1076,7 @@ async def get_image_tag_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
@@ -1158,6 +1161,7 @@ async def get_image_status_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 

@@ -637,7 +637,9 @@ async def get_images_by_tag(
     query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+            selectinload(Images.user).load_only(
+                Users.user_id, Users.username, Users.avatar, Users.user_title
+            )  # type: ignore[arg-type]
         )
         .join(
             image_id_subquery,
@@ -806,6 +808,7 @@ async def get_tag(
             user_id=user.user_id or 0,
             username=user.username,
             avatar=user.avatar or None,
+            user_title=user.user_title,
             groups=user.groups,  # Uses the eager-loaded groups property
         )
 
@@ -972,6 +975,7 @@ async def get_tag_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
@@ -1087,6 +1091,7 @@ async def get_tag_usage_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
