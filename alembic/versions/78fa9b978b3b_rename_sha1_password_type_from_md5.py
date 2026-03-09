@@ -50,5 +50,7 @@ def downgrade() -> None:
         UPDATE users
         SET password_type = 'md5'
         WHERE password_type = 'sha1'
+          AND LENGTH(password) = 40
+          AND salt != ''
         """
     )
