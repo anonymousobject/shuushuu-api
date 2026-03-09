@@ -231,6 +231,33 @@ class TestLogin:
         assert response.status_code == 401
         assert "reset" in response.json()["detail"].lower()
 
+    async def test_login_with_real_md5_password_increments_failed_attempts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that MD5 login attempts count toward the failed attempt lockout threshold."""
+        import hashlib
+
+        md5_hash = hashlib.md5("oldpassword".encode()).hexdigest()
+
+        user = Users(
+            username="md5lockuser",
+            password=md5_hash,
+            password_type="md5",
+            salt="",
+            email="md5lock@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        await client.post(
+            "/api/v1/auth/login",
+            json={"username": "md5lockuser", "password": "oldpassword"},
+        )
+
+        await db_session.refresh(user)
+        assert user.failed_login_attempts == 1
+
 
 @pytest.mark.api
 class TestRefresh:

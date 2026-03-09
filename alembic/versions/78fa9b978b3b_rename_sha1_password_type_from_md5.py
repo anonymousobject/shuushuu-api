@@ -16,11 +16,10 @@ This migration corrects the label for SHA1+salt accounts:
 After this migration the login code handles each type explicitly:
   - 'bcrypt' → direct bcrypt verification
   - 'sha1'   → SHA1+salt verification, migrates to bcrypt on success
-  - 'md5'    → cannot verify securely; user is prompted to reset their password
+  - 'md5'    → verification intentionally unsupported (insecure legacy format); user is prompted to reset
 """
 from typing import Sequence
 
-import sqlalchemy as sa
 from alembic import op
 
 
