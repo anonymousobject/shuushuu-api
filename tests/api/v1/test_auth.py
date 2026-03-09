@@ -195,10 +195,11 @@ class TestLogin:
         db_session.add(user)
         await db_session.commit()
 
-        await client.post(
+        response = await client.post(
             "/api/v1/auth/login",
             json={"username": "sha1miguser", "password": password},
         )
+        assert response.status_code == 200
 
         await db_session.refresh(user)
         assert user.password_type == "bcrypt"

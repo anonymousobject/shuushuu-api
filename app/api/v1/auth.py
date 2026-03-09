@@ -294,6 +294,7 @@ async def login(
             # Lockout expired — reset counter so user gets fresh attempts
             user.failed_login_attempts = 0
             user.lockout_until = None
+            await db.commit()
 
     # Verify password
     password_valid = False
@@ -307,7 +308,7 @@ async def login(
         if password_valid:
             migrate_to_bcrypt = True
     elif user.password_type == "md5":
-        # Unsalted MD5 — cannot be securely verified; require password reset
+        # Unsalted MD5 — verification is technically possible but intentionally unsupported due to insecure legacy format; require password reset
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Your account uses a legacy password format that is no longer supported. Please reset your password.",
