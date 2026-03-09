@@ -295,19 +295,19 @@ async def login(
             user.failed_login_attempts = 0
             user.lockout_until = None
 
-    # Verify password (supports both bcrypt and legacy SHA1)
+    # Verify password
     password_valid = False
     migrate_to_bcrypt = False
 
     if user.password_type == "bcrypt":
-        # Modern bcrypt verification
         password_valid = verify_password(credentials.password, user.password)
-    else:
-        # Legacy SHA1+salt verification
+    elif user.password_type == "sha1":
+        # Legacy SHA1+salt verification — migrate to bcrypt on success
         password_valid = _verify_legacy_password(credentials.password, user.password, user.salt)
         if password_valid:
-            # Password is correct, migrate to bcrypt
             migrate_to_bcrypt = True
+    # MD5: verification is technically possible but intentionally unsupported due to insecure
+    # legacy format — fall through to the failure path so attempts are counted/rate-limited
 
     if not password_valid:
         # Increment failed login attempts
@@ -323,6 +323,11 @@ async def login(
             )
 
         await db.commit()
+        if user.password_type == "md5":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Your account uses a legacy password format that is no longer supported. Please reset your password.",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
