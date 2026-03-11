@@ -73,6 +73,10 @@ class TagExternalLinks(TagExternalLinkBase, table=True):
         sa_column_kwargs={"server_default": text("current_timestamp()")},
     )
 
+    # Dead link tracking
+    dead_at: datetime | None = Field(default=None)
+    archive_url: str | None = Field(default=None, max_length=2000)
+
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
     # - Circular import issues
