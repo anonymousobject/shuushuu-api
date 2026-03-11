@@ -4221,6 +4221,589 @@ class TestGetTagWithLinks:
 
 
 @pytest.mark.api
+class TestUpdateTagExternalLink:
+    """Tests for PATCH /tags/{tag_id}/links/{link_id} endpoint."""
+
+    async def test_mark_link_as_dead(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test marking an external link as dead sets dead_at timestamp."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admindeadlink",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindeadlink@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="dead link artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/dead")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindeadlink", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] is not None
+        assert data["archive_url"] is None
+        assert data["url"] == "https://example.com/dead"
+
+    async def test_mark_link_dead_with_archive_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test marking a link dead and providing archive URL in one request."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admindeadarchive",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindeadarchive@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="archive link artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/archived")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindeadarchive", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={
+                "is_dead": True,
+                "archive_url": "https://web.archive.org/web/20090302035041/https://example.com/archived",
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] is not None
+        assert data["archive_url"] == "https://web.archive.org/web/20090302035041/https://example.com/archived"
+
+    async def test_unmark_link_as_dead(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test setting is_dead=False clears dead_at."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminunmark",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminunmark@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="unmark artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        from datetime import UTC, datetime
+
+        link = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://example.com/revived",
+            dead_at=datetime.now(UTC),
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminunmark", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"is_dead": False},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] is None
+
+    async def test_set_archive_url_only(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test setting archive_url without changing dead status."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminarchiveonly",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminarchiveonly@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="archive only artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/archive-only")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminarchiveonly", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"archive_url": "https://web.archive.org/web/2024/https://example.com/archive-only"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] is None
+        assert data["archive_url"] == "https://web.archive.org/web/2024/https://example.com/archive-only"
+
+    async def test_update_nonexistent_link(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test updating a nonexistent link returns 404."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admin404link",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin404link@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="404 link tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin404link", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/99999",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_update_link_without_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test updating a link without TAG_UPDATE permission returns 403."""
+        user = Users(
+            username="nopermupdate",
+            password=get_password_hash("UserPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="nopermupdate@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        tag = Tags(title="no perm tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/noperm")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "nopermupdate", "password": "UserPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+
+    async def test_invalid_archive_url_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that archive URLs without http/https are rejected."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admininvalidarchive",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admininvalidarchive@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="invalid archive tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/invalid")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admininvalidarchive", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"archive_url": "ftp://not-http.com"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+    async def test_mark_dead_is_idempotent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that marking an already-dead link doesn't change dead_at timestamp."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminidempotent",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminidempotent@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="idempotent artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        from datetime import UTC, datetime
+
+        original_dead_at = datetime(2025, 1, 1, tzinfo=UTC)
+        link = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://example.com/idempotent",
+            dead_at=original_dead_at,
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminidempotent", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] == "2025-01-01T00:00:00Z"
+
+    async def test_clear_archive_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that sending archive_url: null clears an existing archive URL."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincleararchive",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincleararchive@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="clear archive artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://example.com/clear-archive",
+            archive_url="https://web.archive.org/web/2025/https://example.com/clear-archive",
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincleararchive", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"archive_url": None},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["archive_url"] is None
+
+    async def test_update_link_on_wrong_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that patching a link via a different tag's URL returns 404."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminwrongtag",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminwrongtag@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag_a = Tags(title="tag a", desc="Test", type=TagType.ARTIST)
+        tag_b = Tags(title="tag b", desc="Test", type=TagType.ARTIST)
+        db_session.add_all([tag_a, tag_b])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_b)
+
+        link = TagExternalLinks(tag_id=tag_a.tag_id, url="https://example.com/wrong-tag")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminwrongtag", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag_b.tag_id}/links/{link.link_id}",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_tag_detail_includes_dead_link_fields(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag detail response includes dead_at and archive_url on links."""
+        tag = Tags(title="detail dead link", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        from datetime import UTC, datetime
+
+        link = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://example.com/detail",
+            dead_at=datetime(2025, 6, 15, tzinfo=UTC),
+            archive_url="https://web.archive.org/web/2025/https://example.com/detail",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["links"]) == 1
+        link_data = data["links"][0]
+        assert link_data["dead_at"] == "2025-06-15T00:00:00Z"
+        assert link_data["archive_url"] == "https://web.archive.org/web/2025/https://example.com/detail"
+
+
+@pytest.mark.api
 class TestGetTagHierarchy:
     """Tests for get_tag_hierarchy function.
 
