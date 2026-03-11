@@ -2,6 +2,7 @@
 Tags API endpoints
 """
 
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -39,6 +40,7 @@ from app.schemas.tag import (
     TagCreate,
     TagExternalLinkCreate,
     TagExternalLinkResponse,
+    TagExternalLinkUpdate,
     TagListResponse,
     TagResponse,
     TagWithStats,
@@ -1515,6 +1517,46 @@ async def delete_tag_link(
 
     await db.delete(link)
     await db.commit()
+
+
+@router.patch("/{tag_id}/links/{link_id}", response_model=TagExternalLinkResponse)
+async def update_tag_link(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    link_id: Annotated[int, Path(description="Link ID")],
+    link_update: TagExternalLinkUpdate,
+    _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
+    db: AsyncSession = Depends(get_db),
+) -> TagExternalLinkResponse:
+    """
+    Update an external link on a tag (mark dead, add archive URL).
+
+    Requires TAG_UPDATE permission.
+    Returns 404 if link doesn't exist or doesn't belong to the specified tag.
+    """
+    link_result = await db.execute(
+        select(TagExternalLinks)
+        .where(TagExternalLinks.link_id == link_id)  # type: ignore[arg-type]
+        .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+    link = link_result.scalar_one_or_none()
+
+    if not link:
+        raise HTTPException(
+            status_code=404,
+            detail="Link not found or does not belong to this tag",
+        )
+
+    if link_update.is_dead is True and link.dead_at is None:
+        link.dead_at = datetime.now(UTC)
+    elif link_update.is_dead is False:
+        link.dead_at = None
+
+    if "archive_url" in link_update.model_fields_set:
+        link.archive_url = link_update.archive_url
+
+    await db.commit()
+    await db.refresh(link)
+    return TagExternalLinkResponse.model_validate(link)
 
 
 @router.post("/batch", response_model=BatchTagResponse)
