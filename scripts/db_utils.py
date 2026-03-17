@@ -6,6 +6,7 @@ the legacy migration script and the prod restore script.
 """
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -241,20 +242,27 @@ async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
 
     mysql_cmd.extend([
         db_config["database"],
-        "--init-command=SET SESSION FOREIGN_KEY_CHECKS=0; SET SESSION UNIQUE_CHECKS=0; SET autocommit=0;",
         "--max-allowed-packet=1073741824",  # 1GB in bytes
     ])
 
-    # Build the full command with proper shell quoting
+    database = db_config["database"]
+
+    # Build the full command with proper shell quoting via shlex.quote
     # Pipe through sed to:
     # - Strip LOCK/UNLOCK TABLES (avoid locking conflicts with triggers/FKs)
     # - Strip DEFINER clauses (prod user may differ from local dev user)
-    cmd_str = " ".join(f'"{arg}"' if " " in arg or ";" in arg else arg for arg in mysql_cmd)
+    # - Rewrite ALTER DATABASE to target the local database name (prod dumps
+    #   emit ALTER DATABASE `prod_db` around trigger definitions for charset
+    #   changes; if the prod db name doesn't exist locally, these fail and
+    #   abort the import in batch mode)
+    cmd_str = " ".join(shlex.quote(arg) for arg in mysql_cmd)
+    alter_db_sed = f"s/^ALTER DATABASE `[^`]*`/ALTER DATABASE `{database}`/g"
     import_cmd = (
         f"sed"
         f" -e '/^LOCK TABLES/d; /^UNLOCK TABLES/d'"
         f" -e 's/ DEFINER[ ]*=[ ]*[^ ]*@[^ ]* / /g'"
-        f" {sql_file} | {cmd_str}"
+        f" -e {shlex.quote(alter_db_sed)}"
+        f" {shlex.quote(str(sql_file))} | {cmd_str}"
     )
 
     success = await run_command(
