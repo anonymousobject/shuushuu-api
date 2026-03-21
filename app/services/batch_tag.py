@@ -191,7 +191,8 @@ async def batch_remove_tags(
         )
         existing_links = {(row[0], row[1]) for row in links_result.all()}
 
-    # 4. Process each image-tag pair
+    # 4. Categorize each image-tag pair into removed/skipped
+    pairs_to_remove: list[tuple[int, int]] = []
     for image_id in image_ids:
         for original_tag_id in tag_ids:
             resolved_tag_id = resolved_tags[original_tag_id]
@@ -228,23 +229,7 @@ async def batch_remove_tags(
                 )
                 continue
 
-            # Delete the tag link
-            await db.execute(
-                delete(TagLinks).where(
-                    TagLinks.image_id == image_id,  # type: ignore[arg-type]
-                    TagLinks.tag_id == resolved_tag_id,  # type: ignore[arg-type]
-                )
-            )
-
-            db.add(
-                TagHistory(
-                    image_id=image_id,
-                    tag_id=resolved_tag_id,
-                    action="r",
-                    user_id=user_id,
-                )
-            )
-
+            pairs_to_remove.append((image_id, resolved_tag_id))
             removed.append(
                 BatchTagResultItem(
                     image_id=image_id,
@@ -254,6 +239,29 @@ async def batch_remove_tags(
 
             # Track as removed to prevent duplicate processing within same batch
             existing_links.discard((image_id, resolved_tag_id))
+
+    # 5. Batch delete all tag links in a single statement
+    if pairs_to_remove:
+        from sqlalchemy import tuple_
+
+        await db.execute(
+            delete(TagLinks).where(
+                tuple_(TagLinks.image_id, TagLinks.tag_id).in_(  # type: ignore[arg-type]
+                    pairs_to_remove
+                )
+            )
+        )
+
+        # Record history for all removed pairs
+        for image_id, tag_id in pairs_to_remove:
+            db.add(
+                TagHistory(
+                    image_id=image_id,
+                    tag_id=tag_id,
+                    action="r",
+                    user_id=user_id,
+                )
+            )
 
     try:
         await db.commit()

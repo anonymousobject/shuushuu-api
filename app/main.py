@@ -7,6 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs, urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +29,18 @@ from app.tasks.queue import close_queue
 # Configure logging on module import
 configure_logging()
 logger = get_logger(__name__)
+
+
+_REDACTED_PARAMS = {"token", "code", "access_token", "refresh_token", "password"}
+
+
+def _redact_query(query_string: str) -> str:
+    """Redact sensitive query parameters to avoid leaking secrets in logs."""
+    params = parse_qs(query_string, keep_blank_values=True)
+    redacted = {
+        k: ["[REDACTED]"] if k.lower() in _REDACTED_PARAMS else v for k, v in params.items()
+    }
+    return urlencode(redacted, doseq=True)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -64,7 +77,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 "request_complete",
                 method=request.method,
                 path=str(request.url.path)
-                + ("?" + str(request.url.query) if request.url.query else ""),
+                + ("?" + _redact_query(str(request.url.query)) if request.url.query else ""),
                 status_code=response.status_code,
                 elapsed_ms=elapsed_ms,
             )

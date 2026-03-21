@@ -516,6 +516,71 @@ class TestBatchTagRemove:
         )
         assert result.scalar() == 1
 
+    async def test_resolves_alias_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Alias tags resolve to their canonical tag for removal."""
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
+        token = create_access_token(user.id)
+        images = await _create_test_images(db_session, user, 1)
+
+        # Create canonical tag and alias
+        canonical = Tags(title="Canonical Remove Tag", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Alias Remove Tag", type=TagType.THEME, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        # Link canonical tag to image
+        db_session.add(
+            TagLinks(
+                image_id=images[0].image_id, tag_id=canonical.tag_id, user_id=user.user_id
+            )
+        )
+        await db_session.commit()
+
+        # Remove using alias tag ID
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "remove",
+                "tag_ids": [alias.tag_id],
+                "image_ids": [images[0].image_id],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["removed"]) == 1
+        assert data["removed"][0]["tag_id"] == canonical.tag_id
+
+        # Verify the link was actually deleted
+        from sqlalchemy import select
+
+        link_result = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == images[0].image_id,
+                TagLinks.tag_id == canonical.tag_id,
+            )
+        )
+        assert link_result.scalar_one_or_none() is None
+
+        # Verify history was written for canonical tag
+        from app.models.tag_history import TagHistory
+
+        history_result = await db_session.execute(
+            select(TagHistory).where(
+                TagHistory.image_id == images[0].image_id,
+                TagHistory.tag_id == canonical.tag_id,
+                TagHistory.action == "r",
+            )
+        )
+        assert history_result.scalar_one_or_none() is not None
+
     async def test_requires_remove_permission(
         self, client: AsyncClient, db_session: AsyncSession
     ):
