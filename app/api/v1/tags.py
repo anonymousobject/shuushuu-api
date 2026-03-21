@@ -1587,7 +1587,10 @@ async def batch_tag_operation(
         required_perm = Permission.IMAGE_TAG_REMOVE
 
     if not await has_permission(db, current_user.id, required_perm, redis_client):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
+        raise HTTPException(
+            status_code=403,
+            detail=f"Missing required permission: {required_perm.value}",
+        )
 
     if request.action == BatchTagAction.ADD:
         return await batch_add_tags(

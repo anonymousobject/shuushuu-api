@@ -37,9 +37,7 @@ _REDACTED_PARAMS = {"token", "code", "access_token", "refresh_token", "password"
 def _redact_query(query_string: str) -> str:
     """Redact sensitive query parameters to avoid leaking secrets in logs."""
     params = parse_qs(query_string, keep_blank_values=True)
-    redacted = {
-        k: ["[REDACTED]"] if k.lower() in _REDACTED_PARAMS else v for k, v in params.items()
-    }
+    redacted = {k: ["REDACTED"] if k.lower() in _REDACTED_PARAMS else v for k, v in params.items()}
     return urlencode(redacted, doseq=True)
 
 
