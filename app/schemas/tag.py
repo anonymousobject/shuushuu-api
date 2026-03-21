@@ -260,6 +260,7 @@ class BatchTagAction(str, StdEnum):
     """Supported batch tag actions."""
 
     ADD = "add"
+    REMOVE = "remove"
 
 
 class BatchTagRequest(BaseModel):
@@ -288,5 +289,6 @@ class BatchTagSkippedItem(BaseModel):
 class BatchTagResponse(BaseModel):
     """Response schema for batch tag operations."""
 
-    added: list[BatchTagResultItem]
-    skipped: list[BatchTagSkippedItem]
+    added: list[BatchTagResultItem] = []
+    removed: list[BatchTagResultItem] = []
+    skipped: list[BatchTagSkippedItem] = []

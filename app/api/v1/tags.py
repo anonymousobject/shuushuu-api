@@ -5,6 +5,7 @@ Tags API endpoints
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import asc, case, delete, desc, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +18,7 @@ from app.core.auth import get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
+from app.core.redis import get_redis
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
 from app.models.image_report import ImageReports
@@ -33,6 +35,7 @@ from app.schemas.audit import (
 from app.schemas.common import UserSummary
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
+    BatchTagAction,
     BatchTagRequest,
     BatchTagResponse,
     CharacterSourceLinkCreate,
@@ -1660,26 +1663,46 @@ async def update_tag_link(
 async def batch_tag_operation(
     request: BatchTagRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
-    _: Annotated[None, Depends(require_permission(Permission.IMAGE_TAG_ADD))],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> BatchTagResponse:
     """
-    Batch add tags to multiple images.
+    Batch add or remove tags on multiple images.
 
-    Applies the specified tags to the specified images. Skips invalid
-    pairs (missing image, missing tag, already tagged) and reports them
-    in the response.
+    Applies or removes the specified tags on the specified images. Skips
+    invalid pairs (missing image, missing tag, already/not tagged) and
+    reports them in the response.
 
-    Requires IMAGE_TAG_ADD permission.
+    Requires IMAGE_TAG_ADD for add, IMAGE_TAG_REMOVE for remove.
     """
-    from app.services.batch_tag import batch_add_tags
+    from app.core.permissions import has_permission
+    from app.services.batch_tag import batch_add_tags, batch_remove_tags
 
-    return await batch_add_tags(
-        tag_ids=request.tag_ids,
-        image_ids=request.image_ids,
-        user_id=current_user.id,
-        db=db,
-    )
+    if request.action == BatchTagAction.ADD:
+        required_perm = Permission.IMAGE_TAG_ADD
+    else:
+        required_perm = Permission.IMAGE_TAG_REMOVE
+
+    if not await has_permission(db, current_user.id, required_perm, redis_client):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Missing required permission: {required_perm.value}",
+        )
+
+    if request.action == BatchTagAction.ADD:
+        return await batch_add_tags(
+            tag_ids=request.tag_ids,
+            image_ids=request.image_ids,
+            user_id=current_user.id,
+            db=db,
+        )
+    else:
+        return await batch_remove_tags(
+            tag_ids=request.tag_ids,
+            image_ids=request.image_ids,
+            user_id=current_user.id,
+            db=db,
+        )
 
 
 # =============================================================================
