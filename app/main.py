@@ -63,7 +63,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             logger.info(
                 "request_complete",
                 method=request.method,
-                path=request.url.path,
+                path=str(request.url.path)
+                + ("?" + str(request.url.query) if request.url.query else ""),
                 status_code=response.status_code,
                 elapsed_ms=elapsed_ms,
             )
