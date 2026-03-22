@@ -21,6 +21,8 @@ from app.core.permissions import Permission
 from app.core.redis import get_redis
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
+from app.models.image_report import ImageReports
+from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.permissions import UserGroups
 from app.models.tag_audit_log import TagAuditLog
 from app.models.tag_history import TagHistory
@@ -48,7 +50,10 @@ from app.schemas.tag import (
     TagResponse,
     TagWithStats,
 )
+from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
+
+SUGGESTION_STATS_MIN_THRESHOLD = 5
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -327,6 +332,110 @@ async def validate_tag_relationships(
                     f"Reassign or remove child tags first."
                 ),
             )
+
+
+@router.get("/suggestion-stats", response_model=TagSuggestionStatsResponse)
+async def get_tag_suggestion_stats(
+    pagination: Annotated[PaginationParams, Depends()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    sort: Annotated[str, Query(description="Sort field")] = "acceptance_rate",
+    order: Annotated[str, Query(description="Sort order")] = "desc",
+) -> TagSuggestionStatsResponse:
+    """
+    Get tag suggestion statistics per user.
+
+    Returns a leaderboard of users who have submitted tag suggestions,
+    with acceptance rates and volume metrics. Only includes users with
+    at least 5 suggestions.
+    """
+    # Aliases for readability (type: ignore needed for SQLModel column access)
+    S = ImageReportTagSuggestions  # noqa: N806
+    R = ImageReports  # noqa: N806
+
+    # Count suggestions by status per user
+    total_col = func.count(S.suggestion_id).label("total_suggestions")  # type: ignore[arg-type]
+    accepted_col = func.sum(
+        case((S.accepted.is_(True), 1), else_=0)  # type: ignore[union-attr]
+    ).label("accepted_count")
+    rejected_col = func.sum(
+        case((S.accepted.is_(False), 1), else_=0)  # type: ignore[union-attr]
+    ).label("rejected_count")
+    pending_col = func.sum(
+        case((S.accepted.is_(None), 1), else_=0)  # type: ignore[union-attr]
+    ).label("pending_count")
+    add_col = func.sum(
+        case((S.suggestion_type == 1, 1), else_=0)  # type: ignore[arg-type]
+    ).label("add_count")
+    remove_col = func.sum(
+        case((S.suggestion_type == 2, 1), else_=0)  # type: ignore[arg-type]
+    ).label("remove_count")
+    # Acceptance rate: accepted / (accepted + rejected), null if no decided suggestions
+    decided_col = accepted_col + rejected_col
+    acceptance_rate_col = case(
+        (decided_col > 0, func.round(accepted_col * 100.0 / decided_col, 1)),
+        else_=None,
+    ).label("acceptance_rate")
+
+    query = (
+        select(  # type: ignore[call-overload]
+            R.user_id,
+            Users.username,
+            total_col,
+            accepted_col,
+            rejected_col,
+            pending_col,
+            acceptance_rate_col,
+            add_col,
+            remove_col,
+        )
+        .select_from(S)
+        .join(R, S.report_id == R.report_id)
+        .join(Users, R.user_id == Users.user_id)
+        .group_by(R.user_id, Users.username)
+        .having(total_col >= SUGGESTION_STATS_MIN_THRESHOLD)
+    )
+
+    # Sorting
+    sort_columns = {
+        "acceptance_rate": acceptance_rate_col,
+        "total_suggestions": total_col,
+        "accepted_count": accepted_col,
+    }
+    sort_col = sort_columns.get(sort, acceptance_rate_col)
+    if order == "asc":
+        query = query.order_by(asc(sort_col))
+    else:
+        query = query.order_by(desc(sort_col))
+
+    # Pagination
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+    query = query.offset(pagination.offset).limit(pagination.per_page)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = [
+        TagSuggestionUserStats(
+            user_id=row.user_id,
+            username=row.username,
+            total_suggestions=row.total_suggestions,
+            accepted_count=row.accepted_count,
+            rejected_count=row.rejected_count,
+            pending_count=row.pending_count,
+            acceptance_rate=row.acceptance_rate,
+            add_count=row.add_count,
+            remove_count=row.remove_count,
+        )
+        for row in rows
+    ]
+
+    return TagSuggestionStatsResponse(
+        items=items,
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+    )
 
 
 @router.get("/", response_model=TagListResponse, include_in_schema=False)
