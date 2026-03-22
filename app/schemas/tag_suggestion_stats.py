@@ -23,3 +23,6 @@ class TagSuggestionStatsResponse(BaseModel):
     """Response for tag suggestion stats endpoint."""
 
     items: list[TagSuggestionUserStats]
+    total: int
+    page: int
+    per_page: int

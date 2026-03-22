@@ -336,6 +336,7 @@ async def validate_tag_relationships(
 
 @router.get("/suggestion-stats", response_model=TagSuggestionStatsResponse)
 async def get_tag_suggestion_stats(
+    pagination: Annotated[PaginationParams, Depends()],
     db: Annotated[AsyncSession, Depends(get_db)],
     sort: Annotated[str, Query(description="Sort field")] = "acceptance_rate",
     order: Annotated[str, Query(description="Sort order")] = "desc",
@@ -354,10 +355,10 @@ async def get_tag_suggestion_stats(
     # Count suggestions by status per user
     total_col = func.count(S.suggestion_id).label("total_suggestions")  # type: ignore[arg-type]
     accepted_col = func.sum(
-        case((S.accepted == 1, 1), else_=0)  # type: ignore[arg-type]
+        case((S.accepted.is_(True), 1), else_=0)  # type: ignore[union-attr]
     ).label("accepted_count")
     rejected_col = func.sum(
-        case((S.accepted == 0, 1), else_=0)  # type: ignore[arg-type]
+        case((S.accepted.is_(False), 1), else_=0)  # type: ignore[union-attr]
     ).label("rejected_count")
     pending_col = func.sum(
         case((S.accepted.is_(None), 1), else_=0)  # type: ignore[union-attr]
@@ -387,7 +388,8 @@ async def get_tag_suggestion_stats(
             add_col,
             remove_col,
         )
-        .join(ImageReports, S.report_id == R.report_id)
+        .select_from(S)
+        .join(R, S.report_id == R.report_id)
         .join(Users, R.user_id == Users.user_id)
         .group_by(R.user_id, Users.username)
         .having(total_col >= SUGGESTION_STATS_MIN_THRESHOLD)
@@ -404,6 +406,11 @@ async def get_tag_suggestion_stats(
         query = query.order_by(asc(sort_col))
     else:
         query = query.order_by(desc(sort_col))
+
+    # Pagination
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+    query = query.offset(pagination.offset).limit(pagination.per_page)
 
     result = await db.execute(query)
     rows = result.all()
@@ -423,7 +430,12 @@ async def get_tag_suggestion_stats(
         for row in rows
     ]
 
-    return TagSuggestionStatsResponse(items=items)
+    return TagSuggestionStatsResponse(
+        items=items,
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+    )
 
 
 @router.get("/", response_model=TagListResponse, include_in_schema=False)

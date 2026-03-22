@@ -6,7 +6,7 @@ Tests cover:
 - Minimum suggestion threshold filtering
 - Acceptance rate calculation
 - Sort options
-- Time-based filtering (last 30 days vs all time)
+- Pagination
 """
 
 import pytest
@@ -64,7 +64,7 @@ async def create_image(db_session: AsyncSession, user_id: int, idx: int = 0) -> 
 
 async def create_tag(db_session: AsyncSession, name: str) -> Tags:
     """Create a test tag."""
-    tag = Tags(tag_name=name, tag_type=0, master_tag=0)
+    tag = Tags(title=name, type=0)
     db_session.add(tag)
     await db_session.commit()
     await db_session.refresh(tag)
@@ -108,6 +108,9 @@ async def test_suggestion_stats_empty(client: AsyncClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["items"] == []
+    assert data["total"] == 0
+    assert data["page"] == 1
+    assert data["per_page"] == 20
 
 
 @pytest.mark.anyio
