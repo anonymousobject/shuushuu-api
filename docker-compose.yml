@@ -55,6 +55,24 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Meilisearch (search engine)
+  meilisearch:
+    image: getmeili/meilisearch:v1
+    container_name: shuushuu-meilisearch
+    environment:
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-dev_master_key}
+      - MEILI_ENV=${MEILI_ENV:-development}
+    ports:
+      - "7700:7700"
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # FastAPI Application
   api:
     build:
@@ -72,6 +90,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
+      - MEILISEARCH_URL=http://meilisearch:7700
+      - MEILISEARCH_API_KEY=${MEILI_MASTER_KEY:-dev_master_key}
       # Prevent Python from writing pyc files and __pycache__ dirs
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
@@ -85,6 +105,8 @@ services:
       mariadb:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      meilisearch:
         condition: service_healthy
     develop:
       watch:
@@ -150,6 +172,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
+      - MEILISEARCH_URL=http://meilisearch:7700
+      - MEILISEARCH_API_KEY=${MEILI_MASTER_KEY:-dev_master_key}
       # Prevent Python from writing pyc files
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
@@ -238,6 +262,8 @@ volumes:
   redis_data:
     driver: local
   iqdb_data:
+    driver: local
+  meilisearch_data:
     driver: local
 
 networks:
