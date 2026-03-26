@@ -164,7 +164,7 @@ class TestUserReportEndpoint:
         assert response.status_code == 201
         data = response.json()
         assert data["image_id"] == image.image_id
-        assert data["user_id"] == user.user_id
+        assert data["user"]["user_id"] == user.user_id
         assert data["category"] == 2
         assert data["reason_text"] == "Inappropriate content"
         assert data["status"] == ReportStatus.PENDING
@@ -552,8 +552,240 @@ class TestAdminReportsList:
         assert response.status_code == 200
         data = response.json()
         assert len(data["image_reports"]) == 1
-        assert data["image_reports"][0]["reviewed_by"] == admin.user_id
-        assert data["image_reports"][0]["reviewed_by_username"] == admin.username
+        assert data["image_reports"][0]["reviewed_by_user"]["user_id"] == admin.user_id
+        assert data["image_reports"][0]["reviewed_by_user"]["username"] == admin.username
+
+    async def test_list_reports_filter_by_user_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering reports by the submitting user's ID."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+
+        other_user, _ = await create_auth_user(
+            db_session, username="other", email="other@example.com"
+        )
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        # Create reports from two different users
+        report_admin = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            status=ReportStatus.PENDING,
+        )
+        report_other = ImageReports(
+            image_id=image.image_id,
+            user_id=other_user.user_id,
+            category=2,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add_all([report_admin, report_other])
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, password)
+
+        # Filter by other_user's ID
+        response = await client.get(
+            f"/api/v1/admin/reports?user_id={other_user.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["image_reports"]) == 1
+        assert data["image_reports"][0]["user"]["user_id"] == other_user.user_id
+
+    async def test_list_reports_filter_by_user_id_no_results(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test filtering by user_id that has no reports returns empty."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        token = await login_user(client, admin.username, password)
+
+        response = await client.get(
+            "/api/v1/admin/reports?user_id=99999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert len(data["image_reports"]) == 0
+
+
+@pytest.mark.api
+class TestAdminGetReport:
+    """Tests for GET /api/v1/admin/reports/{report_id} endpoint."""
+
+    async def test_get_report_success(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test fetching a single image report by ID."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,
+            reason_text="test reason",
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.get(
+            f"/api/v1/admin/reports/{report.report_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["report_id"] == report.report_id
+        assert data["image_id"] == image.image_id
+        assert data["user"]["user_id"] == admin.user_id
+        assert data["user"]["username"] == admin.username
+        assert data["category"] == 1
+        assert data["reason_text"] == "test reason"
+        assert data["status"] == ReportStatus.PENDING
+        assert data["category_label"] is not None
+        assert data["status_label"] == "Pending"
+
+    async def test_get_report_with_tag_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag suggestions are included in single report response."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        # Add tag suggestions
+        for tag in tags:
+            suggestion = ImageReportTagSuggestions(
+                report_id=report.report_id,
+                tag_id=tag.tag_id,
+                suggestion_type=1,
+            )
+            db_session.add(suggestion)
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/admin/reports/{report.report_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["report_id"] == report.report_id
+        assert data["suggested_tags"] is not None
+        assert len(data["suggested_tags"]) == 2
+
+    async def test_get_report_not_found(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test 404 for nonexistent report."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        token = await login_user(client, admin.username, password)
+
+        response = await client.get(
+            "/api/v1/admin/reports/99999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 404
+
+    async def test_get_report_no_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test 403 when user lacks permission."""
+        user, password = await create_auth_user(db_session)
+        token = await login_user(client, user.username, password)
+
+        response = await client.get(
+            "/api/v1/admin/reports/1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+
+    async def test_get_report_tagger_can_view_tag_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that user with TAG_SUGGESTION_APPLY can view TAG_SUGGESTIONS reports."""
+        tagger, password = await create_auth_user(db_session, username="tagger")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        token = await login_user(client, tagger.username, password)
+
+        admin, _ = await create_auth_user(
+            db_session, username="admin", email="admin@example.com"
+        )
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.get(
+            f"/api/v1/admin/reports/{report.report_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["report_id"] == report.report_id
+
+    async def test_get_report_tagger_cannot_view_non_tag_suggestion(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tagger-only user cannot view non-TAG_SUGGESTIONS reports."""
+        tagger, password = await create_auth_user(db_session, username="tagger")
+        await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
+        token = await login_user(client, tagger.username, password)
+
+        admin, _ = await create_auth_user(
+            db_session, username="admin", email="admin@example.com"
+        )
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=1,  # REPOST, not TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.get(
+            f"/api/v1/admin/reports/{report.report_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
 
 
 @pytest.mark.api
