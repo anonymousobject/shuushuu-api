@@ -458,8 +458,8 @@ class TestAdminCommentReportEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert len(data["comment_reports"]) == 1
-        assert data["comment_reports"][0]["reviewed_by"] == user.user_id
-        assert data["comment_reports"][0]["reviewed_by_username"] == user.username
+        assert data["comment_reports"][0]["reviewed_by_user"]["user_id"] == user.user_id
+        assert data["comment_reports"][0]["reviewed_by_user"]["username"] == user.username
 
     async def test_dismiss_comment_report(
         self, client: AsyncClient, db_session: AsyncSession
@@ -676,3 +676,114 @@ class TestAdminCommentReportEndpoints:
         data = response.json()
         assert len(data["image_reports"]) == 1
         assert len(data["comment_reports"]) == 1
+
+
+@pytest.mark.api
+class TestAdminGetCommentReport:
+    """Tests for GET /api/v1/admin/reports/comments/{report_id} endpoint."""
+
+    async def test_get_comment_report_success(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test fetching a single comment report by ID."""
+        user, password = await create_auth_user(db_session, "admin_get", "admin_get@test.com")
+        await grant_permission(db_session, user.user_id, "report_view")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(
+            db_session, user.user_id, image.image_id, "offensive comment"
+        )
+
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.SPAM,
+            reason_text="this is spam",
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        token = await login_user(client, user.username, password)
+
+        response = await client.get(
+            f"/api/v1/admin/reports/comments/{report.report_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["report_id"] == report.report_id
+        assert data["comment_id"] == comment.post_id
+        assert data["image_id"] == image.image_id
+        assert data["user"]["user_id"] == user.user_id
+        assert data["user"]["username"] == user.username
+        assert data["category"] == CommentReportCategory.SPAM
+        assert data["reason_text"] == "this is spam"
+        assert data["status"] == ReportStatus.PENDING
+        assert data["status_label"] == "Pending"
+        assert data["comment_preview"] == "offensive comment"
+        assert data["comment_deleted"] is False
+
+    async def test_get_comment_report_with_deleted_comment(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test fetching a report whose comment has been soft-deleted."""
+        user, password = await create_auth_user(db_session, "admin_del", "admin_del@test.com")
+        await grant_permission(db_session, user.user_id, "report_view")
+        image = await create_test_image(db_session, user.user_id)
+        comment = await create_test_comment(
+            db_session, user.user_id, image.image_id, "deleted comment"
+        )
+        comment.deleted = True
+        await db_session.commit()
+
+        report = CommentReports(
+            comment_id=comment.post_id,
+            user_id=user.user_id,
+            category=CommentReportCategory.RULE_VIOLATION,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        token = await login_user(client, user.username, password)
+
+        response = await client.get(
+            f"/api/v1/admin/reports/comments/{report.report_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["comment_deleted"] is True
+
+    async def test_get_comment_report_not_found(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test 404 for nonexistent comment report."""
+        user, password = await create_auth_user(db_session, "admin_nf", "admin_nf@test.com")
+        await grant_permission(db_session, user.user_id, "report_view")
+        token = await login_user(client, user.username, password)
+
+        response = await client.get(
+            "/api/v1/admin/reports/comments/99999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 404
+
+    async def test_get_comment_report_no_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test 403 when user lacks permission."""
+        user, password = await create_auth_user(db_session, "noperm", "noperm@test.com")
+        token = await login_user(client, user.username, password)
+
+        response = await client.get(
+            "/api/v1/admin/reports/comments/1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.config import ReportCategory
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.comment_report import CommentReportListItem
+from app.schemas.common import UserSummary
 
 # ===== Tag Suggestion Schemas =====
 
@@ -88,16 +89,14 @@ class ReportResponse(BaseModel):
 
     report_id: int
     image_id: int
-    user_id: int
-    username: str | None = None
+    user: UserSummary | None = None
     category: int | None
     category_label: str | None = None
     reason_text: str | None
     status: int
     status_label: str | None = None
     created_at: UTCDatetime
-    reviewed_by: int | None
-    reviewed_by_username: str | None = None
+    reviewed_by_user: UserSummary | None = None
     reviewed_at: UTCDatetimeOptional = None
     admin_notes: str | None = None
     suggested_tags: list[TagSuggestion] | None = None
@@ -216,8 +215,7 @@ class VoteResponse(BaseModel):
 
     vote_id: int
     review_id: int | None
-    user_id: int | None
-    username: str | None = None
+    user: UserSummary | None = None
     vote: int | None
     vote_label: str | None = None
     comment: str | None
@@ -241,10 +239,8 @@ class ReviewResponse(BaseModel):
     source_report_category_label: str | None = None
     source_report_reason: str | None = None
     reason: str | None = None
-    initiated_by: int | None
-    initiated_by_username: str | None = None
-    closed_by: int | None = None
-    closed_by_username: str | None = None
+    initiated_by_user: UserSummary | None = None
+    closed_by_user: UserSummary | None = None
     review_type: int
     review_type_label: str | None = None
     deadline: UTCDatetime

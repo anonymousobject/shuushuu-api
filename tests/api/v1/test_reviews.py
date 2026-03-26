@@ -212,7 +212,7 @@ class TestCreateReview:
         assert response.status_code == 201
         data = response.json()
         assert data["image_id"] == image.image_id
-        assert data["initiated_by"] == admin.user_id
+        assert data["initiated_by_user"]["user_id"] == admin.user_id
         assert data["status"] == ReviewStatus.OPEN
         assert data["status_label"] == "Open"
 
@@ -648,8 +648,8 @@ class TestReviewClose:
         assert data["status"] == ReviewStatus.CLOSED
         assert data["outcome"] == ReviewOutcome.KEEP
         assert data["outcome_label"] == "Keep"
-        assert data["closed_by"] == admin.user_id
-        assert data["closed_by_username"] == admin.username
+        assert data["closed_by_user"]["user_id"] == admin.user_id
+        assert data["closed_by_user"]["username"] == admin.username
 
         # Verify image status changed to ACTIVE
         await db_session.refresh(image)
@@ -718,8 +718,7 @@ class TestReviewClose:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["closed_by"] is None
-        assert data["closed_by_username"] is None
+        assert data["closed_by_user"] is None
 
     async def test_close_review_shows_closed_by_in_list(
         self, client: AsyncClient, db_session: AsyncSession
@@ -758,8 +757,8 @@ class TestReviewClose:
         items = response.json()["items"]
         assert len(items) >= 1
         closed_review = next(i for i in items if i["review_id"] == review.review_id)
-        assert closed_review["closed_by"] == admin.user_id
-        assert closed_review["closed_by_username"] == admin.username
+        assert closed_review["closed_by_user"]["user_id"] == admin.user_id
+        assert closed_review["closed_by_user"]["username"] == admin.username
 
     async def test_close_already_closed_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
@@ -928,6 +927,8 @@ class TestReviewDetail:
         assert len(data["votes"]) == 1
         assert data["votes"][0]["vote"] == 1
         assert data["votes"][0]["comment"] == "Keep it"
+        assert data["votes"][0]["user"]["user_id"] == admin.user_id
+        assert data["votes"][0]["user"]["username"] == admin.username
 
     async def test_get_review_detail_includes_reason(
         self, client: AsyncClient, db_session: AsyncSession

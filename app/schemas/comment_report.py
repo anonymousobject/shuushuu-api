@@ -46,16 +46,14 @@ class CommentReportResponse(BaseModel):
     report_id: int
     comment_id: int
     image_id: int | None = None  # Denormalized for convenience
-    user_id: int
-    username: str | None = None
+    user: UserSummary | None = None
     category: int | None
     category_label: str | None = None
     reason_text: str | None
     status: int
     status_label: str | None = None
     created_at: UTCDatetime
-    reviewed_by: int | None = None
-    reviewed_by_username: str | None = None
+    reviewed_by_user: UserSummary | None = None
     reviewed_at: UTCDatetimeOptional = None
     admin_notes: str | None = None
 
