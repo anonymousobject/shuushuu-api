@@ -123,8 +123,8 @@ async def _build_user_summaries(db: AsyncSession, user_ids: set[int]) -> dict[in
     )
     users = result.scalars().all()
     return {
-        user.user_id: UserSummary(
-            user_id=user.user_id,
+        user.id: UserSummary(
+            user_id=user.id,
             username=user.username,
             avatar=user.avatar,
             user_title=user.user_title,
@@ -965,13 +965,13 @@ async def list_reports(
 
         for report in reports:
             response = ReportResponse(
-                report_id=report.report_id,
+                report_id=report.report_id,  # type: ignore[arg-type]
                 image_id=report.image_id,
                 user=user_summaries.get(report.user_id),
                 category=report.category,
                 reason_text=report.reason_text,
                 status=report.status,
-                created_at=report.created_at,
+                created_at=report.created_at,  # type: ignore[arg-type]
                 reviewed_by_user=user_summaries.get(report.reviewed_by)
                 if report.reviewed_by
                 else None,
@@ -1121,13 +1121,13 @@ async def get_report(
     summaries = await _build_user_summaries(db, report_user_ids)
 
     response = ReportResponse(
-        report_id=report.report_id,
+        report_id=report.report_id,  # type: ignore[arg-type]
         image_id=report.image_id,
         user=summaries.get(report.user_id),
         category=report.category,
         reason_text=report.reason_text,
         status=report.status,
-        created_at=report.created_at,
+        created_at=report.created_at,  # type: ignore[arg-type]
         reviewed_by_user=summaries.get(report.reviewed_by) if report.reviewed_by else None,
         reviewed_at=report.reviewed_at,
         admin_notes=report.admin_notes,
@@ -1137,7 +1137,7 @@ async def get_report(
     suggestions_result = await db.execute(
         select(ImageReportTagSuggestions, Tags)
         .join(Tags, Tags.tag_id == ImageReportTagSuggestions.tag_id)  # type: ignore[arg-type]
-        .where(ImageReportTagSuggestions.report_id == report_id)  # type: ignore[attr-defined]
+        .where(ImageReportTagSuggestions.report_id == report_id)  # type: ignore[arg-type]
     )
     suggestions = suggestions_result.all()
     if suggestions:
@@ -1180,7 +1180,7 @@ async def get_comment_report(
             Comments.deleted.label("comment_deleted"),  # type: ignore[attr-defined]
         )
         .outerjoin(Comments, Comments.post_id == CommentReports.comment_id)
-        .where(CommentReports.report_id == report_id)  # type: ignore[arg-type]
+        .where(CommentReports.report_id == report_id)
     )
 
     result = await db.execute(query)
@@ -1774,9 +1774,9 @@ async def escalate_report(
     await db.commit()
     await db.refresh(review)
 
-    summaries = await _build_user_summaries(db, {current_user.user_id})
+    summaries = await _build_user_summaries(db, {current_user.id})
     response = ReviewResponse.model_validate(review)
-    response.initiated_by_user = summaries.get(current_user.user_id)
+    response.initiated_by_user = summaries.get(current_user.id)
     return response
 
 
@@ -1899,8 +1899,8 @@ async def get_review(
     # Get votes
     votes_result = await db.execute(
         select(ReviewVotes)
-        .where(ReviewVotes.review_id == review_id)
-        .order_by(ReviewVotes.created_at)
+        .where(ReviewVotes.review_id == review_id)  # type: ignore[arg-type]
+        .order_by(ReviewVotes.created_at)  # type: ignore[arg-type]
     )
     vote_rows = votes_result.scalars().all()
 
@@ -2022,9 +2022,9 @@ async def create_review(
     await db.commit()
     await db.refresh(review)
 
-    summaries = await _build_user_summaries(db, {current_user.user_id})
+    summaries = await _build_user_summaries(db, {current_user.id})
     response = ReviewResponse.model_validate(review)
-    response.initiated_by_user = summaries.get(current_user.user_id)
+    response.initiated_by_user = summaries.get(current_user.id)
     return response
 
 
@@ -2098,9 +2098,9 @@ async def vote_on_review(
     await db.commit()
     await db.refresh(vote)
 
-    summaries = await _build_user_summaries(db, {current_user.user_id})
+    summaries = await _build_user_summaries(db, {current_user.id})
     response = VoteResponse.model_validate(vote)
-    response.user = summaries.get(current_user.user_id)
+    response.user = summaries.get(current_user.id)
     return response
 
 
@@ -2184,7 +2184,7 @@ async def close_review(
     await db.commit()
     await db.refresh(review)
 
-    close_user_ids: set[int] = {current_user.user_id}
+    close_user_ids: set[int] = {current_user.id}
     if review.initiated_by:
         close_user_ids.add(review.initiated_by)
     close_summaries = await _build_user_summaries(db, close_user_ids)
@@ -2193,7 +2193,7 @@ async def close_review(
     response.initiated_by_user = (
         close_summaries.get(review.initiated_by) if review.initiated_by else None
     )
-    response.closed_by_user = close_summaries.get(current_user.user_id)
+    response.closed_by_user = close_summaries.get(current_user.id)
     response.vote_count = vote_count
     response.keep_votes = keep_votes
     response.remove_votes = remove_votes

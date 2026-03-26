@@ -2353,11 +2353,11 @@ async def report_image(
         .options(
             selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
         )
-        .where(Users.user_id == current_user.user_id)  # type: ignore[arg-type]
+        .where(Users.user_id == current_user.id)  # type: ignore[arg-type]
     )
     reporter = user_result.scalar_one()
     reporter_summary = UserSummary(
-        user_id=reporter.user_id or 0,
+        user_id=reporter.id,
         username=reporter.username,
         avatar=reporter.avatar,
         user_title=reporter.user_title,

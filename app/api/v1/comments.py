@@ -654,16 +654,16 @@ async def report_comment(
         .options(
             selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
         )
-        .where(Users.user_id == current_user.user_id)  # type: ignore[arg-type]
+        .where(Users.user_id == current_user.id)  # type: ignore[arg-type]
     )
     reporter = user_result.scalar_one()
 
     return CommentReportResponse(
-        report_id=report.report_id or 0,
+        report_id=report.report_id,  # type: ignore[arg-type]
         comment_id=report.comment_id,
         image_id=comment.image_id,
         user=UserSummary(
-            user_id=reporter.user_id or 0,
+            user_id=reporter.id,
             username=reporter.username,
             avatar=reporter.avatar,
             user_title=reporter.user_title,
