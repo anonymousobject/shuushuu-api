@@ -20,7 +20,7 @@ import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import selectinload
 
 from app.config import (
     AdminActionType,
@@ -105,8 +105,33 @@ from app.schemas.report import (
 )
 from app.services.rating import schedule_rating_recalculation
 from app.services.repost import migrate_repost_data
+from app.services.review_jobs import check_early_close
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+async def _build_user_summaries(db: AsyncSession, user_ids: set[int]) -> dict[int, UserSummary]:
+    """Batch-fetch Users with groups and build UserSummary objects by user_id."""
+    if not user_ids:
+        return {}
+    result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id.in_(user_ids))  # type: ignore[union-attr]
+    )
+    users = result.scalars().all()
+    return {
+        user.id: UserSummary(
+            user_id=user.id,
+            username=user.username,
+            avatar=user.avatar,
+            user_title=user.user_title,
+            groups=user.groups,
+        )
+        for user in users
+    }
 
 
 # ===== Group CRUD =====
@@ -808,6 +833,10 @@ async def list_reports(
         int | None,
         Query(description="Filter by category (4=TAG_SUGGESTIONS for images)"),
     ] = None,
+    user_id: Annotated[
+        int | None,
+        Query(description="Filter by reporting user's ID"),
+    ] = None,
     page: Annotated[int, Query(ge=1, description="Page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
     db: AsyncSession = Depends(get_db),
@@ -885,6 +914,8 @@ async def list_reports(
             base_query = base_query.where(ImageReports.status == status_filter)  # type: ignore[arg-type]
         if category is not None:
             base_query = base_query.where(ImageReports.category == category)  # type: ignore[arg-type]
+        if user_id is not None:
+            base_query = base_query.where(ImageReports.user_id == user_id)  # type: ignore[arg-type]
 
         # Count total rows
         count_query = select(func.count()).select_from(base_query.subquery())
@@ -892,29 +923,23 @@ async def list_reports(
         image_total = total_result.scalar() or 0
         total += image_total
 
-        # Now select ImageReports rows plus the reporting user's username
-        ReviewedByUser = aliased(Users)
-        query = select(  # type: ignore[call-overload]
-            ImageReports,
-            Users.username,
-            ReviewedByUser.username.label("reviewed_by_username"),  # type: ignore[attr-defined]
-        )
-        query = query.join(Users, Users.user_id == ImageReports.user_id)
-        query = query.outerjoin(ReviewedByUser, ReviewedByUser.user_id == ImageReports.reviewed_by)
-        if status_filter is not None:
-            query = query.where(ImageReports.status == status_filter)
-        if category is not None:
-            query = query.where(ImageReports.category == category)
-
-        # Apply pagination and ordering (newest first)
-        query = query.order_by(desc(ImageReports.created_at))  # type: ignore[arg-type]
+        # Select ImageReports with pagination
+        query = base_query.order_by(desc(ImageReports.created_at))  # type: ignore[arg-type]
         query = query.offset(offset).limit(per_page)
 
         result = await db.execute(query)
-        rows = result.all()
+        reports = result.scalars().all()
 
         # Collect report IDs to fetch tag suggestions
-        report_ids = [report.report_id for report, _, _ in rows]
+        report_ids = [report.report_id for report in reports]
+
+        # Batch-fetch user summaries for reporters and reviewers
+        report_user_ids: set[int] = set()
+        for report in reports:
+            report_user_ids.add(report.user_id)
+            if report.reviewed_by:
+                report_user_ids.add(report.reviewed_by)
+        user_summaries = await _build_user_summaries(db, report_user_ids)
 
         # Fetch tag suggestions for all reports in one query
         suggestions_by_report: dict[int, list[TagSuggestion]] = {}
@@ -938,10 +963,21 @@ async def list_reports(
                     )
                 )
 
-        for report, username, reviewed_by_username in rows:
-            response = ReportResponse.model_validate(report)
-            response.username = username
-            response.reviewed_by_username = reviewed_by_username
+        for report in reports:
+            response = ReportResponse(
+                report_id=report.report_id,  # type: ignore[arg-type]
+                image_id=report.image_id,
+                user=user_summaries.get(report.user_id),
+                category=report.category,
+                reason_text=report.reason_text,
+                status=report.status,
+                created_at=report.created_at,  # type: ignore[arg-type]
+                reviewed_by_user=user_summaries.get(report.reviewed_by)
+                if report.reviewed_by
+                else None,
+                reviewed_at=report.reviewed_at,
+                admin_notes=report.admin_notes,
+            )
             if report.report_id in suggestions_by_report:
                 response.suggested_tags = suggestions_by_report[report.report_id]
             image_reports.append(response)
@@ -954,6 +990,8 @@ async def list_reports(
             base_query = base_query.where(CommentReports.status == status_filter)  # type: ignore[arg-type]
         if category is not None:
             base_query = base_query.where(CommentReports.category == category)  # type: ignore[arg-type]
+        if user_id is not None:
+            base_query = base_query.where(CommentReports.user_id == user_id)  # type: ignore[arg-type]
 
         # Count total rows
         count_query = select(func.count()).select_from(base_query.subquery())
@@ -961,23 +999,20 @@ async def list_reports(
         comment_total = total_result.scalar() or 0
         total += comment_total
 
-        # Select comment reports with reporter username, comment author, and comment text
-        query = (
-            select(  # type: ignore[call-overload]
-                CommentReports,
-                Users.username.label("reporter_username"),  # type: ignore[attr-defined]
-                Comments.post_text,
-                Comments.user_id.label("comment_user_id"),  # type: ignore[attr-defined]
-                Comments.image_id,
-                Comments.deleted.label("comment_deleted"),  # type: ignore[attr-defined]
-            )
-            .join(Users, Users.user_id == CommentReports.user_id)
-            .outerjoin(Comments, Comments.post_id == CommentReports.comment_id)
-        )
+        # Select comment reports with comment details
+        query = select(  # type: ignore[call-overload]
+            CommentReports,
+            Comments.post_text,
+            Comments.user_id.label("comment_user_id"),  # type: ignore[attr-defined]
+            Comments.image_id,
+            Comments.deleted.label("comment_deleted"),  # type: ignore[attr-defined]
+        ).outerjoin(Comments, Comments.post_id == CommentReports.comment_id)
         if status_filter is not None:
             query = query.where(CommentReports.status == status_filter)
         if category is not None:
             query = query.where(CommentReports.category == category)
+        if user_id is not None:
+            query = query.where(CommentReports.user_id == user_id)
 
         query = query.order_by(desc(CommentReports.created_at))  # type: ignore[arg-type]
         query = query.offset(offset).limit(per_page)
@@ -985,58 +1020,39 @@ async def list_reports(
         result = await db.execute(query)
         comment_rows = result.all()
 
-        # Collect user IDs to batch-fetch usernames (comment authors + reviewers)
-        comment_author_ids = {
-            row.comment_user_id for row in comment_rows if row.comment_user_id is not None
-        }
-        reviewer_ids = {
-            row[0].reviewed_by for row in comment_rows if row[0].reviewed_by is not None
-        }
-        all_user_ids = comment_author_ids | reviewer_ids
-        user_usernames: dict[int, str] = {}
-        if all_user_ids:
-            user_result = await db.execute(
-                select(Users.user_id, Users.username).where(  # type: ignore[call-overload]
-                    Users.user_id.in_(all_user_ids)  # type: ignore[union-attr]
-                )
-            )
-            user_usernames = {row.user_id: row.username for row in user_result.all()}
+        # Batch-fetch user summaries for reporters, reviewers, and comment authors
+        cr_user_ids: set[int] = set()
+        for row in comment_rows:
+            cr_user_ids.add(row[0].user_id)
+            if row[0].reviewed_by:
+                cr_user_ids.add(row[0].reviewed_by)
+            if row.comment_user_id:
+                cr_user_ids.add(row.comment_user_id)
+        cr_summaries = await _build_user_summaries(db, cr_user_ids)
 
         for row in comment_rows:
             report = row[0]  # CommentReports object
-            reporter_username = row.reporter_username
             post_text = row.post_text
             comment_user_id = row.comment_user_id
-            image_id = row.image_id
-            # If comment is hard-deleted (NULL from outer join), it's "deleted"
+            comment_image_id = row.image_id
             comment_deleted = bool(row.comment_deleted) if row.comment_deleted is not None else True
-
-            comment_author = None
-            if comment_user_id:
-                comment_author = UserSummary(
-                    user_id=comment_user_id,
-                    username=user_usernames.get(comment_user_id, "Unknown"),
-                )
-            comment_preview = post_text[:100] if post_text else None
 
             item = CommentReportListItem(
                 report_id=report.report_id,
                 comment_id=report.comment_id,
-                image_id=image_id,
-                user_id=report.user_id,
-                username=reporter_username,
+                image_id=comment_image_id,
+                user=cr_summaries.get(report.user_id),
                 category=report.category,
                 reason_text=report.reason_text,
                 status=report.status,
                 created_at=report.created_at,
-                reviewed_by=report.reviewed_by,
-                reviewed_by_username=user_usernames.get(report.reviewed_by)
+                reviewed_by_user=cr_summaries.get(report.reviewed_by)
                 if report.reviewed_by
                 else None,
                 reviewed_at=report.reviewed_at,
                 admin_notes=report.admin_notes,
-                comment_author=comment_author,
-                comment_preview=comment_preview,
+                comment_author=cr_summaries.get(comment_user_id) if comment_user_id else None,
+                comment_preview=post_text[:100] if post_text else None,
                 comment_deleted=comment_deleted,
             )
             comment_reports.append(item)
@@ -1050,7 +1066,159 @@ async def list_reports(
     )
 
 
+@router.get("/reports/{report_id}", response_model=ReportResponse)
+async def get_report(
+    report_id: Annotated[int, Path(description="Report ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+) -> ReportResponse:
+    """
+    Get a single image report by ID.
+
+    Requires REPORT_VIEW permission OR TAG_SUGGESTION_APPLY permission.
+    Users with only TAG_SUGGESTION_APPLY can only view TAG_SUGGESTIONS reports.
+    """
+    from app.core.permissions import has_permission
+
+    has_report_view = await has_permission(
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.REPORT_VIEW,
+        redis_client,
+    )
+    has_tag_suggestion_apply = await has_permission(
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.TAG_SUGGESTION_APPLY,
+        redis_client,
+    )
+
+    if not has_report_view and not has_tag_suggestion_apply:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Fetch the report
+    result = await db.execute(
+        select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
+    )
+    report = result.scalar_one_or_none()
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    # Taggers can only view TAG_SUGGESTIONS reports
+    tagger_only = has_tag_suggestion_apply and not has_report_view
+    if tagger_only and report.category != ReportCategory.TAG_SUGGESTIONS:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only view TAG_SUGGESTIONS reports",
+        )
+
+    # Build user summaries
+    report_user_ids = {report.user_id}
+    if report.reviewed_by:
+        report_user_ids.add(report.reviewed_by)
+    summaries = await _build_user_summaries(db, report_user_ids)
+
+    response = ReportResponse(
+        report_id=report.report_id,  # type: ignore[arg-type]
+        image_id=report.image_id,
+        user=summaries.get(report.user_id),
+        category=report.category,
+        reason_text=report.reason_text,
+        status=report.status,
+        created_at=report.created_at,  # type: ignore[arg-type]
+        reviewed_by_user=summaries.get(report.reviewed_by) if report.reviewed_by else None,
+        reviewed_at=report.reviewed_at,
+        admin_notes=report.admin_notes,
+    )
+
+    # Fetch tag suggestions if any
+    suggestions_result = await db.execute(
+        select(ImageReportTagSuggestions, Tags)
+        .join(Tags, Tags.tag_id == ImageReportTagSuggestions.tag_id)  # type: ignore[arg-type]
+        .where(ImageReportTagSuggestions.report_id == report_id)  # type: ignore[arg-type]
+    )
+    suggestions = suggestions_result.all()
+    if suggestions:
+        response.suggested_tags = [
+            TagSuggestion(
+                suggestion_id=suggestion.suggestion_id or 0,
+                tag_id=suggestion.tag_id,
+                tag_name=tag.title or "",
+                tag_type=tag.type,
+                suggestion_type=suggestion.suggestion_type,
+                accepted=suggestion.accepted,
+            )
+            for suggestion, tag in suggestions
+        ]
+
+    return response
+
+
 # ===== Comment Report Triage =====
+
+
+@router.get("/reports/comments/{report_id}", response_model=CommentReportListItem)
+async def get_comment_report(
+    report_id: Annotated[int, Path(description="Comment Report ID")],
+    _: Annotated[None, Depends(require_permission(Permission.REPORT_VIEW))],
+    db: AsyncSession = Depends(get_db),
+) -> CommentReportListItem:
+    """
+    Get a single comment report by ID.
+
+    Requires REPORT_VIEW permission.
+    """
+    # Fetch the report with comment details
+    query = (
+        select(  # type: ignore[call-overload]
+            CommentReports,
+            Comments.post_text,
+            Comments.user_id.label("comment_user_id"),  # type: ignore[attr-defined]
+            Comments.image_id,
+            Comments.deleted.label("comment_deleted"),  # type: ignore[attr-defined]
+        )
+        .outerjoin(Comments, Comments.post_id == CommentReports.comment_id)
+        .where(CommentReports.report_id == report_id)
+    )
+
+    result = await db.execute(query)
+    row = result.one_or_none()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Comment report not found")
+
+    report = row[0]
+    post_text = row.post_text
+    comment_user_id = row.comment_user_id
+    comment_image_id = row.image_id
+    comment_deleted = bool(row.comment_deleted) if row.comment_deleted is not None else True
+
+    # Batch-fetch user summaries
+    cr_user_ids = {report.user_id}
+    if report.reviewed_by:
+        cr_user_ids.add(report.reviewed_by)
+    if comment_user_id:
+        cr_user_ids.add(comment_user_id)
+    summaries = await _build_user_summaries(db, cr_user_ids)
+
+    return CommentReportListItem(
+        report_id=report.report_id,
+        comment_id=report.comment_id,
+        image_id=comment_image_id,
+        user=summaries.get(report.user_id),
+        category=report.category,
+        reason_text=report.reason_text,
+        status=report.status,
+        created_at=report.created_at,
+        reviewed_by_user=summaries.get(report.reviewed_by) if report.reviewed_by else None,
+        reviewed_at=report.reviewed_at,
+        admin_notes=report.admin_notes,
+        comment_author=summaries.get(comment_user_id) if comment_user_id else None,
+        comment_preview=post_text[:100] if post_text else None,
+        comment_deleted=comment_deleted,
+    )
 
 
 @router.post("/reports/comments/{report_id}/dismiss", response_model=MessageResponse)
@@ -1606,7 +1774,10 @@ async def escalate_report(
     await db.commit()
     await db.refresh(review)
 
-    return ReviewResponse.model_validate(review)
+    summaries = await _build_user_summaries(db, {current_user.id})
+    response = ReviewResponse.model_validate(review)
+    response.initiated_by_user = summaries.get(current_user.id)
+    return response
 
 
 # ===== Reviews (Voting Process) =====
@@ -1627,19 +1798,11 @@ async def list_reviews(
 
     Requires REVIEW_VIEW permission.
     """
-    ClosedByUser = aliased(Users)
-    query = (
-        select(  # type: ignore[call-overload]
-            ImageReviews,
-            Users.username,
-            ImageReports.category,
-            ImageReports.reason_text,
-            ClosedByUser.username.label("closed_by_username"),  # type: ignore[attr-defined]
-        )
-        .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
-        .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
-        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)
-    )
+    query = select(  # type: ignore[call-overload]
+        ImageReviews,
+        ImageReports.category,
+        ImageReports.reason_text,
+    ).outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
 
     if status_filter is not None:
         query = query.where(ImageReviews.status == status_filter)
@@ -1656,9 +1819,18 @@ async def list_reviews(
     result = await db.execute(query)
     rows = result.all()
 
+    # Batch-fetch user summaries for initiators and closers
+    review_user_ids: set[int] = set()
+    for review, _, _ in rows:
+        if review.initiated_by:
+            review_user_ids.add(review.initiated_by)
+        if review.closed_by:
+            review_user_ids.add(review.closed_by)
+    review_summaries = await _build_user_summaries(db, review_user_ids)
+
     # Build responses with vote counts
     items = []
-    for review, initiated_by_username, report_category, report_reason, closed_by_username in rows:
+    for review, report_category, report_reason in rows:
         # Get vote counts
         vote_result = await db.execute(
             select(
@@ -1672,8 +1844,12 @@ async def list_reviews(
         remove_votes = vote_count - keep_votes
 
         response = ReviewResponse.model_validate(review)
-        response.initiated_by_username = initiated_by_username
-        response.closed_by_username = closed_by_username
+        response.initiated_by_user = (
+            review_summaries.get(review.initiated_by) if review.initiated_by else None
+        )
+        response.closed_by_user = (
+            review_summaries.get(review.closed_by) if review.closed_by else None
+        )
         response.source_report_category = report_category
         if report_category is not None:
             response.source_report_category_label = ReportCategory.LABELS.get(
@@ -1704,18 +1880,13 @@ async def get_review(
 
     Requires REVIEW_VIEW permission.
     """
-    ClosedByUser = aliased(Users)
     result = await db.execute(
         select(  # type: ignore[call-overload]
             ImageReviews,
-            Users.username,
             ImageReports.category,
             ImageReports.reason_text,
-            ClosedByUser.username.label("closed_by_username"),  # type: ignore[attr-defined]
         )
-        .outerjoin(Users, ImageReviews.initiated_by == Users.user_id)
         .outerjoin(ImageReports, ImageReviews.source_report_id == ImageReports.report_id)
-        .outerjoin(ClosedByUser, ImageReviews.closed_by == ClosedByUser.user_id)
         .where(ImageReviews.review_id == review_id)
     )
     row = result.one_or_none()
@@ -1723,24 +1894,33 @@ async def get_review(
     if not row:
         raise HTTPException(status_code=404, detail="Review not found")
 
-    review, initiated_by_username, report_category, report_reason, closed_by_username = row
+    review, report_category, report_reason = row
 
-    # Get votes with usernames
-    VoteUser = aliased(Users)
+    # Get votes
     votes_result = await db.execute(
-        select(ReviewVotes, VoteUser.username)  # type: ignore[call-overload]
-        .outerjoin(VoteUser, ReviewVotes.user_id == VoteUser.user_id)
-        .where(ReviewVotes.review_id == review_id)
-        .order_by(ReviewVotes.created_at)
+        select(ReviewVotes)
+        .where(ReviewVotes.review_id == review_id)  # type: ignore[arg-type]
+        .order_by(ReviewVotes.created_at)  # type: ignore[arg-type]
     )
-    votes_rows = votes_result.all()
+    vote_rows = votes_result.scalars().all()
+
+    # Batch-fetch user summaries for initiator, closer, and voters
+    review_user_ids: set[int] = set()
+    if review.initiated_by:
+        review_user_ids.add(review.initiated_by)
+    if review.closed_by:
+        review_user_ids.add(review.closed_by)
+    for v in vote_rows:
+        if v.user_id:
+            review_user_ids.add(v.user_id)
+    review_summaries = await _build_user_summaries(db, review_user_ids)
 
     votes = []
     keep_votes = 0
     remove_votes = 0
-    for vote, username in votes_rows:
+    for vote in vote_rows:
         vote_response = VoteResponse.model_validate(vote)
-        vote_response.username = username
+        vote_response.user = review_summaries.get(vote.user_id) if vote.user_id else None
         votes.append(vote_response)
         if vote.vote == 1:
             keep_votes += 1
@@ -1748,8 +1928,10 @@ async def get_review(
             remove_votes += 1
 
     response = ReviewDetailResponse.model_validate(review)
-    response.initiated_by_username = initiated_by_username
-    response.closed_by_username = closed_by_username
+    response.initiated_by_user = (
+        review_summaries.get(review.initiated_by) if review.initiated_by else None
+    )
+    response.closed_by_user = review_summaries.get(review.closed_by) if review.closed_by else None
     response.source_report_category = report_category
     if report_category is not None:
         response.source_report_category_label = ReportCategory.LABELS.get(
@@ -1840,7 +2022,10 @@ async def create_review(
     await db.commit()
     await db.refresh(review)
 
-    return ReviewResponse.model_validate(review)
+    summaries = await _build_user_summaries(db, {current_user.id})
+    response = ReviewResponse.model_validate(review)
+    response.initiated_by_user = summaries.get(current_user.id)
+    return response
 
 
 @router.post("/reviews/{review_id}/vote", response_model=VoteResponse)
@@ -1905,11 +2090,17 @@ async def vote_on_review(
     )
     db.add(action)
 
+    await db.flush()
+
+    # Check if vote margin triggers early close
+    await check_early_close(db, review)
+
     await db.commit()
     await db.refresh(vote)
 
+    summaries = await _build_user_summaries(db, {current_user.id})
     response = VoteResponse.model_validate(vote)
-    response.username = current_user.username
+    response.user = summaries.get(current_user.id)
     return response
 
 
@@ -1993,8 +2184,16 @@ async def close_review(
     await db.commit()
     await db.refresh(review)
 
+    close_user_ids: set[int] = {current_user.id}
+    if review.initiated_by:
+        close_user_ids.add(review.initiated_by)
+    close_summaries = await _build_user_summaries(db, close_user_ids)
+
     response = ReviewResponse.model_validate(review)
-    response.closed_by_username = current_user.username
+    response.initiated_by_user = (
+        close_summaries.get(review.initiated_by) if review.initiated_by else None
+    )
+    response.closed_by_user = close_summaries.get(current_user.id)
     response.vote_count = vote_count
     response.keep_votes = keep_votes
     response.remove_votes = remove_votes
@@ -2053,7 +2252,16 @@ async def extend_review(
     await db.commit()
     await db.refresh(review)
 
-    return ReviewResponse.model_validate(review)
+    extend_user_ids: set[int] = set()
+    if review.initiated_by:
+        extend_user_ids.add(review.initiated_by)
+    extend_summaries = await _build_user_summaries(db, extend_user_ids)
+
+    response = ReviewResponse.model_validate(review)
+    response.initiated_by_user = (
+        extend_summaries.get(review.initiated_by) if review.initiated_by else None
+    )
+    return response
 
 
 # ===== User Suspensions =====

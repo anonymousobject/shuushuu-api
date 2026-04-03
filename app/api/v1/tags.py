@@ -2,8 +2,10 @@
 Tags API endpoints
 """
 
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import asc, case, delete, desc, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -16,8 +18,11 @@ from app.core.auth import get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
+from app.core.redis import get_redis
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
+from app.models.image_report import ImageReports
+from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.permissions import UserGroups
 from app.models.tag_audit_log import TagAuditLog
 from app.models.tag_history import TagHistory
@@ -30,6 +35,7 @@ from app.schemas.audit import (
 from app.schemas.common import UserSummary
 from app.schemas.image import ImageListResponse, ImageResponse
 from app.schemas.tag import (
+    BatchTagAction,
     BatchTagRequest,
     BatchTagResponse,
     CharacterSourceLinkCreate,
@@ -39,12 +45,16 @@ from app.schemas.tag import (
     TagCreate,
     TagExternalLinkCreate,
     TagExternalLinkResponse,
+    TagExternalLinkUpdate,
     TagListResponse,
     TagResponse,
     TagWithStats,
 )
+from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
+
+SUGGESTION_STATS_MIN_THRESHOLD = 5
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -228,6 +238,7 @@ async def validate_tag_relationships(
     db: AsyncSession,
     *,
     tag_id: int | None,
+    tag_type: int | None = None,
     inheritedfrom_id: int | None,
     alias_of: int | None,
 ) -> None:
@@ -273,10 +284,37 @@ async def validate_tag_relationships(
                 detail="A tag cannot be an alias of itself",
             )
         alias_result = await db.execute(select(Tags).where(Tags.tag_id == alias_of))  # type: ignore[arg-type]
-        if not alias_result.scalar_one_or_none():
+        alias_tag = alias_result.scalar_one_or_none()
+        if not alias_tag:
             raise HTTPException(
                 status_code=400,
                 detail=f"Alias tag with id {alias_of} does not exist",
+            )
+        if alias_tag.alias_of is not None:
+            # Resolve to the canonical tag for a helpful error message
+            canonical_result = await db.execute(
+                select(Tags).where(Tags.tag_id == alias_tag.alias_of)  # type: ignore[arg-type]
+            )
+            canonical_tag = canonical_result.scalar_one_or_none()
+            canonical_name = canonical_tag.title if canonical_tag else "unknown"
+            canonical_id_val = alias_tag.alias_of
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot alias to a tag that is itself an alias. "
+                    f"Tag '{alias_tag.title}' (id: {alias_of}) is an alias of "
+                    f"'{canonical_name}' (id: {canonical_id_val}). "
+                    f"Use the canonical tag as alias target instead."
+                ),
+            )
+        if tag_type is not None and alias_tag.type != tag_type:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot alias to a tag of a different type. "
+                    f"Tag type is {tag_type}, but target '{alias_tag.title}' "
+                    f"(id: {alias_of}) has type {alias_tag.type}."
+                ),
             )
 
     if alias_of is not None and tag_id is not None:
@@ -295,6 +333,110 @@ async def validate_tag_relationships(
                     f"Reassign or remove child tags first."
                 ),
             )
+
+
+@router.get("/suggestion-stats", response_model=TagSuggestionStatsResponse)
+async def get_tag_suggestion_stats(
+    pagination: Annotated[PaginationParams, Depends()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    sort: Annotated[str, Query(description="Sort field")] = "acceptance_rate",
+    order: Annotated[str, Query(description="Sort order")] = "desc",
+) -> TagSuggestionStatsResponse:
+    """
+    Get tag suggestion statistics per user.
+
+    Returns a leaderboard of users who have submitted tag suggestions,
+    with acceptance rates and volume metrics. Only includes users with
+    at least 5 suggestions.
+    """
+    # Aliases for readability (type: ignore needed for SQLModel column access)
+    S = ImageReportTagSuggestions  # noqa: N806
+    R = ImageReports  # noqa: N806
+
+    # Count suggestions by status per user
+    total_col = func.count(S.suggestion_id).label("total_suggestions")  # type: ignore[arg-type]
+    accepted_col = func.sum(
+        case((S.accepted.is_(True), 1), else_=0)  # type: ignore[union-attr]
+    ).label("accepted_count")
+    rejected_col = func.sum(
+        case((S.accepted.is_(False), 1), else_=0)  # type: ignore[union-attr]
+    ).label("rejected_count")
+    pending_col = func.sum(
+        case((S.accepted.is_(None), 1), else_=0)  # type: ignore[union-attr]
+    ).label("pending_count")
+    add_col = func.sum(
+        case((S.suggestion_type == 1, 1), else_=0)  # type: ignore[arg-type]
+    ).label("add_count")
+    remove_col = func.sum(
+        case((S.suggestion_type == 2, 1), else_=0)  # type: ignore[arg-type]
+    ).label("remove_count")
+    # Acceptance rate: accepted / (accepted + rejected), null if no decided suggestions
+    decided_col = accepted_col + rejected_col
+    acceptance_rate_col = case(
+        (decided_col > 0, func.round(accepted_col * 100.0 / decided_col, 1)),
+        else_=None,
+    ).label("acceptance_rate")
+
+    query = (
+        select(  # type: ignore[call-overload]
+            R.user_id,
+            Users.username,
+            total_col,
+            accepted_col,
+            rejected_col,
+            pending_col,
+            acceptance_rate_col,
+            add_col,
+            remove_col,
+        )
+        .select_from(S)
+        .join(R, S.report_id == R.report_id)
+        .join(Users, R.user_id == Users.user_id)
+        .group_by(R.user_id, Users.username)
+        .having(total_col >= SUGGESTION_STATS_MIN_THRESHOLD)
+    )
+
+    # Sorting
+    sort_columns = {
+        "acceptance_rate": acceptance_rate_col,
+        "total_suggestions": total_col,
+        "accepted_count": accepted_col,
+    }
+    sort_col = sort_columns.get(sort, acceptance_rate_col)
+    if order == "asc":
+        query = query.order_by(asc(sort_col))
+    else:
+        query = query.order_by(desc(sort_col))
+
+    # Pagination
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+    query = query.offset(pagination.offset).limit(pagination.per_page)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = [
+        TagSuggestionUserStats(
+            user_id=row.user_id,
+            username=row.username,
+            total_suggestions=row.total_suggestions,
+            accepted_count=row.accepted_count,
+            rejected_count=row.rejected_count,
+            pending_count=row.pending_count,
+            acceptance_rate=row.acceptance_rate,
+            add_count=row.add_count,
+            remove_count=row.remove_count,
+        )
+        for row in rows
+    ]
+
+    return TagSuggestionStatsResponse(
+        items=items,
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+    )
 
 
 @router.get("/", response_model=TagListResponse, include_in_schema=False)
@@ -610,7 +752,12 @@ async def get_images_by_tag(
     query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            )
         )
         .join(
             image_id_subquery,
@@ -779,6 +926,7 @@ async def get_tag(
             user_id=user.user_id or 0,
             username=user.username,
             avatar=user.avatar or None,
+            user_title=user.user_title,
             groups=user.groups,  # Uses the eager-loaded groups property
         )
 
@@ -945,6 +1093,7 @@ async def get_tag_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
@@ -1060,6 +1209,7 @@ async def get_tag_usage_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
@@ -1105,6 +1255,7 @@ async def create_tag(
     await validate_tag_relationships(
         db,
         tag_id=None,
+        tag_type=tag_data.type,
         inheritedfrom_id=tag_data.inheritedfrom_id,
         alias_of=tag_data.alias_of,
     )
@@ -1173,6 +1324,7 @@ async def update_tag(
     await validate_tag_relationships(
         db,
         tag_id=tag_id,
+        tag_type=new_type,
         inheritedfrom_id=inheritedfrom_id,
         alias_of=alias_id,
     )
@@ -1346,6 +1498,51 @@ async def update_tag(
             .values(tag_id=canonical_id)
         )
 
+        # Migrate character-source links (guarded by tag type)
+        if tag.type == TagType.SOURCE:
+            existing_cs_source = await db.execute(
+                select(CharacterSourceLinks.character_tag_id).where(  # type: ignore[call-overload]
+                    CharacterSourceLinks.source_tag_id == canonical_id
+                )
+            )
+            existing_cs_source_char_ids = {row[0] for row in existing_cs_source}
+
+            if existing_cs_source_char_ids:
+                await db.execute(
+                    delete(CharacterSourceLinks).where(
+                        CharacterSourceLinks.source_tag_id == tag_id,  # type: ignore[arg-type]
+                        CharacterSourceLinks.character_tag_id.in_(existing_cs_source_char_ids),  # type: ignore[attr-defined]
+                    )
+                )
+
+            await db.execute(
+                update(CharacterSourceLinks)
+                .where(CharacterSourceLinks.source_tag_id == tag_id)  # type: ignore[arg-type]
+                .values(source_tag_id=canonical_id)
+            )
+
+        elif tag.type == TagType.CHARACTER:
+            existing_cs_char = await db.execute(
+                select(CharacterSourceLinks.source_tag_id).where(  # type: ignore[call-overload]
+                    CharacterSourceLinks.character_tag_id == canonical_id
+                )
+            )
+            existing_cs_char_source_ids = {row[0] for row in existing_cs_char}
+
+            if existing_cs_char_source_ids:
+                await db.execute(
+                    delete(CharacterSourceLinks).where(
+                        CharacterSourceLinks.character_tag_id == tag_id,  # type: ignore[arg-type]
+                        CharacterSourceLinks.source_tag_id.in_(existing_cs_char_source_ids),  # type: ignore[attr-defined]
+                    )
+                )
+
+            await db.execute(
+                update(CharacterSourceLinks)
+                .where(CharacterSourceLinks.character_tag_id == tag_id)  # type: ignore[arg-type]
+                .values(character_tag_id=canonical_id)
+            )
+
     db.add(tag)
     await db.commit()
     await db.refresh(tag)
@@ -1441,30 +1638,90 @@ async def delete_tag_link(
     await db.commit()
 
 
+@router.patch("/{tag_id}/links/{link_id}", response_model=TagExternalLinkResponse)
+async def update_tag_link(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    link_id: Annotated[int, Path(description="Link ID")],
+    link_update: TagExternalLinkUpdate,
+    _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
+    db: AsyncSession = Depends(get_db),
+) -> TagExternalLinkResponse:
+    """
+    Update an external link on a tag (mark dead, add archive URL).
+
+    Requires TAG_UPDATE permission.
+    Returns 404 if link doesn't exist or doesn't belong to the specified tag.
+    """
+    link_result = await db.execute(
+        select(TagExternalLinks)
+        .where(TagExternalLinks.link_id == link_id)  # type: ignore[arg-type]
+        .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+    )
+    link = link_result.scalar_one_or_none()
+
+    if not link:
+        raise HTTPException(
+            status_code=404,
+            detail="Link not found or does not belong to this tag",
+        )
+
+    if link_update.is_dead is True and link.dead_at is None:
+        link.dead_at = datetime.now(UTC)
+    elif link_update.is_dead is False:
+        link.dead_at = None
+
+    if "archive_url" in link_update.model_fields_set:
+        link.archive_url = link_update.archive_url
+
+    await db.commit()
+    await db.refresh(link)
+    return TagExternalLinkResponse.model_validate(link)
+
+
 @router.post("/batch", response_model=BatchTagResponse)
 async def batch_tag_operation(
     request: BatchTagRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
-    _: Annotated[None, Depends(require_permission(Permission.IMAGE_TAG_ADD))],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> BatchTagResponse:
     """
-    Batch add tags to multiple images.
+    Batch add or remove tags on multiple images.
 
-    Applies the specified tags to the specified images. Skips invalid
-    pairs (missing image, missing tag, already tagged) and reports them
-    in the response.
+    Applies or removes the specified tags on the specified images. Skips
+    invalid pairs (missing image, missing tag, already/not tagged) and
+    reports them in the response.
 
-    Requires IMAGE_TAG_ADD permission.
+    Requires IMAGE_TAG_ADD for add, IMAGE_TAG_REMOVE for remove.
     """
-    from app.services.batch_tag import batch_add_tags
+    from app.core.permissions import has_permission
+    from app.services.batch_tag import batch_add_tags, batch_remove_tags
 
-    return await batch_add_tags(
-        tag_ids=request.tag_ids,
-        image_ids=request.image_ids,
-        user_id=current_user.id,
-        db=db,
-    )
+    if request.action == BatchTagAction.ADD:
+        required_perm = Permission.IMAGE_TAG_ADD
+    else:
+        required_perm = Permission.IMAGE_TAG_REMOVE
+
+    if not await has_permission(db, current_user.id, required_perm, redis_client):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Missing required permission: {required_perm.value}",
+        )
+
+    if request.action == BatchTagAction.ADD:
+        return await batch_add_tags(
+            tag_ids=request.tag_ids,
+            image_ids=request.image_ids,
+            user_id=current_user.id,
+            db=db,
+        )
+    else:
+        return await batch_remove_tags(
+            tag_ids=request.tag_ids,
+            image_ids=request.image_ids,
+            user_id=current_user.id,
+            db=db,
+        )
 
 
 # =============================================================================

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_optional_current_user
 from app.core.database import get_db
-from app.models.image import Images
+from app.models.image import Images, VariantStatus
 from app.models.user import Users
 from app.services.image_visibility import can_view_image_file
 
@@ -139,11 +139,20 @@ async def _serve_image(
     if not await can_view_image_file(image, current_user, db):
         raise HTTPException(status_code=404)
 
-    # Check if variant exists (medium/large are optional)
-    if image_type == "medium" and not image.medium:
-        raise HTTPException(status_code=404)
-    if image_type == "large" and not image.large:
-        raise HTTPException(status_code=404)
+    # Check variant state for medium/large
+    if image_type in ("medium", "large"):
+        variant_status = image.medium if image_type == "medium" else image.large
+        if variant_status == VariantStatus.NONE:
+            raise HTTPException(status_code=404)
+        if variant_status == VariantStatus.PENDING:
+            # Variant is still being generated — fall back to fullsize.
+            # Cache-Control: no-store prevents the browser from caching this response
+            # so it will retry on the next request and pick up the real variant once ready.
+            fullsize_path = f"/internal/fullsize/{image.filename}.{image.ext}"
+            return Response(
+                status_code=200,
+                headers={"X-Accel-Redirect": fullsize_path, "Cache-Control": "no-store"},
+            )
 
     # Use database extension for fullsize/medium/large, always webp for thumbnails
     if image_type == "thumbs":

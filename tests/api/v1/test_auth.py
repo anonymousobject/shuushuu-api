@@ -145,6 +145,119 @@ class TestLogin:
         assert token is not None
         assert token.revoked is False
 
+    async def test_login_with_sha1_password_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that users with SHA1+salt passwords (password_type='sha1') can log in."""
+        import hashlib
+
+        salt = "test_salt_abc123"
+        password = "TestPassword123!"
+        sha1_hash = hashlib.sha1((salt + password).encode()).hexdigest()
+
+        user = Users(
+            username="sha1user",
+            password=sha1_hash,
+            password_type="sha1",
+            salt=salt,
+            email="sha1user@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "sha1user", "password": password},
+        )
+
+        assert response.status_code == 200
+        assert "access_token" in response.json()
+
+    async def test_login_with_sha1_password_migrates_to_bcrypt(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that successful SHA1 login migrates the stored password to bcrypt."""
+        import hashlib
+
+        salt = "test_salt_def456"
+        password = "TestPassword123!"
+        sha1_hash = hashlib.sha1((salt + password).encode()).hexdigest()
+
+        user = Users(
+            username="sha1miguser",
+            password=sha1_hash,
+            password_type="sha1",
+            salt=salt,
+            email="sha1mig@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "sha1miguser", "password": password},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(user)
+        assert user.password_type == "bcrypt"
+
+    async def test_login_with_real_md5_password_prompts_reset(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that accounts with real MD5 passwords return a reset prompt, not a generic auth error."""
+        import hashlib
+
+        md5_hash = hashlib.md5("oldpassword".encode()).hexdigest()  # 32-char unsalted MD5
+
+        user = Users(
+            username="md5user",
+            password=md5_hash,
+            password_type="md5",
+            salt="",
+            email="md5user@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "md5user", "password": "oldpassword"},
+        )
+
+        assert response.status_code == 401
+        assert "reset" in response.json()["detail"].lower()
+
+    async def test_login_with_real_md5_password_increments_failed_attempts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that MD5 login attempts count toward the failed attempt lockout threshold."""
+        import hashlib
+
+        md5_hash = hashlib.md5("oldpassword".encode()).hexdigest()
+
+        user = Users(
+            username="md5lockuser",
+            password=md5_hash,
+            password_type="md5",
+            salt="",
+            email="md5lock@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        await client.post(
+            "/api/v1/auth/login",
+            json={"username": "md5lockuser", "password": "oldpassword"},
+        )
+
+        await db_session.refresh(user)
+        assert user.failed_login_attempts == 1
+
 
 @pytest.mark.api
 class TestRefresh:

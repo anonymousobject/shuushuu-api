@@ -13,8 +13,12 @@ from app.models.tag_link import TagLinks
 from app.models.user import Users
 
 
-async def _create_user_with_tag_permission(db_session: AsyncSession) -> Users:
-    """Create a user with IMAGE_TAG_ADD permission."""
+async def _create_user_with_tag_permission(
+    db_session: AsyncSession, perms: list[str] | None = None
+) -> Users:
+    """Create a user with specified tag permissions (defaults to IMAGE_TAG_ADD)."""
+    if perms is None:
+        perms = ["image_tag_add"]
     user = Users(
         username="batch_tagger",
         password="hashed_password_here",
@@ -27,18 +31,23 @@ async def _create_user_with_tag_permission(db_session: AsyncSession) -> Users:
     await db_session.commit()
     await db_session.refresh(user)
 
-    perm = Perms(title="image_tag_add", desc="Add tags to images")
-    db_session.add(perm)
-    await db_session.commit()
-    await db_session.refresh(perm)
+    perm_descs = {
+        "image_tag_add": "Add tags to images",
+        "image_tag_remove": "Remove tags from images",
+    }
+    for perm_title in perms:
+        perm = Perms(title=perm_title, desc=perm_descs.get(perm_title, perm_title))
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
 
-    user_perm = UserPerms(
-        user_id=user.user_id,
-        perm_id=perm.perm_id,
-        permvalue=1,
-    )
-    db_session.add(user_perm)
-    await db_session.commit()
+        user_perm = UserPerms(
+            user_id=user.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
 
     return user
 
@@ -149,12 +158,12 @@ class TestBatchTagValidation:
     async def test_rejects_invalid_action(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Only 'add' action is supported."""
+        """Only 'add' and 'remove' actions are supported."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
         response = await client.post(
             "/api/v1/tags/batch",
-            json={"action": "remove", "tag_ids": [1], "image_ids": [1]},
+            json={"action": "replace", "tag_ids": [1], "image_ids": [1]},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 422
@@ -359,6 +368,229 @@ class TestBatchTagAdd:
         response = await client.post(
             "/api/v1/tags/batch",
             json={"action": "add", "tag_ids": [1], "image_ids": [1]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestBatchTagRemove:
+    """Tests for batch tag removal."""
+
+    async def test_remove_tags_from_images(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Successfully remove multiple tags from multiple images."""
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
+        token = create_access_token(user.id)
+        images = await _create_test_images(db_session, user, 2)
+        tags = await _create_test_tags(db_session, 2)
+
+        # Pre-link all tags to all images
+        for img in images:
+            for tag in tags:
+                db_session.add(
+                    TagLinks(image_id=img.image_id, tag_id=tag.tag_id, user_id=user.user_id)
+                )
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "remove",
+                "tag_ids": [t.tag_id for t in tags],
+                "image_ids": [img.image_id for img in images],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["removed"]) == 4  # 2 images * 2 tags
+        assert len(data["skipped"]) == 0
+
+    async def test_skips_not_tagged(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Tags not linked to images are reported as skipped."""
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
+        token = create_access_token(user.id)
+        images = await _create_test_images(db_session, user, 1)
+        tags = await _create_test_tags(db_session, 1)
+
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "remove",
+                "tag_ids": [tags[0].tag_id],
+                "image_ids": [images[0].image_id],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["removed"]) == 0
+        assert len(data["skipped"]) == 1
+        assert data["skipped"][0]["reason"] == "not_tagged"
+
+    async def test_skips_nonexistent_images(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Missing image IDs are reported as skipped."""
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
+        token = create_access_token(user.id)
+        tags = await _create_test_tags(db_session, 1)
+
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "remove",
+                "tag_ids": [tags[0].tag_id],
+                "image_ids": [999999],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["removed"]) == 0
+        assert len(data["skipped"]) == 1
+        assert data["skipped"][0]["reason"] == "image_not_found"
+
+    async def test_skips_nonexistent_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Missing tag IDs are reported as skipped."""
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
+        token = create_access_token(user.id)
+        images = await _create_test_images(db_session, user, 1)
+
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "remove",
+                "tag_ids": [999999],
+                "image_ids": [images[0].image_id],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["removed"]) == 0
+        assert len(data["skipped"]) == 1
+        assert data["skipped"][0]["reason"] == "tag_not_found"
+
+    async def test_creates_removal_history(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Each removed tag link creates a tag history entry with action 'r'."""
+        from sqlalchemy import func, select
+
+        from app.models.tag_history import TagHistory
+
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
+        token = create_access_token(user.id)
+        images = await _create_test_images(db_session, user, 1)
+        tags = await _create_test_tags(db_session, 1)
+
+        # Pre-link
+        db_session.add(
+            TagLinks(image_id=images[0].image_id, tag_id=tags[0].tag_id, user_id=user.user_id)
+        )
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "remove",
+                "tag_ids": [tags[0].tag_id],
+                "image_ids": [images[0].image_id],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        result = await db_session.execute(
+            select(func.count(TagHistory.tag_history_id)).where(
+                TagHistory.tag_id == tags[0].tag_id,
+                TagHistory.action == "r",
+            )
+        )
+        assert result.scalar() == 1
+
+    async def test_resolves_alias_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Alias tags resolve to their canonical tag for removal."""
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
+        token = create_access_token(user.id)
+        images = await _create_test_images(db_session, user, 1)
+
+        # Create canonical tag and alias
+        canonical = Tags(title="Canonical Remove Tag", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Alias Remove Tag", type=TagType.THEME, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        # Link canonical tag to image
+        db_session.add(
+            TagLinks(
+                image_id=images[0].image_id, tag_id=canonical.tag_id, user_id=user.user_id
+            )
+        )
+        await db_session.commit()
+
+        # Remove using alias tag ID
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "remove",
+                "tag_ids": [alias.tag_id],
+                "image_ids": [images[0].image_id],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["removed"]) == 1
+        assert data["removed"][0]["tag_id"] == canonical.tag_id
+
+        # Verify the link was actually deleted
+        from sqlalchemy import select
+
+        link_result = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == images[0].image_id,
+                TagLinks.tag_id == canonical.tag_id,
+            )
+        )
+        assert link_result.scalar_one_or_none() is None
+
+        # Verify history was written for canonical tag
+        from app.models.tag_history import TagHistory
+
+        history_result = await db_session.execute(
+            select(TagHistory).where(
+                TagHistory.image_id == images[0].image_id,
+                TagHistory.tag_id == canonical.tag_id,
+                TagHistory.action == "r",
+            )
+        )
+        assert history_result.scalar_one_or_none() is not None
+
+    async def test_requires_remove_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Users without IMAGE_TAG_REMOVE permission get 403."""
+        # User with only ADD permission, not REMOVE
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_add"])
+        token = create_access_token(user.id)
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={"action": "remove", "tag_ids": [1], "image_ids": [1]},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 403

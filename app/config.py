@@ -140,6 +140,9 @@ class Settings(BaseSettings):
     REVIEW_DEADLINE_DAYS: int = 7  # Default deadline for review voting
     REVIEW_EXTENSION_DAYS: int = 3  # Extension period when deadline expires without quorum
     REVIEW_QUORUM: int = 3  # Minimum votes required for a decision
+    REVIEW_EARLY_CLOSE_MARGIN: int = Field(
+        default=3, ge=1
+    )  # Vote margin to auto-close before deadline
 
     # Frontend URL (for email links, verification links, etc.)
     # Development: http://localhost:5173 (Vite dev server) or http://localhost:3000 (via nginx)

@@ -1,5 +1,6 @@
 """Image processing background jobs for arq worker."""
 
+import asyncio
 from pathlib import Path as FilePath
 from typing import Any
 
@@ -98,27 +99,31 @@ async def create_variant_job(
     bind_context(task=f"{variant_type}_variant_generation", image_id=image_id)
 
     try:
+        from app.models.image import VariantStatus
         from app.services.image_processing import (
             _create_variant,
             _update_image_variant_field,
         )
 
-        result = _create_variant(
+        size_threshold = settings.MEDIUM_EDGE if variant_type == "medium" else settings.LARGE_EDGE
+        result = await asyncio.to_thread(
+            _create_variant,
             source_path=FilePath(source_path),
             image_id=image_id,
             ext=ext,
             storage_path=storage_path,
             width=width,
             height=height,
-            size_threshold=settings.MEDIUM_EDGE
-            if variant_type == "medium"
-            else settings.LARGE_EDGE,
+            size_threshold=size_threshold,
             variant_type=variant_type,
         )
 
-        # None means variant was deleted (larger than original) — update DB
-        if result is None:
-            await _update_image_variant_field(image_id, variant_type, 0)
+        if result is True:
+            # Variant created successfully — mark as ready
+            await _update_image_variant_field(image_id, variant_type, VariantStatus.READY)
+        else:
+            # Variant not needed (too small) or deleted (larger than original) — mark as none
+            await _update_image_variant_field(image_id, variant_type, VariantStatus.NONE)
 
         created = result is True
         logger.info(f"{variant_type}_variant_job_completed", image_id=image_id, created=created)

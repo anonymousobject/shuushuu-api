@@ -6,7 +6,7 @@ import math
 import random
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
 from typing import Annotated
@@ -61,7 +61,7 @@ from app.models import (
     Tags,
     Users,
 )
-from app.models.image import ImageSortBy
+from app.models.image import ImageSortBy, VariantStatus
 from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import UserGroups
 from app.schemas.audit import (
@@ -129,7 +129,12 @@ async def _hydrate_similar_images(
     images_result = await db.execute(
         select(Images)
         .options(
-            selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar)  # type: ignore[arg-type]
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            )
         )
         .where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
     )
@@ -824,15 +829,32 @@ async def update_image(
     redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ImageDetailedResponse:
     """
-    Update image metadata (caption, miscmeta).
+    Update image metadata (caption, miscmeta) and/or owner status.
 
-    Can be used by:
+    Metadata can be updated by:
     - The image owner
     - Admin users
     - Users with IMAGE_EDIT_META permission
+
+    Status can be set to SPOILER (2) or REPOST (-1) by:
+    - The image owner (only when image is ACTIVE and not locked)
+
+    Repost requires replacement_id (the original image ID).
     """
+    from app.services.repost import migrate_repost_data
+
     update_fields = image_data.model_dump(exclude_unset=True)
-    if not update_fields:
+    new_status = update_fields.pop("status", None)
+    replacement_id = update_fields.pop("replacement_id", None)
+
+    # replacement_id is only valid with status=REPOST
+    if replacement_id is not None and new_status != ImageStatus.REPOST:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="replacement_id is only valid when marking as repost",
+        )
+
+    if not update_fields and new_status is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No fields to update",
@@ -856,16 +878,93 @@ async def update_image(
             db, current_user.id, Permission.IMAGE_EDIT_META, redis_client
         )
 
-    if not is_owner and not is_admin and not has_edit_permission:
+    # Metadata fields require owner, admin, or IMAGE_EDIT_META
+    if update_fields and not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to edit this image",
         )
 
+    # Status changes require ownership
+    if new_status is not None:
+        if not is_owner:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to change this image's status",
+            )
+
+        # Owners can only set SPOILER or REPOST
+        allowed_statuses = {ImageStatus.SPOILER, ImageStatus.REPOST}
+        if new_status not in allowed_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Owners can only mark images as spoiler or repost",
+            )
+
+        # Image must be ACTIVE
+        if image.status != ImageStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only active images can have their status changed",
+            )
+
+        # Image must not be locked
+        if image.locked:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Locked images cannot have their status changed",
+            )
+
+        # Handle repost validation
+        if new_status == ImageStatus.REPOST:
+            if replacement_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="replacement_id is required when marking as repost",
+                )
+            if replacement_id == image_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="An image cannot be a repost of itself",
+                )
+            original_result = await db.execute(
+                select(Images).where(Images.image_id == replacement_id)
+            )
+            if not original_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Original image not found",
+                )
+            image.replacement_id = replacement_id
+            await migrate_repost_data(image_id, replacement_id, db)
+        else:
+            # Clear replacement_id when not a repost
+            image.replacement_id = None
+
+        previous_status = image.status
+        image.status = new_status
+        image.status_user_id = current_user.id
+        image.status_updated = datetime.now(UTC)
+
+        # Log to status history
+        history = ImageStatusHistory(
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=new_status,
+            user_id=current_user.id,
+        )
+        db.add(history)
+
+    # Apply metadata updates
     for field, value in update_fields.items():
         setattr(image, field, value)
 
     await db.commit()
+
+    # Recalculate ratings for the original image after repost migration
+    if new_status == ImageStatus.REPOST and replacement_id:
+        await recalculate_image_ratings(db, replacement_id)
+        await db.commit()
 
     # Re-fetch with relationships for response
     result = await db.execute(
@@ -981,6 +1080,7 @@ async def get_image_tag_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
@@ -1065,6 +1165,7 @@ async def get_image_status_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                user_title=user.user_title,
                 groups=user.groups if user else [],
             )
 
@@ -1181,7 +1282,14 @@ async def search_by_hash(
     """
     result = await db.execute(
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))  # type: ignore[arg-type]
+        .options(
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            )
+        )
         .where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
     )
     images = result.scalars().all()
@@ -1322,7 +1430,14 @@ async def get_bookmark_image(
 
     result = await db.execute(
         select(Images)
-        .options(selectinload(Images.user).load_only(Users.user_id, Users.username, Users.avatar))  # type: ignore[arg-type]
+        .options(
+            selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                Users.user_id,  # type: ignore[arg-type]
+                Users.username,  # type: ignore[arg-type]
+                Users.avatar,  # type: ignore[arg-type]
+                Users.user_title,  # type: ignore[arg-type]
+            )
+        )
         .where(Images.image_id == current_user.bookmark)  # type: ignore[arg-type]
     )
     image = result.scalar_one_or_none()
@@ -1946,9 +2061,17 @@ async def upload_image(
                     ).model_dump(mode="json"),
                 )
 
-        # Determine if medium/large variants should be created
-        has_medium = 1 if (width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE) else 0
-        has_large = 1 if (width > settings.LARGE_EDGE or height > settings.LARGE_EDGE) else 0
+        # Determine variant generation status for medium/large
+        medium_status = (
+            VariantStatus.PENDING
+            if (width > settings.MEDIUM_EDGE or height > settings.MEDIUM_EDGE)
+            else VariantStatus.NONE
+        )
+        large_status = (
+            VariantStatus.PENDING
+            if (width > settings.LARGE_EDGE or height > settings.LARGE_EDGE)
+            else VariantStatus.NONE
+        )
 
         # Update temporary record with actual data
         temp_image.filename = filename
@@ -1958,8 +2081,8 @@ async def upload_image(
         temp_image.width = width
         temp_image.height = height
         temp_image.total_pixels = total_pixels
-        temp_image.medium = has_medium
-        temp_image.large = has_large
+        temp_image.medium = medium_status
+        temp_image.large = large_status
         temp_image.caption = caption
         temp_image.miscmeta = miscmeta
 
@@ -1999,7 +2122,7 @@ async def upload_image(
         logger.debug("thumbnail_job_enqueued", image_id=image_id)
 
         # Schedule medium variant generation if needed
-        if has_medium:
+        if medium_status:
             await enqueue_job(
                 "create_variant_job",
                 image_id=image_id,
@@ -2012,7 +2135,7 @@ async def upload_image(
             )
 
         # Schedule large variant generation if needed
-        if has_large:
+        if large_status:
             await enqueue_job(
                 "create_variant_job",
                 image_id=image_id,
@@ -2237,9 +2360,24 @@ async def report_image(
         tag_suggestions_count=len(suggestions),
     )
 
-    # Build response
+    # Build response - fetch user with groups for UserSummary
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == current_user.id)  # type: ignore[arg-type]
+    )
+    reporter = user_result.scalar_one()
+    reporter_summary = UserSummary(
+        user_id=reporter.id,
+        username=reporter.username,
+        avatar=reporter.avatar,
+        user_title=reporter.user_title,
+        groups=reporter.groups,
+    )
     response = ReportResponse.model_validate(new_report)
-    response.username = current_user.username
+    response.user = reporter_summary
 
     # Add tag suggestions to response
     if suggestions:

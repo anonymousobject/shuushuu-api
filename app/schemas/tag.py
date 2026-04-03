@@ -8,7 +8,7 @@ from enum import Enum as StdEnum
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.tag import TagBase
-from app.schemas.base import UTCDatetime
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.common import UserSummary
 
 # Tag name validation constants
@@ -193,8 +193,32 @@ class TagExternalLinkResponse(BaseModel):
     link_id: int
     url: str
     date_added: UTCDatetime
+    dead_at: UTCDatetimeOptional = None
+    archive_url: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class TagExternalLinkUpdate(BaseModel):
+    """Schema for updating a tag external link (marking dead, adding archive URL)."""
+
+    is_dead: bool | None = None
+    archive_url: str | None = None
+
+    @field_validator("archive_url")
+    @classmethod
+    def validate_archive_url(cls, v: str | None) -> str | None:
+        """Validate archive URL has http/https protocol and trim whitespace."""
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("Archive URL cannot be empty")
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("Archive URL must start with http:// or https://")
+        if len(v) > 2000:
+            raise ValueError("Archive URL exceeds maximum length of 2000 characters")
+        return v
 
 
 class CharacterSourceLinkCreate(BaseModel):
@@ -236,6 +260,7 @@ class BatchTagAction(str, StdEnum):
     """Supported batch tag actions."""
 
     ADD = "add"
+    REMOVE = "remove"
 
 
 class BatchTagRequest(BaseModel):
@@ -264,5 +289,6 @@ class BatchTagSkippedItem(BaseModel):
 class BatchTagResponse(BaseModel):
     """Response schema for batch tag operations."""
 
-    added: list[BatchTagResultItem]
-    skipped: list[BatchTagSkippedItem]
+    added: list[BatchTagResultItem] = []
+    removed: list[BatchTagResultItem] = []
+    skipped: list[BatchTagSkippedItem] = []

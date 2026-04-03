@@ -27,6 +27,23 @@ if TYPE_CHECKING:
     from app.models.user import Users
 
 
+class VariantStatus(int, Enum):
+    """
+    Status of a medium or large image variant.
+
+    NONE    (0): No variant will ever be generated (image too small, or variant
+                 was larger than the original after generation).
+    READY   (1): Variant file exists on disk and is ready to serve.
+    PENDING (2): Variant generation has been queued but not yet completed.
+                 The media endpoint falls back to fullsize with Cache-Control: no-store
+                 so the browser retries on the next request.
+    """
+
+    NONE = 0
+    READY = 1
+    PENDING = 2
+
+
 class ImageSortBy(str, Enum):
     """
     Allowed sort fields for image queries.

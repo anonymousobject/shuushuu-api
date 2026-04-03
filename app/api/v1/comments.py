@@ -29,6 +29,7 @@ from app.schemas.comment import (
     CommentUpdate,
 )
 from app.schemas.comment_report import CommentReportCreate, CommentReportResponse
+from app.schemas.common import UserSummary
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -647,11 +648,27 @@ async def report_comment(
         await db.commit()
         await db.refresh(report)
 
+    # Fetch reporter with groups for UserSummary
+    user_result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == current_user.id)  # type: ignore[arg-type]
+    )
+    reporter = user_result.scalar_one()
+
     return CommentReportResponse(
-        report_id=report.report_id or 0,
+        report_id=report.report_id,  # type: ignore[arg-type]
         comment_id=report.comment_id,
         image_id=comment.image_id,
-        user_id=report.user_id,
+        user=UserSummary(
+            user_id=reporter.id,
+            username=reporter.username,
+            avatar=reporter.avatar,
+            user_title=reporter.user_title,
+            groups=reporter.groups,
+        ),
         category=report.category,
         reason_text=report.reason_text,
         status=report.status,

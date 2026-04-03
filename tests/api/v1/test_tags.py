@@ -21,6 +21,7 @@ from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_link import TagLinks
 from app.models.user import Users
@@ -2064,6 +2065,113 @@ class TestCreateTag:
         )
         assert response.status_code == 200
 
+    async def test_create_tag_rejects_cross_type_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a tag with alias_of pointing to a different type is rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admin_cross_create",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincrosscreate@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create a source tag to be the alias target
+        source = Tags(title="Target Source", desc="source", type=TagType.SOURCE)
+        db_session.add(source)
+        await db_session.commit()
+        await db_session.refresh(source)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_cross_create", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to create a CHARACTER tag aliased to a SOURCE tag
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "Cross Type Alias",
+                "type": TagType.CHARACTER,
+                "alias_of": source.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "different type" in response.json()["detail"]
+
+    async def test_create_tag_rejects_alias_to_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test creating a tag aliased to another alias is rejected."""
+        perm = Perms(title="tag_create", desc="Create tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admin_chain_create",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminchaincreate@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        canonical = Tags(title="Canonical Tag", desc="canonical", type=TagType.CHARACTER)
+        alias = Tags(title="Alias Tag", desc="alias", type=TagType.CHARACTER, alias_of=None)
+        db_session.add_all([canonical, alias])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(alias)
+
+        # Make alias point to canonical
+        alias.alias_of = canonical.tag_id
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin_chain_create", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to create a new tag aliased to the alias (chain)
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "Chain Alias",
+                "type": TagType.CHARACTER,
+                "alias_of": alias.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "itself an alias" in response.json()["detail"]
+
 
 @pytest.mark.api
 class TestUpdateTag:
@@ -2983,6 +3091,439 @@ class TestUpdateTag:
         assert len(alias_links) == 0
 
 
+    async def test_setting_alias_migrates_character_source_links_for_source(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that character-source links are migrated when a source tag is aliased."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincslink",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincslink@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create source tags (canonical and alias) and a character tag
+        canonical_source = Tags(title="Touhou Project", desc="canonical", type=TagType.SOURCE)
+        alias_source = Tags(title="Touhou", desc="alias", type=TagType.SOURCE)
+        character = Tags(title="Hakurei Reimu", desc="character", type=TagType.CHARACTER)
+        db_session.add_all([canonical_source, alias_source, character])
+        await db_session.commit()
+        await db_session.refresh(canonical_source)
+        await db_session.refresh(alias_source)
+        await db_session.refresh(character)
+
+        # Link character to the alias source
+        link = CharacterSourceLinks(
+            character_tag_id=character.tag_id,
+            source_tag_id=alias_source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Login and set alias
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincslink", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.put(
+            f"/api/v1/tags/{alias_source.tag_id}",
+            json={"title": "Touhou", "alias_of": canonical_source.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Verify character-source link was migrated to canonical source
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.source_tag_id == canonical_source.tag_id
+            )
+        )
+        canonical_links = result.scalars().all()
+        assert len(canonical_links) == 1
+        assert canonical_links[0].character_tag_id == character.tag_id
+
+        # Verify no links remain on alias source
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.source_tag_id == alias_source.tag_id
+            )
+        )
+        alias_links = result.scalars().all()
+        assert len(alias_links) == 0
+
+    async def test_setting_alias_migrates_character_source_links_for_character(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that character-source links are migrated when a character tag is aliased."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincschar",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincschar@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create character tags (canonical and alias) and a source tag
+        canonical_char = Tags(title="Sakura Miko Canon", desc="canonical", type=TagType.CHARACTER)
+        alias_char = Tags(title="Miko Sakura Alt", desc="alias", type=TagType.CHARACTER)
+        source = Tags(title="Hololive", desc="source", type=TagType.SOURCE)
+        db_session.add_all([canonical_char, alias_char, source])
+        await db_session.commit()
+        await db_session.refresh(canonical_char)
+        await db_session.refresh(alias_char)
+        await db_session.refresh(source)
+
+        # Link alias character to source
+        link = CharacterSourceLinks(
+            character_tag_id=alias_char.tag_id,
+            source_tag_id=source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Login and set alias
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincschar", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.put(
+            f"/api/v1/tags/{alias_char.tag_id}",
+            json={"title": "Miko Sakura Alt", "alias_of": canonical_char.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Verify character-source link was migrated to canonical character
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == canonical_char.tag_id
+            )
+        )
+        canonical_links = result.scalars().all()
+        assert len(canonical_links) == 1
+        assert canonical_links[0].source_tag_id == source.tag_id
+
+        # Verify no links remain on alias character
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == alias_char.tag_id
+            )
+        )
+        alias_links = result.scalars().all()
+        assert len(alias_links) == 0
+
+    async def test_setting_alias_migrates_character_source_links_with_conflicts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that duplicate character-source links are handled during alias migration."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincsconf",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincsconf@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create tags
+        canonical_source = Tags(title="Fate Series", desc="canonical", type=TagType.SOURCE)
+        alias_source = Tags(title="Fate", desc="alias", type=TagType.SOURCE)
+        char_shared = Tags(title="Saber", desc="shared char", type=TagType.CHARACTER)
+        char_unique = Tags(title="Archer", desc="unique char", type=TagType.CHARACTER)
+        db_session.add_all([canonical_source, alias_source, char_shared, char_unique])
+        await db_session.commit()
+        for tag in [canonical_source, alias_source, char_shared, char_unique]:
+            await db_session.refresh(tag)
+
+        # Same character linked to both canonical and alias source (conflict)
+        link_canonical = CharacterSourceLinks(
+            character_tag_id=char_shared.tag_id,
+            source_tag_id=canonical_source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        link_alias_dup = CharacterSourceLinks(
+            character_tag_id=char_shared.tag_id,
+            source_tag_id=alias_source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        # Unique character only on alias
+        link_alias_unique = CharacterSourceLinks(
+            character_tag_id=char_unique.tag_id,
+            source_tag_id=alias_source.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        db_session.add_all([link_canonical, link_alias_dup, link_alias_unique])
+        await db_session.commit()
+
+        # Login and set alias
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincsconf", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.put(
+            f"/api/v1/tags/{alias_source.tag_id}",
+            json={"title": "Fate", "alias_of": canonical_source.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Canonical source should have both characters (Saber + Archer), no duplicates
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.source_tag_id == canonical_source.tag_id
+            )
+        )
+        canonical_links = result.scalars().all()
+        canonical_char_ids = {link.character_tag_id for link in canonical_links}
+        assert canonical_char_ids == {char_shared.tag_id, char_unique.tag_id}
+
+        # No links remain on alias source
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.source_tag_id == alias_source.tag_id
+            )
+        )
+        alias_links = result.scalars().all()
+        assert len(alias_links) == 0
+
+    async def test_setting_alias_migrates_character_source_links_character_with_conflicts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that duplicate character-source links are handled when a character tag is aliased."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincscharconf",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincscharconf@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create tags
+        canonical_char = Tags(title="Artoria Pendragon", desc="canonical", type=TagType.CHARACTER)
+        alias_char = Tags(title="Saber Artoria", desc="alias", type=TagType.CHARACTER)
+        source_shared = Tags(title="Fate/Stay Night", desc="shared source", type=TagType.SOURCE)
+        source_unique = Tags(title="Fate/Zero", desc="unique source", type=TagType.SOURCE)
+        db_session.add_all([canonical_char, alias_char, source_shared, source_unique])
+        await db_session.commit()
+        for tag in [canonical_char, alias_char, source_shared, source_unique]:
+            await db_session.refresh(tag)
+
+        # Same source linked to both canonical and alias character (conflict)
+        link_canonical = CharacterSourceLinks(
+            character_tag_id=canonical_char.tag_id,
+            source_tag_id=source_shared.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        link_alias_dup = CharacterSourceLinks(
+            character_tag_id=alias_char.tag_id,
+            source_tag_id=source_shared.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        # Unique source only on alias
+        link_alias_unique = CharacterSourceLinks(
+            character_tag_id=alias_char.tag_id,
+            source_tag_id=source_unique.tag_id,
+            created_by_user_id=admin.user_id,
+        )
+        db_session.add_all([link_canonical, link_alias_dup, link_alias_unique])
+        await db_session.commit()
+
+        # Login and set alias
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincscharconf", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.put(
+            f"/api/v1/tags/{alias_char.tag_id}",
+            json={"title": "Saber Artoria", "alias_of": canonical_char.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Canonical character should have both sources, no duplicates
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == canonical_char.tag_id
+            )
+        )
+        canonical_links = result.scalars().all()
+        canonical_source_ids = {link.source_tag_id for link in canonical_links}
+        assert canonical_source_ids == {source_shared.tag_id, source_unique.tag_id}
+
+        # No links remain on alias character
+        result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == alias_char.tag_id
+            )
+        )
+        alias_links = result.scalars().all()
+        assert len(alias_links) == 0
+
+    async def test_setting_alias_rejects_alias_chain(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that aliasing to a tag that is itself an alias is rejected."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminchain",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminchain@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        canonical = Tags(title="Chain Canonical", desc="canonical", type=TagType.CHARACTER)
+        middle_alias = Tags(title="Chain Middle", desc="alias", type=TagType.CHARACTER)
+        new_tag = Tags(title="Chain New", desc="new", type=TagType.CHARACTER)
+        db_session.add_all([canonical, middle_alias, new_tag])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(middle_alias)
+        await db_session.refresh(new_tag)
+
+        # Make middle_alias point to canonical
+        middle_alias.alias_of = canonical.tag_id
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminchain", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to alias new_tag to middle_alias (creating a chain)
+        response = await client.put(
+            f"/api/v1/tags/{new_tag.tag_id}",
+            json={"title": "Chain New", "alias_of": middle_alias.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "itself an alias" in response.json()["detail"]
+        assert str(canonical.tag_id) in response.json()["detail"]
+
+    async def test_setting_alias_rejects_cross_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that aliasing a tag to a different type is rejected."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincrosstype",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincrosstype@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        source_tag = Tags(title="Some Source", desc="source", type=TagType.SOURCE)
+        char_tag = Tags(title="Some Character", desc="character", type=TagType.CHARACTER)
+        db_session.add_all([source_tag, char_tag])
+        await db_session.commit()
+        await db_session.refresh(source_tag)
+        await db_session.refresh(char_tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincrosstype", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try to alias source to character — should fail
+        response = await client.put(
+            f"/api/v1/tags/{source_tag.tag_id}",
+            json={"title": "Some Source", "alias_of": char_tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "different type" in response.json()["detail"]
+
+
 @pytest.mark.api
 class TestDeleteTag:
     """Tests for DELETE /api/v1/tags/{tag_id} endpoint (admin only)."""
@@ -3677,6 +4218,589 @@ class TestGetTagWithLinks:
         data = response.json()
         assert "links" in data
         assert data["links"] == []
+
+
+@pytest.mark.api
+class TestUpdateTagExternalLink:
+    """Tests for PATCH /tags/{tag_id}/links/{link_id} endpoint."""
+
+    async def test_mark_link_as_dead(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test marking an external link as dead sets dead_at timestamp."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admindeadlink",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindeadlink@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="dead link artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/dead")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindeadlink", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] is not None
+        assert data["archive_url"] is None
+        assert data["url"] == "https://example.com/dead"
+
+    async def test_mark_link_dead_with_archive_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test marking a link dead and providing archive URL in one request."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admindeadarchive",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindeadarchive@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="archive link artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/archived")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindeadarchive", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={
+                "is_dead": True,
+                "archive_url": "https://web.archive.org/web/20090302035041/https://example.com/archived",
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] is not None
+        assert data["archive_url"] == "https://web.archive.org/web/20090302035041/https://example.com/archived"
+
+    async def test_unmark_link_as_dead(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test setting is_dead=False clears dead_at."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminunmark",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminunmark@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="unmark artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        from datetime import UTC, datetime
+
+        link = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://example.com/revived",
+            dead_at=datetime.now(UTC),
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminunmark", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"is_dead": False},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] is None
+
+    async def test_set_archive_url_only(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test setting archive_url without changing dead status."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminarchiveonly",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminarchiveonly@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="archive only artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/archive-only")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminarchiveonly", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"archive_url": "https://web.archive.org/web/2024/https://example.com/archive-only"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] is None
+        assert data["archive_url"] == "https://web.archive.org/web/2024/https://example.com/archive-only"
+
+    async def test_update_nonexistent_link(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test updating a nonexistent link returns 404."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admin404link",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admin404link@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="404 link tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin404link", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/99999",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_update_link_without_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test updating a link without TAG_UPDATE permission returns 403."""
+        user = Users(
+            username="nopermupdate",
+            password=get_password_hash("UserPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="nopermupdate@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        tag = Tags(title="no perm tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/noperm")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "nopermupdate", "password": "UserPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+
+    async def test_invalid_archive_url_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that archive URLs without http/https are rejected."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admininvalidarchive",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admininvalidarchive@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="invalid archive tag", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://example.com/invalid")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admininvalidarchive", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"archive_url": "ftp://not-http.com"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+    async def test_mark_dead_is_idempotent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that marking an already-dead link doesn't change dead_at timestamp."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminidempotent",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminidempotent@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="idempotent artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        from datetime import UTC, datetime
+
+        original_dead_at = datetime(2025, 1, 1, tzinfo=UTC)
+        link = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://example.com/idempotent",
+            dead_at=original_dead_at,
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminidempotent", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dead_at"] == "2025-01-01T00:00:00Z"
+
+    async def test_clear_archive_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that sending archive_url: null clears an existing archive URL."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="admincleararchive",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincleararchive@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="clear archive artist", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://example.com/clear-archive",
+            archive_url="https://web.archive.org/web/2025/https://example.com/clear-archive",
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincleararchive", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link.link_id}",
+            json={"archive_url": None},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["archive_url"] is None
+
+    async def test_update_link_on_wrong_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that patching a link via a different tag's URL returns 404."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminwrongtag",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminwrongtag@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag_a = Tags(title="tag a", desc="Test", type=TagType.ARTIST)
+        tag_b = Tags(title="tag b", desc="Test", type=TagType.ARTIST)
+        db_session.add_all([tag_a, tag_b])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_b)
+
+        link = TagExternalLinks(tag_id=tag_a.tag_id, url="https://example.com/wrong-tag")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminwrongtag", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag_b.tag_id}/links/{link.link_id}",
+            json={"is_dead": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 404
+
+    async def test_tag_detail_includes_dead_link_fields(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that tag detail response includes dead_at and archive_url on links."""
+        tag = Tags(title="detail dead link", desc="Test", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        from datetime import UTC, datetime
+
+        link = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://example.com/detail",
+            dead_at=datetime(2025, 6, 15, tzinfo=UTC),
+            archive_url="https://web.archive.org/web/2025/https://example.com/detail",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["links"]) == 1
+        link_data = data["links"][0]
+        assert link_data["dead_at"] == "2025-06-15T00:00:00Z"
+        assert link_data["archive_url"] == "https://web.archive.org/web/2025/https://example.com/detail"
 
 
 @pytest.mark.api

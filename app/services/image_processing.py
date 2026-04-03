@@ -73,84 +73,74 @@ def _create_variant(
     # Bind context for this ARQ task
     bind_context(task=f"{variant_type}_variant_generation", image_id=image_id)
 
-    try:
-        logger.info(f"{variant_type}_variant_generation_started", source_path=str(source_path))
+    logger.info(f"{variant_type}_variant_generation_started", source_path=str(source_path))
 
-        # Create variant directory if it doesn't exist
-        variant_dir = FilePath(storage_path) / variant_type
-        variant_dir.mkdir(parents=True, exist_ok=True)
+    # Create variant directory if it doesn't exist
+    variant_dir = FilePath(storage_path) / variant_type
+    variant_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate variant filename
-        date_prefix = datetime.now().strftime("%Y-%m-%d")
-        variant_filename = f"{date_prefix}-{image_id}.{ext}"
-        variant_path = variant_dir / variant_filename
+    # Generate variant filename
+    date_prefix = datetime.now().strftime("%Y-%m-%d")
+    variant_filename = f"{date_prefix}-{image_id}.{ext}"
+    variant_path = variant_dir / variant_filename
 
-        # Open image and create variant
-        with Image.open(source_path) as img:
-            original_size = img.size
+    # Open image and create variant
+    with Image.open(source_path) as img:
+        original_size = img.size
 
-            # Convert to sRGB for consistent web display
-            img = _convert_to_srgb(img)  # type: ignore[assignment]
+        # Convert to sRGB for consistent web display
+        img = _convert_to_srgb(img)  # type: ignore[assignment]
 
-            # Convert RGBA to RGB for JPEG compatibility
-            if img.mode in ("RGBA", "LA") and ext.lower() in ("jpg", "jpeg"):
-                background = Image.new("RGB", img.size, (255, 255, 255))
-                background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
-                img = background  # type: ignore[assignment]
+        # Convert RGBA to RGB for JPEG compatibility
+        if img.mode in ("RGBA", "LA") and ext.lower() in ("jpg", "jpeg"):
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+            img = background  # type: ignore[assignment]
 
-            # Calculate variant size maintaining aspect ratio
-            img.thumbnail(
-                (size_threshold, size_threshold),
-                Image.Resampling.LANCZOS,  # High-quality downsampling
-            )
+        # Calculate variant size maintaining aspect ratio
+        img.thumbnail(
+            (size_threshold, size_threshold),
+            Image.Resampling.LANCZOS,  # High-quality downsampling
+        )
 
-            # Save variant with quality setting
-            save_kwargs = {}
-            if ext.lower() in ("jpg", "jpeg"):
-                save_kwargs["quality"] = settings.LARGE_QUALITY
-                save_kwargs["optimize"] = True
-            elif ext.lower() == "webp":
-                save_kwargs["quality"] = settings.LARGE_QUALITY
+        # Save variant with quality setting
+        save_kwargs = {}
+        if ext.lower() in ("jpg", "jpeg"):
+            save_kwargs["quality"] = settings.LARGE_QUALITY
+            save_kwargs["optimize"] = True
+        elif ext.lower() == "webp":
+            save_kwargs["quality"] = settings.LARGE_QUALITY
 
-            img.save(variant_path, **save_kwargs)  # type: ignore[arg-type]
+        img.save(variant_path, **save_kwargs)  # type: ignore[arg-type]
 
-            # Check file sizes - delete variant if it's not smaller than original
-            original_file_size = source_path.stat().st_size
-            variant_file_size = variant_path.stat().st_size
+        # Check file sizes - delete variant if it's not smaller than original
+        original_file_size = source_path.stat().st_size
+        variant_file_size = variant_path.stat().st_size
 
-            if variant_file_size >= original_file_size:
-                # Variant is not smaller, delete it
-                variant_path.unlink()
-                logger.info(
-                    f"{variant_type}_variant_deleted_larger_than_original",
-                    variant_path=str(variant_path),
-                    original_size=original_size,
-                    variant_size=img.size,
-                    original_file_size=original_file_size,
-                    variant_file_size=variant_file_size,
-                )
-                # Signal caller to update DB (caller is async and can await)
-                return None
-
+        if variant_file_size >= original_file_size:
+            # Variant is not smaller, delete it
+            variant_path.unlink()
             logger.info(
-                f"{variant_type}_variant_generated",
+                f"{variant_type}_variant_deleted_larger_than_original",
                 variant_path=str(variant_path),
                 original_size=original_size,
                 variant_size=img.size,
                 original_file_size=original_file_size,
                 variant_file_size=variant_file_size,
             )
+            # Signal caller to update DB (caller is async and can await)
+            return None
 
-        return True
-
-    except Exception as e:
-        logger.error(
-            f"{variant_type}_variant_generation_failed",
-            error=str(e),
-            error_type=type(e).__name__,
-            source_path=str(source_path),
+        logger.info(
+            f"{variant_type}_variant_generated",
+            variant_path=str(variant_path),
+            original_size=original_size,
+            variant_size=img.size,
+            original_file_size=original_file_size,
+            variant_file_size=variant_file_size,
         )
-        return False
+
+    return True
 
 
 def calculate_md5(file_path: FilePath) -> str:
@@ -207,11 +197,12 @@ def validate_image_file(
                 detail=f"File extension {ext} not allowed. Allowed: {', '.join(sorted(allowed_extensions))}",
             )
 
-    # CRITICAL: Verify file is actually an image by attempting to open it with PIL
-    # This prevents uploading malicious files with fake extensions/content-types
+    # CRITICAL: Verify file is actually an image by fully decoding it with PIL.
+    # img.load() decodes all pixel data, catching truncated/corrupted files.
+    # img.verify() only checks headers and would miss truncated uploads.
     try:
         with Image.open(file_path) as img:
-            img.verify()  # Verify it's a valid image
+            img.load()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
