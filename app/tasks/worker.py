@@ -74,7 +74,12 @@ async def process_review_deadlines(ctx: dict[str, Any]) -> None:
                 errors=results["errors"],
             )
         except Exception as e:
-            logger.error("review_deadline_job_failed", error=str(e))
+            await db.rollback()
+            logger.exception(
+                "review_deadline_job_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -121,5 +126,5 @@ class WorkerSettings:
 
     cron_jobs = [
         cron(cleanup_stale_accounts, hour=3, minute=0),
-        cron(process_review_deadlines, minute={0}),  # Every hour on the hour
+        cron(process_review_deadlines, minute=0),  # Every hour on the hour
     ]
