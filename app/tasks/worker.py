@@ -21,6 +21,7 @@ from arq.worker import func
 
 from app.config import settings
 from app.core.database import get_async_session
+from app.services.review_jobs import check_review_deadlines
 from app.services.user_cleanup import cleanup_unverified_accounts
 from app.tasks.email_jobs import send_password_reset_email_job, send_verification_email_job
 from app.tasks.image_jobs import (
@@ -49,6 +50,36 @@ async def cleanup_stale_accounts(ctx: dict[str, Any]) -> None:
         except Exception as e:
             logger.error("cleanup_task_failed", error=str(e))
             # Don't re-raise, just log failure for cron job
+
+
+async def process_review_deadlines(ctx: dict[str, Any]) -> None:
+    """
+    Process reviews past their voting deadline.
+
+    Runs hourly via arq cron. Closes reviews with quorum or extends/defaults as needed.
+    """
+    from app.core.logging import get_logger
+
+    logger = get_logger(__name__)
+
+    async with get_async_session() as db:
+        try:
+            results = await check_review_deadlines(db)
+            await db.commit()
+            logger.info(
+                "review_deadline_job_complete",
+                processed=results["processed"],
+                closed=results["closed"],
+                extended=results["extended"],
+                errors=results["errors"],
+            )
+        except Exception as e:
+            await db.rollback()
+            logger.exception(
+                "review_deadline_job_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -95,4 +126,5 @@ class WorkerSettings:
 
     cron_jobs = [
         cron(cleanup_stale_accounts, hour=3, minute=0),
+        cron(process_review_deadlines, minute=0),  # Every hour on the hour
     ]

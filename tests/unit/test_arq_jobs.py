@@ -6,6 +6,14 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from app.models.image import VariantStatus
 from app.tasks.image_jobs import create_thumbnail_job, create_variant_job
+from app.tasks.worker import WorkerSettings
+
+
+@pytest.mark.unit
+def test_worker_has_review_deadline_cron_job():
+    """Ensure process_review_deadlines is registered as an arq cron job."""
+    cron_func_names = [job.coroutine.__name__ for job in WorkerSettings.cron_jobs]
+    assert "process_review_deadlines" in cron_func_names
 
 
 @pytest.mark.unit
