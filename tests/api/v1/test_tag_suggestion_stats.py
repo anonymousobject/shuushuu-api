@@ -9,7 +9,6 @@ Tests cover:
 - Pagination
 """
 
-import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -101,7 +100,6 @@ async def create_suggestion(
     return suggestion
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_empty(client: AsyncClient) -> None:
     """Returns empty list when no suggestions exist."""
     response = await client.get("/api/v1/tags/suggestion-stats")
@@ -113,7 +111,6 @@ async def test_suggestion_stats_empty(client: AsyncClient) -> None:
     assert data["per_page"] == 20
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_minimum_threshold(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -132,7 +129,6 @@ async def test_suggestion_stats_minimum_threshold(
     assert data["items"] == []
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_at_threshold(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -158,7 +154,6 @@ async def test_suggestion_stats_at_threshold(
     assert item["acceptance_rate"] == 100.0
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_mixed_statuses(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -191,7 +186,6 @@ async def test_suggestion_stats_mixed_statuses(
     assert item["acceptance_rate"] == 75.0
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_acceptance_rate_excludes_pending(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -216,7 +210,6 @@ async def test_suggestion_stats_acceptance_rate_excludes_pending(
     assert item["acceptance_rate"] == 100.0
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_all_pending_null_rate(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -236,7 +229,6 @@ async def test_suggestion_stats_all_pending_null_rate(
     assert item["acceptance_rate"] is None
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_multiple_users_sorted_by_acceptance_rate(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -268,7 +260,6 @@ async def test_suggestion_stats_multiple_users_sorted_by_acceptance_rate(
     assert data["items"][1]["acceptance_rate"] == 60.0
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_sort_by_total(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -297,7 +288,6 @@ async def test_suggestion_stats_sort_by_total(
     assert data["items"][1]["total_suggestions"] == 5
 
 
-@pytest.mark.anyio
 async def test_suggestion_stats_includes_suggestion_type_breakdown(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
