@@ -1549,6 +1549,16 @@ async def update_tag(
 
     await sync_tag_to_search(tag, db=db)
 
+    # If alias was set and tag_links migrated, also sync the canonical tag
+    # (its usage_count changed)
+    if tag.alias_of is not None and tag.alias_of != original_alias_of:
+        canonical_result = await db.execute(
+            select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
+        )
+        canonical_tag = canonical_result.scalar_one_or_none()
+        if canonical_tag:
+            await sync_tag_to_search(canonical_tag, db=db)
+
     return TagResponse.model_validate(tag)
 
 

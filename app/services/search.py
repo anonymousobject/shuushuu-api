@@ -322,7 +322,7 @@ class SearchService:
         """
         filters: list[str] = []
         if type_filter is not None:
-            filters.append(f"type = {type_filter}")
+            filters.append(f"type = {int(type_filter)}")
         if exclude_aliases:
             filters.append("alias_of IS NULL")
 

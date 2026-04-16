@@ -245,6 +245,31 @@ class TestSearchEndpoint:
         assert response.status_code == 503
         assert response.json()["detail"] == "Search service is not available"
 
+    async def test_search_returns_503_when_meilisearch_fails_mid_request(
+        self,
+        client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
+    ):
+        """If Meilisearch errors during search, endpoint returns 503."""
+        mock_search_service.search_tags.side_effect = Exception("Connection refused")
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "test"}
+        )
+        assert response.status_code == 503
+        assert "temporarily unavailable" in response.json()["detail"]
+
+    async def test_search_rejects_offset_over_1000(
+        self,
+        client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
+    ):
+        """Offset above Meilisearch's maxTotalHits returns 422."""
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "test", "offset": 1001}
+        )
+        assert response.status_code == 422
+
     async def test_search_handles_missing_db_tags_gracefully(
         self,
         client_with_search: AsyncClient,

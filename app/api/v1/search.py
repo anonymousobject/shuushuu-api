@@ -9,9 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
 from app.core.database import get_db
+from app.core.logging import get_logger
 from app.models.tag import Tags
 from app.schemas.search import SearchResponse, TagSearchHit
 from app.services.search import SearchService
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -35,20 +38,27 @@ async def search(
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     exclude_aliases: Annotated[bool, Query(description="Exclude alias tags")] = False,
     limit: Annotated[int, Query(ge=1, le=100, description="Max results")] = 20,
-    offset: Annotated[int, Query(ge=0, description="Results to skip")] = 0,
+    offset: Annotated[int, Query(ge=0, le=1000, description="Results to skip")] = 0,
     search_service: SearchService = Depends(get_search_service),
 ) -> SearchResponse:
     """Search across entities using Meilisearch.
 
     Currently supports tag search. Returns results in relevance order.
     """
-    result = await search_service.search_tags(
-        q,
-        limit=limit,
-        offset=offset,
-        type_filter=type_id,
-        exclude_aliases=exclude_aliases,
-    )
+    try:
+        result = await search_service.search_tags(
+            q,
+            limit=limit,
+            offset=offset,
+            type_filter=type_id,
+            exclude_aliases=exclude_aliases,
+        )
+    except Exception:
+        logger.warning("meilisearch_search_failed", query=q, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search service is temporarily unavailable",
+        ) from None
 
     # Fetch full tag records from MySQL, preserving Meilisearch order
     hits: list[TagSearchHit] = []
