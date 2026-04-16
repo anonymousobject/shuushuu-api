@@ -1590,7 +1590,8 @@ async def add_tag_link(
     """
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    if not tag_result.scalar_one_or_none():
+    tag = tag_result.scalar_one_or_none()
+    if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
     # Create new link
@@ -1604,6 +1605,7 @@ async def add_tag_link(
         await db.rollback()
         raise HTTPException(status_code=409, detail="URL already exists for this tag") from None
 
+    await sync_tag_to_search(tag, db=db)
     return TagExternalLinkResponse.model_validate(new_link)
 
 
@@ -1636,6 +1638,12 @@ async def delete_tag_link(
 
     await db.delete(link)
     await db.commit()
+
+    # Re-sync tag to update external_urls in search index
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    tag = tag_result.scalar_one_or_none()
+    if tag:
+        await sync_tag_to_search(tag, db=db)
 
 
 @router.patch("/{tag_id}/links/{link_id}", response_model=TagExternalLinkResponse)

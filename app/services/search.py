@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 
 logger = get_logger(__name__)
 
@@ -56,6 +57,34 @@ async def _get_parent_usage_counts(db: AsyncSession, tags: list[Tags]) -> dict[i
     }
 
 
+async def _get_external_urls(db: AsyncSession, tag_id: int) -> list[str]:
+    """Fetch external URLs for a single tag."""
+    result = await db.execute(
+        select(TagExternalLinks.url).where(  # type: ignore[call-overload]
+            TagExternalLinks.tag_id == tag_id
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def _get_external_urls_batch(db: AsyncSession, tag_ids: list[int]) -> dict[int, list[str]]:
+    """Fetch external URLs for multiple tags in a single query.
+
+    Returns a mapping of tag_id -> list of URLs.
+    """
+    if not tag_ids:
+        return {}
+    result = await db.execute(
+        select(TagExternalLinks.tag_id, TagExternalLinks.url).where(  # type: ignore[call-overload]
+            TagExternalLinks.tag_id.in_(tag_ids)  # type: ignore[attr-defined]
+        )
+    )
+    urls_map: dict[int, list[str]] = {}
+    for row in result.all():
+        urls_map.setdefault(row.tag_id, []).append(row.url)
+    return urls_map
+
+
 async def sync_tag_to_search(
     tag: Tags,
     *,
@@ -77,9 +106,12 @@ async def sync_tag_to_search(
         return
     try:
         parent_usage_count = None
-        if tag.alias_of is not None and db is not None:
-            parent_usage_count = await _get_parent_usage_count(db, tag.alias_of)
-        await svc.index_tag(tag, parent_usage_count=parent_usage_count)
+        external_urls = None
+        if db is not None:
+            if tag.alias_of is not None:
+                parent_usage_count = await _get_parent_usage_count(db, tag.alias_of)
+            external_urls = await _get_external_urls(db, tag.tag_id)  # type: ignore[arg-type]
+        await svc.index_tag(tag, parent_usage_count=parent_usage_count, external_urls=external_urls)
     except Exception:
         logger.warning("meilisearch_sync_failed", tag_id=tag.tag_id, exc_info=True)
 
@@ -107,9 +139,18 @@ async def sync_tags_to_search(
         return
     try:
         parent_counts = None
+        external_urls_map = None
         if db is not None:
             parent_counts = await _get_parent_usage_counts(db, tags)
-        await svc.index_tags(tags, parent_usage_counts=parent_counts)
+            external_urls_map = await _get_external_urls_batch(
+                db,
+                [tag.tag_id for tag in tags],  # type: ignore[misc]
+            )
+        await svc.index_tags(
+            tags,
+            parent_usage_counts=parent_counts,
+            external_urls_map=external_urls_map,
+        )
     except Exception:
         logger.warning("meilisearch_bulk_sync_failed", count=len(tags), exc_info=True)
 
@@ -141,13 +182,20 @@ class TagSearchResult:
     total: int
 
 
-def _tag_to_document(tag: Tags, *, parent_usage_count: int | None = None) -> dict[str, Any]:
+def _tag_to_document(
+    tag: Tags,
+    *,
+    parent_usage_count: int | None = None,
+    external_urls: list[str] | None = None,
+) -> dict[str, Any]:
     """Convert a Tags model to a Meilisearch document.
 
     Args:
         tag: The tag to convert.
         parent_usage_count: If provided and the tag is an alias, use this
             instead of the tag's own usage_count for ranking purposes.
+        external_urls: URLs associated with this tag (artist sites, etc.).
+            Searchable at lower priority than title/desc.
     """
     usage_count = tag.usage_count
     if tag.alias_of is not None and parent_usage_count is not None:
@@ -159,6 +207,7 @@ def _tag_to_document(tag: Tags, *, parent_usage_count: int | None = None) -> dic
         "type": tag.type,
         "usage_count": usage_count,
         "alias_of": tag.alias_of,
+        "external_urls": external_urls or [],
     }
 
 
@@ -186,7 +235,7 @@ async def configure_tags_index(client: AsyncClient) -> None:
         ]
     )
     await index.update_filterable_attributes(["type", "alias_of"])
-    await index.update_searchable_attributes(["title", "desc"])
+    await index.update_searchable_attributes(["title", "desc", "external_urls"])
     await index.update_sortable_attributes(["usage_count"])
 
     logger.info("meilisearch_tags_index_configured")
@@ -198,9 +247,17 @@ class SearchService:
     def __init__(self, client: AsyncClient) -> None:
         self.client = client
 
-    async def index_tag(self, tag: Tags, *, parent_usage_count: int | None = None) -> None:
+    async def index_tag(
+        self,
+        tag: Tags,
+        *,
+        parent_usage_count: int | None = None,
+        external_urls: list[str] | None = None,
+    ) -> None:
         """Index or update a single tag in Meilisearch."""
-        doc = _tag_to_document(tag, parent_usage_count=parent_usage_count)
+        doc = _tag_to_document(
+            tag, parent_usage_count=parent_usage_count, external_urls=external_urls
+        )
         index = self.client.index(TAGS_INDEX_NAME)
         await index.add_documents([doc])
         logger.debug("meilisearch_tag_indexed", tag_id=tag.tag_id)
@@ -210,6 +267,7 @@ class SearchService:
         tags: list[Tags],
         *,
         parent_usage_counts: dict[int, int] | None = None,
+        external_urls_map: dict[int, list[str]] | None = None,
     ) -> None:
         """Bulk index multiple tags in Meilisearch.
 
@@ -217,12 +275,18 @@ class SearchService:
             tags: Tags to index.
             parent_usage_counts: Optional mapping of tag_id -> parent usage_count
                 for alias tags, so they rank by parent popularity.
+            external_urls_map: Optional mapping of tag_id -> list of external URLs.
         """
         if not tags:
             return
         counts = parent_usage_counts or {}
+        urls_map = external_urls_map or {}
         docs = [
-            _tag_to_document(tag, parent_usage_count=counts.get(tag.tag_id))  # type: ignore[arg-type]
+            _tag_to_document(
+                tag,
+                parent_usage_count=counts.get(tag.tag_id),  # type: ignore[arg-type]
+                external_urls=urls_map.get(tag.tag_id),  # type: ignore[arg-type]
+            )
             for tag in tags
         ]
         index = self.client.index(TAGS_INDEX_NAME)

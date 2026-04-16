@@ -22,7 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.models.tag import Tags
-from app.services.search import SearchService, _get_parent_usage_counts, configure_tags_index
+from app.services.search import (
+    SearchService,
+    _get_external_urls_batch,
+    _get_parent_usage_counts,
+    configure_tags_index,
+)
 
 
 async def reindex_tags(batch_size: int = 1000) -> None:
@@ -62,7 +67,14 @@ async def reindex_tags(batch_size: int = 1000) -> None:
                     break
 
                 parent_counts = await _get_parent_usage_counts(db, tags)
-                await service.index_tags(tags, parent_usage_counts=parent_counts)
+                external_urls_map = await _get_external_urls_batch(
+                    db, [tag.tag_id for tag in tags]  # type: ignore[misc]
+                )
+                await service.index_tags(
+                    tags,
+                    parent_usage_counts=parent_counts,
+                    external_urls_map=external_urls_map,
+                )
                 indexed += len(tags)
                 offset += batch_size
                 print(f"  Indexed {indexed}/{total} tags...")

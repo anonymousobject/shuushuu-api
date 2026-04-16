@@ -61,7 +61,21 @@ class TestIndexTag:
             "type": TagType.CHARACTER,
             "usage_count": 42,
             "alias_of": None,
+            "external_urls": [],
         }
+
+    async def test_index_tag_with_external_urls(self):
+        """index_tag includes external_urls in the document."""
+        client = _make_mock_client()
+        service = SearchService(client)
+        tag = _make_tag()
+        urls = ["https://www.pixiv.net/en/users/124261821"]
+
+        await service.index_tag(tag, external_urls=urls)
+
+        index_mock = client.index(TAGS_INDEX_NAME)
+        docs = index_mock.add_documents.call_args[0][0]
+        assert docs[0]["external_urls"] == urls
 
     async def test_index_tag_with_alias(self):
         """index_tag includes alias_of when set."""
@@ -97,6 +111,19 @@ class TestTagToDocument:
         alias_tag = _make_tag(tag_id=10, alias_of=99, usage_count=0)
         doc = _tag_to_document(alias_tag)
         assert doc["usage_count"] == 0
+
+    def test_includes_external_urls(self):
+        """external_urls are included in the document when provided."""
+        tag = _make_tag()
+        urls = ["https://www.pixiv.net/en/users/124261821", "https://twitter.com/artist"]
+        doc = _tag_to_document(tag, external_urls=urls)
+        assert doc["external_urls"] == urls
+
+    def test_defaults_to_empty_external_urls(self):
+        """external_urls defaults to empty list when not provided."""
+        tag = _make_tag()
+        doc = _tag_to_document(tag)
+        assert doc["external_urls"] == []
 
 
 @pytest.mark.unit
