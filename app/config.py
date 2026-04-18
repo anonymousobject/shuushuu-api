@@ -64,16 +64,9 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str | None = Field(default=None)
     CELERY_RESULT_BACKEND: str | None = Field(default=None)
 
-    # File Storage
-    STORAGE_TYPE: str = Field(default="local", pattern="^(local|s3)$")
+    # Local filesystem root for image storage (used as fallback when R2 is
+    # disabled, or as the source for R2 uploads during phase 1).
     STORAGE_PATH: str = "/shuushuu/images"
-
-    # S3 Configuration (if using S3)
-    S3_BUCKET: str | None = None
-    S3_ACCESS_KEY: str | None = None
-    S3_SECRET_KEY: str | None = None
-    S3_ENDPOINT: str | None = None
-    S3_REGION: str = "us-east-1"
 
     # Cloudflare R2 (image storage)
     R2_ENABLED: bool = Field(
