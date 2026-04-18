@@ -106,6 +106,7 @@ from app.schemas.report import (
 from app.services.rating import schedule_rating_recalculation
 from app.services.repost import migrate_repost_data
 from app.services.review_jobs import check_early_close
+from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -807,6 +808,18 @@ async def change_image_status(
 
     await db.commit()
     await db.refresh(image)
+
+    if (
+        status_data.status is not None
+        and status_data.status != previous_status
+        and settings.R2_ENABLED
+    ):
+        await enqueue_job(
+            "sync_image_status_job",
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=status_data.status,
+        )
 
     # Schedule rating recalculation for original image after repost migration
     if status_data.status == ImageStatus.REPOST and status_data.replacement_id:

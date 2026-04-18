@@ -960,6 +960,14 @@ async def update_image(
 
     await db.commit()
 
+    if new_status is not None and new_status != previous_status and settings.R2_ENABLED:
+        await enqueue_job(
+            "sync_image_status_job",
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=new_status,
+        )
+
     # Recalculate ratings for the original image after repost migration
     if new_status == ImageStatus.REPOST and replacement_id:
         await recalculate_image_ratings(db, replacement_id)
