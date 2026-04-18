@@ -68,3 +68,31 @@ class R2Storage:
                 Params={"Bucket": bucket, "Key": key},
                 ExpiresIn=ttl,
             )
+
+
+class DummyR2Storage:
+    """No-op R2 storage for R2_ENABLED=false mode.
+
+    Every method raises RuntimeError so any accidental call surfaces
+    loudly rather than silently succeeding.
+    """
+
+    _ERR = (
+        "R2 is disabled (R2_ENABLED=false). This code path should not have "
+        "reached the R2 storage adapter."
+    )
+
+    async def upload_file(self, bucket: str, key: str, path: Path) -> None:
+        raise RuntimeError(self._ERR)
+
+    async def copy_object(self, src_bucket: str, dst_bucket: str, key: str) -> None:
+        raise RuntimeError(self._ERR)
+
+    async def delete_object(self, bucket: str, key: str) -> None:
+        raise RuntimeError(self._ERR)
+
+    async def object_exists(self, bucket: str, key: str) -> bool:
+        raise RuntimeError(self._ERR)
+
+    async def generate_presigned_url(self, bucket: str, key: str, ttl: int) -> str:
+        raise RuntimeError(self._ERR)
