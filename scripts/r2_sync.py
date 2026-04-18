@@ -29,8 +29,8 @@ from app.core.logging import get_logger
 from app.core.r2_client import get_r2_storage
 from app.core.r2_constants import (
     PUBLIC_IMAGE_STATUSES_FOR_R2,
-    R2Location,
     R2_VARIANTS,
+    R2Location,
 )
 from app.models.image import Images, VariantStatus
 from app.services.cloudflare import purge_cache_by_urls
@@ -145,23 +145,17 @@ async def backfill_locations(*, batch_size: int = 1000) -> None:
     while True:
         async with get_async_session() as db:
             result = await db.execute(
-                select(Images)
-                .where(Images.r2_location == R2Location.NONE)
-                .limit(batch_size)
+                select(Images).where(Images.r2_location == R2Location.NONE).limit(batch_size)
             )
             rows = list(result.scalars())
             if not rows:
                 break
 
             public_ids = [
-                img.image_id
-                for img in rows
-                if img.status in PUBLIC_IMAGE_STATUSES_FOR_R2
+                img.image_id for img in rows if img.status in PUBLIC_IMAGE_STATUSES_FOR_R2
             ]
             private_ids = [
-                img.image_id
-                for img in rows
-                if img.status not in PUBLIC_IMAGE_STATUSES_FOR_R2
+                img.image_id for img in rows if img.status not in PUBLIC_IMAGE_STATUSES_FOR_R2
             ]
 
             if public_ids:
@@ -266,8 +260,10 @@ async def resync_image(image_id: int) -> None:
         print(f"image {image_id} not found")
         return
 
-    print(f"image {image_id} filename={image.filename} status={image.status} "
-          f"r2_location={image.r2_location}")
+    print(
+        f"image {image_id} filename={image.filename} status={image.status} "
+        f"r2_location={image.r2_location}"
+    )
     bucket = (
         settings.R2_PUBLIC_BUCKET
         if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
@@ -310,49 +306,47 @@ async def verify(*, sample: int | None) -> dict[str, Any]:
         for variant in variants:
             ext = "webp" if variant == "thumbs" else image.ext
             key = f"{variant}/{image.filename}.{ext}"
-            in_public = await r2.object_exists(
-                bucket=settings.R2_PUBLIC_BUCKET, key=key
-            )
-            in_private = await r2.object_exists(
-                bucket=settings.R2_PRIVATE_BUCKET, key=key
-            )
+            in_public = await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key)
+            in_private = await r2.object_exists(bucket=settings.R2_PRIVATE_BUCKET, key=key)
             if image.r2_location == R2Location.NONE:
                 if in_public or in_private:
-                    discrepancies.append({
-                        "kind": "unexpected",
-                        "image_id": image.image_id,
-                        "key": key,
-                        "found_in_public": in_public,
-                        "found_in_private": in_private,
-                    })
+                    discrepancies.append(
+                        {
+                            "kind": "unexpected",
+                            "image_id": image.image_id,
+                            "key": key,
+                            "found_in_public": in_public,
+                            "found_in_private": in_private,
+                        }
+                    )
                 continue
             expected_bucket = (
                 settings.R2_PUBLIC_BUCKET
                 if image.r2_location == R2Location.PUBLIC
                 else settings.R2_PRIVATE_BUCKET
             )
-            found_expected = (
-                in_public if image.r2_location == R2Location.PUBLIC else in_private
-            )
-            found_other = (
-                in_private if image.r2_location == R2Location.PUBLIC else in_public
-            )
+            found_expected = in_public if image.r2_location == R2Location.PUBLIC else in_private
+            found_other = in_private if image.r2_location == R2Location.PUBLIC else in_public
             if not found_expected:
-                discrepancies.append({
-                    "kind": "missing",
-                    "image_id": image.image_id,
-                    "bucket": expected_bucket,
-                    "key": key,
-                })
+                discrepancies.append(
+                    {
+                        "kind": "missing",
+                        "image_id": image.image_id,
+                        "bucket": expected_bucket,
+                        "key": key,
+                    }
+                )
             if found_other:
-                discrepancies.append({
-                    "kind": "wrong_bucket",
-                    "image_id": image.image_id,
-                    "key": key,
-                    "r2_location": int(image.r2_location),
-                    "found_in_public": in_public,
-                    "found_in_private": in_private,
-                })
+                discrepancies.append(
+                    {
+                        "kind": "wrong_bucket",
+                        "image_id": image.image_id,
+                        "key": key,
+                        "r2_location": int(image.r2_location),
+                        "found_in_public": in_public,
+                        "found_in_private": in_private,
+                    }
+                )
 
     report = {"checked": len(rows), "discrepancies": discrepancies}
     print(f"checked {report['checked']} rows, {len(discrepancies)} discrepancies")
@@ -401,9 +395,7 @@ async def health(*, output_json: bool = False) -> dict[str, Any]:
         )
         oldest = oldest_result.scalar_one_or_none()
         oldest_age = (
-            int((datetime.now(UTC).replace(tzinfo=None) - oldest).total_seconds())
-            if oldest
-            else 0
+            int((datetime.now(UTC).replace(tzinfo=None) - oldest).total_seconds()) if oldest else 0
         )
 
     try:
