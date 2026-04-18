@@ -282,6 +282,24 @@ location ~ "^/thumbs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg
 
 Note: The development config (`frontend.conf.dev`) doesn't enable proxy caching by default, so this is primarily relevant for production deployments with caching enabled.
 
+## R2 serving (R2_ENABLED=true)
+
+When `R2_ENABLED=true`, the FastAPI `/images/*` endpoint returns 302 redirects
+with `Cache-Control: no-store` instead of `X-Accel-Redirect`:
+
+- Public images (`r2_location=PUBLIC`) 302 to the public CDN domain. Browsers
+  follow the redirect; nginx is not in the path for the actual image bytes.
+- Protected images (`r2_location=PRIVATE`) 302 to a short-lived presigned URL
+  against the private R2 bucket. Each request issues a fresh presigned URL.
+- Unfinalized or disabled-mode images (`r2_location=NONE`) still return
+  `X-Accel-Redirect` headers pointing at `/internal/*` — same behaviour as
+  before the R2 work.
+
+No nginx configuration change is required. The existing `proxy_cache off`
+directive on `/images/*`, `/thumbs/*`, `/medium/*`, `/large/*` blocks must be
+preserved — nginx must not cache the 302 responses. The `/internal/*` location
+blocks remain for the fallback path.
+
 ## Migration Notes
 
 Previous setup had FastAPI serving images via `app.mount()`:
