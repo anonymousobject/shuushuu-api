@@ -57,7 +57,7 @@ dev = [
     "types-redis>=4.6.0",
     # Security / Auditing
     "pip-audit>=2.10.0",
-    "moto[s3]>=5.0.0",  # Mock S3 for R2 adapter tests
+    "moto[s3,server]>=5.0.0",  # Mock S3 for R2 adapter tests
     "types-aioboto3>=13.0.0",  # Type stubs
 ]
 
