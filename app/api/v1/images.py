@@ -785,6 +785,16 @@ async def delete_image(
     if not remove_from_iqdb(image_id):
         logger.warning("iqdb_remove_failed_for_deleted_image", image_id=image_id)
 
+    # Capture R2 metadata before DB delete
+    prior_r2_location = image.r2_location
+    prior_filename = image.filename
+    prior_ext = image.ext
+    prior_variants = ["fullsize", "thumbs"]
+    if image.medium == VariantStatus.READY:
+        prior_variants.append("medium")
+    if image.large == VariantStatus.READY:
+        prior_variants.append("large")
+
     # Capture file paths before deleting from DB
     storage_path = FilePath(settings.STORAGE_PATH)
     files_to_delete = [
@@ -817,6 +827,16 @@ async def delete_image(
         deleted_by=current_user.user_id,
         reason=reason,
     )
+
+    if settings.R2_ENABLED:
+        await enqueue_job(
+            "r2_delete_image_job",
+            image_id=image_id,
+            r2_location=prior_r2_location,
+            filename=prior_filename,
+            ext=prior_ext,
+            variants=prior_variants,
+        )
 
 
 @router.patch("/{image_id}", response_model=ImageDetailedResponse)

@@ -75,17 +75,14 @@ class AdminActions(SQLModel, table=True):
     action_id: int | None = Field(default=None, primary_key=True)
 
     # Admin who performed the action
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    # FKs with ON DELETE SET NULL are defined in __table_args__; don't duplicate via foreign_key= param
+    user_id: int | None = Field(default=None)
 
-    # Action type (stored as int, mapped to AdminActionType constants)
-    # 1=report_dismiss, 2=report_action, 3=review_start, 4=review_vote,
-    # 5=review_close, 6=review_extend
     action_type: int = Field(default=0)
 
-    # Related entities (nullable - not all actions have all references)
-    report_id: int | None = Field(default=None, foreign_key="image_reports.report_id")
-    review_id: int | None = Field(default=None, foreign_key="image_reviews.review_id")
-    image_id: int | None = Field(default=None, foreign_key="images.image_id")
+    report_id: int | None = Field(default=None)
+    review_id: int | None = Field(default=None)
+    image_id: int | None = Field(default=None)
 
     # JSON details with action context
     # Examples:
