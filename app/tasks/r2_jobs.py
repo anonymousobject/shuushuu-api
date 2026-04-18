@@ -15,6 +15,7 @@ from app.core.r2_constants import (
     R2Location,
 )
 from app.models.image import Images, VariantStatus
+from app.services.cloudflare import purge_cache_by_urls
 
 logger = get_logger(__name__)
 
@@ -132,3 +133,117 @@ async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str
         r2_location=int(new_location),
     )
     return {"r2_location": int(new_location)}
+
+
+def _cdn_urls_for(image: Images, variants: list[str]) -> list[str]:
+    """Build the public-CDN URLs for the given variants of an image."""
+    urls: list[str] = []
+    for variant in variants:
+        key = _variant_key(image, variant)
+        urls.append(f"{settings.R2_PUBLIC_CDN_URL}/{key}")
+    return urls
+
+
+async def sync_image_status_job(
+    ctx: dict[str, Any],
+    image_id: int,
+    old_status: int,
+    new_status: int,
+) -> dict[str, Any]:
+    """Move an image's R2 objects when its status transitions across
+    the public/protected boundary.
+
+    - Early-return if r2_location=NONE (finalizer owns first-sync).
+    - Early-return if both old and new statuses are on the same side
+      of the public/protected boundary.
+    - Otherwise: copy each existing variant to destination bucket, verify,
+      delete from source. Atomically flip r2_location. If moving
+      public → protected, purge the CDN URLs so nobody can fetch the old
+      copy from edge cache.
+    """
+    bind_context(task="r2_status_sync", image_id=image_id)
+
+    if not settings.R2_ENABLED:
+        return {"skipped": "disabled"}
+
+    async with get_async_session() as db:
+        result = await db.execute(select(Images).where(Images.image_id == image_id))
+        image = result.scalar_one_or_none()
+        if image is None:
+            return {"skipped": "image_missing"}
+        if image.r2_location == R2Location.NONE:
+            logger.debug(
+                "r2_status_sync_skipped_not_finalized",
+                image_id=image_id,
+            )
+            return {"skipped": "not_finalized"}
+
+        old_public = old_status in PUBLIC_IMAGE_STATUSES_FOR_R2
+        new_public = new_status in PUBLIC_IMAGE_STATUSES_FOR_R2
+        if old_public == new_public:
+            return {"skipped": "no_bucket_move"}
+
+        if old_public:
+            src_bucket = settings.R2_PUBLIC_BUCKET
+            dst_bucket = settings.R2_PRIVATE_BUCKET
+            dst_location = R2Location.PRIVATE
+        else:
+            src_bucket = settings.R2_PRIVATE_BUCKET
+            dst_bucket = settings.R2_PUBLIC_BUCKET
+            dst_location = R2Location.PUBLIC
+
+        variants = _expected_variants(image)
+        r2 = get_r2_storage()
+
+        logger.info(
+            "r2_status_transition_started",
+            image_id=image_id,
+            src=src_bucket,
+            dst=dst_bucket,
+        )
+
+        moved_variants: list[str] = []
+        for variant in variants:
+            key = _variant_key(image, variant)
+            if not await r2.object_exists(bucket=src_bucket, key=key):
+                logger.warning(
+                    "r2_status_sync_source_missing",
+                    image_id=image_id,
+                    bucket=src_bucket,
+                    key=key,
+                )
+                continue
+            await r2.copy_object(src_bucket=src_bucket, dst_bucket=dst_bucket, key=key)
+            if not await r2.object_exists(bucket=dst_bucket, key=key):
+                raise RuntimeError(f"Copy succeeded but {dst_bucket}/{key} does not exist")
+            await r2.delete_object(bucket=src_bucket, key=key)
+            moved_variants.append(variant)
+
+        # Atomic flip
+        await db.execute(
+            update(Images).where(Images.image_id == image_id).values(r2_location=dst_location)
+        )
+        await db.commit()
+
+    # Purge CDN when going public → protected. Do this after the DB flip and
+    # outside the DB transaction; a purge failure doesn't roll back the move.
+    if old_public and moved_variants:
+        try:
+            await purge_cache_by_urls(_cdn_urls_for(image, moved_variants))
+        except Exception as e:
+            logger.error(
+                "r2_cdn_purge_failed_post_transition",
+                image_id=image_id,
+                error=str(e),
+            )
+            # Don't re-raise — the bucket move already committed.
+
+    logger.info(
+        "r2_status_transition_completed",
+        image_id=image_id,
+        moved_variants=moved_variants,
+    )
+    return {
+        "moved_variants": moved_variants,
+        "r2_location": int(dst_location),
+    }
