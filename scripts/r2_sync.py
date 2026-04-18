@@ -20,8 +20,17 @@ import argparse
 import asyncio
 import sys
 
+from sqlalchemy import select, update
+
 from app.config import settings
+from app.core.database import get_async_session
 from app.core.logging import get_logger
+from app.core.r2_client import get_r2_storage
+from app.core.r2_constants import (
+    PUBLIC_IMAGE_STATUSES_FOR_R2,
+    R2Location,
+)
+from app.models.image import Images, VariantStatus
 
 logger = get_logger(__name__)
 
@@ -77,10 +86,119 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+async def split_existing(*, dry_run: bool) -> None:
+    """Move protected-status images' R2 objects from public to private bucket.
+
+    Assumes existing R2 state is "everything in R2_PUBLIC_BUCKET" (the starting
+    point for the production cutover). Idempotent — objects already moved are
+    skipped via object_exists checks.
+    """
+    r2 = get_r2_storage()
+
+    async with get_async_session() as db:
+        result = await db.execute(
+            select(Images).where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))
+        )
+        rows = list(result.scalars())
+
+    logger.info("split_existing_started", count=len(rows), dry_run=dry_run)
+
+    moved = 0
+    for image in rows:
+        variants = ["fullsize", "thumbs"]
+        if image.medium == VariantStatus.READY:
+            variants.append("medium")
+        if image.large == VariantStatus.READY:
+            variants.append("large")
+        for variant in variants:
+            ext = "webp" if variant == "thumbs" else image.ext
+            key = f"{variant}/{image.filename}.{ext}"
+            if not await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key):
+                continue
+            if dry_run:
+                print(
+                    f"DRY_RUN move {settings.R2_PUBLIC_BUCKET}/{key}"
+                    f" -> {settings.R2_PRIVATE_BUCKET}/{key}"
+                )
+                moved += 1
+                continue
+            await r2.copy_object(
+                src_bucket=settings.R2_PUBLIC_BUCKET,
+                dst_bucket=settings.R2_PRIVATE_BUCKET,
+                key=key,
+            )
+            await r2.delete_object(bucket=settings.R2_PUBLIC_BUCKET, key=key)
+            moved += 1
+
+    logger.info("split_existing_completed", moved=moved, dry_run=dry_run)
+    print(f"{'[dry-run] ' if dry_run else ''}moved {moved} objects")
+
+
+async def backfill_locations(*, batch_size: int = 1000) -> None:
+    """Flip r2_location for rows still at NONE based on current status."""
+    require_bulk_backfill()
+
+    total_flipped = 0
+    while True:
+        async with get_async_session() as db:
+            result = await db.execute(
+                select(Images)
+                .where(Images.r2_location == R2Location.NONE)
+                .limit(batch_size)
+            )
+            rows = list(result.scalars())
+            if not rows:
+                break
+
+            public_ids = [
+                img.image_id
+                for img in rows
+                if img.status in PUBLIC_IMAGE_STATUSES_FOR_R2
+            ]
+            private_ids = [
+                img.image_id
+                for img in rows
+                if img.status not in PUBLIC_IMAGE_STATUSES_FOR_R2
+            ]
+
+            if public_ids:
+                await db.execute(
+                    update(Images)
+                    .where(Images.image_id.in_(public_ids))
+                    .where(Images.r2_location == R2Location.NONE)
+                    .values(r2_location=R2Location.PUBLIC)
+                )
+            if private_ids:
+                await db.execute(
+                    update(Images)
+                    .where(Images.image_id.in_(private_ids))
+                    .where(Images.r2_location == R2Location.NONE)
+                    .values(r2_location=R2Location.PRIVATE)
+                )
+
+            await db.commit()
+            total_flipped += len(public_ids) + len(private_ids)
+            logger.info(
+                "backfill_batch",
+                batch_size=len(rows),
+                total_flipped=total_flipped,
+            )
+
+    print(f"backfilled {total_flipped} rows")
+
+
 async def _dispatch(args: argparse.Namespace) -> int:
     require_r2_enabled()
+
+    if args.command == "split-existing":
+        await split_existing(dry_run=args.dry_run)
+        return 0
+    if args.command == "backfill-locations":
+        await backfill_locations()
+        return 0
+
     raise NotImplementedError(
-        f"Subcommand '{args.command}' is not yet implemented in this chunk."
+        f"Subcommand '{args.command}' is not yet implemented."
     )
 
 
