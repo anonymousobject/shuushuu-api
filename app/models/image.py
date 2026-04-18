@@ -133,6 +133,7 @@ class ImageBase(SQLModel):
         """Validate that status is one of the allowed ImageStatus constants."""
         valid_statuses = {
             ImageStatus.REVIEW,
+            ImageStatus.LOW_QUALITY,
             ImageStatus.INAPPROPRIATE,
             ImageStatus.REPOST,
             ImageStatus.OTHER,
@@ -142,7 +143,7 @@ class ImageBase(SQLModel):
         if v not in valid_statuses:
             raise ValueError(
                 f"Invalid image status: {v}. Must be one of {valid_statuses} "
-                f"(-4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler)"
+                f"(-4=Review, -3=LowQuality, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler)"
             )
         return v
 
