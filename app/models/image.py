@@ -21,6 +21,7 @@ from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.config import ImageStatus
+from app.core.r2_constants import R2Location
 
 if TYPE_CHECKING:
     from app.models.tag_link import TagLinks
@@ -241,6 +242,10 @@ class Images(ImageBase, table=True):
     # Internal metadata
     total_pixels: Decimal | None = Field(default=None)
     replacement_id: int | None = Field(default=None, foreign_key="images.image_id")
+
+    # R2 sync state. NONE=0 means object is not yet in R2; the finalizer
+    # or `r2_sync.py reconcile` will flip it to PUBLIC or PRIVATE.
+    r2_location: int = Field(default=R2Location.NONE)
 
     # Relationships - Example implementation
     # This demonstrates how to add relationships when needed. Key points:
