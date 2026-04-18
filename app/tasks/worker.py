@@ -30,6 +30,11 @@ from app.tasks.image_jobs import (
     create_variant_job,
 )
 from app.tasks.pm_jobs import send_pm_notification
+from app.tasks.r2_jobs import (
+    r2_delete_image_job,
+    r2_finalize_upload_job,
+    sync_image_status_job,
+)
 from app.tasks.rating_jobs import recalculate_rating_job
 
 
@@ -122,6 +127,9 @@ class WorkerSettings:
         func(send_pm_notification, max_tries=3),
         func(send_verification_email_job, max_tries=3),
         func(send_password_reset_email_job, max_tries=3),
+        func(r2_finalize_upload_job, max_tries=5),
+        func(sync_image_status_job, max_tries=settings.ARQ_MAX_TRIES),
+        func(r2_delete_image_job, max_tries=settings.ARQ_MAX_TRIES),
     ]
 
     cron_jobs = [

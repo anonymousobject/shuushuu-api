@@ -247,3 +247,54 @@ async def sync_image_status_job(
         "moved_variants": moved_variants,
         "r2_location": int(dst_location),
     }
+
+
+async def r2_delete_image_job(
+    ctx: dict[str, Any],
+    image_id: int,
+    r2_location: int,
+    filename: str,
+    ext: str,
+    variants: list[str],
+) -> dict[str, Any]:
+    """Delete an image's R2 objects after hard-deletion of the DB row.
+
+    Arguments are denormalised (filename, ext, variants list) because the DB
+    row is already gone by the time this runs. `r2_location` tells us which
+    bucket the canonical copy lived in; NONE means nothing to do.
+    """
+    bind_context(task="r2_delete_image", image_id=image_id)
+
+    if not settings.R2_ENABLED:
+        return {"skipped": "disabled"}
+    if r2_location == R2Location.NONE:
+        return {"skipped": "never_in_r2"}
+
+    bucket = (
+        settings.R2_PUBLIC_BUCKET
+        if r2_location == R2Location.PUBLIC
+        else settings.R2_PRIVATE_BUCKET
+    )
+
+    r2 = get_r2_storage()
+    keys: list[str] = []
+    for variant in variants:
+        variant_ext = "webp" if variant == "thumbs" else ext
+        keys.append(f"{variant}/{filename}.{variant_ext}")
+
+    for key in keys:
+        await r2.delete_object(bucket=bucket, key=key)
+        logger.info("r2_object_deleted", image_id=image_id, bucket=bucket, key=key)
+
+    if r2_location == R2Location.PUBLIC:
+        urls = [f"{settings.R2_PUBLIC_CDN_URL}/{k}" for k in keys]
+        try:
+            await purge_cache_by_urls(urls)
+        except Exception as e:
+            logger.error(
+                "r2_cdn_purge_failed_post_delete",
+                image_id=image_id,
+                error=str(e),
+            )
+
+    return {"deleted_keys": keys}
