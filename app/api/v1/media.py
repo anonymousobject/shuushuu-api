@@ -7,7 +7,7 @@ Routes:
 - GET /medium/{filename} - Serve medium variant (1280px) with permission check
 - GET /large/{filename} - Serve large variant (2048px) with permission check
 
-These endpoints return X-Accel-Redirect headers for nginx to serve the actual files.
+These endpoints serve images via X-Accel-Redirect (local FS) or HTTP 302 redirect (R2 CDN / presigned URL).
 Authentication is cookie-based (access_token HTTPOnly cookie).
 
 Note: Future enhancement could support ?token=xxx query param for non-browser clients.
@@ -19,11 +19,17 @@ from fastapi import APIRouter, Depends, Response
 from fastapi.exceptions import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.auth import get_optional_current_user
 from app.core.database import get_db
+from app.core.logging import get_logger
+from app.core.r2_client import get_r2_storage
+from app.core.r2_constants import R2Location
 from app.models.image import Images, VariantStatus
 from app.models.user import Users
 from app.services.image_visibility import can_view_image_file
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -126,7 +132,14 @@ async def _serve_image(
     db: AsyncSession,
     current_user: Users | None,
 ) -> Response:
-    """Internal handler for serving images."""
+    """Internal handler for serving images.
+
+    Routing:
+      - Permission check first (prevents leaking protected-image existence).
+      - If R2 enabled and r2_location=PUBLIC → 302 to CDN URL.
+      - If R2 enabled and r2_location=PRIVATE → 302 to presigned URL.
+      - Otherwise → X-Accel-Redirect to local /internal/ path (legacy fallback).
+    """
     image_id = parse_image_id_from_filename(filename)
     if image_id is None:
         raise HTTPException(status_code=404)
@@ -135,31 +148,51 @@ async def _serve_image(
     if image is None:
         raise HTTPException(status_code=404)
 
-    # Permission check first - prevents leaking info about protected images
+    # Permission check — prevents leaking info about protected images
     if not await can_view_image_file(image, current_user, db):
         raise HTTPException(status_code=404)
 
-    # Check variant state for medium/large
+    # Variant checks (unchanged)
     if image_type in ("medium", "large"):
         variant_status = image.medium if image_type == "medium" else image.large
         if variant_status == VariantStatus.NONE:
             raise HTTPException(status_code=404)
         if variant_status == VariantStatus.PENDING:
-            # Variant is still being generated — fall back to fullsize.
-            # Cache-Control: no-store prevents the browser from caching this response
-            # so it will retry on the next request and pick up the real variant once ready.
+            # TODO(r2): Pending variant falls back to local /internal/fullsize/ path even
+            # when the fullsize is in R2. Acceptable during migration (files exist locally
+            # until r2_sync backfills them), but must be revisited once local FS is retired.
             fullsize_path = f"/internal/fullsize/{image.filename}.{image.ext}"
             return Response(
                 status_code=200,
                 headers={"X-Accel-Redirect": fullsize_path, "Cache-Control": "no-store"},
             )
 
-    # Use database extension for fullsize/medium/large, always webp for thumbnails
-    if image_type == "thumbs":
-        ext = "webp"
-    else:
-        ext = image.ext
+    ext = "webp" if image_type == "thumbs" else image.ext
+    key = f"{image_type}/{image.filename}.{ext}"
 
-    # Files are stored with filename (e.g., 2025-12-29-1112174.jpeg)
-    internal_path = f"/internal/{image_type}/{image.filename}.{ext}"
-    return Response(status_code=200, headers={"X-Accel-Redirect": internal_path})
+    # R2 branches (only active when R2_ENABLED)
+    if settings.R2_ENABLED and image.r2_location == R2Location.PUBLIC:
+        cdn_url = f"{settings.R2_PUBLIC_CDN_URL}/{key}"
+        return Response(
+            status_code=302,
+            headers={"Location": cdn_url, "Cache-Control": "no-store"},
+        )
+
+    if settings.R2_ENABLED and image.r2_location == R2Location.PRIVATE:
+        r2 = get_r2_storage()
+        presigned = await r2.generate_presigned_url(
+            bucket=settings.R2_PRIVATE_BUCKET,
+            key=key,
+            ttl=settings.R2_PRESIGN_TTL_SECONDS,
+        )
+        logger.debug("r2_presigned_url_issued", image_id=image_id, variant=image_type)
+        return Response(
+            status_code=302,
+            headers={"Location": presigned, "Cache-Control": "no-store"},
+        )
+
+    # Local FS fallback (r2_location=NONE, or R2 disabled)
+    return Response(
+        status_code=200,
+        headers={"X-Accel-Redirect": f"/internal/{image_type}/{image.filename}.{ext}"},
+    )
