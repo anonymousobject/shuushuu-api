@@ -2144,6 +2144,13 @@ async def upload_image(
             _defer_by=5.0,  # Wait 5 seconds for thumbnail to complete
         )
 
+        if settings.R2_ENABLED:
+            await enqueue_job(
+                "r2_finalize_upload_job",
+                image_id=image_id,
+                _defer_by=90,
+            )
+
         # Build response
         image_response = ImageResponse(
             image_id=temp_image.image_id or 0,  # image_id is guaranteed to exist after flush
