@@ -2,22 +2,28 @@
 
 ## Overview
 
-Images are served directly by nginx for optimal performance, rather than going through the FastAPI application server. This approach:
+All image requests (`/images/*`, `/thumbs/*`, `/medium/*`, `/large/*`) are
+proxied through FastAPI for permission checks before serving. FastAPI decides
+the serving method:
 
-- **Reduces FastAPI load** - Static files don't consume application resources
-- **Improves performance** - nginx is highly optimized for static file serving
-- **Enables caching** - Long cache headers (1 year) for immutable image files
-- **Scales better** - Can add CDN or separate image servers later
+- **X-Accel-Redirect** to an internal nginx location (local filesystem)
+- **302 redirect** to a CDN URL or presigned R2 URL (when `R2_ENABLED=true`)
+
+This approach ensures permission checks are always enforced while keeping
+nginx responsible for actual file serving in the local-FS path.
 
 ## Architecture
 
 ```
 Client Request
     ↓
-nginx (port 80/3000)
-    ├─ /api/v1/* → FastAPI (port 8000)
-    └─ /storage/fullsize/* → Filesystem (/shuushuu/images/fullsize/)
-    └─ /storage/thumbs/* → Filesystem (/shuushuu/images/thumbs/)
+nginx (port 80/443)
+    ├─ /api/v1/*                → FastAPI (port 8000)
+    ├─ /images/{filename}       → FastAPI (permission check)
+    ├─ /thumbs/{filename}       → FastAPI (permission check)
+    ├─ /medium/{filename}       → FastAPI (permission check)
+    ├─ /large/{filename}        → FastAPI (permission check)
+    └─ /internal/{type}/*       → Filesystem (internal only, via X-Accel-Redirect)
 ```
 
 ## Configuration
@@ -29,220 +35,164 @@ nginx (port 80/3000)
 IMAGE_BASE_URL: str = "http://localhost:3000"
 ```
 
-This setting controls the base URL prepended to image paths in API responses.
-
-**Environment Variable:**
-```bash
-IMAGE_BASE_URL=http://localhost:3000  # Development
-IMAGE_BASE_URL=https://your-domain.com  # Production
-IMAGE_BASE_URL=https://cdn.your-domain.com  # With CDN
-```
+This setting controls the base URL prepended to image paths in API responses
+when R2 is disabled or the image hasn't been synced to R2 yet.
 
 **File: `app/schemas/image.py`**
+
+URL generation uses computed fields that route based on R2 state:
+
 ```python
+def _should_use_cdn(self) -> bool:
+    """Direct-CDN URL when R2 enabled, status is public, and object is in public bucket."""
+    return (
+        settings.R2_ENABLED
+        and self.status in PUBLIC_IMAGE_STATUSES_FOR_R2
+        and self.r2_location == R2Location.PUBLIC
+    )
+
 @computed_field
 @property
 def url(self) -> str:
-    """Generate image URL"""
-    return f"{settings.IMAGE_BASE_URL}/storage/fullsize/{self.filename}.{self.ext}"
+    if self._should_use_cdn():
+        return f"{settings.R2_PUBLIC_CDN_URL}/fullsize/{self.filename}.{self.ext}"
+    return f"{settings.IMAGE_BASE_URL}/images/{self.filename}.{self.ext}"
 
 @computed_field
 @property
 def thumbnail_url(self) -> str:
-    """Generate thumbnail URL"""
-    return f"{settings.IMAGE_BASE_URL}/storage/thumbs/{self.filename}.jpeg"
+    if self._should_use_cdn():
+        return f"{settings.R2_PUBLIC_CDN_URL}/thumbs/{self.filename}.webp"
+    return f"{settings.IMAGE_BASE_URL}/thumbs/{self.filename}.webp"
 ```
 
-These computed fields generate complete URLs that the frontend can use directly.
-
-### Nginx
-
-**File: `docker/nginx/frontend.conf.template`**
-```nginx
-# Serve images directly from storage
-location ^~ /storage/fullsize/ {
-    alias ${STORAGE_PATH}/fullsize/;
-    autoindex off;
-    expires 1y;
-    add_header Cache-Control "public, immutable";
-}
-
-location ^~ /storage/thumbs/ {
-    alias ${STORAGE_PATH}/thumbs/;
-    autoindex off;
-    expires 1y;
-    add_header Cache-Control "public, immutable";
-}
-```
-
-The `^~` prefix gives these locations priority over regex locations.
+Medium/large variants only use CDN URLs when the variant status is `READY`
+(not `PENDING`), so the media endpoint's fullsize fallback works during
+variant generation.
 
 ### Frontend (SvelteKit)
 
-The frontend simply uses the URLs returned by the API:
+The frontend uses URLs returned by the API directly:
 
 ```svelte
-<!-- Image detail page -->
 <a href={data.image.url}>
-  <img src={data.image.thumbnail_url} alt={data.image.title} />
+  <img src={data.image.thumbnail_url} alt={`Image ${img.image_id}`} />
 </a>
-
-<!-- Gallery page -->
-<img src={img.thumbnail_url} alt={`Image ${img.image_id}`} />
 ```
 
-No manual URL construction needed - the API provides complete URLs.
+No manual URL construction needed.
 
-## API Response Example
+### API Response Example
 
 ```json
 {
   "image_id": 1111520,
   "filename": "2024-11-15-1111520",
   "ext": "jpeg",
-  "url": "http://localhost:3000/storage/fullsize/2024-11-15-1111520.jpeg",
-  "thumbnail_url": "http://localhost:3000/storage/thumbs/2024-11-15-1111520.jpeg",
+  "url": "http://localhost:3000/images/2024-11-15-1111520.jpeg",
+  "thumbnail_url": "http://localhost:3000/thumbs/2024-11-15-1111520.webp",
+  "medium_url": "http://localhost:3000/medium/2024-11-15-1111520.jpeg",
+  "large_url": null,
   ...
 }
 ```
 
-## Deployment Considerations
+When R2 is enabled and the image is in the public bucket:
 
-### Development
-- Images served via nginx on port 3000
-- `IMAGE_BASE_URL=http://localhost:3000`
-
-### Production
-- Configure nginx to serve images from filesystem or mounted volume
-- Set `IMAGE_BASE_URL` to your domain (e.g., `https://e-shuushuu.net`)
-- Consider adding a CDN for global distribution
-
-### CDN Integration
-To serve images from a CDN:
-
-1. Sync images to CDN storage (S3, Cloudflare R2, etc.)
-2. Set `IMAGE_BASE_URL=https://cdn.your-domain.com`
-3. Images will automatically use CDN URLs in API responses
-
-No frontend changes needed - it just uses whatever URLs the API provides.
-
-## Cache Headers
-
-Images use aggressive caching since they're immutable (filename includes upload date):
-
-```nginx
-expires 1y;
-add_header Cache-Control "public, immutable";
+```json
+{
+  "url": "https://cdn.e-shuushuu.net/fullsize/2024-11-15-1111520.jpeg",
+  "thumbnail_url": "https://cdn.e-shuushuu.net/thumbs/2024-11-15-1111520.webp",
+  ...
+}
 ```
 
-This means:
-- Browsers cache for 1 year
-- `immutable` tells browsers the file will never change
-- Reduces bandwidth and improves load times
+## URL Patterns
 
-## Protected Image Serving (Visibility Control)
-
-Some images require permission checks before serving (e.g., images under review, flagged inappropriate). For these, we use X-Accel-Redirect to maintain nginx's file-serving performance while adding FastAPI permission checks.
-
-### Legacy-Compatible URL Pattern
-
-To maintain compatibility with the original e-shuushuu.net URLs, protected images use:
 - `/images/{date}-{image_id}.{ext}` (e.g., `/images/2026-01-02-1112196.png`) - fullsize
-- `/thumbs/{date}-{image_id}.{ext}` (e.g., `/thumbs/2026-01-02-1112196.png`) - thumbnail
+- `/thumbs/{date}-{image_id}.webp` - thumbnail (always WebP)
 - `/medium/{date}-{image_id}.{ext}` - medium variant (1280px edge, if available)
 - `/large/{date}-{image_id}.{ext}` - large variant (2048px edge, if available)
 
-### Request Flow
+## Nginx Configuration
 
-```
-Client → nginx → FastAPI (permission check) → X-Accel-Redirect → nginx → file
-```
-
-1. nginx proxies `/images/*`, `/thumbs/*`, `/medium/*`, `/large/*` requests to FastAPI
-2. FastAPI checks if user can view the image (based on status, ownership, permissions)
-3. If authorized: returns `X-Accel-Redirect: /internal/{type}/{filename}.{ext}`
-4. If unauthorized: returns 404 (not 403, to hide existence)
-5. nginx serves from internal location (not directly accessible)
-
-### Nginx Configuration
-
-Add these locations to your nginx config:
+### Protected image routes (proxy to FastAPI)
 
 ```nginx
-# Proxy protected image requests to FastAPI for permission checks
-location ~ ^/images/\d{4}-\d{2}-\d{2}-\d+\.(png|jpg|jpeg|gif|webp)$ {
-    proxy_pass http://fastapi:8000;
+location ~ "^/images/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
+    proxy_pass http://api:8000;
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
 }
 
-location ~ ^/thumbs/\d{4}-\d{2}-\d{2}-\d+\.(png|jpg|jpeg|gif|webp)$ {
-    proxy_pass http://fastapi:8000;
-    proxy_set_header Host $host;
-    proxy_set_header Cookie $http_cookie;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
+# Same pattern for /thumbs/, /medium/, /large/
+```
 
-location ~ ^/medium/\d{4}-\d{2}-\d{2}-\d+\.(png|jpg|jpeg|gif|webp)$ {
-    proxy_pass http://fastapi:8000;
-    proxy_set_header Host $host;
-    proxy_set_header Cookie $http_cookie;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
+### Internal locations (X-Accel-Redirect targets)
 
-location ~ ^/large/\d{4}-\d{2}-\d{2}-\d+\.(png|jpg|jpeg|gif|webp)$ {
-    proxy_pass http://fastapi:8000;
-    proxy_set_header Host $host;
-    proxy_set_header Cookie $http_cookie;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-
-# Internal locations - only accessible via X-Accel-Redirect from FastAPI
-# Files are stored with the filename format (e.g., 2025-12-29-1112174.jpeg)
+```nginx
 location /internal/fullsize/ {
-    internal;  # Cannot be accessed directly by clients
+    internal;
     alias ${STORAGE_PATH}/fullsize/;
     expires 1y;
     add_header Cache-Control "public, immutable";
 }
 
 location /internal/thumbs/ {
-    internal;  # Cannot be accessed directly by clients
+    internal;
     alias ${STORAGE_PATH}/thumbs/;
     expires 1y;
     add_header Cache-Control "public, immutable";
 }
 
-location /internal/medium/ {
-    internal;  # Cannot be accessed directly by clients
-    alias ${STORAGE_PATH}/medium/;
-    expires 1y;
-    add_header Cache-Control "public, immutable";
-}
-
-location /internal/large/ {
-    internal;  # Cannot be accessed directly by clients
-    alias ${STORAGE_PATH}/large/;
-    expires 1y;
-    add_header Cache-Control "public, immutable";
-}
+# Same pattern for /internal/medium/, /internal/large/
 ```
 
-### Visibility Rules
+## Request Flow
 
-| Status | Status Code | Public? |
-|--------|-------------|---------|
-| ACTIVE (1) | Active | Yes |
-| SPOILER (2) | Marked spoiler | Yes |
-| REPOST (-1) | Duplicate | Yes |
-| REVIEW (-4) | Under review | No* |
-| INAPPROPRIATE (-2) | Flagged | No* |
-| OTHER (0) | Uncategorized | No* |
+### Local filesystem (R2 disabled or `r2_location=NONE`)
+
+```
+Client → nginx → FastAPI (permission check) → X-Accel-Redirect → nginx → file
+```
+
+1. nginx proxies the request to FastAPI
+2. FastAPI checks visibility (status, ownership, permissions)
+3. If authorized: returns `X-Accel-Redirect: /internal/{type}/{filename}.{ext}`
+4. If unauthorized: returns 404 (not 403, to hide existence)
+5. nginx serves from internal location
+
+### R2 serving (`R2_ENABLED=true`)
+
+```
+Client → nginx → FastAPI (permission check) → 302 redirect → R2/CDN
+```
+
+- **Public images** (`r2_location=PUBLIC` and status is public): 302 to CDN
+  domain. Both conditions must hold — a public-bucket image whose status just
+  changed to protected falls back to the app endpoint until the sync job
+  moves it.
+- **Protected images** (`r2_location=PRIVATE`): 302 to a short-lived presigned
+  URL against the private R2 bucket. Each request issues a fresh presigned URL.
+- **Unsynced images** (`r2_location=NONE`): falls back to X-Accel-Redirect
+  (same as local FS path above).
+
+All 302 responses include `Cache-Control: no-store` so nginx and browsers
+do not cache the redirect.
+
+## Visibility Rules
+
+| Status | Value | Public? |
+|--------|-------|---------|
+| ACTIVE | 1 | Yes |
+| SPOILER | 2 | Yes |
+| REPOST | -1 | Yes |
+| REVIEW | -4 | No* |
+| INAPPROPRIATE | -2 | No* |
+| OTHER | 0 | No* |
 
 *Protected images are visible to:
 - The image uploader (owner)
@@ -250,63 +200,24 @@ location /internal/large/ {
 
 ### Authentication
 
-Permission checks use the `access_token` HTTPOnly cookie for authentication. Anonymous users can only view public status images.
+Permission checks use the `access_token` HTTPOnly cookie. Anonymous users
+can only view public-status images.
 
-### Caching Considerations
+## Caching Considerations
 
 Since the same URL can return different responses based on authentication:
-- nginx should NOT cache responses from `/images/*`, `/thumbs/*`, `/medium/*`, `/large/*`
-- The internal locations (`/internal/*`) use immutable caching since they bypass permission checks
+- nginx must NOT cache responses from `/images/*`, `/thumbs/*`, `/medium/*`,
+  `/large/*` (add `proxy_cache off;` if proxy caching is enabled)
+- The `/internal/*` locations use immutable caching since they're only
+  reached after a successful permission check
+- R2 302 responses include `Cache-Control: no-store`
 
-To prevent nginx caching protected paths, add `proxy_cache off;` to each protected image location block:
+## Cache Headers
+
+Images use aggressive caching on the internal/CDN paths since filenames are
+immutable (they include the upload date):
 
 ```nginx
-# Example: Add proxy_cache off to the existing proxy_pass locations
-location ~ "^/images/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
-    proxy_cache off;  # Don't cache permission-dependent responses
-    proxy_pass http://api:8000;
-    proxy_set_header Host $host;
-    proxy_set_header Cookie $http_cookie;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-
-location ~ "^/thumbs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
-    proxy_cache off;  # Don't cache permission-dependent responses
-    proxy_pass http://api:8000;
-    # ... same headers as above
-}
-
-# Apply the same pattern to /medium/ and /large/ locations
+expires 1y;
+add_header Cache-Control "public, immutable";
 ```
-
-Note: The development config (`frontend.conf.dev`) doesn't enable proxy caching by default, so this is primarily relevant for production deployments with caching enabled.
-
-## R2 serving (R2_ENABLED=true)
-
-When `R2_ENABLED=true`, the FastAPI `/images/*` endpoint returns 302 redirects
-with `Cache-Control: no-store` instead of `X-Accel-Redirect`:
-
-- Public images (`r2_location=PUBLIC`) 302 to the public CDN domain. Browsers
-  follow the redirect; nginx is not in the path for the actual image bytes.
-- Protected images (`r2_location=PRIVATE`) 302 to a short-lived presigned URL
-  against the private R2 bucket. Each request issues a fresh presigned URL.
-- Unfinalized or disabled-mode images (`r2_location=NONE`) still return
-  `X-Accel-Redirect` headers pointing at `/internal/*` — same behaviour as
-  before the R2 work.
-
-No nginx configuration change is required. The existing `proxy_cache off`
-directive on `/images/*`, `/thumbs/*`, `/medium/*`, `/large/*` blocks must be
-preserved — nginx must not cache the 302 responses. The `/internal/*` location
-blocks remain for the fallback path.
-
-## Migration Notes
-
-Previous setup had FastAPI serving images via `app.mount()`:
-```python
-# Old code (removed)
-app.mount("/storage/fullsize", StaticFiles(directory=f"{settings.STORAGE_PATH}/fullsize"))
-app.mount("/storage/thumbs", StaticFiles(directory=f"{settings.STORAGE_PATH}/thumbs"))
-```
-
-This was replaced with nginx serving for better performance.

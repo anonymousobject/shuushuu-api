@@ -16,8 +16,15 @@ This file is the short reference for operators.
 | `R2_PRIVATE_BUCKET` | `shuushuu-images-private` | `shuushuu-images-staging-private` | — |
 | `R2_PUBLIC_CDN_URL` | `https://cdn.e-shuushuu.net` | `https://cdn-staging.e-shuushuu.net` | — |
 | `R2_PRESIGN_TTL_SECONDS` | `900` | `900` | — |
-| `CLOUDFLARE_API_TOKEN` | per-env | per-env | — |
-| `CLOUDFLARE_ZONE_ID` | per-env (prod zone) | per-env (staging zone) | — |
+| `CLOUDFLARE_API_TOKEN` | per-env | per-env (optional) | — |
+| `CLOUDFLARE_ZONE_ID` | per-env (prod zone) | per-env (optional) | — |
+
+Cloudflare credentials are **optional**. Without them R2 storage works
+normally but CDN cache purge is skipped — public→private transitions and
+deletions will leave stale objects in Cloudflare edge cache until they
+expire naturally. Set them when you have a custom domain attached to the
+public bucket via Cloudflare. The token only needs **Zone > Cache Purge >
+Purge** permission.
 
 Staging's separate `CLOUDFLARE_ZONE_ID` ensures purges issued from staging
 never affect prod. Staging's `R2_ALLOW_BULK_BACKFILL=false` ensures a
@@ -48,7 +55,7 @@ the same cron on that environment.
 # Inspect one image
 R2_ENABLED=true uv run python scripts/r2_sync.py image 12345
 
-# Audit recent rows
+# Audit recent rows (--sample N or --all required)
 R2_ENABLED=true uv run python scripts/r2_sync.py verify --sample 1000
 
 # Manual CDN purge
