@@ -184,10 +184,11 @@ async def sync_image_status_job(
         # Derive desired location from *current* DB status, not from the
         # enqueued old/new args which may be stale if status changed again.
         dst_location = _location_for_status(image.status)
-        if image.r2_location == dst_location:
+        src_location = image.r2_location
+        if src_location == dst_location:
             return {"skipped": "already_correct"}
 
-        if image.r2_location == R2Location.PUBLIC:
+        if src_location == R2Location.PUBLIC:
             src_bucket = settings.R2_PUBLIC_BUCKET
             dst_bucket = settings.R2_PRIVATE_BUCKET
         else:
@@ -230,11 +231,22 @@ async def sync_image_status_job(
             )
             return {"skipped": "no_objects_moved"}
 
-        # Atomic flip
-        await db.execute(
-            update(Images).where(Images.image_id == image_id).values(r2_location=dst_location)  # type: ignore[arg-type]
+        # Conditional flip — only update if r2_location hasn't changed since
+        # we read it, avoiding clobbering a concurrent status transition.
+        result = await db.execute(
+            update(Images)
+            .where(Images.image_id == image_id)  # type: ignore[arg-type]
+            .where(Images.r2_location == src_location)  # type: ignore[arg-type]
+            .values(r2_location=dst_location)
         )
         await db.commit()
+        if result.rowcount == 0:
+            logger.warning(
+                "r2_status_sync_clobbered",
+                image_id=image_id,
+                expected_src=int(src_location),
+            )
+            return {"skipped": "concurrent_update"}
 
     # Purge CDN when going public → protected. Do this after the DB flip and
     # outside the DB transaction; a purge failure doesn't roll back the move.

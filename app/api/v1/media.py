@@ -24,7 +24,7 @@ from app.core.auth import get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.r2_client import get_r2_storage
-from app.core.r2_constants import R2Location
+from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
 from app.models.image import Images, VariantStatus
 from app.models.user import Users
 from app.services.image_visibility import can_view_image_file
@@ -171,7 +171,11 @@ async def _serve_image(
     key = f"{image_type}/{image.filename}.{ext}"
 
     # R2 branches (only active when R2_ENABLED)
-    if settings.R2_ENABLED and image.r2_location == R2Location.PUBLIC:
+    if (
+        settings.R2_ENABLED
+        and image.r2_location == R2Location.PUBLIC
+        and image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
+    ):
         cdn_url = f"{settings.R2_PUBLIC_CDN_URL}/{key}"
         return Response(
             status_code=302,
