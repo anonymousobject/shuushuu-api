@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.config import TagType, settings
 from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
-from app.models.image import ImageBase
+from app.models.image import ImageBase, VariantStatus
 from app.schemas.base import UTCDatetime
 from app.schemas.common import UserSummary
 
@@ -131,7 +131,7 @@ class ImageResponse(ImageBase):
         """Medium variant (1280px edge) URL, or None if variant is absent."""
         if not self.medium:
             return None
-        if self._should_use_cdn():
+        if self.medium == VariantStatus.READY and self._should_use_cdn():
             return f"{settings.R2_PUBLIC_CDN_URL}/medium/{self.filename}.{self.ext}"
         return f"{settings.IMAGE_BASE_URL}/medium/{self.filename}.{self.ext}"
 
@@ -141,7 +141,7 @@ class ImageResponse(ImageBase):
         """Large variant (2048px edge) URL, or None if variant is absent."""
         if not self.large:
             return None
-        if self._should_use_cdn():
+        if self.large == VariantStatus.READY and self._should_use_cdn():
             return f"{settings.R2_PUBLIC_CDN_URL}/large/{self.filename}.{self.ext}"
         return f"{settings.IMAGE_BASE_URL}/large/{self.filename}.{self.ext}"
 

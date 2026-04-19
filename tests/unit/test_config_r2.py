@@ -7,7 +7,7 @@ from app.config import Settings
 
 @pytest.mark.unit
 class TestR2ConfigValidation:
-    """R2_ENABLED requires all R2_* and CLOUDFLARE_* credentials."""
+    """R2_ENABLED requires R2_* credentials; CLOUDFLARE_* are optional."""
 
     def test_r2_disabled_requires_no_credentials(self):
         """When R2_ENABLED=false, empty R2/Cloudflare fields are fine."""

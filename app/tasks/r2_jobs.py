@@ -34,11 +34,15 @@ def _location_for_status(status: int) -> R2Location:
 
 
 def _expected_variants(image: Images) -> list[str]:
-    """Variants that should exist on disk for this image."""
+    """Variants that should exist on disk for this image.
+
+    Includes PENDING variants so the finalize job retries until they are
+    generated and uploaded, rather than marking the image synced too early.
+    """
     variants = ["fullsize", "thumbs"]
-    if image.medium == VariantStatus.READY:
+    if image.medium in (VariantStatus.PENDING, VariantStatus.READY):
         variants.append("medium")
-    if image.large == VariantStatus.READY:
+    if image.large in (VariantStatus.PENDING, VariantStatus.READY):
         variants.append("large")
     return variants
 

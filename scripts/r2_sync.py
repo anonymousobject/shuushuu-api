@@ -80,7 +80,9 @@ def _build_parser() -> argparse.ArgumentParser:
     img = sub.add_parser("image")
     img.add_argument("image_id", type=int)
     ver = sub.add_parser("verify")
-    ver.add_argument("--sample", type=int, default=None)
+    ver_group = ver.add_mutually_exclusive_group(required=True)
+    ver_group.add_argument("--sample", type=int)
+    ver_group.add_argument("--all", action="store_true")
     pc = sub.add_parser("purge-cache")
     pc.add_argument("image_id", type=int)
     h = sub.add_parser("health")
@@ -201,55 +203,69 @@ async def reconcile(*, stale_after: int) -> None:
     cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=stale_after)
     r2 = get_r2_storage()
 
-    async with get_async_session() as db:
-        result = await db.execute(
-            select(Images)
-            .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
-            .where(Images.date_added < cutoff)  # type: ignore[arg-type,operator]
-        )
-        rows = list(result.scalars())
-
+    batch_size = 500
+    last_image_id = 0
     healed = 0
-    for image in rows:
-        variants = ["fullsize", "thumbs"]
-        if image.medium == VariantStatus.READY:
-            variants.append("medium")
-        if image.large == VariantStatus.READY:
-            variants.append("large")
-        bucket = (
-            settings.R2_PUBLIC_BUCKET
-            if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
-            else settings.R2_PRIVATE_BUCKET
-        )
-        all_uploaded = True
-        for variant in variants:
-            ext = "webp" if variant == "thumbs" else image.ext
-            key = f"{variant}/{image.filename}.{ext}"
-            local = FilePath(settings.STORAGE_PATH) / variant / f"{image.filename}.{ext}"
-            if not local.exists():
-                logger.warning("reconcile_local_missing", image_id=image.image_id, variant=variant)
-                all_uploaded = False
-                break
-            if not await r2.object_exists(bucket=bucket, key=key):
-                await r2.upload_file(bucket=bucket, key=key, path=local)
+    processed = 0
 
-        if all_uploaded:
-            new_location = (
-                R2Location.PUBLIC
-                if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
-                else R2Location.PRIVATE
+    while True:
+        async with get_async_session() as db:
+            result = await db.execute(
+                select(Images)
+                .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
+                .where(Images.date_added < cutoff)  # type: ignore[arg-type,operator]
+                .where(Images.image_id > last_image_id)  # type: ignore[arg-type,operator]
+                .order_by(Images.image_id)  # type: ignore[arg-type]
+                .limit(batch_size)
             )
-            async with get_async_session() as db:
-                await db.execute(
-                    update(Images)
-                    .where(Images.image_id == image.image_id)  # type: ignore[arg-type]
-                    .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
-                    .values(r2_location=new_location)
-                )
-                await db.commit()
-            healed += 1
+            rows = list(result.scalars())
 
-    print(f"reconciled {healed}/{len(rows)} rows")
+        if not rows:
+            break
+
+        for image in rows:
+            processed += 1
+            last_image_id = image.image_id  # type: ignore[assignment]
+
+            variants = ["fullsize", "thumbs"]
+            if image.medium == VariantStatus.READY:
+                variants.append("medium")
+            if image.large == VariantStatus.READY:
+                variants.append("large")
+            bucket = (
+                settings.R2_PUBLIC_BUCKET
+                if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
+                else settings.R2_PRIVATE_BUCKET
+            )
+            all_uploaded = True
+            for variant in variants:
+                ext = "webp" if variant == "thumbs" else image.ext
+                key = f"{variant}/{image.filename}.{ext}"
+                local = FilePath(settings.STORAGE_PATH) / variant / f"{image.filename}.{ext}"
+                if not local.exists():
+                    logger.warning("reconcile_local_missing", image_id=image.image_id, variant=variant)
+                    all_uploaded = False
+                    break
+                if not await r2.object_exists(bucket=bucket, key=key):
+                    await r2.upload_file(bucket=bucket, key=key, path=local)
+
+            if all_uploaded:
+                new_location = (
+                    R2Location.PUBLIC
+                    if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
+                    else R2Location.PRIVATE
+                )
+                async with get_async_session() as db:
+                    await db.execute(
+                        update(Images)
+                        .where(Images.image_id == image.image_id)  # type: ignore[arg-type]
+                        .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
+                        .values(r2_location=new_location)
+                    )
+                    await db.commit()
+                healed += 1
+
+    print(f"reconciled {healed}/{processed} rows")
 
 
 async def resync_image(image_id: int) -> None:
