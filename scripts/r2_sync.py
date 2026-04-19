@@ -223,6 +223,9 @@ async def reconcile(*, stale_after: int) -> None:
         if not rows:
             break
 
+        public_healed_ids: list[int] = []
+        private_healed_ids: list[int] = []
+
         for image in rows:
             processed += 1
             last_image_id = image.image_id  # type: ignore[assignment]
@@ -250,20 +253,29 @@ async def reconcile(*, stale_after: int) -> None:
                     await r2.upload_file(bucket=bucket, key=key, path=local)
 
             if all_uploaded:
-                new_location = (
-                    R2Location.PUBLIC
-                    if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
-                    else R2Location.PRIVATE
+                if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2:
+                    public_healed_ids.append(image.image_id)  # type: ignore[arg-type]
+                else:
+                    private_healed_ids.append(image.image_id)  # type: ignore[arg-type]
+
+        async with get_async_session() as db:
+            if public_healed_ids:
+                await db.execute(
+                    update(Images)
+                    .where(Images.image_id.in_(public_healed_ids))  # type: ignore[union-attr]
+                    .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
+                    .values(r2_location=R2Location.PUBLIC)
                 )
-                async with get_async_session() as db:
-                    await db.execute(
-                        update(Images)
-                        .where(Images.image_id == image.image_id)  # type: ignore[arg-type]
-                        .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
-                        .values(r2_location=new_location)
-                    )
-                    await db.commit()
-                healed += 1
+            if private_healed_ids:
+                await db.execute(
+                    update(Images)
+                    .where(Images.image_id.in_(private_healed_ids))  # type: ignore[union-attr]
+                    .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
+                    .values(r2_location=R2Location.PRIVATE)
+                )
+            if public_healed_ids or private_healed_ids:
+                await db.commit()
+                healed += len(public_healed_ids) + len(private_healed_ids)
 
     print(f"reconciled {healed}/{processed} rows")
 

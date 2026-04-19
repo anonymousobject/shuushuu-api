@@ -166,7 +166,8 @@ async def sync_image_status_job(
     """Move an image's R2 objects when its status transitions across
     the public/protected boundary.
 
-    - Early-return if r2_location=NONE (finalizer owns first-sync).
+    - Retry if r2_location=NONE (finalizer hasn't finished yet; once it
+      flips r2_location we can move the objects to the correct bucket).
     - Early-return if both old and new statuses are on the same side
       of the public/protected boundary.
     - Otherwise: copy each existing variant to destination bucket, verify,
@@ -185,11 +186,11 @@ async def sync_image_status_job(
         if image is None:
             return {"skipped": "image_missing"}
         if image.r2_location == R2Location.NONE:
-            logger.debug(
-                "r2_status_sync_skipped_not_finalized",
+            logger.info(
+                "r2_status_sync_deferred_not_finalized",
                 image_id=image_id,
             )
-            return {"skipped": "not_finalized"}
+            raise Retry(defer=30)
 
         # Derive desired location from *current* DB status, not from the
         # enqueued old/new args which may be stale if status changed again.

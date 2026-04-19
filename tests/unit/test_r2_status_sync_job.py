@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from arq import Retry
 
 from app.config import ImageStatus, settings
 from app.core.r2_constants import R2Location
@@ -45,7 +46,7 @@ class TestSyncImageStatusJob:
         ):
             yield
 
-    async def test_early_return_when_location_none(self, db_session, monkeypatch):
+    async def test_retries_when_location_none(self, db_session, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         img = Images(
             user_id=1,
@@ -60,12 +61,13 @@ class TestSyncImageStatusJob:
 
         mock_r2 = AsyncMock()
         with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
-            await sync_image_status_job(
-                {},
-                image_id=img.image_id,
-                old_status=ImageStatus.ACTIVE,
-                new_status=ImageStatus.REVIEW,
-            )
+            with pytest.raises(Retry):
+                await sync_image_status_job(
+                    {},
+                    image_id=img.image_id,
+                    old_status=ImageStatus.ACTIVE,
+                    new_status=ImageStatus.REVIEW,
+                )
         mock_r2.copy_object.assert_not_awaited()
         mock_r2.delete_object.assert_not_awaited()
 
