@@ -42,9 +42,10 @@ async def uploader(db_session: AsyncSession) -> Users:
 @pytest.mark.api
 class TestUploadEnqueuesR2Finalize:
     async def test_enqueues_finalize_when_r2_enabled(
-        self, client: AsyncClient, uploader: Users, monkeypatch
+        self, client: AsyncClient, uploader: Users, monkeypatch, tmp_path
     ):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
         token = create_access_token(uploader.user_id)
 
         with patch(
@@ -65,9 +66,10 @@ class TestUploadEnqueuesR2Finalize:
         assert finalize_calls[0].kwargs.get("_defer_by", 0) >= 60
 
     async def test_no_finalize_when_r2_disabled(
-        self, client: AsyncClient, uploader: Users, monkeypatch
+        self, client: AsyncClient, uploader: Users, monkeypatch, tmp_path
     ):
         monkeypatch.setattr(settings, "R2_ENABLED", False)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
         token = create_access_token(uploader.user_id)
 
         with patch(
