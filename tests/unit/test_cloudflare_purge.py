@@ -98,3 +98,27 @@ class TestPurgeCacheByUrls:
                 await purge_cache_by_urls(["https://cdn.example.com/x.jpg"])
 
         assert any("r2_cdn_purge_failed" in r.message for r in caplog.records)
+
+    async def test_raises_on_logical_failure(self, monkeypatch, caplog):
+        """Cloudflare can return 200 with success=false — must raise."""
+        monkeypatch.setattr(settings, "CLOUDFLARE_API_TOKEN", "tok")
+        monkeypatch.setattr(settings, "CLOUDFLARE_ZONE_ID", "zone")
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.text = ""
+        mock_response.json = lambda: {"success": False, "errors": [{"message": "bad token"}]}
+        mock_response.raise_for_status = lambda: None
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = False
+
+        with caplog.at_level(logging.ERROR), patch(
+            "app.services.cloudflare.httpx.AsyncClient", return_value=mock_client
+        ):
+            with pytest.raises(RuntimeError, match="success=false"):
+                await purge_cache_by_urls(["https://cdn.example.com/x.jpg"])
+
+        assert any("r2_cdn_purge_logical_failure" in r.message for r in caplog.records)

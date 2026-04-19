@@ -141,8 +141,10 @@ class TestSyncImageStatusJob:
         await db_session.refresh(img)
         assert img.r2_location == R2Location.PUBLIC
 
-    async def test_skips_missing_source_objects(self, synced_public_image, monkeypatch):
-        """Missing source objects don't crash — the variant is skipped."""
+    async def test_skips_missing_source_objects(
+        self, synced_public_image, db_session, monkeypatch
+    ):
+        """All source objects missing → no copies, no DB flip."""
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.example.com")
         mock_r2 = AsyncMock()
@@ -151,7 +153,7 @@ class TestSyncImageStatusJob:
         with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2), patch(
             "app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock
         ):
-            await sync_image_status_job(
+            result = await sync_image_status_job(
                 {},
                 image_id=synced_public_image.image_id,
                 old_status=ImageStatus.ACTIVE,
@@ -159,6 +161,9 @@ class TestSyncImageStatusJob:
             )
         mock_r2.copy_object.assert_not_awaited()
         mock_r2.delete_object.assert_not_awaited()
+        assert result == {"skipped": "no_objects_moved"}
+        await db_session.refresh(synced_public_image)
+        assert synced_public_image.r2_location == R2Location.PUBLIC
 
     async def test_no_op_when_r2_disabled(self, synced_public_image, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", False)

@@ -59,4 +59,11 @@ async def purge_cache_by_urls(urls: list[str]) -> None:
                     body=response.text,
                 )
                 raise
+            body = response.json()
+            if not body.get("success"):
+                logger.error(
+                    "r2_cdn_purge_logical_failure",
+                    errors=body.get("errors"),
+                )
+                raise RuntimeError(f"Cloudflare purge returned success=false: {body.get('errors')}")
             logger.info("r2_cdn_purge_succeeded", batch_size=len(batch))

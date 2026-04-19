@@ -46,6 +46,7 @@ from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optio
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
+from app.core.r2_constants import R2Location
 from app.core.redis import get_redis
 from app.models import (
     AdminActions,
@@ -828,7 +829,7 @@ async def delete_image(
         reason=reason,
     )
 
-    if settings.R2_ENABLED:
+    if settings.R2_ENABLED and prior_r2_location != R2Location.NONE:
         await enqueue_job(
             "r2_delete_image_job",
             image_id=image_id,

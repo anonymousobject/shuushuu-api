@@ -219,6 +219,15 @@ async def sync_image_status_job(
             await r2.delete_object(bucket=src_bucket, key=key)
             moved_variants.append(variant)
 
+        if not moved_variants:
+            logger.warning(
+                "r2_status_sync_nothing_moved",
+                image_id=image_id,
+                src=src_bucket,
+                dst=dst_bucket,
+            )
+            return {"skipped": "no_objects_moved"}
+
         # Atomic flip
         await db.execute(
             update(Images).where(Images.image_id == image_id).values(r2_location=dst_location)  # type: ignore[arg-type]
