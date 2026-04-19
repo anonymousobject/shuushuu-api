@@ -240,7 +240,7 @@ async def sync_image_status_job(
             .values(r2_location=dst_location)
         )
         await db.commit()
-        if result.rowcount == 0:
+        if result.rowcount == 0:  # type: ignore[attr-defined]
             logger.warning(
                 "r2_status_sync_clobbered",
                 image_id=image_id,
