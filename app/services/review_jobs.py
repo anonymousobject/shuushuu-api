@@ -48,8 +48,13 @@ async def check_review_deadlines(db: AsyncSession) -> dict[str, Any]:
             "closed": int,
             "extended": int,
             "errors": int,
-            "error_details": list
+            "error_details": list,
+            "transitions": list[tuple[int, int, int]],  # (image_id, old_status, new_status)
         }
+
+    `transitions` surfaces status changes that callers should propagate to the
+    R2 sync queue AFTER committing the outer transaction — see
+    `app/services/image_status.py`.
     """
     results: dict[str, Any] = {
         "processed": 0,
@@ -57,6 +62,7 @@ async def check_review_deadlines(db: AsyncSession) -> dict[str, Any]:
         "extended": 0,
         "errors": 0,
         "error_details": [],
+        "transitions": [],
     }
 
     # Query all open reviews past their deadline
@@ -73,12 +79,14 @@ async def check_review_deadlines(db: AsyncSession) -> dict[str, Any]:
     for review in reviews:
         try:
             async with db.begin_nested():  # Savepoint for each review
-                outcome = await _process_single_review(db, review)
+                outcome, transition = await _process_single_review(db, review)
                 results["processed"] += 1
                 if outcome == "closed":
                     results["closed"] += 1
                 elif outcome == "extended":
                     results["extended"] += 1
+                if transition is not None:
+                    results["transitions"].append(transition)
         except Exception as e:
             results["errors"] += 1
             results["error_details"].append(
@@ -101,7 +109,9 @@ async def check_review_deadlines(db: AsyncSession) -> dict[str, Any]:
     return results
 
 
-async def _process_single_review(db: AsyncSession, review: ImageReviews) -> str:
+async def _process_single_review(
+    db: AsyncSession, review: ImageReviews
+) -> tuple[str, tuple[int, int, int] | None]:
     """
     Process a single expired review.
 
@@ -110,7 +120,9 @@ async def _process_single_review(db: AsyncSession, review: ImageReviews) -> str:
         review: The review to process
 
     Returns:
-        "closed" if review was closed, "extended" if deadline was extended
+        Tuple of (outcome, transition) where outcome is "closed" or "extended"
+        and transition is (image_id, old_status, new_status) when the image
+        status changed, or None otherwise.
     """
     # Count votes by type
     vote_counts = await _get_vote_counts(db, review.review_id)  # type: ignore[arg-type]
@@ -130,16 +142,16 @@ async def _process_single_review(db: AsyncSession, review: ImageReviews) -> str:
     if has_quorum and not is_tie:
         # Has quorum and clear majority - close with outcome
         outcome = ReviewOutcome.KEEP if keep_votes > remove_votes else ReviewOutcome.REMOVE
-        await _close_review(db, review, outcome, "quorum_reached")
-        return "closed"
+        transition = await _close_review(db, review, outcome, "quorum_reached")
+        return "closed", transition
     elif not review.extension_used:
         # No quorum or tie, first time - extend deadline
         await _extend_review(db, review)
-        return "extended"
+        return "extended", None
     else:
         # No quorum or tie after extension - default to keep
-        await _close_review(db, review, ReviewOutcome.KEEP, "default_after_extension")
-        return "closed"
+        transition = await _close_review(db, review, ReviewOutcome.KEEP, "default_after_extension")
+        return "closed", transition
 
 
 async def _get_vote_counts(db: AsyncSession, review_id: int) -> dict[int, int]:
@@ -167,7 +179,7 @@ async def _close_review(
     review: ImageReviews,
     outcome: int,
     reason: str,
-) -> None:
+) -> tuple[int, int, int] | None:
     """
     Close a review and update the image status.
 
@@ -176,6 +188,10 @@ async def _close_review(
         review: The review to close
         outcome: ReviewOutcome value (KEEP or REMOVE)
         reason: Reason for closing (for audit log)
+
+    Returns:
+        (image_id, old_status, new_status) when the image row existed and its
+        status changed. None if the image was not found.
     """
     now = datetime.now(UTC)
 
@@ -186,7 +202,9 @@ async def _close_review(
 
     # Update image status
     image = await db.get(Images, review.image_id)
+    transition: tuple[int, int, int] | None = None
     if image:
+        old_status = image.status
         if outcome == ReviewOutcome.KEEP:
             image.status = ImageStatus.ACTIVE
         else:  # REMOVE
@@ -200,6 +218,7 @@ async def _close_review(
             user_id=None,  # System action
         )
         db.add(status_history)
+        transition = (review.image_id, old_status, image.status)
 
     # Create audit log entry
     action = AdminActions(
@@ -221,6 +240,8 @@ async def _close_review(
         f"Closed review {review.review_id} with outcome "
         f"{'KEEP' if outcome == ReviewOutcome.KEEP else 'REMOVE'} (reason: {reason})"
     )
+
+    return transition
 
 
 async def _extend_review(db: AsyncSession, review: ImageReviews) -> None:
@@ -260,7 +281,7 @@ async def _extend_review(db: AsyncSession, review: ImageReviews) -> None:
     )
 
 
-async def check_early_close(db: AsyncSession, review: ImageReviews) -> bool:
+async def check_early_close(db: AsyncSession, review: ImageReviews) -> tuple[int, int, int] | None:
     """
     Check if a review should be closed early based on vote margin.
 
@@ -272,27 +293,29 @@ async def check_early_close(db: AsyncSession, review: ImageReviews) -> bool:
         review: The review to check
 
     Returns:
-        True if the review was closed, False otherwise
+        (image_id, old_status, new_status) if the review was closed and the
+        image's status changed — callers must pass this to
+        `enqueue_r2_sync_on_status_change` after committing. None if the
+        review was not closed (no quorum / tie / already closed).
     """
     # Re-read review to guard against concurrent close by another request/job
     await db.refresh(review)
     if review.status != ReviewStatus.OPEN:
-        return False
+        return None
 
     vote_counts = await _get_vote_counts(db, review.review_id)  # type: ignore[arg-type]
     keep_votes = vote_counts.get(1, 0)
     remove_votes = vote_counts.get(0, 0)
 
     if keep_votes == remove_votes:
-        return False
+        return None
 
     margin = abs(keep_votes - remove_votes)
     if margin < settings.REVIEW_EARLY_CLOSE_MARGIN:
-        return False
+        return None
 
     outcome = ReviewOutcome.KEEP if keep_votes > remove_votes else ReviewOutcome.REMOVE
-    await _close_review(db, review, outcome, "early_close_margin")
-    return True
+    return await _close_review(db, review, outcome, "early_close_margin")
 
 
 async def prune_admin_actions(

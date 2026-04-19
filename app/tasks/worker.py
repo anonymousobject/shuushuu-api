@@ -21,6 +21,7 @@ from arq.worker import func
 
 from app.config import settings
 from app.core.database import get_async_session
+from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.review_jobs import check_review_deadlines
 from app.services.user_cleanup import cleanup_unverified_accounts
 from app.tasks.email_jobs import send_password_reset_email_job, send_verification_email_job
@@ -71,6 +72,11 @@ async def process_review_deadlines(ctx: dict[str, Any]) -> None:
         try:
             results = await check_review_deadlines(db)
             await db.commit()
+            # Enqueue R2 bucket moves AFTER the commit — the worker that runs
+            # sync_image_status_job loads the row in a fresh session and needs
+            # to see the post-transition status.
+            for image_id, old_status, new_status in results.get("transitions", []):
+                await enqueue_r2_sync_on_status_change(image_id, old_status, new_status)
             logger.info(
                 "review_deadline_job_complete",
                 processed=results["processed"],

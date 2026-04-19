@@ -94,7 +94,7 @@ class TestStatusChangeEnqueuesSync:
         await db_session.refresh(image)
 
         with patch(
-            "app.api.v1.admin.enqueue_job", new_callable=AsyncMock
+            "app.services.image_status.enqueue_job", new_callable=AsyncMock
         ) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/admin/images/{image.image_id}",
@@ -132,7 +132,7 @@ class TestStatusChangeEnqueuesSync:
         await db_session.refresh(image)
 
         with patch(
-            "app.api.v1.admin.enqueue_job", new_callable=AsyncMock
+            "app.services.image_status.enqueue_job", new_callable=AsyncMock
         ) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/admin/images/{image.image_id}",
@@ -167,7 +167,7 @@ class TestStatusChangeEnqueuesSync:
         await db_session.refresh(image)
 
         with patch(
-            "app.api.v1.admin.enqueue_job", new_callable=AsyncMock
+            "app.services.image_status.enqueue_job", new_callable=AsyncMock
         ) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/admin/images/{image.image_id}",
@@ -202,7 +202,7 @@ class TestStatusChangeEnqueuesSync:
         await db_session.refresh(image)
 
         with patch(
-            "app.api.v1.images.enqueue_job", new_callable=AsyncMock
+            "app.services.image_status.enqueue_job", new_callable=AsyncMock
         ) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/images/{image.image_id}",

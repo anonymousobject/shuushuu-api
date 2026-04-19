@@ -1,6 +1,6 @@
 # R2 Image Serving Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use `**Step N:**` format; tick them off by updating this file as you complete each one if desired.
+> **For Agents:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use `**Step N:**` format; tick them off by updating this file as you complete each one if desired.
 
 **Goal:** Serve images from Cloudflare R2 (two buckets — public via CDN, private via presigned URLs) while keeping local filesystem as a fallback. Dual-write new uploads. Gated behind `R2_ENABLED` so dev stays local-only.
 

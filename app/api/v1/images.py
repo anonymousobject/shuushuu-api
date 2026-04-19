@@ -99,6 +99,7 @@ from app.services.image_processing import (
     get_image_dimensions,
     validate_image_file,
 )
+from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
 from app.services.rate_limit import check_similarity_rate_limit
@@ -981,9 +982,8 @@ async def update_image(
 
     await db.commit()
 
-    if new_status is not None and new_status != previous_status and settings.R2_ENABLED:
-        await enqueue_job(
-            "sync_image_status_job",
+    if new_status is not None:
+        await enqueue_r2_sync_on_status_change(
             image_id=image_id,
             old_status=previous_status,
             new_status=new_status,

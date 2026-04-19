@@ -103,10 +103,10 @@ from app.schemas.report import (
     UnifiedReportListResponse,
     VoteResponse,
 )
+from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.rating import schedule_rating_recalculation
 from app.services.repost import migrate_repost_data
 from app.services.review_jobs import check_early_close
-from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -809,13 +809,8 @@ async def change_image_status(
     await db.commit()
     await db.refresh(image)
 
-    if (
-        status_data.status is not None
-        and status_data.status != previous_status
-        and settings.R2_ENABLED
-    ):
-        await enqueue_job(
-            "sync_image_status_job",
+    if status_data.status is not None:
+        await enqueue_r2_sync_on_status_change(
             image_id=image_id,
             old_status=previous_status,
             new_status=status_data.status,
@@ -1694,6 +1689,12 @@ async def action_report(
 
     await db.commit()
 
+    await enqueue_r2_sync_on_status_change(
+        image_id=report.image_id,
+        old_status=previous_status,
+        new_status=action_data.new_status,
+    )
+
     return MessageResponse(message="Report processed and image status updated")
 
 
@@ -1786,6 +1787,12 @@ async def escalate_report(
 
     await db.commit()
     await db.refresh(review)
+
+    await enqueue_r2_sync_on_status_change(
+        image_id=report.image_id,
+        old_status=previous_status,
+        new_status=ImageStatus.REVIEW,
+    )
 
     summaries = await _build_user_summaries(db, {current_user.id})
     response = ReviewResponse.model_validate(review)
@@ -2035,6 +2042,12 @@ async def create_review(
     await db.commit()
     await db.refresh(review)
 
+    await enqueue_r2_sync_on_status_change(
+        image_id=image_id,
+        old_status=previous_status,
+        new_status=ImageStatus.REVIEW,
+    )
+
     summaries = await _build_user_summaries(db, {current_user.id})
     response = ReviewResponse.model_validate(review)
     response.initiated_by_user = summaries.get(current_user.id)
@@ -2106,10 +2119,16 @@ async def vote_on_review(
     await db.flush()
 
     # Check if vote margin triggers early close
-    await check_early_close(db, review)
+    transition = await check_early_close(db, review)
 
     await db.commit()
     await db.refresh(vote)
+
+    if transition is not None:
+        image_id, old_status, new_status = transition
+        await enqueue_r2_sync_on_status_change(
+            image_id=image_id, old_status=old_status, new_status=new_status
+        )
 
     summaries = await _build_user_summaries(db, {current_user.id})
     response = VoteResponse.model_validate(vote)
@@ -2171,6 +2190,7 @@ async def close_review(
     review.closed_by = current_user.user_id
 
     # Apply outcome to image
+    previous_image_status = image.status
     if close_data.outcome == ReviewOutcome.KEEP:
         image.status = ImageStatus.ACTIVE
     else:
@@ -2196,6 +2216,12 @@ async def close_review(
 
     await db.commit()
     await db.refresh(review)
+
+    await enqueue_r2_sync_on_status_change(
+        image_id=review.image_id,
+        old_status=previous_image_status,
+        new_status=image.status,
+    )
 
     close_user_ids: set[int] = {current_user.id}
     if review.initiated_by:
