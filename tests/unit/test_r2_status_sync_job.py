@@ -82,10 +82,25 @@ class TestSyncImageStatusJob:
         mock_r2.copy_object.assert_not_awaited()
 
     async def test_public_to_protected_copies_deletes_and_purges(
-        self, synced_public_image, db_session, monkeypatch
+        self, db_session, monkeypatch
     ):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.example.com")
+        # Simulate post-commit state: status already changed to REVIEW,
+        # but r2_location still PUBLIC (job hasn't moved objects yet).
+        img = Images(
+            user_id=1,
+            filename="2026-04-17-7",
+            ext="jpg",
+            status=ImageStatus.REVIEW,
+            r2_location=R2Location.PUBLIC,
+            medium=VariantStatus.READY,
+            large=VariantStatus.NONE,
+        )
+        db_session.add(img)
+        await db_session.commit()
+        await db_session.refresh(img)
+
         mock_r2 = AsyncMock()
         mock_r2.object_exists = AsyncMock(return_value=True)
 
@@ -94,15 +109,15 @@ class TestSyncImageStatusJob:
         ) as mock_purge:
             await sync_image_status_job(
                 {},
-                image_id=synced_public_image.image_id,
+                image_id=img.image_id,
                 old_status=ImageStatus.ACTIVE,
                 new_status=ImageStatus.REVIEW,
             )
 
         assert mock_r2.copy_object.await_count == 3
         assert mock_r2.delete_object.await_count == 3
-        await db_session.refresh(synced_public_image)
-        assert synced_public_image.r2_location == R2Location.PRIVATE
+        await db_session.refresh(img)
+        assert img.r2_location == R2Location.PRIVATE
         mock_purge.assert_awaited_once()
         urls = mock_purge.await_args.args[0]
         assert all(u.startswith("https://cdn.example.com/") for u in urls)
@@ -141,12 +156,22 @@ class TestSyncImageStatusJob:
         await db_session.refresh(img)
         assert img.r2_location == R2Location.PUBLIC
 
-    async def test_skips_missing_source_objects(
-        self, synced_public_image, db_session, monkeypatch
-    ):
+    async def test_skips_missing_source_objects(self, db_session, monkeypatch):
         """All source objects missing → no copies, no DB flip."""
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.example.com")
+        # Post-commit state: status=REVIEW, r2_location=PUBLIC.
+        img = Images(
+            user_id=1,
+            filename="2026-04-17-missing",
+            ext="jpg",
+            status=ImageStatus.REVIEW,
+            r2_location=R2Location.PUBLIC,
+        )
+        db_session.add(img)
+        await db_session.commit()
+        await db_session.refresh(img)
+
         mock_r2 = AsyncMock()
         mock_r2.object_exists = AsyncMock(return_value=False)
 
@@ -155,15 +180,15 @@ class TestSyncImageStatusJob:
         ):
             result = await sync_image_status_job(
                 {},
-                image_id=synced_public_image.image_id,
+                image_id=img.image_id,
                 old_status=ImageStatus.ACTIVE,
                 new_status=ImageStatus.REVIEW,
             )
         mock_r2.copy_object.assert_not_awaited()
         mock_r2.delete_object.assert_not_awaited()
         assert result == {"skipped": "no_objects_moved"}
-        await db_session.refresh(synced_public_image)
-        assert synced_public_image.r2_location == R2Location.PUBLIC
+        await db_session.refresh(img)
+        assert img.r2_location == R2Location.PUBLIC
 
     async def test_no_op_when_r2_disabled(self, synced_public_image, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", False)

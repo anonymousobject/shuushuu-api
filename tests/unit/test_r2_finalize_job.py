@@ -63,6 +63,7 @@ class TestR2FinalizeUploadJob:
         (tmp_path / "thumbs" / "2026-04-17-42.webp").write_bytes(b"x")
 
         mock_r2 = AsyncMock()
+        mock_r2.object_exists = AsyncMock(return_value=False)
         with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
             await r2_finalize_upload_job({}, image_id=fresh_image.image_id)
 
@@ -92,6 +93,7 @@ class TestR2FinalizeUploadJob:
         await db_session.commit()
 
         mock_r2 = AsyncMock()
+        mock_r2.object_exists = AsyncMock(return_value=False)
         with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
             await r2_finalize_upload_job({}, image_id=fresh_image.image_id)
 
@@ -116,6 +118,7 @@ class TestR2FinalizeUploadJob:
         await db_session.commit()
 
         mock_r2 = AsyncMock()
+        mock_r2.object_exists = AsyncMock(return_value=False)
         with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
             await r2_finalize_upload_job({}, image_id=fresh_image.image_id)
 

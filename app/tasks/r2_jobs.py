@@ -101,6 +101,9 @@ async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str
         r2 = get_r2_storage()
         for variant in variants:
             key = _variant_key(image, variant)
+            if await r2.object_exists(bucket=bucket, key=key):
+                logger.info("r2_upload_skipped_exists", image_id=image_id, key=key)
+                continue
             path = _local_path(image, variant)
             logger.info(
                 "r2_upload_started",
@@ -178,19 +181,18 @@ async def sync_image_status_job(
             )
             return {"skipped": "not_finalized"}
 
-        old_public = old_status in PUBLIC_IMAGE_STATUSES_FOR_R2
-        new_public = new_status in PUBLIC_IMAGE_STATUSES_FOR_R2
-        if old_public == new_public:
-            return {"skipped": "no_bucket_move"}
+        # Derive desired location from *current* DB status, not from the
+        # enqueued old/new args which may be stale if status changed again.
+        dst_location = _location_for_status(image.status)
+        if image.r2_location == dst_location:
+            return {"skipped": "already_correct"}
 
-        if old_public:
+        if image.r2_location == R2Location.PUBLIC:
             src_bucket = settings.R2_PUBLIC_BUCKET
             dst_bucket = settings.R2_PRIVATE_BUCKET
-            dst_location = R2Location.PRIVATE
         else:
             src_bucket = settings.R2_PRIVATE_BUCKET
             dst_bucket = settings.R2_PUBLIC_BUCKET
-            dst_location = R2Location.PUBLIC
 
         variants = _expected_variants(image)
         r2 = get_r2_storage()
@@ -236,7 +238,7 @@ async def sync_image_status_job(
 
     # Purge CDN when going public → protected. Do this after the DB flip and
     # outside the DB transaction; a purge failure doesn't roll back the move.
-    if old_public and moved_variants:
+    if dst_location == R2Location.PRIVATE and moved_variants:
         try:
             await purge_cache_by_urls(_cdn_urls_for(image, moved_variants))
         except Exception as e:
