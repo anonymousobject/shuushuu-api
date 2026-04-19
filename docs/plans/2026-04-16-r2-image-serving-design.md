@@ -289,13 +289,14 @@ No `R2_*` or `CLOUDFLARE_*` env vars required. App behaves exactly like today.
 
 ### When `R2_ENABLED=true`
 
-Everything in this design activates. A config validator in `app/config.py` requires all of these to be non-empty at startup; mismatch fails fast:
+Everything in this design activates. A config validator in `app/config.py` requires these R2-serving settings to be non-empty at startup; mismatch fails fast:
 
 - `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`
 - `R2_PUBLIC_BUCKET`, `R2_PRIVATE_BUCKET`
 - `R2_PUBLIC_CDN_URL`
 - `R2_PRESIGN_TTL_SECONDS` (default 900)
-- `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`
+
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ZONE_ID` are optional. They are only needed for CDN cache purge operations and are not required to enable R2-backed image serving.
 
 The DB schema is identical in both modes. A prod DB dump restored on dev works without surgery; images will just show `r2_location=NONE` and serve from wherever the dev filesystem has them (or 404 if not present).
 

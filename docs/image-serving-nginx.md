@@ -76,7 +76,7 @@ The frontend uses URLs returned by the API directly:
 
 ```svelte
 <a href={data.image.url}>
-  <img src={data.image.thumbnail_url} alt={`Image ${img.image_id}`} />
+  <img src={data.image.thumbnail_url} alt={`Image ${data.image.image_id}`} />
 </a>
 ```
 
