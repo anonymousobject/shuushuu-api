@@ -5,6 +5,7 @@ The adapter exposes only the operations the app needs; no leaky AWS details.
 """
 
 from pathlib import Path
+from typing import Any
 
 import aioboto3
 
@@ -24,7 +25,7 @@ class R2Storage:
         self._session = session
         self._endpoint_url = endpoint_url
 
-    def _client(self):
+    def _client(self) -> Any:
         """Yield a short-lived aioboto3 S3 client (async context manager)."""
         return self._session.client("s3", endpoint_url=self._endpoint_url)
 
@@ -63,7 +64,7 @@ class R2Storage:
     async def generate_presigned_url(self, bucket: str, key: str, ttl: int) -> str:
         """Generate a short-lived GET URL for a private-bucket object."""
         async with self._client() as s3:
-            return await s3.generate_presigned_url(
+            return await s3.generate_presigned_url(  # type: ignore[no-any-return]
                 ClientMethod="get_object",
                 Params={"Bucket": bucket, "Key": key},
                 ExpiresIn=ttl,

@@ -100,7 +100,7 @@ async def split_existing(*, dry_run: bool) -> None:
 
     async with get_async_session() as db:
         result = await db.execute(
-            select(Images).where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))
+            select(Images).where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))  # type: ignore[attr-defined]
         )
         rows = list(result.scalars())
 
@@ -145,7 +145,7 @@ async def backfill_locations(*, batch_size: int = 1000) -> None:
     while True:
         async with get_async_session() as db:
             result = await db.execute(
-                select(Images).where(Images.r2_location == R2Location.NONE).limit(batch_size)
+                select(Images).where(Images.r2_location == R2Location.NONE).limit(batch_size)  # type: ignore[arg-type]
             )
             rows = list(result.scalars())
             if not rows:
@@ -161,15 +161,15 @@ async def backfill_locations(*, batch_size: int = 1000) -> None:
             if public_ids:
                 await db.execute(
                     update(Images)
-                    .where(Images.image_id.in_(public_ids))
-                    .where(Images.r2_location == R2Location.NONE)
+                    .where(Images.image_id.in_(public_ids))  # type: ignore[union-attr]
+                    .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
                     .values(r2_location=R2Location.PUBLIC)
                 )
             if private_ids:
                 await db.execute(
                     update(Images)
-                    .where(Images.image_id.in_(private_ids))
-                    .where(Images.r2_location == R2Location.NONE)
+                    .where(Images.image_id.in_(private_ids))  # type: ignore[union-attr]
+                    .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
                     .values(r2_location=R2Location.PRIVATE)
                 )
 
@@ -202,8 +202,8 @@ async def reconcile(*, stale_after: int) -> None:
     async with get_async_session() as db:
         result = await db.execute(
             select(Images)
-            .where(Images.r2_location == R2Location.NONE)
-            .where(Images.date_added < cutoff)
+            .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
+            .where(Images.date_added < cutoff)  # type: ignore[arg-type,operator]
         )
         rows = list(result.scalars())
 
@@ -240,8 +240,8 @@ async def reconcile(*, stale_after: int) -> None:
             async with get_async_session() as db:
                 await db.execute(
                     update(Images)
-                    .where(Images.image_id == image.image_id)
-                    .where(Images.r2_location == R2Location.NONE)
+                    .where(Images.image_id == image.image_id)  # type: ignore[arg-type]
+                    .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
                     .values(r2_location=new_location)
                 )
                 await db.commit()
@@ -254,7 +254,7 @@ async def resync_image(image_id: int) -> None:
     """Debug tool: print current R2 state for one image (read-only)."""
     r2 = get_r2_storage()
     async with get_async_session() as db:
-        result = await db.execute(select(Images).where(Images.image_id == image_id))
+        result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
         image = result.scalar_one_or_none()
     if image is None:
         print(f"image {image_id} not found")
@@ -292,7 +292,7 @@ async def verify(*, sample: int | None) -> dict[str, Any]:
     async with get_async_session() as db:
         stmt = select(Images)
         if sample:
-            stmt = stmt.order_by(Images.image_id.desc()).limit(sample)
+            stmt = stmt.order_by(Images.image_id.desc()).limit(sample)  # type: ignore[union-attr]
         result = await db.execute(stmt)
         rows = list(result.scalars())
 
@@ -358,7 +358,7 @@ async def verify(*, sample: int | None) -> dict[str, Any]:
 async def purge_cache_command(*, image_id: int) -> None:
     """Manually invoke Cloudflare purge for one image's CDN URLs."""
     async with get_async_session() as db:
-        result = await db.execute(select(Images).where(Images.image_id == image_id))
+        result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
         image = result.scalar_one_or_none()
     if image is None:
         print(f"image {image_id} not found")
@@ -386,12 +386,12 @@ async def health(*, output_json: bool = False) -> dict[str, Any]:
 
     async with get_async_session() as db:
         count_result = await db.execute(
-            select(func.count()).select_from(Images).where(Images.r2_location == R2Location.NONE)
+            select(func.count()).select_from(Images).where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
         )
         unsynced_count = count_result.scalar_one()
 
         oldest_result = await db.execute(
-            select(func.min(Images.date_added)).where(Images.r2_location == R2Location.NONE)
+            select(func.min(Images.date_added)).where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
         )
         oldest = oldest_result.scalar_one_or_none()
         oldest_age = (

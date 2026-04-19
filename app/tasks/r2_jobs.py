@@ -70,7 +70,7 @@ async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str
         return {"skipped": "disabled"}
 
     async with get_async_session() as db:
-        result = await db.execute(select(Images).where(Images.image_id == image_id))
+        result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
         image = result.scalar_one_or_none()
         if image is None:
             logger.warning("r2_finalize_image_missing", image_id=image_id)
@@ -121,8 +121,8 @@ async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str
         new_location = _location_for_status(image.status)
         await db.execute(
             update(Images)
-            .where(Images.image_id == image_id)
-            .where(Images.r2_location == R2Location.NONE)
+            .where(Images.image_id == image_id)  # type: ignore[arg-type]
+            .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
             .values(r2_location=new_location)
         )
         await db.commit()
@@ -167,7 +167,7 @@ async def sync_image_status_job(
         return {"skipped": "disabled"}
 
     async with get_async_session() as db:
-        result = await db.execute(select(Images).where(Images.image_id == image_id))
+        result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
         image = result.scalar_one_or_none()
         if image is None:
             return {"skipped": "image_missing"}
@@ -221,7 +221,7 @@ async def sync_image_status_job(
 
         # Atomic flip
         await db.execute(
-            update(Images).where(Images.image_id == image_id).values(r2_location=dst_location)
+            update(Images).where(Images.image_id == image_id).values(r2_location=dst_location)  # type: ignore[arg-type]
         )
         await db.commit()
 
