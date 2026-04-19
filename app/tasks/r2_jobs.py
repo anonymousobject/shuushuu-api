@@ -217,15 +217,23 @@ async def sync_image_status_job(
         )
 
         moved_variants: list[str] = []
+        already_at_dst: list[str] = []
         for variant in variants:
             key = _variant_key(image, variant)
-            if not await r2.object_exists(bucket=src_bucket, key=key):
-                logger.warning(
-                    "r2_status_sync_source_missing",
-                    image_id=image_id,
-                    bucket=src_bucket,
-                    key=key,
-                )
+            src_exists = await r2.object_exists(bucket=src_bucket, key=key)
+            if not src_exists:
+                # Check if a previous attempt already moved this object. Treat
+                # that as "already moved" so we still commit the DB flip and
+                # don't leave r2_location stuck on src_location.
+                if await r2.object_exists(bucket=dst_bucket, key=key):
+                    already_at_dst.append(variant)
+                else:
+                    logger.warning(
+                        "r2_status_sync_source_missing",
+                        image_id=image_id,
+                        bucket=src_bucket,
+                        key=key,
+                    )
                 continue
             await r2.copy_object(src_bucket=src_bucket, dst_bucket=dst_bucket, key=key)
             if not await r2.object_exists(bucket=dst_bucket, key=key):
@@ -233,7 +241,8 @@ async def sync_image_status_job(
             await r2.delete_object(bucket=src_bucket, key=key)
             moved_variants.append(variant)
 
-        if not moved_variants:
+        effective_variants = moved_variants + already_at_dst
+        if not effective_variants:
             logger.warning(
                 "r2_status_sync_nothing_moved",
                 image_id=image_id,
@@ -242,12 +251,21 @@ async def sync_image_status_job(
             )
             return {"skipped": "no_objects_moved"}
 
-        missing_variants = set(variants) - set(moved_variants)
+        if already_at_dst:
+            logger.info(
+                "r2_status_sync_replay_detected",
+                image_id=image_id,
+                already_at_dst=already_at_dst,
+                moved=moved_variants,
+            )
+
+        missing_variants = set(variants) - set(effective_variants)
         if missing_variants:
             logger.warning(
                 "r2_status_sync_partial_move",
                 image_id=image_id,
                 moved=moved_variants,
+                already_at_dst=already_at_dst,
                 missing=sorted(missing_variants),
             )
 
@@ -270,9 +288,11 @@ async def sync_image_status_job(
 
     # Purge CDN when going public → protected. Do this after the DB flip and
     # outside the DB transaction; a purge failure doesn't roll back the move.
-    if dst_location == R2Location.PRIVATE and moved_variants:
+    # Include already_at_dst variants: on replay the prior run may have died
+    # before purging, so redo it (purge is idempotent).
+    if dst_location == R2Location.PRIVATE and effective_variants:
         try:
-            await purge_cache_by_urls(_cdn_urls_for(image, moved_variants))
+            await purge_cache_by_urls(_cdn_urls_for(image, effective_variants))
         except Exception as e:
             logger.error(
                 "r2_cdn_purge_failed_post_transition",

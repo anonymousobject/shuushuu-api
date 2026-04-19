@@ -201,25 +201,31 @@ Logic:
 
 ```
 if image.r2_location == R2Location.NONE:
-    return  # object not yet in R2; finalizer owns first-sync
+    raise Retry(defer=30)  # finalizer hasn't flipped r2_location yet;
+                           # retry instead of returning so we don't leave
+                           # the object in the wrong bucket after first-sync
 
-old_public = old_status in PUBLIC_STATUSES
-new_public = new_status in PUBLIC_STATUSES
-
-if old_public == new_public:
+# Derive desired location from current DB status (not the enqueued args,
+# which may be stale if status changed again).
+dst_location = location_for_status(image.status)
+src_location = image.r2_location
+if src_location == dst_location:
     return  # no bucket move needed
-
-src, dst = (public, private) if old_public else (private, public)
 
 for variant in (fullsize, thumbs, medium, large):
     key = variant_key(image, variant)
-    if not object_exists(src, key): continue
+    if not object_exists(src, key):
+        # Idempotent replay: if object already at dst, treat as moved so
+        # we still commit the DB flip rather than leaving r2_location stale.
+        if object_exists(dst, key): already_at_dst.append(variant)
+        continue
     copy_object(src, dst, key)
     assert object_exists(dst, key)
     delete_object(src, key)
 
-# Atomic flip — this is the moment URL generation switches:
-update image set r2_location = dst_location
+# Conditional flip — only update if r2_location hasn't changed since we
+# read it, avoiding clobbering a concurrent status transition:
+update image set r2_location = dst_location where r2_location = src_location
 
 if new_public is False:  # public → protected
     cloudflare_purge([cdn_url(v) for v in variants])

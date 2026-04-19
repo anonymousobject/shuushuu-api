@@ -68,6 +68,13 @@ def require_bulk_backfill() -> None:
         )
 
 
+def _positive_int(value: str) -> int:
+    n = int(value)
+    if n <= 0:
+        raise argparse.ArgumentTypeError(f"must be > 0, got {n}")
+    return n
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="R2 operational tooling")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -81,7 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
     img.add_argument("image_id", type=int)
     ver = sub.add_parser("verify")
     ver_group = ver.add_mutually_exclusive_group(required=True)
-    ver_group.add_argument("--sample", type=int)
+    ver_group.add_argument("--sample", type=_positive_int)
     ver_group.add_argument("--all", action="store_true")
     pc = sub.add_parser("purge-cache")
     pc.add_argument("image_id", type=int)
@@ -322,7 +329,7 @@ async def verify(*, sample: int | None) -> dict[str, Any]:
 
     async with get_async_session() as db:
         stmt = select(Images)
-        if sample:
+        if sample is not None:
             stmt = stmt.order_by(Images.image_id.desc()).limit(sample)  # type: ignore[union-attr]
         stmt = stmt.execution_options(yield_per=500)
         stream = await db.stream_scalars(stmt)

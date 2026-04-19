@@ -192,6 +192,54 @@ class TestSyncImageStatusJob:
         await db_session.refresh(img)
         assert img.r2_location == R2Location.PUBLIC
 
+    async def test_replay_when_src_missing_but_dst_exists_flips_db(
+        self, db_session, monkeypatch
+    ):
+        """Replay after prior run moved objects but failed before DB flip.
+
+        Source is empty, destination has all variants → treat as already moved,
+        still commit DB flip and purge CDN (purge is idempotent).
+        """
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.example.com")
+        img = Images(
+            user_id=1,
+            filename="2026-04-17-replay",
+            ext="jpg",
+            status=ImageStatus.REVIEW,
+            r2_location=R2Location.PUBLIC,
+        )
+        db_session.add(img)
+        await db_session.commit()
+        await db_session.refresh(img)
+
+        mock_r2 = AsyncMock()
+
+        async def object_exists(*, bucket: str, key: str) -> bool:
+            return bucket == settings.R2_PRIVATE_BUCKET
+
+        mock_r2.object_exists = AsyncMock(side_effect=object_exists)
+
+        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2), patch(
+            "app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock
+        ) as mock_purge:
+            result = await sync_image_status_job(
+                {},
+                image_id=img.image_id,
+                old_status=ImageStatus.ACTIVE,
+                new_status=ImageStatus.REVIEW,
+            )
+
+        mock_r2.copy_object.assert_not_awaited()
+        mock_r2.delete_object.assert_not_awaited()
+        assert result["r2_location"] == int(R2Location.PRIVATE)
+        assert result["moved_variants"] == []
+        await db_session.refresh(img)
+        assert img.r2_location == R2Location.PRIVATE
+        mock_purge.assert_awaited_once()
+        urls = mock_purge.await_args.args[0]
+        assert len(urls) == 2
+
     async def test_no_op_when_r2_disabled(self, synced_public_image, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", False)
         mock_r2 = AsyncMock()
