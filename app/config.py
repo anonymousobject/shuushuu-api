@@ -209,7 +209,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_r2_enabled_requirements(self) -> Settings:
-        """When R2_ENABLED=true, all R2_* and CLOUDFLARE_* credentials must be set."""
+        """When R2_ENABLED=true, R2 credentials must be set.
+
+        Cloudflare credentials are optional — purge_cache_by_urls raises at
+        call time if they're missing, so R2 works without CDN purging.
+        """
         if not self.R2_ENABLED:
             return self
         required = {
@@ -219,8 +223,6 @@ class Settings(BaseSettings):
             "R2_PUBLIC_BUCKET": self.R2_PUBLIC_BUCKET,
             "R2_PRIVATE_BUCKET": self.R2_PRIVATE_BUCKET,
             "R2_PUBLIC_CDN_URL": self.R2_PUBLIC_CDN_URL,
-            "CLOUDFLARE_API_TOKEN": self.CLOUDFLARE_API_TOKEN,
-            "CLOUDFLARE_ZONE_ID": self.CLOUDFLARE_ZONE_ID,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
