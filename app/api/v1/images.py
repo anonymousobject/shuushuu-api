@@ -833,7 +833,7 @@ async def delete_image(
         await enqueue_job(
             "r2_delete_image_job",
             image_id=image_id,
-            r2_location=prior_r2_location,
+            r2_location=int(prior_r2_location),
             filename=prior_filename,
             ext=prior_ext,
             variants=prior_variants,

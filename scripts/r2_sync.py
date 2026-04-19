@@ -97,41 +97,43 @@ async def split_existing(*, dry_run: bool) -> None:
     skipped via object_exists checks.
     """
     r2 = get_r2_storage()
+    moved = 0
+
+    logger.info("split_existing_started", dry_run=dry_run)
 
     async with get_async_session() as db:
-        result = await db.execute(
-            select(Images).where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))  # type: ignore[attr-defined]
+        stmt = (
+            select(Images)
+            .where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))  # type: ignore[attr-defined]
+            .execution_options(yield_per=500)
         )
-        rows = list(result.scalars())
+        stream = await db.stream_scalars(stmt)
 
-    logger.info("split_existing_started", count=len(rows), dry_run=dry_run)
-
-    moved = 0
-    for image in rows:
-        variants = ["fullsize", "thumbs"]
-        if image.medium == VariantStatus.READY:
-            variants.append("medium")
-        if image.large == VariantStatus.READY:
-            variants.append("large")
-        for variant in variants:
-            ext = "webp" if variant == "thumbs" else image.ext
-            key = f"{variant}/{image.filename}.{ext}"
-            if not await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key):
-                continue
-            if dry_run:
-                print(
-                    f"DRY_RUN move {settings.R2_PUBLIC_BUCKET}/{key}"
-                    f" -> {settings.R2_PRIVATE_BUCKET}/{key}"
+        async for image in stream:
+            variants = ["fullsize", "thumbs"]
+            if image.medium == VariantStatus.READY:
+                variants.append("medium")
+            if image.large == VariantStatus.READY:
+                variants.append("large")
+            for variant in variants:
+                ext = "webp" if variant == "thumbs" else image.ext
+                key = f"{variant}/{image.filename}.{ext}"
+                if not await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key):
+                    continue
+                if dry_run:
+                    print(
+                        f"DRY_RUN move {settings.R2_PUBLIC_BUCKET}/{key}"
+                        f" -> {settings.R2_PRIVATE_BUCKET}/{key}"
+                    )
+                    moved += 1
+                    continue
+                await r2.copy_object(
+                    src_bucket=settings.R2_PUBLIC_BUCKET,
+                    dst_bucket=settings.R2_PRIVATE_BUCKET,
+                    key=key,
                 )
+                await r2.delete_object(bucket=settings.R2_PUBLIC_BUCKET, key=key)
                 moved += 1
-                continue
-            await r2.copy_object(
-                src_bucket=settings.R2_PUBLIC_BUCKET,
-                dst_bucket=settings.R2_PRIVATE_BUCKET,
-                key=key,
-            )
-            await r2.delete_object(bucket=settings.R2_PUBLIC_BUCKET, key=key)
-            moved += 1
 
     logger.info("split_existing_completed", moved=moved, dry_run=dry_run)
     print(f"{'[dry-run] ' if dry_run else ''}moved {moved} objects")
@@ -288,67 +290,69 @@ async def verify(*, sample: int | None) -> dict[str, Any]:
     """
     r2 = get_r2_storage()
     discrepancies: list[dict[str, Any]] = []
+    checked = 0
 
     async with get_async_session() as db:
         stmt = select(Images)
         if sample:
             stmt = stmt.order_by(Images.image_id.desc()).limit(sample)  # type: ignore[union-attr]
-        result = await db.execute(stmt)
-        rows = list(result.scalars())
+        stmt = stmt.execution_options(yield_per=500)
+        stream = await db.stream_scalars(stmt)
 
-    for image in rows:
-        variants = ["fullsize", "thumbs"]
-        if image.medium == VariantStatus.READY:
-            variants.append("medium")
-        if image.large == VariantStatus.READY:
-            variants.append("large")
+        async for image in stream:
+            checked += 1
+            variants = ["fullsize", "thumbs"]
+            if image.medium == VariantStatus.READY:
+                variants.append("medium")
+            if image.large == VariantStatus.READY:
+                variants.append("large")
 
-        for variant in variants:
-            ext = "webp" if variant == "thumbs" else image.ext
-            key = f"{variant}/{image.filename}.{ext}"
-            in_public = await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key)
-            in_private = await r2.object_exists(bucket=settings.R2_PRIVATE_BUCKET, key=key)
-            if image.r2_location == R2Location.NONE:
-                if in_public or in_private:
+            for variant in variants:
+                ext = "webp" if variant == "thumbs" else image.ext
+                key = f"{variant}/{image.filename}.{ext}"
+                in_public = await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key)
+                in_private = await r2.object_exists(bucket=settings.R2_PRIVATE_BUCKET, key=key)
+                if image.r2_location == R2Location.NONE:
+                    if in_public or in_private:
+                        discrepancies.append(
+                            {
+                                "kind": "unexpected",
+                                "image_id": image.image_id,
+                                "key": key,
+                                "found_in_public": in_public,
+                                "found_in_private": in_private,
+                            }
+                        )
+                    continue
+                expected_bucket = (
+                    settings.R2_PUBLIC_BUCKET
+                    if image.r2_location == R2Location.PUBLIC
+                    else settings.R2_PRIVATE_BUCKET
+                )
+                found_expected = in_public if image.r2_location == R2Location.PUBLIC else in_private
+                found_other = in_private if image.r2_location == R2Location.PUBLIC else in_public
+                if not found_expected:
                     discrepancies.append(
                         {
-                            "kind": "unexpected",
+                            "kind": "missing",
+                            "image_id": image.image_id,
+                            "bucket": expected_bucket,
+                            "key": key,
+                        }
+                    )
+                if found_other:
+                    discrepancies.append(
+                        {
+                            "kind": "wrong_bucket",
                             "image_id": image.image_id,
                             "key": key,
+                            "r2_location": int(image.r2_location),
                             "found_in_public": in_public,
                             "found_in_private": in_private,
                         }
                     )
-                continue
-            expected_bucket = (
-                settings.R2_PUBLIC_BUCKET
-                if image.r2_location == R2Location.PUBLIC
-                else settings.R2_PRIVATE_BUCKET
-            )
-            found_expected = in_public if image.r2_location == R2Location.PUBLIC else in_private
-            found_other = in_private if image.r2_location == R2Location.PUBLIC else in_public
-            if not found_expected:
-                discrepancies.append(
-                    {
-                        "kind": "missing",
-                        "image_id": image.image_id,
-                        "bucket": expected_bucket,
-                        "key": key,
-                    }
-                )
-            if found_other:
-                discrepancies.append(
-                    {
-                        "kind": "wrong_bucket",
-                        "image_id": image.image_id,
-                        "key": key,
-                        "r2_location": int(image.r2_location),
-                        "found_in_public": in_public,
-                        "found_in_private": in_private,
-                    }
-                )
 
-    report = {"checked": len(rows), "discrepancies": discrepancies}
+    report = {"checked": checked, "discrepancies": discrepancies}
     print(f"checked {report['checked']} rows, {len(discrepancies)} discrepancies")
     for d in discrepancies[:20]:
         print(f"  {d['kind']}: {d.get('bucket', '')}{d['key']} (image_id={d['image_id']})")

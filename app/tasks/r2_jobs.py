@@ -122,13 +122,19 @@ async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str
         # Atomic flip. Re-check r2_location to avoid clobbering a concurrent
         # finalize (arq at-most-once + DB row as lock).
         new_location = _location_for_status(image.status)
-        await db.execute(
+        result = await db.execute(
             update(Images)
             .where(Images.image_id == image_id)  # type: ignore[arg-type]
             .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
             .values(r2_location=new_location)
         )
         await db.commit()
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            logger.warning(
+                "r2_finalize_clobbered",
+                image_id=image_id,
+            )
+            return {"skipped": "concurrent_update"}
 
     logger.info(
         "r2_finalize_succeeded",
@@ -230,6 +236,15 @@ async def sync_image_status_job(
                 dst=dst_bucket,
             )
             return {"skipped": "no_objects_moved"}
+
+        missing_variants = set(variants) - set(moved_variants)
+        if missing_variants:
+            logger.warning(
+                "r2_status_sync_partial_move",
+                image_id=image_id,
+                moved=moved_variants,
+                missing=sorted(missing_variants),
+            )
 
         # Conditional flip — only update if r2_location hasn't changed since
         # we read it, avoiding clobbering a concurrent status transition.
