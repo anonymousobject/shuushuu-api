@@ -1,6 +1,6 @@
 """Integration test: split-existing moves protected images to private bucket."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,17 @@ def _mock_session_cm(db_session):
     mock_cm.__aenter__ = AsyncMock(return_value=db_session)
     mock_cm.__aexit__ = AsyncMock(return_value=False)
     return mock_cm
+
+
+def _make_mock_r2(*, object_exists: bool) -> AsyncMock:
+    """AsyncMock for R2Storage with bulk_session() returning a no-op async CM."""
+    mock_r2 = AsyncMock()
+    mock_r2.object_exists = AsyncMock(return_value=object_exists)
+    bulk_cm = AsyncMock()
+    bulk_cm.__aenter__ = AsyncMock(return_value=mock_r2)
+    bulk_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_r2.bulk_session = Mock(return_value=bulk_cm)
+    return mock_r2
 
 
 @pytest.mark.integration
@@ -62,8 +73,7 @@ class TestSplitExisting:
         )
         await db_session.commit()
 
-        mock_r2 = AsyncMock()
-        mock_r2.object_exists = AsyncMock(return_value=True)
+        mock_r2 = _make_mock_r2(object_exists=True)
 
         with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
             await split_existing(dry_run=False)
@@ -94,8 +104,7 @@ class TestSplitExisting:
         )
         await db_session.commit()
 
-        mock_r2 = AsyncMock()
-        mock_r2.object_exists = AsyncMock(return_value=True)
+        mock_r2 = _make_mock_r2(object_exists=True)
 
         with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
             await split_existing(dry_run=True)
@@ -119,8 +128,7 @@ class TestSplitExisting:
         )
         await db_session.commit()
 
-        mock_r2 = AsyncMock()
-        mock_r2.object_exists = AsyncMock(return_value=False)
+        mock_r2 = _make_mock_r2(object_exists=False)
 
         with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
             await split_existing(dry_run=False)
