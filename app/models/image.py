@@ -13,7 +13,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict, field_validator
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from app.models.user import Users
 
 
-class VariantStatus(int, Enum):
+class VariantStatus(IntEnum):
     """
     Status of a medium or large image variant.
 
