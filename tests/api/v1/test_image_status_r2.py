@@ -182,10 +182,16 @@ class TestStatusChangeEnqueuesSync:
         ]
         assert sync_calls == []
 
-    async def test_owner_spoiler_enqueues_sync(
+    async def test_owner_spoiler_does_not_enqueue_same_side(
         self, client: AsyncClient, db_session: AsyncSession, monkeypatch
     ):
-        """Owner marking ACTIVE→SPOILER via PATCH /api/v1/images/ also enqueues."""
+        """Owner marking ACTIVE→SPOILER via PATCH /api/v1/images/ skips enqueue.
+
+        ACTIVE and SPOILER are both in PUBLIC_IMAGE_STATUSES_FOR_R2, so the
+        object stays in the public bucket. `enqueue_r2_sync_on_status_change`
+        short-circuits to avoid an enqueue + worker wake for a no-op move —
+        all owner-path transitions (ACTIVE → {SPOILER, REPOST}) land here.
+        """
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         owner = await _create_user(db_session, "r2owner", "r2owner@test.com")
         token = create_access_token(owner.user_id)
@@ -215,6 +221,4 @@ class TestStatusChangeEnqueuesSync:
             for c in mock_enqueue.await_args_list
             if c.args[0] == "sync_image_status_job"
         ]
-        assert len(sync_calls) == 1
-        assert sync_calls[0].kwargs["old_status"] == ImageStatus.ACTIVE
-        assert sync_calls[0].kwargs["new_status"] == ImageStatus.SPOILER
+        assert sync_calls == []
