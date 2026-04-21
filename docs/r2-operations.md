@@ -19,12 +19,19 @@ This file is the short reference for operators.
 | `CLOUDFLARE_API_TOKEN` | per-env | per-env (optional) | — |
 | `CLOUDFLARE_ZONE_ID` | per-env (prod zone) | per-env (optional) | — |
 
-Cloudflare credentials are **optional**. Without them R2 storage works
-normally but CDN cache purge is skipped — public→private transitions and
-deletions will leave stale objects in Cloudflare edge cache until they
-expire naturally. Set them when you have a custom domain attached to the
-public bucket via Cloudflare. The token only needs **Zone > Cache Purge >
-Purge** permission.
+Cloudflare credentials are **optional** for R2 storage itself.
+`purge_cache_by_urls` raises when they're missing, so:
+
+- **Automatic purges** (post-transition and post-delete in
+  `sync_image_status_job` / `r2_delete_image_job`) catch and log the
+  raise as `r2_cdn_purge_failed_*` — best-effort. Objects will sit in
+  Cloudflare edge cache until they expire naturally.
+- **Manual `r2_sync.py purge-cache`** does **not** catch: running it
+  without `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID` set will error.
+
+Set them when you have a custom domain attached to the public bucket
+via Cloudflare. The token only needs **Zone > Cache Purge > Purge**
+permission.
 
 Staging's separate `CLOUDFLARE_ZONE_ID` ensures purges issued from staging
 never affect prod. Staging's `R2_ALLOW_BULK_BACKFILL=false` ensures a

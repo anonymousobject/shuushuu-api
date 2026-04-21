@@ -55,3 +55,29 @@ class TestEnqueueR2SyncOnStatusChange:
                 new_status=ImageStatus.REVIEW,
             )
         mock_enqueue.assert_not_awaited()
+
+    async def test_noop_when_transition_stays_on_public_side(self, monkeypatch):
+        """ACTIVE→SPOILER: both public — worker would early-return, don't enqueue."""
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        with patch(
+            "app.services.image_status.enqueue_job", new_callable=AsyncMock
+        ) as mock_enqueue:
+            await enqueue_r2_sync_on_status_change(
+                image_id=123,
+                old_status=ImageStatus.ACTIVE,
+                new_status=ImageStatus.SPOILER,
+            )
+        mock_enqueue.assert_not_awaited()
+
+    async def test_noop_when_transition_stays_on_protected_side(self, monkeypatch):
+        """REVIEW→INAPPROPRIATE: both protected — worker would early-return, don't enqueue."""
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        with patch(
+            "app.services.image_status.enqueue_job", new_callable=AsyncMock
+        ) as mock_enqueue:
+            await enqueue_r2_sync_on_status_change(
+                image_id=123,
+                old_status=ImageStatus.REVIEW,
+                new_status=ImageStatus.INAPPROPRIATE,
+            )
+        mock_enqueue.assert_not_awaited()

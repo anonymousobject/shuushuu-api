@@ -105,7 +105,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("backfill-locations")
     rec = sub.add_parser("reconcile")
-    rec.add_argument("--stale-after", type=int, default=600)
+    rec.add_argument("--stale-after", type=_positive_int, default=600)
     img = sub.add_parser("image")
     img.add_argument("image_id", type=int)
     ver = sub.add_parser(
@@ -355,70 +355,71 @@ async def reconcile(*, stale_after: int) -> None:
     healed = 0
     processed = 0
 
-    while True:
-        async with get_async_session() as db:
-            result = await db.execute(
-                select(Images)
-                .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
-                .where(Images.date_added < cutoff)  # type: ignore[arg-type,operator]
-                .where(Images.image_id > last_image_id)  # type: ignore[arg-type,operator]
-                .order_by(Images.image_id)  # type: ignore[arg-type]
-                .limit(batch_size)
-            )
-            rows = list(result.scalars())
-
-        if not rows:
-            break
-
-        public_healed_ids: list[int] = []
-        private_healed_ids: list[int] = []
-
-        for image in rows:
-            processed += 1
-            last_image_id = image.image_id  # type: ignore[assignment]
-
-            variants = _ready_variants(image)
-            bucket = (
-                settings.R2_PUBLIC_BUCKET
-                if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
-                else settings.R2_PRIVATE_BUCKET
-            )
-            all_uploaded = True
-            for variant in variants:
-                ext = "webp" if variant == "thumbs" else image.ext
-                key = f"{variant}/{image.filename}.{ext}"
-                local = FilePath(settings.STORAGE_PATH) / variant / f"{image.filename}.{ext}"
-                if not local.exists():
-                    logger.warning("reconcile_local_missing", image_id=image.image_id, variant=variant)
-                    all_uploaded = False
-                    break
-                if not await r2.object_exists(bucket=bucket, key=key):
-                    await r2.upload_file(bucket=bucket, key=key, path=local)
-
-            if all_uploaded:
-                if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2:
-                    public_healed_ids.append(image.image_id)  # type: ignore[arg-type]
-                else:
-                    private_healed_ids.append(image.image_id)  # type: ignore[arg-type]
-
-        async with get_async_session() as db:
-            if public_healed_ids:
-                await db.execute(
-                    update(Images)
-                    .where(Images.image_id.in_(public_healed_ids))  # type: ignore[union-attr]
+    async with r2.bulk_session():
+        while True:
+            async with get_async_session() as db:
+                result = await db.execute(
+                    select(Images)
                     .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
-                    .values(r2_location=R2Location.PUBLIC)
+                    .where(Images.date_added < cutoff)  # type: ignore[arg-type,operator]
+                    .where(Images.image_id > last_image_id)  # type: ignore[arg-type,operator]
+                    .order_by(Images.image_id)  # type: ignore[arg-type]
+                    .limit(batch_size)
                 )
-            if private_healed_ids:
-                await db.execute(
-                    update(Images)
-                    .where(Images.image_id.in_(private_healed_ids))  # type: ignore[union-attr]
-                    .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
-                    .values(r2_location=R2Location.PRIVATE)
+                rows = list(result.scalars())
+
+            if not rows:
+                break
+
+            public_healed_ids: list[int] = []
+            private_healed_ids: list[int] = []
+
+            for image in rows:
+                processed += 1
+                last_image_id = image.image_id  # type: ignore[assignment]
+
+                variants = _ready_variants(image)
+                bucket = (
+                    settings.R2_PUBLIC_BUCKET
+                    if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2
+                    else settings.R2_PRIVATE_BUCKET
                 )
-            if public_healed_ids or private_healed_ids:
-                await db.commit()
-                healed += len(public_healed_ids) + len(private_healed_ids)
+                all_uploaded = True
+                for variant in variants:
+                    ext = "webp" if variant == "thumbs" else image.ext
+                    key = f"{variant}/{image.filename}.{ext}"
+                    local = FilePath(settings.STORAGE_PATH) / variant / f"{image.filename}.{ext}"
+                    if not local.exists():
+                        logger.warning("reconcile_local_missing", image_id=image.image_id, variant=variant)
+                        all_uploaded = False
+                        break
+                    if not await r2.object_exists(bucket=bucket, key=key):
+                        await r2.upload_file(bucket=bucket, key=key, path=local)
+
+                if all_uploaded:
+                    if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2:
+                        public_healed_ids.append(image.image_id)  # type: ignore[arg-type]
+                    else:
+                        private_healed_ids.append(image.image_id)  # type: ignore[arg-type]
+
+            async with get_async_session() as db:
+                if public_healed_ids:
+                    await db.execute(
+                        update(Images)
+                        .where(Images.image_id.in_(public_healed_ids))  # type: ignore[union-attr]
+                        .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
+                        .values(r2_location=R2Location.PUBLIC)
+                    )
+                if private_healed_ids:
+                    await db.execute(
+                        update(Images)
+                        .where(Images.image_id.in_(private_healed_ids))  # type: ignore[union-attr]
+                        .where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
+                        .values(r2_location=R2Location.PRIVATE)
+                    )
+                if public_healed_ids or private_healed_ids:
+                    await db.commit()
+                    healed += len(public_healed_ids) + len(private_healed_ids)
 
     print(f"reconciled {healed}/{processed} rows")
 
