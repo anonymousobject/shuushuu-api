@@ -1,6 +1,6 @@
 """Tests for the remaining r2_sync.py subcommands."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -21,6 +21,15 @@ def _mock_session_cm(db_session):
     mock_cm.__aenter__ = AsyncMock(return_value=db_session)
     mock_cm.__aexit__ = AsyncMock(return_value=False)
     return mock_cm
+
+
+def _attach_bulk_session(mock_r2: AsyncMock) -> AsyncMock:
+    """Wire a no-op bulk_session() async CM onto an existing r2 mock."""
+    bulk_cm = AsyncMock()
+    bulk_cm.__aenter__ = AsyncMock(return_value=mock_r2)
+    bulk_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_r2.bulk_session = Mock(return_value=bulk_cm)
+    return mock_r2
 
 
 @pytest.mark.unit
@@ -188,7 +197,7 @@ class TestVerify:
         )
         await db_session.commit()
 
-        mock_r2 = AsyncMock()
+        mock_r2 = _attach_bulk_session(AsyncMock())
         mock_r2.object_exists = AsyncMock(return_value=False)
         with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
             report = await verify(sample=None)
@@ -213,7 +222,7 @@ class TestVerify:
         )
         await db_session.commit()
 
-        mock_r2 = AsyncMock()
+        mock_r2 = _attach_bulk_session(AsyncMock())
         mock_r2.object_exists = AsyncMock(
             side_effect=lambda bucket, key: bucket == settings.R2_PUBLIC_BUCKET
         )
@@ -241,7 +250,7 @@ class TestVerify:
         )
         await db_session.commit()
 
-        mock_r2 = AsyncMock()
+        mock_r2 = _attach_bulk_session(AsyncMock())
         mock_r2.object_exists = AsyncMock(return_value=True)
         with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
             report = await verify(sample=None)
@@ -267,7 +276,7 @@ class TestVerify:
         )
         await db_session.commit()
 
-        mock_r2 = AsyncMock()
+        mock_r2 = _attach_bulk_session(AsyncMock())
         mock_r2.object_exists = AsyncMock(return_value=False)
         with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
             report = await verify(sample=None)
