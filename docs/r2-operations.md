@@ -62,6 +62,10 @@ the same cron on that environment.
 # Inspect one image
 R2_ENABLED=true uv run python scripts/r2_sync.py image 12345
 
+# Force delete + re-upload one image's variants (heals a corrupted object)
+R2_ENABLED=true uv run python scripts/r2_sync.py image 12345 --force-reupload --dry-run
+R2_ENABLED=true uv run python scripts/r2_sync.py image 12345 --force-reupload
+
 # Audit recent rows (--sample N or --all required)
 R2_ENABLED=true uv run python scripts/r2_sync.py verify --sample 1000
 

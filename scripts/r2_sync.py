@@ -108,6 +108,20 @@ def _build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--stale-after", type=_positive_int, default=600)
     img = sub.add_parser("image")
     img.add_argument("image_id", type=int)
+    img.add_argument(
+        "--force-reupload",
+        action="store_true",
+        help=(
+            "Delete + re-upload each ready variant from the local filesystem. "
+            "Refuses if r2_location=NONE (use 'reconcile' first). Triggers a "
+            "best-effort CDN purge for PUBLIC rows."
+        ),
+    )
+    img.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --force-reupload: report actions without touching R2.",
+    )
     ver = sub.add_parser(
         "verify",
         description=(
@@ -450,6 +464,76 @@ async def resync_image(image_id: int) -> None:
         print(f"  {variant}: {bucket}/{key} exists={exists}")
 
 
+async def force_reupload_image(*, image_id: int, dry_run: bool) -> None:
+    """Delete + re-upload each ready variant for one image from local files.
+
+    For healing a partially-corrupted R2 object (truncated upload that passes
+    HEAD but fails GET, or a CDN-cached bad copy) where `reconcile` wouldn't
+    help because `object_exists` returns true. Refuses when r2_location=NONE
+    — that's reconcile's job. Variants whose local file is missing are
+    skipped with a warning (no delete, no upload). PUBLIC bucket uploads
+    trigger a best-effort CDN purge after re-upload.
+    """
+    from pathlib import Path as FilePath
+
+    r2 = get_r2_storage()
+    async with get_async_session() as db:
+        result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+        image = result.scalar_one_or_none()
+
+    if image is None:
+        print(f"image {image_id} not found")
+        return
+
+    if image.r2_location == R2Location.NONE:
+        print(
+            f"image {image_id} has r2_location=NONE — use 'reconcile' to upload "
+            "from local first; force-reupload only operates on already-synced rows"
+        )
+        return
+
+    bucket = (
+        settings.R2_PUBLIC_BUCKET
+        if image.r2_location == R2Location.PUBLIC
+        else settings.R2_PRIVATE_BUCKET
+    )
+    variants = _ready_variants(image)
+    processed_keys: list[str] = []
+
+    async with r2.bulk_session():
+        for variant in variants:
+            ext = "webp" if variant == "thumbs" else image.ext
+            key = f"{variant}/{image.filename}.{ext}"
+            local = FilePath(settings.STORAGE_PATH) / variant / f"{image.filename}.{ext}"
+            if not local.exists():
+                logger.warning(
+                    "force_reupload_local_missing",
+                    image_id=image_id,
+                    variant=variant,
+                )
+                continue
+            processed_keys.append(key)
+            if dry_run:
+                print(f"DRY_RUN delete+reupload {bucket}/{key}")
+                continue
+            await r2.delete_object(bucket=bucket, key=key)
+            await r2.upload_file(bucket=bucket, key=key, path=local)
+
+    if not dry_run and processed_keys and image.r2_location == R2Location.PUBLIC:
+        urls = [f"{settings.R2_PUBLIC_CDN_URL}/{k}" for k in processed_keys]
+        try:
+            await purge_cache_by_urls(urls)
+        except Exception as exc:
+            logger.warning(
+                "force_reupload_cdn_purge_failed",
+                image_id=image_id,
+                error=repr(exc),
+            )
+
+    verb = "would re-upload" if dry_run else "re-uploaded"
+    print(f"{verb} {len(processed_keys)} variants for image {image_id}")
+
+
 async def verify(
     *,
     sample: int | None = None,
@@ -759,7 +843,10 @@ async def _run(args: argparse.Namespace) -> int:
     elif args.command == "reconcile":
         await reconcile(stale_after=args.stale_after)
     elif args.command == "image":
-        await resync_image(args.image_id)
+        if args.force_reupload:
+            await force_reupload_image(image_id=args.image_id, dry_run=args.dry_run)
+        else:
+            await resync_image(args.image_id)
     elif args.command == "verify":
         await verify(
             sample=args.sample,
