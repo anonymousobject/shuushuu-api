@@ -179,7 +179,7 @@ async def _serve_image(
         cdn_url = f"{settings.R2_PUBLIC_CDN_URL}/{key}"
         return Response(
             status_code=302,
-            headers={"Location": cdn_url, "Cache-Control": "no-store"},
+            headers={"Location": cdn_url, "Cache-Control": "private, max-age=300"},
         )
 
     if settings.R2_ENABLED and image.r2_location == R2Location.PRIVATE:

@@ -85,7 +85,12 @@ class TestMediaServingR2:
     async def test_public_bucket_302s_to_cdn(
         self, client: AsyncClient, public_r2_image: Images, monkeypatch
     ):
-        """status=ACTIVE, r2_location=PUBLIC, R2 on → 302 to CDN URL with no-store."""
+        """status=ACTIVE, r2_location=PUBLIC, R2 on → 302 to CDN URL, cacheable.
+
+        The CDN URL is stable for the life of the image's r2_location, so the
+        redirect itself is cacheable. This avoids a round-trip on every <img>
+        render. Staleness after a PUBLIC→PRIVATE move is bounded by max-age.
+        """
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.example.com")
 
@@ -95,7 +100,7 @@ class TestMediaServingR2:
         )
         assert response.status_code == 302
         assert response.headers["Location"].startswith("https://cdn.example.com/fullsize/")
-        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Cache-Control"] == "private, max-age=300"
 
     async def test_private_bucket_302s_to_presigned(
         self, client: AsyncClient, private_r2_image: Images, db_session: AsyncSession, monkeypatch
