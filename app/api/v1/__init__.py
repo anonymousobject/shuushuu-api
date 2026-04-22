@@ -17,6 +17,7 @@ from app.api.v1 import (
     news,
     permissions,
     privmsgs,
+    search,
     tags,
     users,
 )
@@ -37,6 +38,7 @@ router.include_router(history.router)
 router.include_router(favorites.router)
 router.include_router(comments.router)
 router.include_router(privmsgs.router)
+router.include_router(search.router)
 router.include_router(meta.router)
 router.include_router(news.router)
 router.include_router(permissions.router)

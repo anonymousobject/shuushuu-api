@@ -52,6 +52,7 @@ from app.schemas.tag import (
 )
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
+from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 
 SUGGESTION_STATS_MIN_THRESHOLD = 5
 
@@ -1271,6 +1272,8 @@ async def create_tag(
     await db.commit()
     await db.refresh(new_tag)
 
+    await sync_tag_to_search(new_tag, db=db)
+
     return TagResponse.model_validate(new_tag)
 
 
@@ -1544,6 +1547,18 @@ async def update_tag(
     await db.commit()
     await db.refresh(tag)
 
+    await sync_tag_to_search(tag, db=db)
+
+    # If alias was set and tag_links migrated, also sync the canonical tag
+    # (its usage_count changed)
+    if tag.alias_of is not None and tag.alias_of != original_alias_of:
+        canonical_result = await db.execute(
+            select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
+        )
+        canonical_tag = canonical_result.scalar_one_or_none()
+        if canonical_tag:
+            await sync_tag_to_search(canonical_tag, db=db)
+
     return TagResponse.model_validate(tag)
 
 
@@ -1566,6 +1581,8 @@ async def delete_tag(
     await db.delete(tag)
     await db.commit()
 
+    await sync_tag_delete_to_search(tag_id)
+
 
 @router.post("/{tag_id}/links", response_model=TagExternalLinkResponse, status_code=201)
 async def add_tag_link(
@@ -1583,7 +1600,8 @@ async def add_tag_link(
     """
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    if not tag_result.scalar_one_or_none():
+    tag = tag_result.scalar_one_or_none()
+    if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
     # Create new link
@@ -1597,6 +1615,7 @@ async def add_tag_link(
         await db.rollback()
         raise HTTPException(status_code=409, detail="URL already exists for this tag") from None
 
+    await sync_tag_to_search(tag, db=db)
     return TagExternalLinkResponse.model_validate(new_link)
 
 
@@ -1629,6 +1648,12 @@ async def delete_tag_link(
 
     await db.delete(link)
     await db.commit()
+
+    # Re-sync tag to update external_urls in search index
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    tag = tag_result.scalar_one_or_none()
+    if tag:
+        await sync_tag_to_search(tag, db=db)
 
 
 @router.patch("/{tag_id}/links/{link_id}", response_model=TagExternalLinkResponse)
