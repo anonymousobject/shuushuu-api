@@ -53,7 +53,14 @@ class UserSortParams(BaseModel):
     """Common sorting parameters for user queries."""
 
     sort_by: Literal[
-        "user_id", "username", "date_joined", "last_login", "image_posts", "posts", "favorites"
+        "user_id",
+        "username",
+        "date_joined",
+        "last_login",
+        "last_active",
+        "image_posts",
+        "posts",
+        "favorites",
     ] = Field(default="user_id", description="Sort field")
     sort_order: SortOrder = Field(default="DESC", description="Sort order")
 

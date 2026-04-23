@@ -102,6 +102,7 @@ async def list_users(
         "username": Users.username,
         "date_joined": Users.date_joined,
         "last_login": Users.last_login,
+        "last_active": Users.last_active,
         "image_posts": Users.image_posts,
         "posts": Users.posts,
         "favorites": Users.favorites,
