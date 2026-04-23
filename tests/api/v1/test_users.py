@@ -1634,11 +1634,11 @@ class TestUserSorting:
         now = datetime.now(UTC)
         users = [
             Users(
-                username=f"activeuser{i}",
+                username=f"activeuser_asc{i}",
                 password=get_password_hash("TestPassword123!"),
                 password_type="bcrypt",
                 salt="",
-                email=f"activeuser{i}@example.com",
+                email=f"activeuser_asc{i}@example.com",
                 active=1,
                 last_active=now - timedelta(days=i) if i > 0 else None,
             )
@@ -1648,7 +1648,7 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=last_active&sort_order=ASC&search=activeuser")
+        response = await client.get("/api/v1/users?sort_by=last_active&sort_order=ASC&search=activeuser_asc")
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
