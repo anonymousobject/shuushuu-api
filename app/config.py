@@ -64,16 +64,37 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str | None = Field(default=None)
     CELERY_RESULT_BACKEND: str | None = Field(default=None)
 
-    # File Storage
-    STORAGE_TYPE: str = Field(default="local", pattern="^(local|s3)$")
+    # Local filesystem root for image storage (used as fallback when R2 is
+    # disabled, or as the source for R2 uploads during phase 1).
     STORAGE_PATH: str = "/shuushuu/images"
 
-    # S3 Configuration (if using S3)
-    S3_BUCKET: str | None = None
-    S3_ACCESS_KEY: str | None = None
-    S3_SECRET_KEY: str | None = None
-    S3_ENDPOINT: str | None = None
-    S3_REGION: str = "us-east-1"
+    # Cloudflare R2 (image storage)
+    R2_ENABLED: bool = Field(
+        default=False,
+        description="Enable R2 image serving. When false, app uses local FS only.",
+    )
+    R2_ACCESS_KEY_ID: str = Field(default="")
+    R2_SECRET_ACCESS_KEY: str = Field(default="")
+    R2_ENDPOINT: str = Field(default="", description="R2 S3-compatible endpoint URL")
+    R2_PUBLIC_BUCKET: str = Field(default="shuushuu-images")
+    R2_PRIVATE_BUCKET: str = Field(default="shuushuu-images-private")
+    R2_PUBLIC_CDN_URL: str = Field(
+        default="",
+        description="Custom domain attached to the public R2 bucket (no trailing slash)",
+    )
+    R2_PRESIGN_TTL_SECONDS: int = Field(default=900, ge=60, le=3600)
+    R2_ALLOW_BULK_BACKFILL: bool = Field(
+        default=False,
+        description=(
+            "Gate for r2_sync.py backfill-locations and reconcile. "
+            "Set true permanently in prod; leave false on staging to prevent "
+            "mass-uploading prod-imported images to the staging bucket."
+        ),
+    )
+
+    # Cloudflare API (for CDN cache purge)
+    CLOUDFLARE_API_TOKEN: str = Field(default="")
+    CLOUDFLARE_ZONE_ID: str = Field(default="")
 
     # Image Processing
     MAX_IMAGE_SIZE: int = 32 * 1024 * 1024  # 32MB
@@ -183,6 +204,30 @@ class Settings(BaseSettings):
                 "Use SMTP_TLS=true for implicit TLS (port 465), "
                 "or SMTP_STARTTLS=true for STARTTLS (port 587), "
                 "or both false for unencrypted localhost relay."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_r2_enabled_requirements(self) -> Settings:
+        """When R2_ENABLED=true, R2 credentials must be set.
+
+        Cloudflare credentials are optional — purge_cache_by_urls raises at
+        call time if they're missing, so R2 works without CDN purging.
+        """
+        if not self.R2_ENABLED:
+            return self
+        required = {
+            "R2_ACCESS_KEY_ID": self.R2_ACCESS_KEY_ID,
+            "R2_SECRET_ACCESS_KEY": self.R2_SECRET_ACCESS_KEY,
+            "R2_ENDPOINT": self.R2_ENDPOINT,
+            "R2_PUBLIC_BUCKET": self.R2_PUBLIC_BUCKET,
+            "R2_PRIVATE_BUCKET": self.R2_PRIVATE_BUCKET,
+            "R2_PUBLIC_CDN_URL": self.R2_PUBLIC_CDN_URL,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(
+                f"R2_ENABLED=true but these required settings are empty: {', '.join(missing)}"
             )
         return self
 

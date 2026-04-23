@@ -7,7 +7,8 @@ from typing import Any
 from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.config import TagType, settings
-from app.models.image import ImageBase
+from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
+from app.models.image import ImageBase, VariantStatus
 from app.schemas.base import UTCDatetime
 from app.schemas.common import UserSummary
 
@@ -92,35 +93,57 @@ class ImageResponse(ImageBase):
     medium: int
     large: int
     replacement_id: int | None = None  # Original image ID when this is a repost (status=-1)
+    r2_location: int = R2Location.NONE  # Tri-state: 0=NONE, 1=PUBLIC, 2=PRIVATE
 
-    # Computed fields
+    def _should_use_cdn(self) -> bool:
+        """True when we can emit a direct-CDN URL for this image.
+
+        All three must hold: R2 enabled, status is publicly-viewable, and the
+        canonical object lives in the public bucket. A mismatch (e.g., public
+        status but PRIVATE location during a bucket move) falls back to the
+        /images/ path, which the endpoint routes based on current r2_location.
+        """
+        return (
+            settings.R2_ENABLED
+            and self.status in PUBLIC_IMAGE_STATUSES_FOR_R2
+            and self.r2_location == R2Location.PUBLIC
+        )
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def url(self) -> str:
-        """Generate image URL (protected path with permission check)"""
+        """Fullsize URL — direct CDN when eligible, else protected path."""
+        if self._should_use_cdn():
+            return f"{settings.R2_PUBLIC_CDN_URL}/fullsize/{self.filename}.{self.ext}"
         return f"{settings.IMAGE_BASE_URL}/images/{self.filename}.{self.ext}"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def thumbnail_url(self) -> str:
-        """Generate thumbnail URL (protected path with permission check)"""
+        """Thumbnail URL (always WebP)."""
+        if self._should_use_cdn():
+            return f"{settings.R2_PUBLIC_CDN_URL}/thumbs/{self.filename}.webp"
         return f"{settings.IMAGE_BASE_URL}/thumbs/{self.filename}.webp"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def medium_url(self) -> str | None:
-        """Generate medium variant URL (1280px edge, protected path) if available"""
-        if self.medium:
-            return f"{settings.IMAGE_BASE_URL}/medium/{self.filename}.{self.ext}"
-        return None
+        """Medium variant (1280px edge) URL, or None if variant is absent."""
+        if not self.medium:
+            return None
+        if self.medium == VariantStatus.READY and self._should_use_cdn():
+            return f"{settings.R2_PUBLIC_CDN_URL}/medium/{self.filename}.{self.ext}"
+        return f"{settings.IMAGE_BASE_URL}/medium/{self.filename}.{self.ext}"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def large_url(self) -> str | None:
-        """Generate large variant URL (2048px edge, protected path) if available"""
-        if self.large:
-            return f"{settings.IMAGE_BASE_URL}/large/{self.filename}.{self.ext}"
-        return None
+        """Large variant (2048px edge) URL, or None if variant is absent."""
+        if not self.large:
+            return None
+        if self.large == VariantStatus.READY and self._should_use_cdn():
+            return f"{settings.R2_PUBLIC_CDN_URL}/large/{self.filename}.{self.ext}"
+        return f"{settings.IMAGE_BASE_URL}/large/{self.filename}.{self.ext}"
 
 
 class ImageDetailedResponse(ImageResponse):

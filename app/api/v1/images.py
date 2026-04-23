@@ -46,6 +46,7 @@ from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optio
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
+from app.core.r2_constants import R2Location
 from app.core.redis import get_redis
 from app.models import (
     AdminActions,
@@ -98,6 +99,7 @@ from app.services.image_processing import (
     get_image_dimensions,
     validate_image_file,
 )
+from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
 from app.services.rate_limit import check_similarity_rate_limit
@@ -785,6 +787,16 @@ async def delete_image(
     if not remove_from_iqdb(image_id):
         logger.warning("iqdb_remove_failed_for_deleted_image", image_id=image_id)
 
+    # Capture R2 metadata before DB delete
+    prior_r2_location = image.r2_location
+    prior_filename = image.filename
+    prior_ext = image.ext
+    prior_variants = ["fullsize", "thumbs"]
+    if image.medium == VariantStatus.READY:
+        prior_variants.append("medium")
+    if image.large == VariantStatus.READY:
+        prior_variants.append("large")
+
     # Capture file paths before deleting from DB
     storage_path = FilePath(settings.STORAGE_PATH)
     files_to_delete = [
@@ -817,6 +829,16 @@ async def delete_image(
         deleted_by=current_user.user_id,
         reason=reason,
     )
+
+    if settings.R2_ENABLED and prior_r2_location != R2Location.NONE:
+        await enqueue_job(
+            "r2_delete_image_job",
+            image_id=image_id,
+            r2_location=int(prior_r2_location),
+            filename=prior_filename,
+            ext=prior_ext,
+            variants=prior_variants,
+        )
 
 
 @router.patch("/{image_id}", response_model=ImageDetailedResponse)
@@ -959,6 +981,13 @@ async def update_image(
         setattr(image, field, value)
 
     await db.commit()
+
+    if new_status is not None:
+        await enqueue_r2_sync_on_status_change(
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=new_status,
+        )
 
     # Recalculate ratings for the original image after repost migration
     if new_status == ImageStatus.REPOST and replacement_id:
@@ -2143,6 +2172,13 @@ async def upload_image(
             thumb_path=str(thumb_path),
             _defer_by=5.0,  # Wait 5 seconds for thumbnail to complete
         )
+
+        if settings.R2_ENABLED:
+            await enqueue_job(
+                "r2_finalize_upload_job",
+                image_id=image_id,
+                _defer_by=90,
+            )
 
         # Build response
         image_response = ImageResponse(

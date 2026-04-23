@@ -35,6 +35,7 @@ dependencies = [
     "python-json-logger>=2.0.7",
     # Task queue
     "arq>=0.27.0", # Task queue for background jobs
+    "aioboto3>=13.0.0",  # Async S3-compatible client for Cloudflare R2
     # "python-magic>=0.4.27",  # File type detection - for validating image uploads
     # "slowapi>=0.1.9",  # Rate limiting - for API throttling
     # "python-multipart>=0.0.20",  # Multipart form data - needed for image uploads
@@ -56,6 +57,8 @@ dev = [
     "types-redis>=4.6.0",
     # Security / Auditing
     "pip-audit>=2.10.0",
+    "moto[s3,server]>=5.0.0",  # Mock S3 for R2 adapter tests
+    "types-aioboto3>=13.0.0",  # Type stubs
 ]
 
 [build-system]

@@ -2536,7 +2536,7 @@ class TestShowAllImagesFilter:
         db_session.add(user)
         await db_session.flush()
 
-        # Create images with different statuses (excluding LOW_QUALITY which isn't valid)
+        # Create images with different statuses (LOW_QUALITY omitted — same visibility as REVIEW)
         statuses = [
             (ImageStatus.REVIEW, "review_img"),  # -4, hidden
             (ImageStatus.INAPPROPRIATE, "inapp_img"),  # -2, hidden
@@ -2676,7 +2676,7 @@ class TestShowAllImagesFilter:
         db_session.add(other_user)
         await db_session.flush()
 
-        # All valid statuses (excluding LOW_QUALITY which isn't in the validator)
+        # All valid statuses (LOW_QUALITY omitted — same visibility as REVIEW)
         statuses = [
             (ImageStatus.REVIEW, "review_img"),
             (ImageStatus.INAPPROPRIATE, "inapp_img"),

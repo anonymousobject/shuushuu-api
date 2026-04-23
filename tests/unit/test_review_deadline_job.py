@@ -508,7 +508,7 @@ class TestEarlyClose:
         await db_session.refresh(review)
         await db_session.refresh(image)
 
-        assert closed is True
+        assert closed is not None
         assert review.status == ReviewStatus.CLOSED
         assert review.outcome == ReviewOutcome.KEEP
         assert image.status == ImageStatus.ACTIVE
@@ -527,7 +527,7 @@ class TestEarlyClose:
         await db_session.refresh(review)
         await db_session.refresh(image)
 
-        assert closed is True
+        assert closed is not None
         assert review.status == ReviewStatus.CLOSED
         assert review.outcome == ReviewOutcome.REMOVE
         assert image.status == ImageStatus.INAPPROPRIATE
@@ -544,7 +544,7 @@ class TestEarlyClose:
 
         await db_session.refresh(review)
 
-        assert closed is False
+        assert closed is None
         assert review.status == ReviewStatus.OPEN
 
     async def test_early_close_tie(self, db_session: AsyncSession):
@@ -559,7 +559,7 @@ class TestEarlyClose:
 
         await db_session.refresh(review)
 
-        assert closed is False
+        assert closed is None
         assert review.status == ReviewStatus.OPEN
 
     async def test_early_close_large_margin_keep(self, db_session: AsyncSession):
@@ -576,7 +576,7 @@ class TestEarlyClose:
         await db_session.refresh(review)
         await db_session.refresh(image)
 
-        assert closed is True
+        assert closed is not None
         assert review.outcome == ReviewOutcome.KEEP
         assert image.status == ImageStatus.ACTIVE
 
@@ -615,5 +615,5 @@ class TestEarlyClose:
 
         await db_session.refresh(review)
 
-        assert closed is False
+        assert closed is None
         assert review.status == ReviewStatus.OPEN

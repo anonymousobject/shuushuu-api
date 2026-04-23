@@ -21,6 +21,7 @@ from arq.worker import func
 
 from app.config import settings
 from app.core.database import get_async_session
+from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.review_jobs import check_review_deadlines
 from app.services.user_cleanup import cleanup_unverified_accounts
 from app.tasks.email_jobs import send_password_reset_email_job, send_verification_email_job
@@ -30,6 +31,11 @@ from app.tasks.image_jobs import (
     create_variant_job,
 )
 from app.tasks.pm_jobs import send_pm_notification
+from app.tasks.r2_jobs import (
+    r2_delete_image_job,
+    r2_finalize_upload_job,
+    sync_image_status_job,
+)
 from app.tasks.rating_jobs import recalculate_rating_job
 
 
@@ -66,6 +72,11 @@ async def process_review_deadlines(ctx: dict[str, Any]) -> None:
         try:
             results = await check_review_deadlines(db)
             await db.commit()
+            # Enqueue R2 bucket moves AFTER the commit — the worker that runs
+            # sync_image_status_job loads the row in a fresh session and needs
+            # to see the post-transition status.
+            for image_id, old_status, new_status in results.get("transitions", []):
+                await enqueue_r2_sync_on_status_change(image_id, old_status, new_status)
             logger.info(
                 "review_deadline_job_complete",
                 processed=results["processed"],
@@ -122,6 +133,9 @@ class WorkerSettings:
         func(send_pm_notification, max_tries=3),
         func(send_verification_email_job, max_tries=3),
         func(send_password_reset_email_job, max_tries=3),
+        func(r2_finalize_upload_job, max_tries=5),
+        func(sync_image_status_job, max_tries=settings.ARQ_MAX_TRIES),
+        func(r2_delete_image_job, max_tries=settings.ARQ_MAX_TRIES),
     ]
 
     cron_jobs = [
