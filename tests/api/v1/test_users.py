@@ -1629,6 +1629,67 @@ class TestUserSorting:
         # Non-nulls should be sorted in descending order
         assert non_null_logins == sorted(non_null_logins, reverse=True)
 
+    async def test_sort_by_last_active_asc(self, client: AsyncClient, db_session: AsyncSession):
+        """Test sorting users by last_active in ascending order."""
+        now = datetime.now(UTC)
+        users = [
+            Users(
+                username=f"activeuser{i}",
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=f"activeuser{i}@example.com",
+                active=1,
+                last_active=now - timedelta(days=i) if i > 0 else None,
+            )
+            for i in range(5)
+        ]
+        for user in users:
+            db_session.add(user)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users?sort_by=last_active&sort_order=ASC&search=activeuser")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["users"]) == 5
+
+        last_actives = [u["last_active"] for u in data["users"]]
+        non_null = [la for la in last_actives if la is not None]
+        assert non_null == sorted(non_null)
+
+    async def test_sort_by_last_active_desc(self, client: AsyncClient, db_session: AsyncSession):
+        """Test sorting users by last_active in descending order."""
+        now = datetime.now(UTC)
+        users = [
+            Users(
+                username=f"activeuser_desc{i}",
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=f"activeuser_desc{i}@example.com",
+                active=1,
+                last_active=now - timedelta(days=i) if i > 0 else None,
+            )
+            for i in range(5)
+        ]
+        for user in users:
+            db_session.add(user)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users?sort_by=last_active&sort_order=DESC&search=activeuser_desc")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["users"]) == 5
+
+        last_actives = [u["last_active"] for u in data["users"]]
+        non_null = [la for la in last_actives if la is not None]
+        null_vals = [la for la in last_actives if la is None]
+        if null_vals:
+            first_null_index = last_actives.index(None)
+            assert all(la is not None for la in last_actives[:first_null_index])
+            assert all(la is None for la in last_actives[first_null_index:])
+        assert non_null == sorted(non_null, reverse=True)
+
     async def test_sort_by_image_posts_asc(self, client: AsyncClient, db_session: AsyncSession):
         """Test sorting users by image_posts in ascending order."""
         # Create users with different image_posts counts
