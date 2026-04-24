@@ -177,5 +177,9 @@ from app.api.v1.iqdb_feed import router as iqdb_feed_router  # noqa: E402
 # Mount iqdb feed at root level so iqdb.org can crawl /image/index.xml
 app.include_router(iqdb_feed_router)
 
+from app.api.v1 import feeds as feeds_router  # noqa: E402
+
+app.include_router(feeds_router.router, prefix="/api/v1")
+
 # Note: Static images are served directly by nginx for better performance
 # See docker/nginx/frontend.conf.template for configuration
