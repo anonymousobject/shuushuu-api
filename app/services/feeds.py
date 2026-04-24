@@ -1,17 +1,28 @@
 """Atom feed rendering and query helpers."""
 
 import hashlib
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from html import escape
 from typing import Any
 
+from feedgenerator import Atom1Feed, Enclosure  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config import ImageStatus, TagType
+from app.config import ImageStatus, TagType, settings
 from app.models.image import Images
 from app.models.tag_link import TagLinks
 from app.schemas.image import ImageDetailedResponse
+
+TAG_TYPE_NAME: dict[int, str] = {
+    TagType.THEME: "Theme",
+    TagType.SOURCE: "Source",
+    TagType.ARTIST: "Artist",
+    TagType.CHARACTER: "Character",
+    # TagType.ALL is a filter pseudo-type; never on actual rows.
+}
 
 SentinelRow = tuple[int, datetime | None]
 
@@ -167,3 +178,82 @@ async def fetch_feed_entries(
     result = await db.execute(query)
     images = result.scalars().all()
     return [ImageDetailedResponse.from_db_model(image) for image in images]
+
+
+class _ShuushuuAtom1Feed(Atom1Feed):  # type: ignore[misc]
+    """Atom1Feed variant that emits <category term=... scheme=...> per RFC 4287.
+
+    The stock Atom1Feed.add_item_elements drops the scheme attribute, so we
+    append our own category elements from a 'shuu_categories' item attribute
+    (list of (term, scheme) tuples) passed through add_item's **kwargs.
+    """
+
+    def add_item_elements(self, handler, item):  # type: ignore[no-untyped-def]
+        super().add_item_elements(handler, item)
+        for term, scheme in item.get("shuu_categories", ()):
+            handler.addQuickElement("category", "", {"term": term, "scheme": scheme})
+
+
+@dataclass(frozen=True)
+class FeedMeta:
+    feed_id: str
+    title: str
+    self_url: str
+    alternate_url: str
+
+
+def _category_scheme(tag_type_id: int) -> str:
+    return (
+        f"{settings.FRONTEND_URL.rstrip('/')}/tag-type/{TAG_TYPE_NAME.get(tag_type_id, 'Unknown')}"
+    )
+
+
+def build_atom_feed(
+    meta: FeedMeta,
+    entries: list[ImageDetailedResponse],
+) -> str:
+    """Render an Atom 1.0 XML document."""
+    feed = _ShuushuuAtom1Feed(
+        title=meta.title,
+        link=meta.alternate_url,
+        description="",  # empty → no <subtitle>
+        feed_url=meta.self_url,
+        language="en",
+    )
+    # Override <id> and feed-level <author>. <updated> is auto-derived.
+    feed.feed["id"] = meta.feed_id
+    feed.feed["author_name"] = "Shuushuu"
+
+    frontend = settings.FRONTEND_URL.rstrip("/")
+
+    for image in entries:
+        author_name = (
+            image.user.username if image.user and image.user.username else "[deleted user]"
+        )
+        entry_dt = image.date_added or datetime.now(UTC)
+
+        content_html: str | None = escape(image.caption) if image.caption else None
+
+        shuu_categories = [(t.tag, _category_scheme(t.type_id)) for t in (image.tags or [])]
+
+        enclosure = Enclosure(
+            url=image.url,
+            length=str(image.filesize or 0),
+            mime_type=mime_type_for_ext(image.ext),
+        )
+
+        feed.add_item(
+            title=compose_entry_title(image_id=image.image_id, tags=image.tags or []),
+            link=f"{frontend}/images/{image.image_id}",
+            description=None,
+            content=content_html,
+            unique_id=f"tag:e-shuushuu.net,2005:image:{image.image_id}",
+            unique_id_is_permalink=False,
+            pubdate=entry_dt,
+            updateddate=entry_dt,
+            author_name=author_name,
+            enclosures=[enclosure],
+            shuu_categories=shuu_categories,
+        )
+
+    return feed.writeString("utf-8")  # type: ignore[no-any-return]

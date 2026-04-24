@@ -1,11 +1,24 @@
 """Unit tests for app.services.feeds pure helpers."""
 
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
 from app.config import TagType
-from app.services.feeds import compose_entry_title, compute_feed_etag, mime_type_for_ext, newest_timestamp
+from app.models.image import Images
+from app.models.tag import Tags
+from app.models.user import Users
+from app.schemas.image import ImageDetailedResponse
+from app.services.feeds import (
+    FeedMeta,
+    build_atom_feed,
+    compose_entry_title,
+    compute_feed_etag,
+    mime_type_for_ext,
+    newest_timestamp,
+)
 
 
 class TestMimeTypeForExt:
@@ -178,3 +191,156 @@ class TestNewestTimestamp:
         result = newest_timestamp(sentinel)
         assert result is not None
         assert result.microsecond == 0
+
+
+ATOM_NS = "{http://www.w3.org/2005/Atom}"
+
+
+def _feed_meta() -> FeedMeta:
+    return FeedMeta(
+        feed_id="tag:e-shuushuu.net,2005:feed:images",
+        title="Shuushuu — latest images",
+        self_url="https://e-shuushuu.net/api/v1/images.atom",
+        alternate_url="https://e-shuushuu.net/",
+    )
+
+
+class TestBuildAtomFeedEmpty:
+    def test_empty_feed_is_valid_atom(self):
+        xml = build_atom_feed(_feed_meta(), entries=[])
+        root = ET.fromstring(xml)
+        assert root.tag == f"{ATOM_NS}feed"
+
+    def test_empty_feed_has_id_title_self_link_updated(self):
+        xml = build_atom_feed(_feed_meta(), entries=[])
+        root = ET.fromstring(xml)
+        assert root.find(f"{ATOM_NS}id").text == (
+            "tag:e-shuushuu.net,2005:feed:images"
+        )
+        assert root.find(f"{ATOM_NS}title").text == "Shuushuu — latest images"
+        self_link = root.find(f"{ATOM_NS}link[@rel='self']")
+        assert self_link is not None
+        assert self_link.get("href") == (
+            "https://e-shuushuu.net/api/v1/images.atom"
+        )
+        assert root.find(f"{ATOM_NS}updated") is not None
+
+    def test_empty_feed_has_no_entries(self):
+        xml = build_atom_feed(_feed_meta(), entries=[])
+        root = ET.fromstring(xml)
+        assert root.findall(f"{ATOM_NS}entry") == []
+
+
+def _orm_image(
+    image_id: int = 42,
+    filename: str = "abc42",
+    ext: str = "png",
+    caption: str | None = None,
+    filesize: int = 1024,
+    date_added: datetime | None = None,
+    username: str | None = "alice",
+    tags: list[Tags] | None = None,
+) -> Images:
+    user = None
+    if username is not None:
+        user = Users(
+            user_id=1,
+            username=username,
+            password="x",
+            password_type="bcrypt",
+            salt="",
+            email="a@b.c",
+            active=1,
+        )
+
+    img = Images(
+        image_id=image_id,
+        filename=filename,
+        ext=ext,
+        caption=caption or "",
+        filesize=filesize,
+        user_id=1,
+        status=1,
+        date_added=date_added or datetime(2026, 4, 24, 10, 0, 0, tzinfo=UTC),
+    )
+    # Bypass SQLAlchemy instrumentation — we're building a plain object graph
+    # for from_db_model to read, not persisting through a session.
+    img.__dict__["user"] = user
+    img.__dict__["tag_links"] = [SimpleNamespace(tag=t) for t in (tags or [])]
+    return img
+
+
+def _entry(**overrides) -> ImageDetailedResponse:
+    return ImageDetailedResponse.from_db_model(_orm_image(**overrides))
+
+
+class TestBuildAtomFeedWithEntries:
+    def test_entry_has_tag_uri_id(self):
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(image_id=42)])
+        root = ET.fromstring(xml)
+        entry_node = root.find(f"{ATOM_NS}entry")
+        assert entry_node.find(f"{ATOM_NS}id").text == (
+            "tag:e-shuushuu.net,2005:image:42"
+        )
+
+    def test_entry_alternate_link_points_to_detail_page(self):
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(image_id=42)])
+        root = ET.fromstring(xml)
+        alt = root.find(f"{ATOM_NS}entry/{ATOM_NS}link[@rel='alternate']")
+        assert alt is not None
+        assert alt.get("href", "").endswith("/images/42")
+
+    def test_entry_enclosure_has_mime_and_length(self):
+        xml = build_atom_feed(
+            _feed_meta(), entries=[_entry(image_id=42, ext="png", filesize=1024)]
+        )
+        root = ET.fromstring(xml)
+        enc = root.find(f"{ATOM_NS}entry/{ATOM_NS}link[@rel='enclosure']")
+        assert enc is not None
+        assert enc.get("type") == "image/png"
+        assert enc.get("length") == "1024"
+
+    def test_entry_author_is_uploader(self):
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(username="alice")])
+        root = ET.fromstring(xml)
+        assert (
+            root.find(f"{ATOM_NS}entry/{ATOM_NS}author/{ATOM_NS}name").text
+            == "alice"
+        )
+
+    def test_entry_author_falls_back_for_deleted_uploader(self):
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(username=None)])
+        root = ET.fromstring(xml)
+        assert (
+            root.find(f"{ATOM_NS}entry/{ATOM_NS}author/{ATOM_NS}name").text
+            == "[deleted user]"
+        )
+
+    def test_entry_content_is_html_escaped_caption(self):
+        xml = build_atom_feed(
+            _feed_meta(),
+            entries=[_entry(caption="a <b> caption & stuff")],
+        )
+        root = ET.fromstring(xml)
+        content = root.find(f"{ATOM_NS}entry/{ATOM_NS}content")
+        assert content is not None
+        assert content.get("type") == "html"
+        assert content.text == "a &lt;b&gt; caption &amp; stuff"
+
+    def test_entry_with_no_caption_omits_content(self):
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(caption=None)])
+        root = ET.fromstring(xml)
+        assert root.find(f"{ATOM_NS}entry/{ATOM_NS}content") is None
+
+    def test_entry_categories_carry_scheme(self):
+        tags = [
+            Tags(tag_id=1, title="hatsune miku", type=TagType.CHARACTER, usage_count=500),
+            Tags(tag_id=2, title="vocaloid", type=TagType.SOURCE, usage_count=1000),
+        ]
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(tags=tags)])
+        root = ET.fromstring(xml)
+        cats = root.findall(f"{ATOM_NS}entry/{ATOM_NS}category")
+        assert len(cats) == 2
+        by_term = {c.get("term"): c.get("scheme") for c in cats}
+        assert by_term["hatsune miku"].endswith("/tag-type/Character")
+        assert by_term["vocaloid"].endswith("/tag-type/Source")
