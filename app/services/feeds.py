@@ -1,8 +1,12 @@
 """Atom feed rendering and query helpers."""
 
+import hashlib
+from datetime import datetime
 from typing import Any
 
 from app.config import TagType
+
+SentinelRow = tuple[int, datetime | None]
 
 _MIME_BY_EXT: dict[str, str] = {
     "jpg": "image/jpeg",
@@ -57,3 +61,30 @@ def compose_entry_title(image_id: int, tags: list[Any]) -> str:
     if not parts:
         return f"Image #{image_id}"
     return " ".join(parts)
+
+
+def compute_feed_etag(sentinel: list[SentinelRow]) -> str:
+    """Derive a weak ETag from the sentinel query result.
+
+    Rows with NULL date_added are excluded from the hash (defensive per spec).
+    The hash is stable for identical input, which is all a conditional request
+    needs — we regenerate it from current DB state on every request and never
+    store it.
+    """
+    payload = ",".join(
+        f"{image_id}:{ts.isoformat()}" for image_id, ts in sentinel if ts is not None
+    )
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    return f'W/"{digest}"'
+
+
+def newest_timestamp(sentinel: list[SentinelRow]) -> datetime | None:
+    """Return the newest non-NULL date_added from the sentinel, floored to the second.
+
+    Returns None if the sentinel is empty or every row has NULL date_added —
+    callers should omit the Last-Modified header in that case.
+    """
+    non_null = [ts for _, ts in sentinel if ts is not None]
+    if not non_null:
+        return None
+    return max(non_null).replace(microsecond=0)

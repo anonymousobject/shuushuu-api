@@ -1,9 +1,11 @@
 """Unit tests for app.services.feeds pure helpers."""
 
+from datetime import UTC, datetime
+
 import pytest
 
 from app.config import TagType
-from app.services.feeds import compose_entry_title, mime_type_for_ext
+from app.services.feeds import compose_entry_title, compute_feed_etag, mime_type_for_ext, newest_timestamp
 
 
 class TestMimeTypeForExt:
@@ -101,3 +103,78 @@ class TestComposeEntryTitle:
             compose_entry_title(image_id=42, tags=tags)
             == "high usage char by high usage artist"
         )
+
+
+class TestComputeFeedEtag:
+    def _sentinel(self):
+        return [
+            (100, datetime(2026, 4, 24, 12, 0, 0, tzinfo=UTC)),
+            (99, datetime(2026, 4, 23, 12, 0, 0, tzinfo=UTC)),
+        ]
+
+    def test_returns_weak_etag(self):
+        etag = compute_feed_etag(self._sentinel())
+        assert etag.startswith('W/"')
+        assert etag.endswith('"')
+
+    def test_deterministic_for_same_input(self):
+        s = self._sentinel()
+        assert compute_feed_etag(s) == compute_feed_etag(s)
+
+    def test_changes_when_image_id_changes(self):
+        a = self._sentinel()
+        b = self._sentinel()
+        b[0] = (101, b[0][1])
+        assert compute_feed_etag(a) != compute_feed_etag(b)
+
+    def test_changes_when_timestamp_changes(self):
+        a = self._sentinel()
+        b = self._sentinel()
+        b[0] = (b[0][0], datetime(2026, 4, 24, 13, 0, 0, tzinfo=UTC))
+        assert compute_feed_etag(a) != compute_feed_etag(b)
+
+    def test_empty_sentinel_still_returns_valid_etag(self):
+        etag = compute_feed_etag([])
+        assert etag.startswith('W/"') and etag.endswith('"')
+
+    def test_ignores_rows_with_null_date(self):
+        a = [(100, datetime(2026, 4, 24, 12, 0, 0, tzinfo=UTC))]
+        b = [
+            (100, datetime(2026, 4, 24, 12, 0, 0, tzinfo=UTC)),
+            (99, None),
+        ]
+        assert compute_feed_etag(a) == compute_feed_etag(b)
+
+
+class TestNewestTimestamp:
+    def test_picks_newest_from_sentinel(self):
+        sentinel = [
+            (100, datetime(2026, 4, 24, 12, 0, 0, tzinfo=UTC)),
+            (99, datetime(2026, 4, 23, 12, 0, 0, tzinfo=UTC)),
+        ]
+        assert newest_timestamp(sentinel) == datetime(
+            2026, 4, 24, 12, 0, 0, tzinfo=UTC
+        )
+
+    def test_empty_returns_none(self):
+        assert newest_timestamp([]) is None
+
+    def test_skips_none_timestamps(self):
+        sentinel = [
+            (100, None),
+            (99, datetime(2026, 4, 23, 12, 0, 0, tzinfo=UTC)),
+        ]
+        assert newest_timestamp(sentinel) == datetime(
+            2026, 4, 23, 12, 0, 0, tzinfo=UTC
+        )
+
+    def test_all_none_returns_none(self):
+        assert newest_timestamp([(100, None), (99, None)]) is None
+
+    def test_result_is_floored_to_whole_seconds(self):
+        sentinel = [
+            (100, datetime(2026, 4, 24, 12, 0, 0, 999_999, tzinfo=UTC)),
+        ]
+        result = newest_timestamp(sentinel)
+        assert result is not None
+        assert result.microsecond == 0
