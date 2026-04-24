@@ -644,9 +644,9 @@ class TestFetchFeedSentinelGlobal:
     ):
         user = await _make_user(db_session)
         active_a = await _make_image(db_session, user, "a")
-        hidden = await _make_image(db_session, user, "h", status=ImageStatus.DELETED)
+        hidden = await _make_image(db_session, user, "h", status=ImageStatus.INAPPROPRIATE)
         active_b = await _make_image(db_session, user, "b")
-        await _make_image(db_session, user, "c", status=ImageStatus.REPORTED)
+        await _make_image(db_session, user, "c", status=ImageStatus.REVIEW)
 
         sentinel = await fetch_feed_sentinel(db_session, tag_ids=None, limit=50)
 
@@ -813,7 +813,7 @@ class TestFetchFeedEntriesGlobal:
     async def test_only_active_images(self, db_session: AsyncSession):
         user = await _make_user(db_session, "activeonly")
         active = await _make_image(db_session, user, "a")
-        hidden = await _make_image(db_session, user, "h", status=ImageStatus.DELETED)
+        hidden = await _make_image(db_session, user, "h", status=ImageStatus.INAPPROPRIATE)
 
         entries = await fetch_feed_entries(db_session, tag_ids=None, limit=50)
         ids = [e.image_id for e in entries]
@@ -1218,7 +1218,7 @@ class TestGlobalImagesFeed:
         user = await _make_user(db_session, "actuser")
         active = await _make_image(db_session, user, "a1")
         hidden = await _make_image(
-            db_session, user, "h1", status=ImageStatus.DELETED
+            db_session, user, "h1", status=ImageStatus.INAPPROPRIATE
         )
 
         response = await client.get("/api/v1/images.atom")
