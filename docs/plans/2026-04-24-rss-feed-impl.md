@@ -511,7 +511,7 @@ Append to `app/services/feeds.py`:
 
 ```python
 import hashlib
-from datetime import datetime
+from datetime import UTC, datetime
 
 
 SentinelRow = tuple[int, datetime | None]
@@ -1216,9 +1216,11 @@ class TestBuildAtomFeedWithEntries:
         content = root.find(f"{ATOM_NS}entry/{ATOM_NS}content")
         assert content is not None
         assert content.get("type") == "html"
-        # ET.fromstring will have already un-escaped &amp; → &, &lt; → <
-        # so we check the .text rendered equals the original.
-        assert content.text == "a <b> caption & stuff"
+        # Two escape layers apply: html.escape (our code, so <b> is treated
+        # as plain text inside type="html") + XML-attribute escape (library).
+        # ET.fromstring reverses only the outer XML layer, so .text still
+        # shows the HTML-escaped form.
+        assert content.text == "a &lt;b&gt; caption &amp; stuff"
 
     def test_entry_with_no_caption_omits_content(self):
         xml = build_atom_feed(_feed_meta(), entries=[_entry(caption=None)])
