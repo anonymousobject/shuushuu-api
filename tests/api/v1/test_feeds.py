@@ -161,3 +161,88 @@ class TestFetchFeedEntriesGlobal:
         entries = await fetch_feed_entries(db_session, tag_ids=None, limit=50)
         ids = [e.image_id for e in entries]
         assert ids.index(second.image_id) < ids.index(first.image_id)
+
+
+class TestGlobalImagesFeed:
+    async def test_returns_atom_content_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "ctuser")
+        await _make_image(db_session, user, "ct1")
+        response = await client.get("/api/v1/images.atom")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/atom+xml")
+
+    async def test_includes_only_active_images(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "actuser")
+        active = await _make_image(db_session, user, "a1")
+        hidden = await _make_image(db_session, user, "h1", status=ImageStatus.INAPPROPRIATE)
+        response = await client.get("/api/v1/images.atom")
+        body = response.text
+        assert f"image:{active.image_id}" in body
+        assert f"image:{hidden.image_id}" not in body
+
+    async def test_caps_at_50_entries(self, client: AsyncClient, db_session: AsyncSession):
+        user = await _make_user(db_session, "capuser")
+        for i in range(55):
+            await _make_image(db_session, user, f"cap{i}")
+        response = await client.get("/api/v1/images.atom")
+        assert response.status_code == 200
+        assert response.text.count("<entry") <= 50
+
+    async def test_sets_cache_control_header(self, client: AsyncClient, db_session: AsyncSession):
+        user = await _make_user(db_session, "cacheuser")
+        await _make_image(db_session, user, "c1")
+        response = await client.get("/api/v1/images.atom")
+        assert "max-age=300" in response.headers["cache-control"]
+
+    async def test_sets_etag_and_last_modified(self, client: AsyncClient, db_session: AsyncSession):
+        user = await _make_user(db_session, "etaguser")
+        await _make_image(db_session, user, "e1")
+        response = await client.get("/api/v1/images.atom")
+        assert response.headers.get("etag", "").startswith('W/"')
+        assert "last-modified" in response.headers
+
+    async def test_conditional_if_none_match_returns_304(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "condetag")
+        await _make_image(db_session, user, "ce1")
+        first = await client.get("/api/v1/images.atom")
+        etag = first.headers["etag"]
+        second = await client.get(
+            "/api/v1/images.atom", headers={"If-None-Match": etag}
+        )
+        assert second.status_code == 304
+        assert second.text == ""
+
+    async def test_new_image_busts_etag(self, client: AsyncClient, db_session: AsyncSession):
+        user = await _make_user(db_session, "bustetag")
+        await _make_image(db_session, user, "be1")
+        first = await client.get("/api/v1/images.atom")
+        first_etag = first.headers["etag"]
+        await _make_image(db_session, user, "be2")
+        second = await client.get(
+            "/api/v1/images.atom", headers={"If-None-Match": first_etag}
+        )
+        assert second.status_code == 200
+        assert second.headers["etag"] != first_etag
+
+    async def test_if_modified_since_returns_304(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "imsuser")
+        await _make_image(db_session, user, "ims1")
+        first = await client.get("/api/v1/images.atom")
+        last_mod = first.headers["last-modified"]
+        second = await client.get(
+            "/api/v1/images.atom", headers={"If-Modified-Since": last_mod}
+        )
+        assert second.status_code == 304
+
+    async def test_empty_feed_is_200(self, client: AsyncClient, db_session: AsyncSession):
+        response = await client.get("/api/v1/images.atom")
+        assert response.status_code == 200
+        assert "<feed" in response.text
