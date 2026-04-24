@@ -32,6 +32,7 @@ Modern booru convention is Atom 1.0 (verified: Danbooru serves `/posts.atom`, e6
 | `GET` | `/api/v1/tags/{id}/images.atom` | Latest 50 active images tagged with `{id}`. `{id}` is `tags.tag_id`. 404 if the tag does not exist. |
 
 - `{id}` is used instead of `{title}` to make URLs stable across tag renames.
+- The per-tag endpoint resolves aliases (`tags.alias_of`) via `resolve_tag_alias()` and expands the tag hierarchy via `get_tag_hierarchy()`, matching `GET /api/v1/tags/{id}/images` (see `app/api/v1/tags.py:167,201,695,703`). A reader subscribing to a tag feed sees the same image set the frontend tag page renders.
 - Content-Type: `application/atom+xml; charset=utf-8`.
 - Public (no auth).
 - Fixed window: 50 entries. No query parameters.
@@ -56,11 +57,11 @@ Modern booru convention is Atom 1.0 (verified: Danbooru serves `/posts.atom`, e6
 | `<id>` | `tag:e-shuushuu.net,2005:image:{image_id}`. Tag URI, stable, unique, independent of filename. |
 | `<title>` | See "Title composition" below. |
 | `<link rel="alternate">` | `https://e-shuushuu.net/images/{image_id}` (frontend detail page). |
-| `<link rel="enclosure">` | Full image URL, with `type="image/{ext}"`. `length` is omitted (we do not store file size per image). |
+| `<link rel="enclosure">` | Full image URL, with `type="image/{ext}"` and `length="{image.filesize}"` in bytes. |
 | `<updated>` | `image.date_added`. |
 | `<published>` | `image.date_added`. Same as `<updated>` until the model tracks edits separately. |
 | `<author><name>` | `image.user.username`. `"[deleted user]"` if `user` is NULL (soft-deleted uploader). |
-| `<category>` | One per tag linked to the image, via `tag_links`. `term="{tag.title}"`, `scheme="https://e-shuushuu.net/tag-type/{type_name}"` where `type_name` is one of `all`, `theme`, `source`, `artist`, `character` per `TagType`. No truncation. |
+| `<category>` | One per tag linked to the image, via `tag_links`. `term="{tag.title}"`, `scheme="https://e-shuushuu.net/tag-type/{type_name}"` where `type_name` is the value from `TagSummary.type_name` (title-cased: `All`, `Theme`, `Source`, `Artist`, `Character`). Reusing the existing schema value keeps feed and JSON-API representations aligned. No truncation. |
 | `<content type="html">` | `image.caption` if present, else empty string. HTML-escaped. |
 
 ### Title composition
@@ -79,7 +80,7 @@ Rationale: titles are the prominent field in feed-reader list views; keeping the
 ### Response headers
 
 - `Cache-Control: public, max-age=300` (5 minutes; matches PHP memcache TTL).
-- `Last-Modified: <HTTP-date>` — newest `date_added` in the feed window, in RFC 7232 §2.2 format.
+- `Last-Modified: <HTTP-date>` — newest `date_added` in the feed window, floored to whole seconds (RFC 7232 §2.2 HTTP-date has 1-second resolution) and formatted as e.g. `Wed, 24 Apr 2026 12:34:56 GMT`.
 - `ETag: W/"<hash>"` — weak ETag, content-derived (see below).
 
 ### ETag generation
@@ -87,9 +88,14 @@ Rationale: titles are the prominent field in feed-reader list views; keeping the
 Stateless. Server derives it on every request from current DB state; no storage of handed-out ETags.
 
 ```
+# Per-tag: resolve alias + expand hierarchy FIRST, then filter.
+# The sentinel's effective tag set MUST match the hydration query's effective tag set.
+effective_ids = get_tag_hierarchy(resolve_tag_alias(tag_id))  # per-tag feed only
+
 sentinel = SELECT image_id, date_added
            FROM images
-           WHERE status = 1 [AND image_id IN (SELECT image_id FROM tag_links WHERE tag_id = :tag_id)]
+           WHERE status = 1
+             [AND image_id IN (SELECT image_id FROM tag_links WHERE tag_id IN :effective_ids)]
            ORDER BY image_id DESC
            LIMIT 50;
 etag = 'W/"' + sha1(','.join(f"{id}:{ts.isoformat()}" for id, ts in sentinel)) + '"'
@@ -98,7 +104,8 @@ etag = 'W/"' + sha1(','.join(f"{id}:{ts.isoformat()}" for id, ts in sentinel)) +
 Properties:
 - New image uploaded → top-50 set changes → hash changes → cache busts.
 - Image in the window hidden / status-changed → window shifts → hash changes.
-- Older image (outside top 50) edited → hash unchanged, cache stays valid. Correct.
+- Image in the window *retagged* (tags added or removed without changing `date_added`) → hash unchanged, so the body may go stale. This is an accepted limitation bounded by the 5-minute `max-age`. Capturing tag mutations in the ETag would require hashing the tag set per entry, which is more joins per sentinel than it's worth for a 5-minute window.
+- Older image outside the top 50 edited → hash unchanged, cache stays valid. Correct.
 
 ### Conditional request handling
 
@@ -106,7 +113,9 @@ Properties:
 2. If the request has `If-None-Match` matching our current ETag, or `If-Modified-Since` at or after our `Last-Modified`: return `304 Not Modified` with no body and the ETag / Last-Modified headers.
 3. Otherwise: load full entry data (user + tag joins), render, return `200` with body + headers.
 
-Cost profile: repeat polls when nothing changed cost one indexed `SELECT ... LIMIT 50` and a SHA-1. Polls with new content add the full render path. No `Vary` header — no per-request variation to capture.
+Cost profile: repeat polls when nothing changed cost one indexed `SELECT ... LIMIT 50` and a SHA-1. Polls with new content add the full render path.
+
+The feed handler does not set a `Vary` header itself (no per-request variation in the rendered body). If a fronting proxy or FastAPI's `GZipMiddleware` applies `Content-Encoding: gzip`, the compression layer is responsible for setting `Vary: Accept-Encoding` so shared caches key the compressed and uncompressed responses correctly. This is standard proxy/middleware behavior and out of scope for the feed handler.
 
 ## Implementation
 
@@ -136,8 +145,8 @@ app/
 1. Handler receives request.
 2. Service runs the sentinel query and derives ETag + Last-Modified.
 3. If-None-Match / If-Modified-Since check → maybe return 304.
-4. Service runs the hydration query (joins `Users` via `selectinload`, joins `Tags` via `selectinload(Images.tag_links).selectinload(TagLinks.tag)`).
-5. Results converted to `ImageDetailedResponse` instances (`.model_validate(image)`).
+4. Service runs the hydration query, eager-loading relationships via `selectinload` (e.g. `Images.user`, `Images.tag_links.tag`) so no lazy-loads happen during rendering.
+5. Results converted to `ImageDetailedResponse` via `.model_validate(image)` directly. `ImageDetailedResponse.from_db_model()` is not used: its constructor-level kwargs (`is_favorited`, `user_rating`, `prev_image_id`, `next_image_id`) are request-context fields that do not apply in a public feed.
 6. `build_atom_feed(feed_meta, entries)` produces the XML string.
 7. Return `Response(content=..., media_type="application/atom+xml; charset=utf-8")` with headers.
 
@@ -149,7 +158,7 @@ app/
 
 - **Empty feed** (no matching active images): valid feed, zero `<entry>` elements, `<updated>` = current UTC. 200, not 404.
 - **Tag ID not found**: 404 with the repo's standard error shape.
-- **Tag is an alias** (`alias_of IS NOT NULL`): serve the alias's own images (no redirect, no alias-following). Matches existing tag-detail endpoint behavior. Revisit if users complain.
+- **Tag is an alias** (`alias_of IS NOT NULL`): `resolve_tag_alias()` follows the alias to the canonical tag, then `get_tag_hierarchy()` expands to include child tags. The feed serves images in the full effective set. Matches `GET /api/v1/tags/{id}/images`. No redirect; the request URL remains the alias's ID, but the content is the canonical set. Readers that subscribe via alias continue to receive the correct content after the alias is established.
 - **Image with NULL `user_id`** (soft-deleted uploader): `<author><name>[deleted user]</name></author>`.
 - **Image with no tags**: title falls back to `"Image #{id}"`. Feed is valid.
 - **Caption contains HTML or XML specials**: library escapes as literal text inside `<content type="html">`. If we later want to render formatted captions, revisit the content type.
