@@ -4970,7 +4970,7 @@ class TestTagNameValidation:
 
     Additionally:
     - Minimum length: 2 characters
-    - Maximum length: 150 characters
+    - Maximum length: 255 characters
     - Consecutive spaces are normalized to single space
     """
 
@@ -5393,7 +5393,7 @@ class TestTagNameValidation:
     async def test_maximum_length_validation(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that tag names cannot exceed 150 characters."""
+        """Test that tag names cannot exceed 255 characters."""
         perm = Perms(title="tag_create", desc="Create tags")
         db_session.add(perm)
         await db_session.commit()
@@ -5422,18 +5422,18 @@ class TestTagNameValidation:
         )
         access_token = login_response.json()["access_token"]
 
-        # 151 characters should be rejected
+        # 256 characters should be rejected
         response = await client.post(
             "/api/v1/tags",
-            json={"title": "A" * 151, "type": TagType.THEME},
+            json={"title": "A" * 256, "type": TagType.THEME},
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 422
 
-        # 150 characters should be allowed
+        # 255 characters should be allowed
         response = await client.post(
             "/api/v1/tags",
-            json={"title": "A" * 150, "type": TagType.THEME},
+            json={"title": "A" * 255, "type": TagType.THEME},
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 200
