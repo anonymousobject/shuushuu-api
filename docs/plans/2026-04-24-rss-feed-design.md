@@ -66,10 +66,10 @@ Modern booru convention is Atom 1.0 (verified: Danbooru serves `/posts.atom`, e6
 
 ### Title composition
 
-Format: `"{characters} ({sources}) drawn by {artists}"` using a single representative tag per category, chosen by `ORDER BY usage_count DESC`. Empty sections are skipped:
+Format: `"{characters} ({sources}) by {artists}"` using a single representative tag per category, chosen by `ORDER BY usage_count DESC`. Empty sections are skipped:
 
-- No character tags: `"({sources}) drawn by {artists}"`.
-- No source tags: `"{characters} drawn by {artists}"`.
+- No character tags: `"({sources}) by {artists}"`.
+- No source tags: `"{characters} by {artists}"`.
 - No artist tags: `"{characters} ({sources})"`.
 - No tags of any used category: `"Image #{image_id}"` (final fallback).
 
