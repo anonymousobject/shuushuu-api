@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus, TagType
 from app.models import Images, Tags, TagLinks, Users
-from app.services.feeds import fetch_feed_sentinel
+from app.services.feeds import fetch_feed_entries, fetch_feed_sentinel
 
 
 async def _make_user(db: AsyncSession, username: str = "feeder") -> Users:
@@ -125,3 +125,39 @@ class TestFetchFeedSentinelPerTag:
     async def test_empty_tag_list_returns_no_rows(self, db_session: AsyncSession):
         sentinel = await fetch_feed_sentinel(db_session, tag_ids=[], limit=50)
         assert sentinel == []
+
+
+class TestFetchFeedEntriesGlobal:
+    async def test_returns_image_detailed_responses(self, db_session: AsyncSession):
+        user = await _make_user(db_session, "hydrator")
+        tag = await _make_tag(db_session, "hydrator_tag", type_=TagType.ARTIST)
+        image = await _make_image(db_session, user, "h1")
+        await _link(db_session, image, tag)
+
+        entries = await fetch_feed_entries(db_session, tag_ids=None, limit=50)
+
+        assert len(entries) >= 1
+        entry = next(e for e in entries if e.image_id == image.image_id)
+        assert entry.user is not None
+        assert entry.user.username == "hydrator"
+        assert entry.tags is not None
+        assert any(t.tag == "hydrator_tag" for t in entry.tags)
+
+    async def test_only_active_images(self, db_session: AsyncSession):
+        user = await _make_user(db_session, "activeonly")
+        active = await _make_image(db_session, user, "a")
+        hidden = await _make_image(db_session, user, "h", status=ImageStatus.INAPPROPRIATE)
+
+        entries = await fetch_feed_entries(db_session, tag_ids=None, limit=50)
+        ids = [e.image_id for e in entries]
+        assert active.image_id in ids
+        assert hidden.image_id not in ids
+
+    async def test_ordered_newest_first(self, db_session: AsyncSession):
+        user = await _make_user(db_session, "orderer")
+        first = await _make_image(db_session, user, "o1")
+        second = await _make_image(db_session, user, "o2")
+
+        entries = await fetch_feed_entries(db_session, tag_ids=None, limit=50)
+        ids = [e.image_id for e in entries]
+        assert ids.index(second.image_id) < ids.index(first.image_id)

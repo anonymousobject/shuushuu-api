@@ -6,10 +6,12 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import ImageStatus, TagType
 from app.models.image import Images
 from app.models.tag_link import TagLinks
+from app.schemas.image import ImageDetailedResponse
 
 SentinelRow = tuple[int, datetime | None]
 
@@ -129,3 +131,39 @@ async def fetch_feed_sentinel(
 
     result = await db.execute(query)
     return [(row.image_id, row.date_added) for row in result]
+
+
+async def fetch_feed_entries(
+    db: AsyncSession,
+    tag_ids: list[int] | None,
+    limit: int = 50,
+) -> list[ImageDetailedResponse]:
+    """Full hydration query for feed rendering.
+
+    Eager-loads the uploader and every linked tag (plus the tag row itself for
+    title/type). Converts results via ImageDetailedResponse.from_db_model, which
+    handles the tag_links -> tags mapping that from_attributes cannot do.
+    """
+    if tag_ids == []:
+        return []
+
+    query = (
+        select(Images)
+        .options(
+            selectinload(Images.user),
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),
+        )
+        .where(Images.status == ImageStatus.ACTIVE)
+        .order_by(Images.image_id.desc())
+        .limit(limit)
+    )
+
+    if tag_ids is not None:
+        tag_subquery = (
+            select(TagLinks.image_id).where(TagLinks.tag_id.in_(tag_ids)).distinct().subquery()
+        )
+        query = query.where(Images.image_id.in_(select(tag_subquery)))
+
+    result = await db.execute(query)
+    images = result.scalars().all()
+    return [ImageDetailedResponse.from_db_model(image) for image in images]
