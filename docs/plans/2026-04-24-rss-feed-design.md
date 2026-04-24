@@ -152,7 +152,7 @@ app/
 
 ### Settings
 
-- `settings.FRONTEND_BASE_URL` (new) — used to construct detail-page links. Default to `"https://e-shuushuu.net"` in production, `"http://localhost:3000"` or similar in dev.
+- Reuse the existing `settings.FRONTEND_URL` (defined at `app/config.py:167`, defaults to `http://localhost:5173` in source; set to `https://e-shuushuu.net` in production via env). Used to construct detail-page links. No new setting.
 
 ## Edge cases
 
