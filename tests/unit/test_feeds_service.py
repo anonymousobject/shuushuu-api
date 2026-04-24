@@ -49,7 +49,7 @@ def _tag(tag_id: int, title: str, type_: int, usage_count: int):
 
     return SimpleNamespace(
         tag_id=tag_id,
-        tag=title,      # TagSummary's alias for Tags.title
+        tag=title,  # TagSummary's alias for Tags.title
         type_id=type_,  # TagSummary's alias for Tags.type
         usage_count=usage_count,
     )
@@ -73,30 +73,21 @@ class TestComposeEntryTitle:
             _tag(3, "vocaloid", TagType.SOURCE, 1000),
             _tag(4, "cutesexyrobutts", TagType.ARTIST, 50),
         ]
-        assert (
-            compose_entry_title(image_id=42, tags=tags)
-            == "(vocaloid) by cutesexyrobutts"
-        )
+        assert compose_entry_title(image_id=42, tags=tags) == "(vocaloid) by cutesexyrobutts"
 
     def test_no_source_tags(self):
         tags = [
             _tag(1, "hatsune miku", TagType.CHARACTER, 500),
             _tag(4, "cutesexyrobutts", TagType.ARTIST, 50),
         ]
-        assert (
-            compose_entry_title(image_id=42, tags=tags)
-            == "hatsune miku by cutesexyrobutts"
-        )
+        assert compose_entry_title(image_id=42, tags=tags) == "hatsune miku by cutesexyrobutts"
 
     def test_no_artist_tags(self):
         tags = [
             _tag(1, "hatsune miku", TagType.CHARACTER, 500),
             _tag(3, "vocaloid", TagType.SOURCE, 1000),
         ]
-        assert (
-            compose_entry_title(image_id=42, tags=tags)
-            == "hatsune miku (vocaloid)"
-        )
+        assert compose_entry_title(image_id=42, tags=tags) == "hatsune miku (vocaloid)"
 
     def test_no_relevant_tags_falls_back(self):
         tags = [_tag(5, "solo", TagType.THEME, 999)]
@@ -112,10 +103,7 @@ class TestComposeEntryTitle:
             _tag(3, "low usage artist", TagType.ARTIST, 1),
             _tag(4, "high usage artist", TagType.ARTIST, 9999),
         ]
-        assert (
-            compose_entry_title(image_id=42, tags=tags)
-            == "high usage char by high usage artist"
-        )
+        assert compose_entry_title(image_id=42, tags=tags) == "high usage char by high usage artist"
 
 
 class TestComputeFeedEtag:
@@ -165,9 +153,7 @@ class TestNewestTimestamp:
             (100, datetime(2026, 4, 24, 12, 0, 0, tzinfo=UTC)),
             (99, datetime(2026, 4, 23, 12, 0, 0, tzinfo=UTC)),
         ]
-        assert newest_timestamp(sentinel) == datetime(
-            2026, 4, 24, 12, 0, 0, tzinfo=UTC
-        )
+        assert newest_timestamp(sentinel) == datetime(2026, 4, 24, 12, 0, 0, tzinfo=UTC)
 
     def test_empty_returns_none(self):
         assert newest_timestamp([]) is None
@@ -177,9 +163,7 @@ class TestNewestTimestamp:
             (100, None),
             (99, datetime(2026, 4, 23, 12, 0, 0, tzinfo=UTC)),
         ]
-        assert newest_timestamp(sentinel) == datetime(
-            2026, 4, 23, 12, 0, 0, tzinfo=UTC
-        )
+        assert newest_timestamp(sentinel) == datetime(2026, 4, 23, 12, 0, 0, tzinfo=UTC)
 
     def test_all_none_returns_none(self):
         assert newest_timestamp([(100, None), (99, None)]) is None
@@ -214,15 +198,11 @@ class TestBuildAtomFeedEmpty:
     def test_empty_feed_has_id_title_self_link_updated(self):
         xml = build_atom_feed(_feed_meta(), entries=[])
         root = ET.fromstring(xml)
-        assert root.find(f"{ATOM_NS}id").text == (
-            "tag:e-shuushuu.net,2005:feed:images"
-        )
+        assert root.find(f"{ATOM_NS}id").text == ("tag:e-shuushuu.net,2005:feed:images")
         assert root.find(f"{ATOM_NS}title").text == "Shuushuu — latest images"
         self_link = root.find(f"{ATOM_NS}link[@rel='self']")
         assert self_link is not None
-        assert self_link.get("href") == (
-            "https://e-shuushuu.net/api/v1/images.atom"
-        )
+        assert self_link.get("href") == ("https://e-shuushuu.net/api/v1/images.atom")
         assert root.find(f"{ATOM_NS}updated") is not None
 
     def test_empty_feed_has_no_entries(self):
@@ -279,9 +259,7 @@ class TestBuildAtomFeedWithEntries:
         xml = build_atom_feed(_feed_meta(), entries=[_entry(image_id=42)])
         root = ET.fromstring(xml)
         entry_node = root.find(f"{ATOM_NS}entry")
-        assert entry_node.find(f"{ATOM_NS}id").text == (
-            "tag:e-shuushuu.net,2005:image:42"
-        )
+        assert entry_node.find(f"{ATOM_NS}id").text == ("tag:e-shuushuu.net,2005:image:42")
 
     def test_entry_alternate_link_points_to_detail_page(self):
         xml = build_atom_feed(_feed_meta(), entries=[_entry(image_id=42)])
@@ -291,9 +269,7 @@ class TestBuildAtomFeedWithEntries:
         assert alt.get("href", "").endswith("/images/42")
 
     def test_entry_enclosure_has_mime_and_length(self):
-        xml = build_atom_feed(
-            _feed_meta(), entries=[_entry(image_id=42, ext="png", filesize=1024)]
-        )
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(image_id=42, ext="png", filesize=1024)])
         root = ET.fromstring(xml)
         enc = root.find(f"{ATOM_NS}entry/{ATOM_NS}link[@rel='enclosure']")
         assert enc is not None
@@ -303,18 +279,12 @@ class TestBuildAtomFeedWithEntries:
     def test_entry_author_is_uploader(self):
         xml = build_atom_feed(_feed_meta(), entries=[_entry(username="alice")])
         root = ET.fromstring(xml)
-        assert (
-            root.find(f"{ATOM_NS}entry/{ATOM_NS}author/{ATOM_NS}name").text
-            == "alice"
-        )
+        assert root.find(f"{ATOM_NS}entry/{ATOM_NS}author/{ATOM_NS}name").text == "alice"
 
     def test_entry_author_falls_back_for_deleted_uploader(self):
         xml = build_atom_feed(_feed_meta(), entries=[_entry(username=None)])
         root = ET.fromstring(xml)
-        assert (
-            root.find(f"{ATOM_NS}entry/{ATOM_NS}author/{ATOM_NS}name").text
-            == "[deleted user]"
-        )
+        assert root.find(f"{ATOM_NS}entry/{ATOM_NS}author/{ATOM_NS}name").text == "[deleted user]"
 
     def test_entry_content_is_html_escaped_caption(self):
         xml = build_atom_feed(

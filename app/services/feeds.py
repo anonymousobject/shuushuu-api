@@ -51,7 +51,7 @@ def _pick_representative(tags: list[Any], type_value: int) -> str | None:
         return None
     # Stable sort: usage_count DESC, then tag_id ASC for determinism on ties.
     candidates.sort(key=lambda t: (-t.usage_count, t.tag_id))
-    return candidates[0].tag
+    return candidates[0].tag  # type: ignore[no-any-return]
 
 
 def compose_entry_title(image_id: int, tags: list[Any]) -> str:
@@ -128,17 +128,20 @@ async def fetch_feed_sentinel(
         return []
 
     query = (
-        select(Images.image_id, Images.date_added)
+        select(Images.image_id, Images.date_added)  # type: ignore[call-overload]
         .where(Images.status == ImageStatus.ACTIVE)
-        .order_by(Images.image_id.desc())
+        .order_by(Images.image_id.desc())  # type: ignore[union-attr]
         .limit(limit)
     )
 
     if tag_ids is not None:
         tag_subquery = (
-            select(TagLinks.image_id).where(TagLinks.tag_id.in_(tag_ids)).distinct().subquery()
+            select(TagLinks.image_id)  # type: ignore[call-overload]
+            .where(TagLinks.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
+            .distinct()
+            .subquery()
         )
-        query = query.where(Images.image_id.in_(select(tag_subquery)))
+        query = query.where(Images.image_id.in_(select(tag_subquery)))  # type: ignore[union-attr]
 
     result = await db.execute(query)
     return [(row.image_id, row.date_added) for row in result]
@@ -161,19 +164,22 @@ async def fetch_feed_entries(
     query = (
         select(Images)
         .options(
-            selectinload(Images.user),
-            selectinload(Images.tag_links).selectinload(TagLinks.tag),
+            selectinload(Images.user),  # type: ignore[arg-type]
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
-        .where(Images.status == ImageStatus.ACTIVE)
-        .order_by(Images.image_id.desc())
+        .where(Images.status == ImageStatus.ACTIVE)  # type: ignore[arg-type]
+        .order_by(Images.image_id.desc())  # type: ignore[union-attr]
         .limit(limit)
     )
 
     if tag_ids is not None:
         tag_subquery = (
-            select(TagLinks.image_id).where(TagLinks.tag_id.in_(tag_ids)).distinct().subquery()
+            select(TagLinks.image_id)  # type: ignore[call-overload]
+            .where(TagLinks.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
+            .distinct()
+            .subquery()
         )
-        query = query.where(Images.image_id.in_(select(tag_subquery)))
+        query = query.where(Images.image_id.in_(select(tag_subquery)))  # type: ignore[union-attr]
 
     result = await db.execute(query)
     images = result.scalars().all()

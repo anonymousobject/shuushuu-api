@@ -12,7 +12,5 @@ class TestTagSummaryUsageCount:
 
     def test_usage_count_defaults_to_zero(self):
         # Validate from a dict without usage_count — should default.
-        summary = TagSummary.model_validate(
-            {"tag_id": 1, "title": "t", "type": 1}
-        )
+        summary = TagSummary.model_validate({"tag_id": 1, "title": "t", "type": 1})
         assert summary.usage_count == 0

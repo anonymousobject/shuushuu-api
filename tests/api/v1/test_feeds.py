@@ -2,12 +2,11 @@
 
 from datetime import UTC, datetime
 
-import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus, TagType
-from app.models import Images, Tags, TagLinks, Users
+from app.models import Images, TagLinks, Tags, Users
 from app.services.feeds import fetch_feed_entries, fetch_feed_sentinel
 
 
@@ -46,9 +45,7 @@ async def _make_image(
     return image
 
 
-async def _make_tag(
-    db: AsyncSession, title: str, type_: int = TagType.THEME
-) -> Tags:
+async def _make_tag(db: AsyncSession, title: str, type_: int = TagType.THEME) -> Tags:
     tag = Tags(title=title, type=type_, user_id=None)
     db.add(tag)
     await db.commit()
@@ -62,9 +59,7 @@ async def _link(db: AsyncSession, image: Images, tag: Tags) -> None:
 
 
 class TestFetchFeedSentinelGlobal:
-    async def test_returns_only_active_images_newest_first(
-        self, db_session: AsyncSession
-    ):
+    async def test_returns_only_active_images_newest_first(self, db_session: AsyncSession):
         user = await _make_user(db_session)
         active_a = await _make_image(db_session, user, "a")
         hidden = await _make_image(db_session, user, "h", status=ImageStatus.INAPPROPRIATE)
@@ -96,9 +91,7 @@ class TestFetchFeedSentinelPerTag:
         img_without = await _make_image(db_session, user, "without")
         await _link(db_session, img_with, tag)
 
-        sentinel = await fetch_feed_sentinel(
-            db_session, tag_ids=[tag.tag_id], limit=50
-        )
+        sentinel = await fetch_feed_sentinel(db_session, tag_ids=[tag.tag_id], limit=50)
 
         ids = [row[0] for row in sentinel]
         assert img_with.image_id in ids
@@ -114,9 +107,7 @@ class TestFetchFeedSentinelPerTag:
         await _link(db_session, img_a, t1)
         await _link(db_session, img_b, t2)
 
-        sentinel = await fetch_feed_sentinel(
-            db_session, tag_ids=[t1.tag_id, t2.tag_id], limit=50
-        )
+        sentinel = await fetch_feed_sentinel(db_session, tag_ids=[t1.tag_id, t2.tag_id], limit=50)
 
         ids = [row[0] for row in sentinel]
         assert img_a.image_id in ids
@@ -164,18 +155,14 @@ class TestFetchFeedEntriesGlobal:
 
 
 class TestGlobalImagesFeed:
-    async def test_returns_atom_content_type(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_returns_atom_content_type(self, client: AsyncClient, db_session: AsyncSession):
         user = await _make_user(db_session, "ctuser")
         await _make_image(db_session, user, "ct1")
         response = await client.get("/api/v1/images.atom")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/atom+xml")
 
-    async def test_includes_only_active_images(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_includes_only_active_images(self, client: AsyncClient, db_session: AsyncSession):
         user = await _make_user(db_session, "actuser")
         active = await _make_image(db_session, user, "a1")
         hidden = await _make_image(db_session, user, "h1", status=ImageStatus.INAPPROPRIATE)
@@ -212,9 +199,7 @@ class TestGlobalImagesFeed:
         await _make_image(db_session, user, "ce1")
         first = await client.get("/api/v1/images.atom")
         etag = first.headers["etag"]
-        second = await client.get(
-            "/api/v1/images.atom", headers={"If-None-Match": etag}
-        )
+        second = await client.get("/api/v1/images.atom", headers={"If-None-Match": etag})
         assert second.status_code == 304
         assert second.text == ""
 
@@ -224,9 +209,7 @@ class TestGlobalImagesFeed:
         first = await client.get("/api/v1/images.atom")
         first_etag = first.headers["etag"]
         await _make_image(db_session, user, "be2")
-        second = await client.get(
-            "/api/v1/images.atom", headers={"If-None-Match": first_etag}
-        )
+        second = await client.get("/api/v1/images.atom", headers={"If-None-Match": first_etag})
         assert second.status_code == 200
         assert second.headers["etag"] != first_etag
 
@@ -237,9 +220,7 @@ class TestGlobalImagesFeed:
         await _make_image(db_session, user, "ims1")
         first = await client.get("/api/v1/images.atom")
         last_mod = first.headers["last-modified"]
-        second = await client.get(
-            "/api/v1/images.atom", headers={"If-Modified-Since": last_mod}
-        )
+        second = await client.get("/api/v1/images.atom", headers={"If-Modified-Since": last_mod})
         assert second.status_code == 304
 
     async def test_empty_feed_is_200(self, client: AsyncClient, db_session: AsyncSession):
