@@ -4,7 +4,12 @@ import hashlib
 from datetime import datetime
 from typing import Any
 
-from app.config import TagType
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import ImageStatus, TagType
+from app.models.image import Images
+from app.models.tag_link import TagLinks
 
 SentinelRow = tuple[int, datetime | None]
 
@@ -88,3 +93,39 @@ def newest_timestamp(sentinel: list[SentinelRow]) -> datetime | None:
     if not non_null:
         return None
     return max(non_null).replace(microsecond=0)
+
+
+async def fetch_feed_sentinel(
+    db: AsyncSession,
+    tag_ids: list[int] | None,
+    limit: int = 50,
+) -> list[SentinelRow]:
+    """Return [(image_id, date_added), ...] for the feed window.
+
+    Cheap query — indexed scan on (status, image_id DESC) only, no joins beyond
+    an optional IN subquery for per-tag filtering. Used for ETag derivation and
+    to short-circuit the full hydration query on conditional-request hits.
+
+    Args:
+        tag_ids: None for the global feed; a non-empty list (the already-resolved
+            alias + hierarchy-expanded tag IDs) for per-tag. An empty list returns
+            no rows.
+    """
+    if tag_ids == []:
+        return []
+
+    query = (
+        select(Images.image_id, Images.date_added)
+        .where(Images.status == ImageStatus.ACTIVE)
+        .order_by(Images.image_id.desc())
+        .limit(limit)
+    )
+
+    if tag_ids is not None:
+        tag_subquery = (
+            select(TagLinks.image_id).where(TagLinks.tag_id.in_(tag_ids)).distinct().subquery()
+        )
+        query = query.where(Images.image_id.in_(select(tag_subquery)))
+
+    result = await db.execute(query)
+    return [(row.image_id, row.date_added) for row in result]
