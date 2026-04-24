@@ -57,7 +57,7 @@ Modern booru convention is Atom 1.0 (verified: Danbooru serves `/posts.atom`, e6
 | `<id>` | `tag:e-shuushuu.net,2005:image:{image_id}`. Tag URI, stable, unique, independent of filename. |
 | `<title>` | See "Title composition" below. |
 | `<link rel="alternate">` | `https://e-shuushuu.net/images/{image_id}` (frontend detail page). |
-| `<link rel="enclosure">` | Full image URL, with `type="image/{ext}"` and `length="{image.filesize}"` in bytes. |
+| `<link rel="enclosure">` | Full image URL, with `length="{image.filesize}"` in bytes and `type` set via a small mapping (`jpg`/`jpeg` → `image/jpeg`, `png` → `image/png`, `gif` → `image/gif`, `webp` → `image/webp`). Naive `f"image/{ext}"` is wrong for `jpg`. |
 | `<updated>` | `image.date_added`. |
 | `<published>` | `image.date_added`. Same as `<updated>` until the model tracks edits separately. |
 | `<author><name>` | `image.user.username`. `"[deleted user]"` if `user` is NULL (soft-deleted uploader). |
@@ -160,7 +160,7 @@ app/
 - **Tag ID not found**: 404 with the repo's standard error shape.
 - **Tag is an alias** (`alias_of IS NOT NULL`): `resolve_tag_alias()` follows the alias to the canonical tag, then `get_tag_hierarchy()` expands to include child tags. The feed serves images in the full effective set. Matches `GET /api/v1/tags/{id}/images`. No redirect; the request URL remains the alias's ID, but the content is the canonical set. Readers that subscribe via alias continue to receive the correct content after the alias is established.
 - **Image with NULL `user_id`** (soft-deleted uploader): `<author><name>[deleted user]</name></author>`.
-- **NULL `date_added`**: `Images.date_added` is nullable in the model but has `server_default=current_timestamp()` at the DB level, so in practice it's always populated. Defensive handling: if a sentinel row has NULL `date_added`, exclude it from the ETag tuple and from `Last-Modified` derivation (fall back to current UTC for `<updated>` and omit `Last-Modified`).
+- **NULL `date_added`**: `Images.date_added` is nullable in the model but has `server_default=current_timestamp()` at the DB level, so in practice it's always populated. Defensive handling: if a sentinel row has NULL `date_added`, exclude it from the ETag tuple and from `Last-Modified` derivation (fall back to current UTC for feed-level `<updated>` and omit `Last-Modified`). For entry-level `<updated>` / `<published>` on such a row, fall back to current UTC — Atom requires `<updated>` on every entry, so dropping the entry from the feed would be more surprising than a slightly-wrong timestamp.
 - **Image with no tags**: title falls back to `"Image #{id}"`. Feed is valid.
 - **Caption contains HTML or XML specials**: library escapes as literal text inside `<content type="html">`. If we later want to render formatted captions, revisit the content type.
 - **Concurrent insert between sentinel and render**: feed's `<updated>` may lag the freshest entry by one request. Bounded by the 5-minute max-age; next poll resolves.
