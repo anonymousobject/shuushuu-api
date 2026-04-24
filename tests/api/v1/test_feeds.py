@@ -246,3 +246,63 @@ class TestGlobalImagesFeed:
         response = await client.get("/api/v1/images.atom")
         assert response.status_code == 200
         assert "<feed" in response.text
+
+
+class TestPerTagImagesFeed:
+    async def test_returns_only_images_with_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "ptuser")
+        tag = await _make_tag(db_session, "pt_tag")
+        with_tag = await _make_image(db_session, user, "pt_w")
+        without_tag = await _make_image(db_session, user, "pt_wo")
+        await _link(db_session, with_tag, tag)
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/images.atom")
+        assert response.status_code == 200
+        body = response.text
+        assert f"image:{with_tag.image_id}" in body
+        assert f"image:{without_tag.image_id}" not in body
+
+    async def test_unknown_tag_id_returns_404(self, client: AsyncClient):
+        response = await client.get("/api/v1/tags/999999999/images.atom")
+        assert response.status_code == 404
+
+    async def test_alias_tag_serves_canonical_image_set(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "aliasuser")
+        canonical = await _make_tag(db_session, "canonical_tag")
+        alias = Tags(
+            title="alias_tag",
+            type=TagType.THEME,
+            user_id=None,
+            alias_of=canonical.tag_id,
+        )
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        image = await _make_image(db_session, user, "aliasimg")
+        await _link(db_session, image, canonical)
+
+        response = await client.get(f"/api/v1/tags/{alias.tag_id}/images.atom")
+        assert response.status_code == 200
+        assert f"image:{image.image_id}" in response.text
+
+    async def test_conditional_request_returns_304(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "pt_etag_user")
+        tag = await _make_tag(db_session, "pt_etag_tag")
+        image = await _make_image(db_session, user, "pt_e1")
+        await _link(db_session, image, tag)
+
+        first = await client.get(f"/api/v1/tags/{tag.tag_id}/images.atom")
+        assert first.status_code == 200
+        etag = first.headers["etag"]
+
+        second = await client.get(
+            f"/api/v1/tags/{tag.tag_id}/images.atom",
+            headers={"If-None-Match": etag},
+        )
+        assert second.status_code == 304

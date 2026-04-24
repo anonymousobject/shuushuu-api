@@ -4,9 +4,10 @@ from datetime import UTC, datetime
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import settings
 from app.core.database import get_db
 from app.services.feeds import (
@@ -87,6 +88,39 @@ async def list_images_atom(
         title="Shuushuu — latest images",
         self_url=_self_url(request),
         alternate_url=_frontend(),
+    )
+    xml = build_atom_feed(meta, entries)
+
+    return Response(content=xml, media_type=ATOM_CONTENT_TYPE, headers=headers)
+
+
+@router.get("/tags/{tag_id}/images.atom")
+async def list_tag_images_atom(
+    request: Request,
+    tag_id: Annotated[int, Path(ge=1)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    """Latest 50 active images tagged with `tag_id`. Follows alias + hierarchy."""
+    tag, resolved_id = await resolve_tag_alias(db, tag_id)
+    if tag is None:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    effective_ids = await get_tag_hierarchy(db, resolved_id)
+
+    sentinel = await fetch_feed_sentinel(db, tag_ids=effective_ids, limit=50)
+    etag = compute_feed_etag(sentinel)
+    last_mod = newest_timestamp(sentinel)
+    headers = _cacheable_headers(etag, last_mod)
+
+    if _is_not_modified(request, etag, last_mod):
+        return Response(status_code=304, headers=headers)
+
+    entries = await fetch_feed_entries(db, tag_ids=effective_ids, limit=50)
+    meta = FeedMeta(
+        feed_id=f"tag:e-shuushuu.net,2005:feed:tags:{resolved_id}",
+        title=f"Shuushuu — tag: {tag.title}",
+        self_url=_self_url(request),
+        alternate_url=_frontend("tags", str(resolved_id)),
     )
     xml = build_atom_feed(meta, entries)
 
