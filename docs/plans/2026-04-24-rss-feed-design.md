@@ -61,7 +61,7 @@ Modern booru convention is Atom 1.0 (verified: Danbooru serves `/posts.atom`, e6
 | `<updated>` | `image.date_added`. |
 | `<published>` | `image.date_added`. Same as `<updated>` until the model tracks edits separately. |
 | `<author><name>` | `image.user.username`. `"[deleted user]"` if `user` is NULL (soft-deleted uploader). |
-| `<category>` | One per tag linked to the image, via `tag_links`. `term="{tag.title}"`, `scheme="https://e-shuushuu.net/tag-type/{type_name}"` where `type_name` is the value from `TagSummary.type_name` (title-cased: `All`, `Theme`, `Source`, `Artist`, `Character`). Reusing the existing schema value keeps feed and JSON-API representations aligned. No truncation. |
+| `<category>` | One per tag linked to the image, via `tag_links`. `term="{tag.title}"`, `scheme="https://e-shuushuu.net/tag-type/{type_name}"` where `type_name` is the value from `TagSummary.type_name` (title-cased: `Theme`, `Source`, `Artist`, `Character`; `All` exists as a pseudo-type in `TagType` but is a filter value only, not present on actual tag rows). Reusing the existing schema value keeps feed and JSON-API representations aligned. No truncation. |
 | `<content type="html">` | `image.caption` if present, else empty string. HTML-escaped. |
 
 ### Title composition
@@ -145,8 +145,8 @@ app/
 1. Handler receives request.
 2. Service runs the sentinel query and derives ETag + Last-Modified.
 3. If-None-Match / If-Modified-Since check → maybe return 304.
-4. Service runs the hydration query, eager-loading relationships via `selectinload` (e.g. `Images.user`, `Images.tag_links.tag`) so no lazy-loads happen during rendering.
-5. Results converted to `ImageDetailedResponse` via `.model_validate(image)` directly. `ImageDetailedResponse.from_db_model()` is not used: its constructor-level kwargs (`is_favorited`, `user_rating`, `prev_image_id`, `next_image_id`) are request-context fields that do not apply in a public feed.
+4. Service runs the hydration query, eager-loading relationships via the chained `selectinload` idiom used elsewhere in the codebase: `selectinload(Images.user)`, `selectinload(Images.tag_links).selectinload(TagLinks.tag)`. Dotted-attribute traversal in a single `selectinload(Images.tag_links.tag)` does not work in SQLAlchemy.
+5. Results converted to `ImageDetailedResponse` via `ImageDetailedResponse.from_db_model(image)` (defined in `app/schemas/image.py:167`). Using `from_db_model` (not `model_validate`) is required because the schema's `tags` field is populated by manually mapping from the `tag_links` relationship — Pydantic's `from_attributes` cannot cross the `tag_links` → `tags` name difference. The request-context kwargs (`is_favorited`, `user_rating`, `prev_image_id`, `next_image_id`) all have defaults and are left at their defaults for feed entries.
 6. `build_atom_feed(feed_meta, entries)` produces the XML string.
 7. Return `Response(content=..., media_type="application/atom+xml; charset=utf-8")` with headers.
 
@@ -156,10 +156,11 @@ app/
 
 ## Edge cases
 
-- **Empty feed** (no matching active images): valid feed, zero `<entry>` elements, `<updated>` = current UTC. 200, not 404.
+- **Empty feed** (no matching active images): valid feed, zero `<entry>` elements, `<updated>` = current UTC. `Last-Modified` header omitted (nothing to date); ETag falls out of the hash of an empty list, stable until content appears. 200, not 404.
 - **Tag ID not found**: 404 with the repo's standard error shape.
 - **Tag is an alias** (`alias_of IS NOT NULL`): `resolve_tag_alias()` follows the alias to the canonical tag, then `get_tag_hierarchy()` expands to include child tags. The feed serves images in the full effective set. Matches `GET /api/v1/tags/{id}/images`. No redirect; the request URL remains the alias's ID, but the content is the canonical set. Readers that subscribe via alias continue to receive the correct content after the alias is established.
 - **Image with NULL `user_id`** (soft-deleted uploader): `<author><name>[deleted user]</name></author>`.
+- **NULL `date_added`**: `Images.date_added` is nullable in the model but has `server_default=current_timestamp()` at the DB level, so in practice it's always populated. Defensive handling: if a sentinel row has NULL `date_added`, exclude it from the ETag tuple and from `Last-Modified` derivation (fall back to current UTC for `<updated>` and omit `Last-Modified`).
 - **Image with no tags**: title falls back to `"Image #{id}"`. Feed is valid.
 - **Caption contains HTML or XML specials**: library escapes as literal text inside `<content type="html">`. If we later want to render formatted captions, revisit the content type.
 - **Concurrent insert between sentinel and render**: feed's `<updated>` may lag the freshest entry by one request. Bounded by the 5-minute max-age; next poll resolves.
