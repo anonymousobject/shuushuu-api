@@ -31,7 +31,7 @@ class TagBase(SQLModel):
     """
 
     # Basic information
-    title: str | None = Field(default=None, max_length=150)
+    title: str | None = Field(default=None, max_length=255)
     desc: str | None = Field(default=None, max_length=200)
     type: int = Field(
         default=TagType.THEME,
