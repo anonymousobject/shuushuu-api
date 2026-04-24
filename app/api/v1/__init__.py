@@ -11,6 +11,7 @@ from app.api.v1 import (
     comments,
     donations,
     favorites,
+    feeds,
     history,
     images,
     meta,
@@ -29,6 +30,7 @@ router.include_router(admin.router)
 router.include_router(auth.router)
 router.include_router(banners.router)
 router.include_router(donations.router)
+router.include_router(feeds.router)
 router.include_router(images.router)
 router.include_router(tags.router)
 router.include_router(character_source_links_router)
