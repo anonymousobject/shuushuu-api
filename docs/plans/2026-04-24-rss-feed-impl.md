@@ -968,13 +968,19 @@ Expected: ImportError on `FeedMeta` / `build_atom_feed`.
 
 - [ ] **Step 3: Implement the builder**
 
+**API context (verified against feedgenerator 2.2.1 source):**
+- `add_item(...)` accepts `description` (emits `<summary type="html">`) **and** `content` (emits `<content type="html">`) as separate kwargs. We want `<content>`, not `<summary>`, so pass `content=...` and `description=None`.
+- `enclosures` kwarg iterates with attribute access (`enclosure.url`, `enclosure.length`, `enclosure.mime_type`). Must be a list of `Enclosure` instances, not dicts.
+- `categories` kwarg is stringified via `str(c)` and emitted as `<category term="...">` with no `scheme`. To get `<category term="..." scheme="...">` per our design spec, we subclass `Atom1Feed` and override `add_item_elements`. Extra item-level data rides through `add_item`'s `**kwargs` and is stored in the item dict.
+- `feed.feed["id"]`, `feed.feed["author_name"]` are read by `add_root_elements` directly — setting them on the feed dict works. `feed.feed["updated"]` is **not** read; `<updated>` is derived from `self.latest_post_date()` (newest `pubdate`/`updateddate` across items; falls back to `datetime.now()` on empty feeds, which matches our spec for the empty-feed case).
+
 Append to `app/services/feeds.py`:
 
 ```python
 from dataclasses import dataclass
 from html import escape
 
-from feedgenerator import Atom1Feed  # type: ignore[import-untyped]
+from feedgenerator import Atom1Feed, Enclosure  # type: ignore[import-untyped]
 
 from app.config import TagType, settings
 
@@ -987,26 +993,35 @@ TAG_TYPE_NAME: dict[int, str] = {
 }
 
 
+class _ShuushuuAtom1Feed(Atom1Feed):
+    """Atom1Feed variant that emits <category term=... scheme=...> per RFC 4287.
+
+    The stock Atom1Feed.add_item_elements drops the scheme attribute, so we
+    append our own category elements from a 'shuu_categories' item attribute
+    (list of (term, scheme) tuples) passed through add_item's **kwargs.
+    """
+
+    def add_item_elements(self, handler, item):  # type: ignore[no-untyped-def]
+        super().add_item_elements(handler, item)
+        for term, scheme in item.get("shuu_categories", ()):
+            handler.addQuickElement(
+                "category", "", {"term": term, "scheme": scheme}
+            )
+
+
 @dataclass(frozen=True)
 class FeedMeta:
     feed_id: str
     title: str
     self_url: str
     alternate_url: str
-    updated: datetime
 
 
-def _category_scheme(tag_type: int) -> str:
+def _category_scheme(tag_type_id: int) -> str:
     return (
         f"{settings.FRONTEND_URL.rstrip('/')}/tag-type/"
-        f"{TAG_TYPE_NAME.get(tag_type, 'Unknown')}"
+        f"{TAG_TYPE_NAME.get(tag_type_id, 'Unknown')}"
     )
-
-
-def _entry_content_html(caption: str | None) -> str:
-    if not caption:
-        return ""
-    return escape(caption)
 
 
 def build_atom_feed(
@@ -1015,80 +1030,61 @@ def build_atom_feed(
 ) -> str:
     """Render an Atom 1.0 XML document.
 
-    Uses feedgenerator.Atom1Feed which handles namespace registration, RFC 3339
-    date formatting, XML escaping, and well-formed output. We pass stringified
-    fields in; the library does the rest.
+    Uses our _ShuushuuAtom1Feed subclass to emit scheme-carrying <category>
+    elements. Item <content type="html"> comes from the image caption;
+    enclosure links use ImageResponse.url (CDN-aware).
     """
-    feed = Atom1Feed(
+    feed = _ShuushuuAtom1Feed(
         title=meta.title,
         link=meta.alternate_url,
-        description=meta.title,  # Atom1Feed requires description; mirrors title.
+        description="",  # empty → no <subtitle>
         feed_url=meta.self_url,
         language="en",
     )
-    # Override feed-level <id>, <updated>, <author> via subclassing-free attrs.
+    # Override <id> and feed-level <author>. <updated> is auto-derived.
     feed.feed["id"] = meta.feed_id
-    feed.feed["updated"] = meta.updated
     feed.feed["author_name"] = "Shuushuu"
 
     frontend = settings.FRONTEND_URL.rstrip("/")
 
     for image in entries:
-        entry_id = f"tag:e-shuushuu.net,2005:image:{image.image_id}"
-        alternate = f"{frontend}/images/{image.image_id}"
-
-        # Uploader name, with soft-delete fallback per spec.
         author_name = (
-            image.user.username if image.user and image.user.username
+            image.user.username
+            if image.user and image.user.username
             else "[deleted user]"
         )
-
-        # date_added fallback to current UTC if missing (defensive per spec).
         entry_dt = image.date_added or datetime.now(UTC)
 
-        # Title — delegate to the composer, passing tags as-is.
-        title = compose_entry_title(
-            image_id=image.image_id,
-            tags=image.tags or [],
-        )
+        content_html: str | None = escape(image.caption) if image.caption else None
 
-        # Build category kwargs: feedgenerator's add_item accepts categories
-        # as a list of tuples-or-dicts; we use the dict form to carry scheme.
-        categories = [
-            {"term": t.tag, "scheme": _category_scheme(t.type_id)}
-            for t in (image.tags or [])
+        shuu_categories = [
+            (t.tag, _category_scheme(t.type_id)) for t in (image.tags or [])
         ]
 
-        # Enclosure — full image URL using IMAGE_BASE_URL from settings.
-        enclosure_url = (
-            f"{settings.IMAGE_BASE_URL.rstrip('/')}/images/"
-            f"{image.filename}.{image.ext}"
+        enclosure = Enclosure(
+            url=image.url,  # CDN-aware computed field on ImageResponse.
+            length=str(image.filesize or 0),
+            mime_type=mime_type_for_ext(image.ext),
         )
-        enclosure_type = mime_type_for_ext(image.ext)
 
         feed.add_item(
-            title=title,
-            link=alternate,
-            description=_entry_content_html(image.caption),
-            unique_id=entry_id,
+            title=compose_entry_title(
+                image_id=image.image_id, tags=image.tags or []
+            ),
+            link=f"{frontend}/images/{image.image_id}",
+            description=None,  # skip <summary>; we emit <content> instead.
+            content=content_html,
+            unique_id=f"tag:e-shuushuu.net,2005:image:{image.image_id}",
             unique_id_is_permalink=False,
-            updateddate=entry_dt,
             pubdate=entry_dt,
+            updateddate=entry_dt,
             author_name=author_name,
-            categories=categories,
-            enclosures=[
-                {
-                    "url": enclosure_url,
-                    "length": str(image.filesize or 0),
-                    "mime_type": enclosure_type,
-                }
-            ],
+            enclosures=[enclosure],
+            shuu_categories=shuu_categories,  # via **kwargs → item dict
         )
 
     return feed.writeString("utf-8")
 ```
-
-NOTE: `feedgenerator.Atom1Feed.add_item` enclosure kwarg differs across versions — verify against installed version. If `enclosures=[{...}]` errors, fall back to `enclosure=Enclosure(...)` (older API). Run the test next step; if it fails on enclosure shape, `python -c "import feedgenerator; help(feedgenerator.Atom1Feed.add_item)"` to see the actual signature.
 
 - [ ] **Step 4: Run the tests and confirm pass**
 
@@ -1097,45 +1093,73 @@ Expected: all empty-feed tests pass. If enclosure-related attribute errors appea
 
 - [ ] **Step 5: Add tests for a non-empty feed**
 
+Rather than construct `ImageDetailedResponse` by hand (brittle — lots of required fields), build a minimal `Images` ORM instance with eager-loaded relationships set directly on the Python object, and funnel it through `from_db_model`. This exercises the exact code path the handler uses.
+
 Append to `tests/unit/test_feeds_service.py`:
 
 ```python
-class TestBuildAtomFeedWithEntries:
-    def _make_entry(self, image_id: int = 42):
-        """Minimal ImageDetailedResponse-shaped object for rendering."""
-        from app.schemas.common import UserSummary
-        from app.schemas.image import ImageDetailedResponse
+from types import SimpleNamespace
 
-        return ImageDetailedResponse(
-            image_id=image_id,
-            filename=f"abc{image_id}",
-            ext="png",
-            caption=None,
-            filesize=1024,
+from app.models.image import Images
+from app.models.tag import Tags
+from app.models.tag_link import TagLinks
+from app.models.user import Users
+from app.schemas.image import ImageDetailedResponse
+
+
+def _orm_image(
+    image_id: int = 42,
+    filename: str = "abc42",
+    ext: str = "png",
+    caption: str | None = None,
+    filesize: int = 1024,
+    date_added: datetime | None = None,
+    username: str | None = "alice",
+    tags: list[Tags] | None = None,
+) -> Images:
+    """Build an Images row with eager-loaded .user and .tag_links set in memory.
+
+    The schema's from_db_model reads image.user and iterates image.tag_links,
+    so we populate both directly. Returned object is ready for
+    ImageDetailedResponse.from_db_model(image).
+    """
+    user = None
+    if username is not None:
+        user = Users(
             user_id=1,
-            user=UserSummary(
-                user_id=1,
-                username="alice",
-                date_joined=datetime(2020, 1, 1, tzinfo=UTC),
-            ),
-            tags=[],
-            date_added=datetime(2026, 4, 24, 10, 0, 0, tzinfo=UTC),
-            locked=0,
-            posts=0,
-            favorites=0,
-            bayesian_rating=0.0,
-            num_ratings=0,
-            medium=0,
-            large=0,
-            is_favorited=False,
-            user_rating=None,
-            prev_image_id=None,
-            next_image_id=None,
+            username=username,
+            password="x",
+            password_type="bcrypt",
+            salt="",
+            email="a@b.c",
+            active=1,
         )
 
+    img = Images(
+        image_id=image_id,
+        filename=filename,
+        ext=ext,
+        caption=caption,
+        filesize=filesize,
+        user_id=1 if username else None,
+        status=1,
+        date_added=date_added or datetime(2026, 4, 24, 10, 0, 0, tzinfo=UTC),
+    )
+    # Directly attach relationships — avoids a DB round-trip for unit tests.
+    img.user = user  # type: ignore[assignment]
+    img.tag_links = [  # type: ignore[assignment]
+        SimpleNamespace(tag=t) for t in (tags or [])
+    ]
+    return img
+
+
+def _entry(**overrides) -> ImageDetailedResponse:
+    return ImageDetailedResponse.from_db_model(_orm_image(**overrides))
+
+
+class TestBuildAtomFeedWithEntries:
     def test_entry_has_tag_uri_id(self):
-        entry = self._make_entry(42)
-        xml = build_atom_feed(_feed_meta(), entries=[entry])
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(image_id=42)])
         root = ET.fromstring(xml)
         entry_node = root.find(f"{ATOM_NS}entry")
         assert entry_node.find(f"{ATOM_NS}id").text == (
@@ -1143,38 +1167,82 @@ class TestBuildAtomFeedWithEntries:
         )
 
     def test_entry_alternate_link_points_to_detail_page(self):
-        entry = self._make_entry(42)
-        xml = build_atom_feed(_feed_meta(), entries=[entry])
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(image_id=42)])
         root = ET.fromstring(xml)
-        entry_node = root.find(f"{ATOM_NS}entry")
-        alt = entry_node.find(f"{ATOM_NS}link[@rel='alternate']")
+        alt = root.find(f"{ATOM_NS}entry/{ATOM_NS}link[@rel='alternate']")
         assert alt is not None
         assert alt.get("href", "").endswith("/images/42")
 
     def test_entry_enclosure_has_mime_and_length(self):
-        entry = self._make_entry(42)
-        xml = build_atom_feed(_feed_meta(), entries=[entry])
+        xml = build_atom_feed(
+            _feed_meta(), entries=[_entry(image_id=42, ext="png", filesize=1024)]
+        )
         root = ET.fromstring(xml)
-        entry_node = root.find(f"{ATOM_NS}entry")
-        enc = entry_node.find(f"{ATOM_NS}link[@rel='enclosure']")
+        enc = root.find(f"{ATOM_NS}entry/{ATOM_NS}link[@rel='enclosure']")
         assert enc is not None
         assert enc.get("type") == "image/png"
         assert enc.get("length") == "1024"
 
     def test_entry_author_is_uploader(self):
-        entry = self._make_entry(42)
-        xml = build_atom_feed(_feed_meta(), entries=[entry])
-        root = ET.fromstring(xml)
-        entry_node = root.find(f"{ATOM_NS}entry")
-        assert (
-            entry_node.find(f"{ATOM_NS}author/{ATOM_NS}name").text == "alice"
+        xml = build_atom_feed(
+            _feed_meta(), entries=[_entry(username="alice")]
         )
+        root = ET.fromstring(xml)
+        assert (
+            root.find(
+                f"{ATOM_NS}entry/{ATOM_NS}author/{ATOM_NS}name"
+            ).text
+            == "alice"
+        )
+
+    def test_entry_author_falls_back_for_deleted_uploader(self):
+        xml = build_atom_feed(
+            _feed_meta(), entries=[_entry(username=None)]
+        )
+        root = ET.fromstring(xml)
+        assert (
+            root.find(
+                f"{ATOM_NS}entry/{ATOM_NS}author/{ATOM_NS}name"
+            ).text
+            == "[deleted user]"
+        )
+
+    def test_entry_content_is_html_escaped_caption(self):
+        xml = build_atom_feed(
+            _feed_meta(),
+            entries=[_entry(caption="a <b> caption & stuff")],
+        )
+        root = ET.fromstring(xml)
+        content = root.find(f"{ATOM_NS}entry/{ATOM_NS}content")
+        assert content is not None
+        assert content.get("type") == "html"
+        # ET.fromstring will have already un-escaped &amp; → &, &lt; → <
+        # so we check the .text rendered equals the original.
+        assert content.text == "a <b> caption & stuff"
+
+    def test_entry_with_no_caption_omits_content(self):
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(caption=None)])
+        root = ET.fromstring(xml)
+        assert root.find(f"{ATOM_NS}entry/{ATOM_NS}content") is None
+
+    def test_entry_categories_carry_scheme(self):
+        tags = [
+            Tags(tag_id=1, title="hatsune miku", type=TagType.CHARACTER, usage_count=500),
+            Tags(tag_id=2, title="vocaloid", type=TagType.SOURCE, usage_count=1000),
+        ]
+        xml = build_atom_feed(_feed_meta(), entries=[_entry(tags=tags)])
+        root = ET.fromstring(xml)
+        cats = root.findall(f"{ATOM_NS}entry/{ATOM_NS}category")
+        assert len(cats) == 2
+        by_term = {c.get("term"): c.get("scheme") for c in cats}
+        assert by_term["hatsune miku"].endswith("/tag-type/Character")
+        assert by_term["vocaloid"].endswith("/tag-type/Source")
 ```
 
 - [ ] **Step 6: Run the tests**
 
 Run: `uv run pytest tests/unit/test_feeds_service.py::TestBuildAtomFeedWithEntries -v`
-Expected: all four tests pass. If the enclosure test fails with `<link rel="enclosure">` absent, inspect the generated XML via `print(xml)` inside the test and adapt the enclosure kwarg shape (see the NOTE in Step 3) until the link appears.
+Expected: all 8 tests pass.
 
 - [ ] **Step 7: Commit**
 
@@ -1292,14 +1360,30 @@ class TestGlobalImagesFeed:
         assert second.status_code == 200
         assert second.headers["etag"] != first_etag
 
+    async def test_if_modified_since_returns_304(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "imsuser")
+        await _make_image(db_session, user, "ims1")
+
+        first = await client.get("/api/v1/images.atom")
+        assert first.status_code == 200
+        last_mod = first.headers["last-modified"]
+
+        second = await client.get(
+            "/api/v1/images.atom",
+            headers={"If-Modified-Since": last_mod},
+        )
+        assert second.status_code == 304
+
     async def test_empty_feed_is_200(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        # No images in the DB for this test's isolated scope.
+        # Note: db_session may share rows across tests; we only assert feed
+        # validity and 200 status, not that there are zero entries.
         response = await client.get("/api/v1/images.atom")
 
         assert response.status_code == 200
-        # Feed is valid Atom even with no entries.
         assert "<feed" in response.text
 ```
 
@@ -1315,13 +1399,14 @@ Replace `app/api/v1/feeds.py` with:
 ```python
 """Atom feed endpoints."""
 
-from datetime import UTC, datetime
-from email.utils import format_datetime
+from datetime import datetime
+from email.utils import format_datetime, parsedate_to_datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import settings
 from app.core.database import get_db
 from app.services.feeds import (
@@ -1349,6 +1434,42 @@ def _self_url(request: Request) -> str:
     return str(request.url).split("?")[0]
 
 
+def _is_not_modified(
+    request: Request, etag: str, last_mod: datetime | None
+) -> bool:
+    """Conditional-request evaluation.
+
+    A request is 'not modified' if either:
+    - Its If-None-Match matches our ETag (exact or '*'), or
+    - We know a Last-Modified and the request's If-Modified-Since is at/after it.
+
+    Both comparisons are best-effort: we accept weak-ETag equality and ignore
+    list/quote edge cases. Feed readers send simple values in practice.
+    """
+    inm = request.headers.get("if-none-match", "").strip()
+    if inm == "*" or (inm and inm == etag):
+        return True
+
+    if last_mod is not None:
+        ims = request.headers.get("if-modified-since")
+        if ims:
+            try:
+                ims_dt = parsedate_to_datetime(ims)
+            except (TypeError, ValueError):
+                ims_dt = None
+            if ims_dt is not None and ims_dt >= last_mod:
+                return True
+
+    return False
+
+
+def _cacheable_headers(etag: str, last_mod: datetime | None) -> dict[str, str]:
+    headers = {"Cache-Control": CACHE_CONTROL, "ETag": etag}
+    if last_mod is not None:
+        headers["Last-Modified"] = format_datetime(last_mod, usegmt=True)
+    return headers
+
+
 @router.get("/images.atom")
 async def list_images_atom(
     request: Request,
@@ -1358,11 +1479,10 @@ async def list_images_atom(
     sentinel = await fetch_feed_sentinel(db, tag_ids=None, limit=50)
     etag = compute_feed_etag(sentinel)
     last_mod = newest_timestamp(sentinel)
+    headers = _cacheable_headers(etag, last_mod)
 
-    # Conditional-request short-circuit
-    if_none_match = request.headers.get("if-none-match")
-    if if_none_match == etag:
-        return _not_modified(etag, last_mod)
+    if _is_not_modified(request, etag, last_mod):
+        return Response(status_code=304, headers=headers)
 
     entries = await fetch_feed_entries(db, tag_ids=None, limit=50)
     meta = FeedMeta(
@@ -1370,30 +1490,10 @@ async def list_images_atom(
         title="Shuushuu — latest images",
         self_url=_self_url(request),
         alternate_url=_frontend(),
-        updated=last_mod or datetime.now(UTC),
     )
     xml = build_atom_feed(meta, entries)
 
-    headers = {
-        "Cache-Control": CACHE_CONTROL,
-        "ETag": etag,
-    }
-    if last_mod:
-        headers["Last-Modified"] = format_datetime(last_mod, usegmt=True)
-
-    return Response(
-        content=xml, media_type=ATOM_CONTENT_TYPE, headers=headers
-    )
-
-
-def _not_modified(etag: str, last_mod: datetime | None) -> Response:
-    headers = {
-        "Cache-Control": CACHE_CONTROL,
-        "ETag": etag,
-    }
-    if last_mod:
-        headers["Last-Modified"] = format_datetime(last_mod, usegmt=True)
-    return Response(status_code=304, headers=headers)
+    return Response(content=xml, media_type=ATOM_CONTENT_TYPE, headers=headers)
 ```
 
 - [ ] **Step 4: Run the tests**
@@ -1503,14 +1603,9 @@ Expected: 404 on all (handler not registered yet).
 
 - [ ] **Step 3: Implement the per-tag handler**
 
-Add to `app/api/v1/feeds.py` (below the global handler):
+Add to `app/api/v1/feeds.py` immediately below the global handler (imports are already at the top of the file from Task 9):
 
 ```python
-from fastapi import HTTPException, Path
-
-from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
-
-
 @router.get("/tags/{tag_id}/images.atom")
 async def list_tag_images_atom(
     request: Request,
@@ -1532,9 +1627,10 @@ async def list_tag_images_atom(
     sentinel = await fetch_feed_sentinel(db, tag_ids=effective_ids, limit=50)
     etag = compute_feed_etag(sentinel)
     last_mod = newest_timestamp(sentinel)
+    headers = _cacheable_headers(etag, last_mod)
 
-    if request.headers.get("if-none-match") == etag:
-        return _not_modified(etag, last_mod)
+    if _is_not_modified(request, etag, last_mod):
+        return Response(status_code=304, headers=headers)
 
     entries = await fetch_feed_entries(db, tag_ids=effective_ids, limit=50)
     meta = FeedMeta(
@@ -1542,23 +1638,13 @@ async def list_tag_images_atom(
         title=f"Shuushuu — tag: {tag.title}",
         self_url=_self_url(request),
         alternate_url=_frontend("tags", str(resolved_id)),
-        updated=last_mod or datetime.now(UTC),
     )
     xml = build_atom_feed(meta, entries)
 
-    headers = {
-        "Cache-Control": CACHE_CONTROL,
-        "ETag": etag,
-    }
-    if last_mod:
-        headers["Last-Modified"] = format_datetime(last_mod, usegmt=True)
-
-    return Response(
-        content=xml, media_type=ATOM_CONTENT_TYPE, headers=headers
-    )
+    return Response(content=xml, media_type=ATOM_CONTENT_TYPE, headers=headers)
 ```
 
-**Verify the signature of `resolve_tag_alias` before running.** It's defined at `app/api/v1/tags.py:167` and returns `tuple[Tags, int]` per usage at `app/api/v1/tags.py:695`. If it raises instead of returning `(None, ...)` on missing, convert that exception to a 404 explicitly; adjust the handler accordingly.
+**Verify `resolve_tag_alias`'s exact return contract before running.** It's defined at `app/api/v1/tags.py:167` and returns `tuple[Tags | None, int]` per existing call sites (e.g. `app/api/v1/tags.py:695`). `tag is None` on unknown id → our 404 branch fires. If the behavior differs in this repo's version, adjust the branch.
 
 - [ ] **Step 4: Run the tests**
 
