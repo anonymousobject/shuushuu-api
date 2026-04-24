@@ -23,10 +23,10 @@
 **Modify:**
 - `pyproject.toml` — add `feedgenerator>=2.2.1` to `dependencies`.
 - `app/main.py` — register the feeds router.
+- `app/schemas/image.py` — add `usage_count: int = 0` to `TagSummary` (used for title-composition representative selection). Non-breaking addition; existing JSON API responses gain the field.
 
 **Do NOT modify:**
 - `app/config.py` (reuse existing `FRONTEND_URL`).
-- `app/schemas/image.py` (reuse `ImageDetailedResponse.from_db_model`).
 - Any DB schema or Alembic migration — pure read-only feature.
 
 ---
@@ -96,7 +96,75 @@ git commit -m "feat(feeds): scaffold feeds router and service module"
 
 ---
 
-### Task 2: MIME type mapping helper
+### Task 2: Extend `TagSummary` with `usage_count`
+
+`compose_entry_title` (next task) picks one representative tag per category by `usage_count DESC`. The existing `TagSummary` schema (`app/schemas/image.py:24`) exposes `.tag`, `.tag_id`, `.type_id`, `.type_name` — but **not** `.usage_count`, even though the underlying `Tags.usage_count` column exists (`app/models/tag.py:122`). Add it so `TagSummary` instances reaching the feed carry the data the title composer needs. Pydantic's `from_attributes=True` (already set on `TagSummary`) pulls the value automatically.
+
+**Files:**
+- Modify: `app/schemas/image.py`
+- Modify: `tests/unit/test_schemas.py` *(or similar — verify exact filename via `ls tests/unit/test_*schema*`; fall back to a new `tests/unit/test_tag_summary.py` if no tag-schema test file exists)*
+
+- [ ] **Step 1: Write the failing test**
+
+Add to the existing tag-summary tests (or create a new `tests/unit/test_tag_summary.py` with this content):
+
+```python
+"""TagSummary schema tests — usage_count field."""
+
+from app.models.tag import Tags
+from app.schemas.image import TagSummary
+
+
+class TestTagSummaryUsageCount:
+    def test_usage_count_populated_from_orm(self):
+        tag = Tags(tag_id=1, title="t", type=1, usage_count=42)
+        summary = TagSummary.model_validate(tag)
+        assert summary.usage_count == 42
+
+    def test_usage_count_defaults_to_zero(self):
+        # Validate from a dict without usage_count — should default.
+        summary = TagSummary.model_validate(
+            {"tag_id": 1, "title": "t", "type": 1}
+        )
+        assert summary.usage_count == 0
+```
+
+- [ ] **Step 2: Run the test and confirm failure**
+
+Run: `uv run pytest tests/unit/test_tag_summary.py -v`  *(or whichever path you used in Step 1)*
+Expected: `AttributeError` or pydantic validation error — `usage_count` not on `TagSummary`.
+
+- [ ] **Step 3: Add the field**
+
+Edit `app/schemas/image.py`, in the `TagSummary` class definition, between `type_id` and the `model_config` line:
+
+```python
+    tag_id: int
+    tag: str = Field(alias="title")  # Maps from Tags.title
+    type_id: int = Field(alias="type")  # Maps from Tags.type
+    usage_count: int = 0  # NEW — needed by feed title composer; non-breaking.
+```
+
+- [ ] **Step 4: Run the test and confirm pass**
+
+Run: `uv run pytest tests/unit/test_tag_summary.py -v`
+Expected: both tests pass.
+
+- [ ] **Step 5: Run the full schema test suite for regressions**
+
+Run: `uv run pytest tests/unit/ -k "schema" -v`
+Expected: all pre-existing schema tests still pass (gaining a field is non-breaking).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/schemas/image.py tests/unit/test_tag_summary.py
+git commit -m "feat(schemas): expose usage_count on TagSummary for feed title composition"
+```
+
+---
+
+### Task 3: MIME type mapping helper
 
 **Files:**
 - Modify: `app/services/feeds.py`
@@ -179,7 +247,7 @@ git commit -m "feat(feeds): MIME type mapping for enclosure links"
 
 ---
 
-### Task 3: Title composition helper
+### Task 4: Title composition helper
 
 Implements the spec's "Title composition" section. Picks one representative tag per category by `usage_count DESC` and formats `"{characters} ({sources}) by {artists}"` with empty sections skipped.
 
@@ -197,13 +265,13 @@ from app.services.feeds import compose_entry_title
 
 
 def _tag(tag_id: int, title: str, type_: int, usage_count: int):
-    """Lightweight stand-in for TagSummary — just enough for the helper."""
+    """Lightweight stand-in for TagSummary — matches its attribute names."""
     from types import SimpleNamespace
 
     return SimpleNamespace(
         tag_id=tag_id,
-        tag=title,  # TagSummary's alias for Tags.title
-        type=type_,
+        tag=title,      # TagSummary's alias for Tags.title
+        type_id=type_,  # TagSummary's alias for Tags.type
         usage_count=usage_count,
     )
 
@@ -288,7 +356,7 @@ from app.config import TagType
 
 def _pick_representative(tags: list[Any], type_value: int) -> str | None:
     """Return the title of the highest-usage tag of the given type, or None."""
-    candidates = [t for t in tags if t.type == type_value]
+    candidates = [t for t in tags if t.type_id == type_value]
     if not candidates:
         return None
     # Stable sort: usage_count DESC, then tag_id ASC for determinism on ties.
@@ -303,8 +371,8 @@ def compose_entry_title(image_id: int, tags: list[Any]) -> str:
     per category (highest usage_count). Empty sections are skipped. Falls back
     to 'Image #{image_id}' if no character, source, or artist tags are present.
 
-    `tags` is any sequence of objects with `.tag` (title), `.type` (int), `.tag_id`,
-    and `.usage_count` — e.g. TagSummary instances or SQLModel Tags rows.
+    `tags` is a sequence of TagSummary-shaped objects with `.tag` (title),
+    `.type_id` (int, matching TagType constants), `.tag_id`, and `.usage_count`.
     """
     char = _pick_representative(tags, TagType.CHARACTER)
     src = _pick_representative(tags, TagType.SOURCE)
@@ -337,7 +405,7 @@ git commit -m "feat(feeds): compose Atom entry titles from image tags"
 
 ---
 
-### Task 4: ETag and Last-Modified helpers
+### Task 5: ETag and Last-Modified helpers
 
 Pure functions operating on a list of `(image_id, date_added)` tuples (the sentinel result). No DB access here.
 
@@ -496,7 +564,7 @@ git commit -m "feat(feeds): ETag and Last-Modified derivation from sentinel quer
 
 Everything in this chunk touches the database. Tests here use the live test DB via `async_db_session` (see `tests/conftest.py`).
 
-### Task 5: Sentinel query (global + per-tag)
+### Task 6: Sentinel query (global + per-tag)
 
 Cheap query used for ETag/Last-Modified derivation and to short-circuit the hydration query on conditional hits.
 
@@ -710,7 +778,7 @@ git commit -m "feat(feeds): sentinel query for ETag/Last-Modified derivation"
 
 ---
 
-### Task 6: Hydration query + schema conversion
+### Task 7: Hydration query + schema conversion
 
 Full query with `selectinload` for user and tag relationships, converted to `ImageDetailedResponse` via `from_db_model` (see spec for why `model_validate` won't work here).
 
@@ -834,7 +902,7 @@ git commit -m "feat(feeds): hydration query returning ImageDetailedResponse list
 
 Renders the feed XML and exposes the two routes with full conditional-request handling.
 
-### Task 7: Atom feed builder
+### Task 8: Atom feed builder
 
 Uses `feedgenerator.Atom1Feed`. Takes a pre-computed `FeedMeta` dataclass (feed-level values) and the list of `ImageDetailedResponse` entries.
 
@@ -1117,7 +1185,7 @@ git commit -m "feat(feeds): Atom XML builder using feedgenerator"
 
 ---
 
-### Task 8: Global feed handler
+### Task 9: Global feed handler
 
 Route: `GET /api/v1/images.atom`. Includes full conditional-request handling.
 
@@ -1349,7 +1417,7 @@ git commit -m "feat(feeds): global images Atom feed handler with conditional req
 
 ---
 
-### Task 9: Per-tag feed handler
+### Task 10: Per-tag feed handler
 
 Route: `GET /api/v1/tags/{tag_id}/images.atom`. Reuses `resolve_tag_alias()` and `get_tag_hierarchy()` from the tags module.
 
@@ -1509,7 +1577,7 @@ Expected: green. Any failure in a non-feeds test is a regression to fix before c
 
 - [ ] **Step 7: Manual smoke test**
 
-Run uvicorn as in Task 8, then:
+Run uvicorn as in Task 9, then:
 ```bash
 curl -sD- http://localhost:8000/api/v1/tags/1/images.atom | head -40   # valid feed or 404
 curl -si http://localhost:8000/api/v1/tags/999999999/images.atom | head -5  # 404
