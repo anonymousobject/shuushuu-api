@@ -203,6 +203,28 @@ class TestGlobalImagesFeed:
         assert second.status_code == 304
         assert second.text == ""
 
+    async def test_if_none_match_accepts_comma_separated_list(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """RFC 7232 §3.2: clients may send multiple ETags. We 304 if ours is in the set."""
+        user = await _make_user(db_session, "multietag")
+        await _make_image(db_session, user, "me1")
+        first = await client.get("/api/v1/images.atom")
+        etag = first.headers["etag"]
+        second = await client.get(
+            "/api/v1/images.atom",
+            headers={"If-None-Match": f'W/"stale-old-etag", {etag}, W/"another-old"'},
+        )
+        assert second.status_code == 304
+
+    async def test_if_none_match_star_returns_304(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "staretag")
+        await _make_image(db_session, user, "se1")
+        response = await client.get("/api/v1/images.atom", headers={"If-None-Match": "*"})
+        assert response.status_code == 304
+
     async def test_new_image_busts_etag(self, client: AsyncClient, db_session: AsyncSession):
         user = await _make_user(db_session, "bustetag")
         await _make_image(db_session, user, "be1")

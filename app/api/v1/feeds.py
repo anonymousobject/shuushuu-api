@@ -43,10 +43,19 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 
 def _is_not_modified(request: Request, etag: str, last_mod: datetime | None) -> bool:
-    """Conditional-request evaluation."""
+    """Conditional-request evaluation.
+
+    Handles If-None-Match per RFC 7232 §3.2: '*' or a comma-separated list of
+    ETags. Feed readers occasionally send their previous and current ETags
+    together; we 304 as long as ours appears anywhere in the list.
+    """
     inm = request.headers.get("if-none-match", "").strip()
-    if inm == "*" or (inm and inm == etag):
+    if inm == "*":
         return True
+    if inm:
+        candidates = {token.strip() for token in inm.split(",") if token.strip()}
+        if etag in candidates:
+            return True
 
     if last_mod is not None:
         ims = request.headers.get("if-modified-since")

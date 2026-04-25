@@ -210,6 +210,13 @@ class TestBuildAtomFeedEmpty:
         root = ET.fromstring(xml)
         assert root.findall(f"{ATOM_NS}entry") == []
 
+    def test_empty_feed_has_no_subtitle(self):
+        # We pass description=None to suppress <subtitle>; this guards against
+        # a future feedgenerator change re-emitting an empty <subtitle/>.
+        xml = build_atom_feed(_feed_meta(), entries=[])
+        root = ET.fromstring(xml)
+        assert root.find(f"{ATOM_NS}subtitle") is None
+
 
 def _orm_image(
     image_id: int = 42,

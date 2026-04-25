@@ -135,13 +135,13 @@ async def fetch_feed_sentinel(
     )
 
     if tag_ids is not None:
-        tag_subquery = (
-            select(TagLinks.image_id)  # type: ignore[call-overload]
-            .where(TagLinks.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
-            .distinct()
-            .subquery()
+        query = query.where(
+            Images.image_id.in_(  # type: ignore[union-attr]
+                select(TagLinks.image_id)  # type: ignore[call-overload]
+                .where(TagLinks.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
+                .distinct()
+            )
         )
-        query = query.where(Images.image_id.in_(select(tag_subquery)))  # type: ignore[union-attr]
 
     result = await db.execute(query)
     return [(row.image_id, row.date_added) for row in result]
@@ -173,13 +173,13 @@ async def fetch_feed_entries(
     )
 
     if tag_ids is not None:
-        tag_subquery = (
-            select(TagLinks.image_id)  # type: ignore[call-overload]
-            .where(TagLinks.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
-            .distinct()
-            .subquery()
+        query = query.where(
+            Images.image_id.in_(  # type: ignore[union-attr]
+                select(TagLinks.image_id)  # type: ignore[call-overload]
+                .where(TagLinks.tag_id.in_(tag_ids))  # type: ignore[attr-defined]
+                .distinct()
+            )
         )
-        query = query.where(Images.image_id.in_(select(tag_subquery)))  # type: ignore[union-attr]
 
     result = await db.execute(query)
     images = result.scalars().all()
@@ -222,7 +222,7 @@ def build_atom_feed(
     feed = _ShuushuuAtom1Feed(
         title=meta.title,
         link=meta.alternate_url,
-        description="",  # empty → no <subtitle>
+        description=None,  # explicit: no <subtitle>
         feed_url=meta.self_url,
         language="en",
     )
@@ -236,7 +236,10 @@ def build_atom_feed(
         author_name = (
             image.user.username if image.user and image.user.username else "[deleted user]"
         )
-        entry_dt = image.date_added or datetime.now(UTC)
+        # date_added is NOT NULL at the DB level; this fallback is for the
+        # impossible case only. Use a fixed epoch rather than wall-clock time so
+        # a misconfigured row doesn't churn the entry's timestamp on every poll.
+        entry_dt = image.date_added or datetime(1970, 1, 1, tzinfo=UTC)
 
         content_html: str | None = escape(image.caption) if image.caption else None
 
