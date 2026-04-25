@@ -33,6 +33,8 @@ dependencies = [
     # Logging
     "structlog>=24.1.0",
     "python-json-logger>=2.0.7",
+    # Feed generation
+    "feedgenerator>=2.2.1",
     # Task queue
     "arq>=0.27.0", # Task queue for background jobs
     "aioboto3>=13.0.0",  # Async S3-compatible client for Cloudflare R2

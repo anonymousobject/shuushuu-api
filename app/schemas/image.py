@@ -27,6 +27,7 @@ class TagSummary(BaseModel):
     tag_id: int
     tag: str = Field(alias="title")  # Maps from Tags.title
     type_id: int = Field(alias="type")  # Maps from Tags.type
+    usage_count: int = 0  # Needed by feed title composer; non-breaking.
 
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True, "populate_by_name": True}
