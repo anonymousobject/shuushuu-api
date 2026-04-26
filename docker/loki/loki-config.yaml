@@ -44,13 +44,27 @@ limits_config:
   max_query_lookback: 60d
   reject_old_samples: true
   reject_old_samples_max_age: 168h  # 7d, prevents agent backfill abuse
+  # Enable the admin delete API so operators can scrub accidentally-leaked
+  # secrets (e.g. tokens) before they age out via retention. Compactor
+  # processes delete requests on its compaction_interval.
+  deletion_mode: filter-and-delete
 
 compactor:
   working_directory: /loki/compactor
   retention_enabled: true
   delete_request_store: filesystem
   compaction_interval: 10m
-  retention_delete_delay: 2h
+  # Operator-cancellation window: how long a delete request sits in
+  # `received` before the compactor begins processing it. Loki defaults to
+  # 24h, which is unusably long for secret scrubs (the leaked value would
+  # outlive the response). 15m matches retention_delete_delay below, giving
+  # ~30m total from submission to chunks being rewritten — short enough for
+  # secret response, long enough for an operator to cancel a fat-fingered
+  # delete via the admin API.
+  delete_request_cancel_period: 15m
+  # Delay between a delete request being accepted and chunks being rewritten.
+  # Loki defaults to 2h; we reduce to 15m for the same reason as above.
+  retention_delete_delay: 15m
   retention_delete_worker_count: 150
 
 # No analytics phone-home
