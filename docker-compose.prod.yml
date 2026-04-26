@@ -167,6 +167,38 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  alloy:
+    image: grafana/alloy:v1.5.1
+    container_name: shuushuu-alloy-prod
+    # Alloy's image default user is uid 473 (`alloy`); /var/lib/alloy/data is owned by 473.
+    # We keep that uid and use group_add for the supplementary groups Alloy needs:
+    #   docker — to read /var/run/docker.sock (gid varies; check with getent on prod)
+    #   adm    — to read /var/log/nginx/* (added in Chunk 4)
+    user: "473:473"
+    group_add:
+      - "999"  # docker group on prod; CHANGE if `getent group docker | cut -d: -f3` returns different
+    command: >
+      run
+      --server.http.listen-addr=0.0.0.0:12345
+      --storage.path=/var/lib/alloy/data
+      /etc/alloy/config.alloy
+    ports: !override []  # Internal only
+    volumes:
+      - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+    depends_on:
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:12345/-/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
   certbot:
     profiles: [disabled]
 
@@ -186,4 +218,7 @@ volumes:
     driver: local
   grafana_data:
     name: grafana_data_prod
+    driver: local
+  alloy_data:
+    name: alloy_data_prod
     driver: local

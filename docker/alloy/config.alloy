@@ -1,0 +1,108 @@
+// Grafana Alloy config for shuushuu-api production logging.
+// See docs/plans/2026-04-25-centralized-logging-design.md sections 1 and 2.
+//
+// Two log sources:
+//   1. Docker containers via socket discovery (this file)
+//   2. Host nginx files (added in Chunk 4)
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// ---------- Loki write target ----------
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+  external_labels = {
+    host = "prod",
+  }
+}
+
+// ---------- Docker container discovery ----------
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "10s"
+}
+
+// Map container metadata into the labels we want.
+// Container name like "/shuushuu-api-prod" becomes service="api".
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Strip leading slash from container name
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container_name"
+  }
+
+  // Derive `service` label by stripping shuushuu- prefix and -prod suffix
+  rule {
+    source_labels = ["container_name"]
+    regex         = "shuushuu-(.*)-prod"
+    target_label  = "service"
+  }
+
+  // Drop containers that don't match our naming convention (e.g. one-off debug containers)
+  rule {
+    source_labels = ["service"]
+    regex         = ".+"
+    action        = "keep"
+  }
+
+  // Carry through compose project label for multi-project hosts
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "compose_project"
+  }
+}
+
+// ---------- Container log source ----------
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.containers.receiver]
+  labels     = {}  // labels come from relabel above
+}
+
+// ---------- Container log processing ----------
+
+loki.process "containers" {
+  forward_to = [loki.write.default.receiver]
+
+  // Try to parse JSON (structlog from api, arq-worker).
+  // For non-JSON lines, this stage is a no-op and `level` stays empty.
+  stage.json {
+    expressions = {
+      level     = "level",
+      logger    = "logger",
+      timestamp = "timestamp",
+    }
+  }
+
+  // Default `level` to "info" when JSON parsing didn't extract one
+  // (non-structlog services like redis, iqdb, frontend plain text).
+  stage.template {
+    source   = "level"
+    template = "{{ if .Value }}{{ .Value }}{{ else }}info{{ end }}"
+  }
+
+  // Single labels stage promotes level once, after the default has been applied.
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+
+  // Drop very high-volume noise: healthcheck pings.
+  // Adjust patterns as observed in real traffic.
+  stage.match {
+    selector = "{service=\"api\"} |= \"GET /health\""
+    action   = "drop"
+  }
+}
