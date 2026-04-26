@@ -160,7 +160,11 @@ loki.process "nginx_access" {
     expression = "/var/log/nginx/(?P<vhost>[^/]+)\\.access\\.log"
   }
 
-  // Combined log format
+  // Combined log format. Captures (in order):
+  //   remote_addr, remote_user, time_local, method, path, protocol,
+  //   status, bytes_sent, referer, user_agent
+  // `remote_user` is the literal `-` placeholder when nginx logs no auth user.
+  // `referer` and `user_agent` use `[^"]*` (zero-or-more) so empty `""` values parse.
   stage.regex {
     expression = "^(?P<remote_addr>\\S+) - (?P<remote_user>\\S+) \\[(?P<time_local>[^\\]]+)\\] \"(?P<method>\\S+) (?P<path>\\S+) (?P<protocol>[^\"]+)\" (?P<status>\\d{3}) (?P<bytes_sent>\\d+) \"(?P<referer>[^\"]*)\" \"(?P<user_agent>[^\"]*)\""
   }
@@ -183,6 +187,11 @@ loki.process "nginx_error" {
     expression = "/var/log/nginx/(?P<vhost>[^/]+)\\.error\\.log"
   }
 
+  // All entries in the nginx error log get level="error" regardless of nginx's
+  // own severity (`emerg|alert|crit|error|warn|notice|info|debug`). This is
+  // intentional per spec: error logs are infrequent enough that finer parsing
+  // is not worth the maintenance. Operators querying `level=warn` will not
+  // find nginx warn-level entries — query the error stream and grep the body.
   stage.static_labels {
     values = {
       level = "error",
