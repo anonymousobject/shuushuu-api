@@ -149,7 +149,9 @@ services:
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
       - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
-    env_file: .env.prod
+    # No env_file: .env.prod — only GRAFANA_ADMIN_PASSWORD is needed, and it is
+    # already substituted via ${VAR} in `environment:` (sourced from --env-file at compose level).
+    # This avoids leaking unrelated DB/Redis/etc. credentials into the Grafana container.
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
