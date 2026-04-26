@@ -28,6 +28,7 @@ from app.core.auth import (
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.security import (
+    RedactedStr,
     create_access_token,
     create_refresh_token,
     get_password_hash,
@@ -731,8 +732,13 @@ async def resend_verification(
     current_user.email_verification_expires_at = datetime.now(UTC) + timedelta(hours=24)
     await db.commit()
 
-    # Queue verification email via ARQ (non-blocking, reliable)
-    await enqueue_job("send_verification_email_job", user_id=current_user.user_id, token=raw_token)
+    # Queue verification email via ARQ (non-blocking, reliable). RedactedStr
+    # keeps the token usable but hides it from arq's repr-based job-arg log.
+    await enqueue_job(
+        "send_verification_email_job",
+        user_id=current_user.user_id,
+        token=RedactedStr(raw_token),
+    )
 
     return MessageResponse(message="Verification email sent! Check your inbox.")
 
@@ -781,11 +787,12 @@ async def forgot_password(
     user.password_reset_expires_at = datetime.now(UTC) + timedelta(hours=1)
     await db.commit()
 
-    # Queue email
+    # Queue email. RedactedStr keeps the token usable but hides it from arq's
+    # repr-based job-arg log (which is INFO-level and ingested by Loki).
     await enqueue_job(
         "send_password_reset_email_job",
         user_id=user.user_id,
-        token=raw_token,
+        token=RedactedStr(raw_token),
     )
 
     return MessageResponse(message=generic_message)
