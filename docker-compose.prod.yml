@@ -186,8 +186,14 @@ services:
       # healthy). Verify on prod before deploying:
       #   getent group docker | cut -d: -f3   # commonly 999 on Debian/Ubuntu
       #   getent group adm    | cut -d: -f3   # commonly 4 on Debian/Ubuntu
-      - "999"  # docker
+      - "116"  # docker
       - "4"    # adm — needed to read /var/log/nginx/* (mode 640 www-data:adm)
+    # nginx error log timestamps are written in the host's local time without
+    # an offset. Pass the host TZ through so stage.timestamp's `location =
+    # "Local"` interprets them correctly. Default UTC; override via .env.prod
+    # if nginx is logging in a non-UTC zone.
+    environment:
+      - TZ=${TZ:-UTC}
     command: >
       run
       --server.http.listen-addr=0.0.0.0:12345

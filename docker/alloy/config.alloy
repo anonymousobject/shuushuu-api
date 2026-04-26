@@ -123,12 +123,22 @@ loki.process "containers" {
 
 // ---------- Host nginx file source ----------
 
-// Discover access logs and tag them with vhost from filename.
-// Pattern matches /var/log/nginx/<vhost>.access.log; new vhosts auto-included.
+// Two path_targets per log type:
+//   - /var/log/nginx/*.access.log      → per-vhost files (e-shuushuu.net.access.log, etc.)
+//   - /var/log/nginx/access.log        → catch-all `server_name _` block + nginx daemon
+// Go filepath.Glob's `*` does not match the empty string, so the per-vhost glob
+// alone misses the bare file. Without the second target we'd have no visibility
+// on direct-IP scans or on nginx's own startup/reload errors.
+// New per-vhost files are picked up automatically on sync_period.
 local.file_match "nginx_access" {
   path_targets = [
     {
       __path__ = "/var/log/nginx/*.access.log",
+      service  = "nginx",
+      log_type = "access",
+    },
+    {
+      __path__ = "/var/log/nginx/access.log",
       service  = "nginx",
       log_type = "access",
     },
@@ -140,6 +150,11 @@ local.file_match "nginx_error" {
   path_targets = [
     {
       __path__ = "/var/log/nginx/*.error.log",
+      service  = "nginx",
+      log_type = "error",
+    },
+    {
+      __path__ = "/var/log/nginx/error.log",
       service  = "nginx",
       log_type = "error",
     },
@@ -157,13 +172,19 @@ loki.source.file "nginx_error" {
   forward_to = [loki.process.nginx_error.receiver]
 }
 
-// Extract vhost from filename like /var/log/nginx/e-shuushuu.net.access.log
+// Extract vhost from filename like /var/log/nginx/e-shuushuu.net.access.log.
+// The capture is optional — bare /var/log/nginx/access.log (catch-all server)
+// has no vhost prefix and gets `vhost="default"` via the template stage below.
 loki.process "nginx_access" {
   forward_to = [loki.write.default.receiver]
 
   stage.regex {
     source     = "filename"
-    expression = "/var/log/nginx/(?P<vhost>[^/]+)\\.access\\.log"
+    expression = "/var/log/nginx/((?P<vhost>[^/]+)\\.)?access\\.log$"
+  }
+  stage.template {
+    source   = "vhost"
+    template = "{{ if .Value }}{{ .Value }}{{ else }}default{{ end }}"
   }
 
   // Combined log format. Captures (in order):
@@ -175,6 +196,15 @@ loki.process "nginx_access" {
     expression = "^(?P<remote_addr>\\S+) - (?P<remote_user>\\S+) \\[(?P<time_local>[^\\]]+)\\] \"(?P<method>\\S+) (?P<path>\\S+) (?P<protocol>[^\"]+)\" (?P<status>\\d{3}) (?P<bytes_sent>\\d+) \"(?P<referer>[^\"]*)\" \"(?P<user_agent>[^\"]*)\""
   }
 
+  // Promote the log line's own time as the entry timestamp. Without this,
+  // Loki uses ingest time, so any restart, backpressure, or rotation lag
+  // silently misorders entries. `time_local` carries an explicit offset
+  // (e.g. `-0400`), so no `location` arg is needed.
+  stage.timestamp {
+    source = "time_local"
+    format = "02/Jan/2006:15:04:05 -0700"
+  }
+
   stage.labels {
     values = {
       vhost   = "",
@@ -183,14 +213,40 @@ loki.process "nginx_access" {
       method  = "",
     }
   }
+
+  // `filename` is auto-added as a label by loki.source.file. With per-vhost
+  // files (e-shuushuu.net.access.log, etc.) this would create one stream per
+  // file — duplicating what `vhost` already encodes. Drop it after extraction.
+  stage.label_drop {
+    values = ["filename"]
+  }
 }
 
 loki.process "nginx_error" {
   forward_to = [loki.write.default.receiver]
 
+  // Same optional-vhost pattern as nginx_access: bare /var/log/nginx/error.log
+  // (where nginx writes its own daemon errors) gets `vhost="default"`.
   stage.regex {
     source     = "filename"
-    expression = "/var/log/nginx/(?P<vhost>[^/]+)\\.error\\.log"
+    expression = "/var/log/nginx/((?P<vhost>[^/]+)\\.)?error\\.log$"
+  }
+  stage.template {
+    source   = "vhost"
+    template = "{{ if .Value }}{{ .Value }}{{ else }}default{{ end }}"
+  }
+
+  // nginx error log line: `2026/04/25 14:30:01 [error] 12345#0: ...`.
+  // Promote this as the entry timestamp (same reasoning as nginx_access).
+  // Format is TZ-naive local time; we rely on the alloy container's TZ env
+  // matching the host's nginx TZ — see the `TZ` var on the alloy service.
+  stage.regex {
+    expression = "^(?P<time_local>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2})"
+  }
+  stage.timestamp {
+    source   = "time_local"
+    format   = "2006/01/02 15:04:05"
+    location = "Local"
   }
 
   // All entries in the nginx error log get level="error" regardless of nginx's
@@ -209,5 +265,9 @@ loki.process "nginx_error" {
       vhost   = "",
       service = "",
     }
+  }
+
+  stage.label_drop {
+    values = ["filename"]
   }
 }
