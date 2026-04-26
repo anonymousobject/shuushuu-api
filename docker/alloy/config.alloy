@@ -114,3 +114,85 @@ loki.process "containers" {
     value  = "/health"
   }
 }
+
+// ---------- Host nginx file source ----------
+
+// Discover access logs and tag them with vhost from filename.
+// Pattern matches /var/log/nginx/<vhost>.access.log; new vhosts auto-included.
+local.file_match "nginx_access" {
+  path_targets = [
+    {
+      __path__ = "/var/log/nginx/*.access.log",
+      service  = "nginx",
+      log_type = "access",
+    },
+  ]
+  sync_period = "30s"
+}
+
+local.file_match "nginx_error" {
+  path_targets = [
+    {
+      __path__ = "/var/log/nginx/*.error.log",
+      service  = "nginx",
+      log_type = "error",
+    },
+  ]
+  sync_period = "30s"
+}
+
+loki.source.file "nginx_access" {
+  targets    = local.file_match.nginx_access.targets
+  forward_to = [loki.process.nginx_access.receiver]
+}
+
+loki.source.file "nginx_error" {
+  targets    = local.file_match.nginx_error.targets
+  forward_to = [loki.process.nginx_error.receiver]
+}
+
+// Extract vhost from filename like /var/log/nginx/e-shuushuu.net.access.log
+loki.process "nginx_access" {
+  forward_to = [loki.write.default.receiver]
+
+  stage.regex {
+    source     = "filename"
+    expression = "/var/log/nginx/(?P<vhost>[^/]+)\\.access\\.log"
+  }
+
+  // Combined log format
+  stage.regex {
+    expression = "^(?P<remote_addr>\\S+) - (?P<remote_user>\\S+) \\[(?P<time_local>[^\\]]+)\\] \"(?P<method>\\S+) (?P<path>\\S+) (?P<protocol>[^\"]+)\" (?P<status>\\d{3}) (?P<bytes_sent>\\d+) \"(?P<referer>[^\"]*)\" \"(?P<user_agent>[^\"]*)\""
+  }
+
+  stage.labels {
+    values = {
+      vhost   = "",
+      service = "",
+      status  = "",
+      method  = "",
+    }
+  }
+}
+
+loki.process "nginx_error" {
+  forward_to = [loki.write.default.receiver]
+
+  stage.regex {
+    source     = "filename"
+    expression = "/var/log/nginx/(?P<vhost>[^/]+)\\.error\\.log"
+  }
+
+  stage.static_labels {
+    values = {
+      level = "error",
+    }
+  }
+
+  stage.labels {
+    values = {
+      vhost   = "",
+      service = "",
+    }
+  }
+}

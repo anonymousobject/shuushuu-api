@@ -181,10 +181,13 @@ services:
     # considerations".
     user: "473:473"
     group_add:
-      # WARNING: docker gid varies per host. If wrong, Alloy starts healthy but
-      # discovery.docker returns ZERO targets and NO container logs flow.
-      # Verify on prod before deploying: `getent group docker | cut -d: -f3`
-      - "999"
+      # WARNING: gids vary per host. Wrong docker gid → no container logs flow;
+      # wrong adm gid → no host nginx logs flow. Both fail silently (Alloy stays
+      # healthy). Verify on prod before deploying:
+      #   getent group docker | cut -d: -f3   # commonly 999 on Debian/Ubuntu
+      #   getent group adm    | cut -d: -f3   # commonly 4 on Debian/Ubuntu
+      - "999"  # docker
+      - "4"    # adm — needed to read /var/log/nginx/* (mode 640 www-data:adm)
     command: >
       run
       --server.http.listen-addr=0.0.0.0:12345
@@ -194,6 +197,7 @@ services:
     volumes:
       - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/nginx:/var/log/nginx:ro
       - alloy_data:/var/lib/alloy/data
     depends_on:
       loki:
