@@ -92,6 +92,12 @@ loki.process "containers" {
 
   // Default `level` to "info" when JSON parsing didn't extract one
   // (non-structlog services like redis, iqdb, frontend plain text).
+  //
+  // NOTE: redis emits its own pseudo-structured `# warning / * notice / . debug /
+  // - info` markers. We deliberately do not parse them: redis logs are very low
+  // volume on this host and the markers are searchable via raw text grep
+  // (`{service="redis"} |~ "^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +# "` etc.).
+  // If redis logs grow noisy, revisit by adding a stage.match selector + regex.
   stage.template {
     source   = "level"
     template = "{{ if .Value }}{{ .Value }}{{ else }}info{{ end }}"

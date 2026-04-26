@@ -202,12 +202,11 @@ services:
     depends_on:
       loki:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:12345/-/ready || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+    # No healthcheck: grafana/alloy ships without wget/curl/nc, so the standard
+    # HTTP probe pattern doesn't work. Alloy is a leaf service — nothing depends
+    # on its `service_healthy` status — and `restart: unless-stopped` plus
+    # docker's process supervision are sufficient. If a future service ever
+    # needs to wait for Alloy, swap to a bash /dev/tcp probe.
     restart: unless-stopped
     logging: *default-logging
 
