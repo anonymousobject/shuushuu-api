@@ -47,7 +47,10 @@ discovery.relabel "containers" {
     target_label  = "service"
   }
 
-  // Drop containers that don't match our naming convention (e.g. one-off debug containers)
+  // Keep only containers whose name matched `shuushuu-(.*)-prod`.
+  // This intentionally drops:
+  //   - The mariadb busybox stub (named `shuushuu-mariadb`, no `-prod` suffix; stub has no useful logs anyway)
+  //   - Any one-off `docker run` debug containers a human might launch on the host
   rule {
     source_labels = ["service"]
     regex         = ".+"
@@ -76,12 +79,14 @@ loki.process "containers" {
   forward_to = [loki.write.default.receiver]
 
   // Try to parse JSON (structlog from api, arq-worker).
-  // For non-JSON lines, this stage is a no-op and `level` stays empty.
+  // For non-JSON lines, this stage is a no-op and the extracted fields stay empty.
+  // `path` is extracted to drive the healthcheck filter below.
   stage.json {
     expressions = {
       level     = "level",
       logger    = "logger",
       timestamp = "timestamp",
+      path      = "path",
     }
   }
 
@@ -99,10 +104,13 @@ loki.process "containers" {
     }
   }
 
-  // Drop very high-volume noise: healthcheck pings.
-  // Adjust patterns as observed in real traffic.
-  stage.match {
-    selector = "{service=\"api\"} |= \"GET /health\""
-    action   = "drop"
+  // Drop high-volume healthcheck pings on the api service.
+  // Filter on the *parsed* `path` field, not a line substring: avoids accidentally
+  // dropping unrelated logs that happen to contain "/health" in a body or
+  // user-supplied string. Lines without a `path` field (non-JSON, e.g. redis/iqdb)
+  // have an empty extracted value and are unaffected.
+  stage.drop {
+    source = "path"
+    value  = "/health"
   }
 }
