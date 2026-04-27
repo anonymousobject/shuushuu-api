@@ -21,6 +21,7 @@ from arq.worker import func
 
 from app.config import settings
 from app.core.database import get_async_session
+from app.core.logging import configure_logging
 from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.review_jobs import check_review_deadlines
 from app.services.user_cleanup import cleanup_unverified_accounts
@@ -37,6 +38,12 @@ from app.tasks.r2_jobs import (
     sync_image_status_job,
 )
 from app.tasks.rating_jobs import recalculate_rating_job
+
+# Same pattern as app/main.py: configure structlog at module import. arq is
+# launched as `uv run arq app.tasks.worker.WorkerSettings`, which never goes
+# through main.py, so without this call the worker would fall through to
+# structlog's defaults (ConsoleRenderer) instead of the prod JSONRenderer.
+configure_logging()
 
 
 async def cleanup_stale_accounts(ctx: dict[str, Any]) -> None:

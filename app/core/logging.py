@@ -92,6 +92,11 @@ def configure_logging() -> None:
     # richer context (user_id, request_id, elapsed_ms)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    # arq's worker emits job lifecycle lines through stdlib logging with its
+    # own formatter. Without this, records also propagate to root where
+    # structlog's stdlib handler re-emits them — producing duplicate lines
+    # (one prefixed with arq's timestamp, one bare).
+    logging.getLogger("arq").propagate = False
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
