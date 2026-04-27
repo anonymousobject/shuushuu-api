@@ -110,7 +110,7 @@ Use the **Explore** tab in Grafana, datasource `Loki`.
 ### Top 10 noisiest paths in nginx (last hour)
 
 ```logql
-topk(10, sum by (path) (count_over_time({service="nginx"} | regexp `"\\S+ (?P<path>\\S+) HTTP` [1h])))
+topk(10, sum by (path) (count_over_time({service="nginx"} | regexp `"\S+ (?P<path>\S+) HTTP` [1h])))
 ```
 
 ## Retention

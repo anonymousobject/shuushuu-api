@@ -134,6 +134,13 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    # Isolate Loki from the app network. Loki runs `auth_enabled: false` and
+    # exposes an admin delete API; if a compromised api/arq-worker container
+    # could reach it, an attacker could scrub log history to cover their tracks
+    # before incident response notices. Only alloy (writer) and grafana (reader)
+    # need to talk to Loki.
+    networks:
+      - logging-net
     logging: *default-logging
 
   grafana:
@@ -165,6 +172,10 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    # Grafana only needs to reach Loki, and is exposed to operators via the host
+    # port mapping (127.0.0.1:3001). Keep it off the app network.
+    networks:
+      - logging-net
     logging: *default-logging
 
   alloy:
@@ -214,6 +225,11 @@ services:
     # docker's process supervision are sufficient. If a future service ever
     # needs to wait for Alloy, swap to a bash /dev/tcp probe.
     restart: unless-stopped
+    # Alloy reads container logs via the docker socket (filesystem-level, not
+    # network) and host nginx logs from a bind mount, so it doesn't need the
+    # app network to monitor app containers — only network access to Loki.
+    networks:
+      - logging-net
     logging: *default-logging
 
   certbot:
@@ -239,3 +255,8 @@ volumes:
   alloy_data:
     name: alloy_data_prod
     driver: local
+
+networks:
+  logging-net:
+    name: shuushuu-logging-net-prod
+    driver: bridge
