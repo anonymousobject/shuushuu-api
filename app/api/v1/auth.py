@@ -285,8 +285,12 @@ async def login(
 
     # Check if account is locked
     if user.lockout_until:
-        if user.lockout_until > datetime.now(UTC):
-            remaining_minutes = int((user.lockout_until - datetime.now(UTC)).total_seconds() / 60)
+        # MySQL DATETIME is timezone-naive, so lockout_until comes back without
+        # tzinfo. Drop tzinfo from `now` to match — comparing aware vs. naive
+        # raises TypeError, which previously locked users out indefinitely.
+        now_naive = datetime.now(UTC).replace(tzinfo=None)
+        if user.lockout_until > now_naive:
+            remaining_minutes = int((user.lockout_until - now_naive).total_seconds() / 60)
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
                 detail=f"Account locked due to too many failed login attempts. Try again in {remaining_minutes} minutes.",
