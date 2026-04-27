@@ -258,6 +258,65 @@ class TestLogin:
         await db_session.refresh(user)
         assert user.failed_login_attempts == 1
 
+    async def test_login_with_expired_lockout_clears_and_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Login must succeed when an existing lockout_until has already expired.
+
+        MySQL DATETIME is timezone-naive, so user.lockout_until comes back from the
+        DB without tzinfo. Comparing it against datetime.now(UTC) (tz-aware) raises
+        TypeError, which silently 500s the login and locks users out indefinitely.
+        """
+        user = Users(
+            username="expiredlockuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="expiredlock@example.com",
+            active=1,
+            failed_login_attempts=5,
+            lockout_until=datetime.now(UTC) - timedelta(days=30),
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "expiredlockuser", "password": "TestPassword123!"},
+        )
+
+        assert response.status_code == 200
+        await db_session.refresh(user)
+        assert user.lockout_until is None
+        assert user.failed_login_attempts == 0
+
+    async def test_login_with_active_lockout_returns_423(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """An unexpired lockout_until must produce 423, not crash on tz comparison."""
+        user = Users(
+            username="activelockuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="activelock@example.com",
+            active=1,
+            failed_login_attempts=5,
+            lockout_until=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "activelockuser", "password": "TestPassword123!"},
+        )
+
+        assert response.status_code == 423
+        assert "locked" in response.json()["detail"].lower()
+
 
 @pytest.mark.api
 class TestRefresh:
