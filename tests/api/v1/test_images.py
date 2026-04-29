@@ -3424,3 +3424,74 @@ class TestGetImageRatings:
             f"/api/v1/images/{image.image_id}/ratings?sort_by=email"
         )
         assert response.status_code == 422
+
+    async def test_sort_by_date_asc(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Sorting by date ASC returns 200 and handles all rating rows."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        users = []
+        for i in range(2):
+            user = Users(
+                username=f"sort_date_{i}",
+                password="hashed",
+                password_type="bcrypt",
+                salt="x" * 16,
+                email=f"sortdate{i}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for u in users:
+            await db_session.refresh(u)
+            db_session.add(
+                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5)
+            )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ratings?sort_by=date&sort_order=ASC"
+        )
+        assert response.status_code == 200
+        assert len(response.json()["users"]) == 2
+
+    async def test_sort_by_user_id_desc_no_redundant_tiebreaker(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Sorting by user_id DESC orders by user_id descending without redundant tiebreak."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        users = []
+        for i in range(3):
+            user = Users(
+                username=f"sort_uid_{i}",
+                password="hashed",
+                password_type="bcrypt",
+                salt="x" * 16,
+                email=f"sortuid{i}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for u in users:
+            await db_session.refresh(u)
+            db_session.add(
+                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5)
+            )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ratings?sort_by=user_id&sort_order=DESC"
+        )
+        assert response.status_code == 200
+        ids_in_order = [u["user_id"] for u in response.json()["users"]]
+        assert ids_in_order == sorted(ids_in_order, reverse=True)

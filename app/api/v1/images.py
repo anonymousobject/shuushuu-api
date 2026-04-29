@@ -1443,11 +1443,13 @@ async def get_image_ratings_users(
     }
     sort_column = sort_columns[sorting.sort_by]
     primary = desc(sort_column) if sorting.sort_order == "DESC" else asc(sort_column)
-    # Tiebreaker on user_id keeps order stable when sorting by a non-unique column
+    # Tiebreaker on user_id keeps order stable when sorting by a non-unique column.
+    # Skip it when the primary sort is already user_id (which is unique).
+    tiebreaker: list[Any] = (
+        [] if sorting.sort_by == "user_id" else [asc(Users.user_id)]  # type: ignore[arg-type]
+    )
     query = (
-        query.order_by(primary, asc(Users.user_id))  # type: ignore[arg-type]
-        .offset(pagination.offset)
-        .limit(pagination.per_page)
+        query.order_by(primary, *tiebreaker).offset(pagination.offset).limit(pagination.per_page)
     )
 
     result = await db.execute(query)
