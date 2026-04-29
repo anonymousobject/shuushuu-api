@@ -9,7 +9,7 @@ import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
-from typing import Annotated
+from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import (
@@ -30,7 +30,12 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
+from app.api.dependencies import (
+    ImageRatingsSortParams,
+    ImageSortParams,
+    PaginationParams,
+    UserSortParams,
+)
 from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import (
     AdminActionType,
@@ -1406,6 +1411,7 @@ async def get_image_favorites(
 async def get_image_ratings_users(
     image_id: int,
     pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[ImageRatingsSortParams, Depends()],
     db: AsyncSession = Depends(get_db),
 ) -> ImageRatingsListResponse:
     """
@@ -1416,6 +1422,10 @@ async def get_image_ratings_users(
     if not image_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Image not found")
 
+    # Count is independent of the user join — hits the fk_image_ratings_image_id index directly
+    count_query = select(func.count()).where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
+    total = (await db.execute(count_query)).scalar() or 0
+
     # Join Users with their ImageRatings row for this image
     query = (
         select(Users, ImageRatings.rating.label("rating_value"))  # type: ignore[attr-defined]
@@ -1423,13 +1433,19 @@ async def get_image_ratings_users(
         .where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
     )
 
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await db.execute(count_query)).scalar() or 0
-
-    # Order by rating descending, then user_id for stability; paginate
+    # Resolve sort column from the requested field (some live on Users, some on ImageRatings)
+    sort_columns: dict[str, Any] = {
+        "rating": ImageRatings.rating,
+        "date": ImageRatings.date,
+        "user_id": Users.user_id,
+        "username": Users.username,
+        "date_joined": Users.date_joined,
+    }
+    sort_column = sort_columns[sorting.sort_by]
+    primary = desc(sort_column) if sorting.sort_order == "DESC" else asc(sort_column)
+    # Tiebreaker on user_id keeps order stable when sorting by a non-unique column
     query = (
-        query.order_by(desc(ImageRatings.rating), asc(Users.user_id))  # type: ignore[arg-type]
+        query.order_by(primary, asc(Users.user_id))  # type: ignore[arg-type]
         .offset(pagination.offset)
         .limit(pagination.per_page)
     )
@@ -1438,9 +1454,7 @@ async def get_image_ratings_users(
     rows = result.all()
 
     users_with_ratings = [
-        UserWithRatingResponse.model_validate(
-            {**UserResponse.model_validate(user).model_dump(), "rating": rating}
-        )
+        UserWithRatingResponse(**UserResponse.model_validate(user).model_dump(), rating=rating)
         for user, rating in rows
     ]
 

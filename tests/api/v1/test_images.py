@@ -3237,6 +3237,9 @@ class TestGetImageRatings:
         assert rating_by_username["rater_1"] == 8
         assert rating_by_username["rater_2"] == 10
 
+        # Default order is rating DESC
+        assert [u["rating"] for u in data["users"]] == [10, 8, 5]
+
         # Should also include core user fields
         first = data["users"][0]
         assert "user_id" in first
@@ -3300,3 +3303,124 @@ class TestGetImageRatings:
         assert data["page"] == 1
         assert data["per_page"] == 2
         assert len(data["users"]) == 2
+
+    async def test_sort_by_rating_asc(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Sorting by rating ASC returns lowest ratings first."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        users = []
+        for i in range(3):
+            user = Users(
+                username=f"sort_rate_{i}",
+                password="hashed",
+                password_type="bcrypt",
+                salt="x" * 16,
+                email=f"sortrate{i}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for u, rating_value in zip(users, [9, 3, 6], strict=True):
+            await db_session.refresh(u)
+            db_session.add(
+                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=rating_value)
+            )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ratings?sort_by=rating&sort_order=ASC"
+        )
+        assert response.status_code == 200
+        ratings_in_order = [u["rating"] for u in response.json()["users"]]
+        assert ratings_in_order == [3, 6, 9]
+
+    async def test_sort_by_rating_desc_default(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Default sort is by rating DESC."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        users = []
+        for i in range(3):
+            user = Users(
+                username=f"sort_def_{i}",
+                password="hashed",
+                password_type="bcrypt",
+                salt="x" * 16,
+                email=f"sortdef{i}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for u, rating_value in zip(users, [4, 9, 6], strict=True):
+            await db_session.refresh(u)
+            db_session.add(
+                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=rating_value)
+            )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/ratings")
+        assert response.status_code == 200
+        ratings_in_order = [u["rating"] for u in response.json()["users"]]
+        assert ratings_in_order == [9, 6, 4]
+
+    async def test_sort_by_username_asc(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Sorting by username ASC orders alphabetically."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        usernames = ["zeta_user", "alpha_user", "mike_user"]
+        users = []
+        for name in usernames:
+            user = Users(
+                username=name,
+                password="hashed",
+                password_type="bcrypt",
+                salt="x" * 16,
+                email=f"{name}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for u in users:
+            await db_session.refresh(u)
+            db_session.add(
+                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5)
+            )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ratings?sort_by=username&sort_order=ASC"
+        )
+        assert response.status_code == 200
+        usernames_in_order = [u["username"] for u in response.json()["users"]]
+        assert usernames_in_order == ["alpha_user", "mike_user", "zeta_user"]
+
+    async def test_invalid_sort_by_rejected(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Unsupported sort_by values return 422."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ratings?sort_by=email"
+        )
+        assert response.status_code == 422
