@@ -1428,7 +1428,11 @@ async def get_image_ratings_users(
 
     # Join Users with their ImageRatings row for this image
     query = (
-        select(Users, ImageRatings.rating.label("rating_value"))  # type: ignore[attr-defined]
+        select(
+            Users,
+            ImageRatings.rating.label("rating_value"),  # type: ignore[attr-defined]
+            ImageRatings.date.label("rated_at"),  # type: ignore[union-attr]
+        )
         .join(ImageRatings, ImageRatings.user_id == Users.user_id)  # type: ignore[arg-type]
         .where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
     )
@@ -1456,8 +1460,12 @@ async def get_image_ratings_users(
     rows = result.all()
 
     users_with_ratings = [
-        UserWithRatingResponse(**UserResponse.model_validate(user).model_dump(), rating=rating)
-        for user, rating in rows
+        UserWithRatingResponse(
+            **UserResponse.model_validate(user).model_dump(),
+            rating=rating,
+            rated_at=rated_at,
+        )
+        for user, rating, rated_at in rows
     ]
 
     return ImageRatingsListResponse(

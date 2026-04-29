@@ -3425,6 +3425,41 @@ class TestGetImageRatings:
         )
         assert response.status_code == 422
 
+    async def test_response_includes_rated_at_timestamp(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Each user entry includes the timestamp when the rating was recorded."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        user = Users(
+            username="dated_rater",
+            password="hashed",
+            password_type="bcrypt",
+            salt="x" * 16,
+            email="datedrater@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        db_session.add(
+            ImageRatings(user_id=user.user_id, image_id=image.image_id, rating=7)
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/ratings")
+        assert response.status_code == 200
+
+        entry = response.json()["users"][0]
+        assert "rated_at" in entry
+        # Should be a non-empty ISO 8601 timestamp ending in Z (UTC), per UTCDatetime serializer
+        assert isinstance(entry["rated_at"], str)
+        assert entry["rated_at"].endswith("Z")
+
     async def test_sort_by_date_asc(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):

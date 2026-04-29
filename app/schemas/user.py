@@ -241,6 +241,7 @@ class UserWithRatingResponse(UserResponse):
     """User profile with the rating they assigned to a specific image."""
 
     rating: int
+    rated_at: UTCDatetimeOptional = None
 
 
 class ImageRatingsListResponse(BaseModel):
