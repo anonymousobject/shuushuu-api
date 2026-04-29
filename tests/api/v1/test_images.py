@@ -3186,3 +3186,117 @@ class TestRateImage:
         data = response.json()
         assert data["average_rating"] == 10.0
         assert data["num_ratings"] == 1
+
+
+@pytest.mark.api
+class TestGetImageRatings:
+    """Tests for GET /api/v1/images/{image_id}/ratings endpoint."""
+
+    async def test_get_image_ratings(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Returns list of users with their ratings for an image."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Create ratings from multiple users
+        users = []
+        for i, rating_value in enumerate([5, 8, 10]):
+            user = Users(
+                username=f"rater_{i}",
+                password="hashed",
+                password_type="bcrypt",
+                salt="x" * 16,
+                email=f"rater{i}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for u in users:
+            await db_session.refresh(u)
+
+        for user, rating_value in zip(users, [5, 8, 10], strict=True):
+            db_session.add(
+                ImageRatings(user_id=user.user_id, image_id=image.image_id, rating=rating_value)
+            )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/ratings")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["total"] == 3
+        assert len(data["users"]) == 3
+
+        # Each entry should include the user fields plus a rating value
+        rating_by_username = {u["username"]: u["rating"] for u in data["users"]}
+        assert rating_by_username["rater_0"] == 5
+        assert rating_by_username["rater_1"] == 8
+        assert rating_by_username["rater_2"] == 10
+
+        # Should also include core user fields
+        first = data["users"][0]
+        assert "user_id" in first
+        assert "username" in first
+
+    async def test_get_image_ratings_nonexistent_image(self, client: AsyncClient):
+        """Returns 404 for an image that doesn't exist."""
+        response = await client.get("/api/v1/images/999999/ratings")
+        assert response.status_code == 404
+
+    async def test_get_image_ratings_empty(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Returns empty list when image has no ratings."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/ratings")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["users"] == []
+
+    async def test_get_image_ratings_pagination(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Pagination limits how many ratings come back per page."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        users = []
+        for i in range(5):
+            user = Users(
+                username=f"pager_{i}",
+                password="hashed",
+                password_type="bcrypt",
+                salt="x" * 16,
+                email=f"pager{i}@example.com",
+                active=1,
+            )
+            db_session.add(user)
+            users.append(user)
+        await db_session.commit()
+        for u in users:
+            await db_session.refresh(u)
+            db_session.add(
+                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=7)
+            )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ratings?page=1&per_page=2"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 5
+        assert data["page"] == 1
+        assert data["per_page"] == 2
+        assert len(data["users"]) == 2

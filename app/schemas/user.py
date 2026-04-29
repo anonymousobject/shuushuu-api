@@ -237,6 +237,21 @@ class UserListResponse(BaseModel):
     users: list[UserResponse]
 
 
+class UserWithRatingResponse(UserResponse):
+    """User profile with the rating they assigned to a specific image."""
+
+    rating: int
+
+
+class ImageRatingsListResponse(BaseModel):
+    """Schema for paginated list of users who rated an image, including their rating values."""
+
+    total: int
+    page: int
+    per_page: int
+    users: list[UserWithRatingResponse]
+
+
 # ===== User Warnings Schemas =====
 
 
