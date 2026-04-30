@@ -1774,6 +1774,17 @@ async def escalate_report(
     db.add(review)
     await db.flush()  # Get review_id
 
+    # Log to public status history (skip if image was already in REVIEW
+    # without an open review — orphaned state should not record a no-op transition)
+    if previous_status != ImageStatus.REVIEW:
+        status_history = ImageStatusHistory(
+            image_id=report.image_id,
+            old_status=previous_status,
+            new_status=ImageStatus.REVIEW,
+            user_id=current_user.user_id,
+        )
+        db.add(status_history)
+
     # Log action
     action = AdminActions(
         user_id=current_user.user_id,
@@ -2024,6 +2035,17 @@ async def create_review(
     )
     db.add(review)
     await db.flush()
+
+    # Log to public status history (skip if image was already in REVIEW
+    # without an open review — orphaned state should not record a no-op transition)
+    if previous_status != ImageStatus.REVIEW:
+        status_history = ImageStatusHistory(
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=ImageStatus.REVIEW,
+            user_id=current_user.user_id,
+        )
+        db.add(status_history)
 
     # Log action
     action = AdminActions(
