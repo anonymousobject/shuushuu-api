@@ -10,12 +10,15 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from app.config import ImageStatus, ReportStatus, ReviewStatus
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
+from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
@@ -992,6 +995,45 @@ class TestAdminReportEscalate:
         # Verify image status changed to REVIEW
         await db_session.refresh(image)
         assert image.status == ImageStatus.REVIEW
+
+    async def test_escalate_report_writes_status_history(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Escalating a report must record the ACTIVE -> REVIEW transition in status history."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=2,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/escalate",
+            json={"deadline_days": 7},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        result = await db_session.execute(
+            select(ImageStatusHistory).where(
+                ImageStatusHistory.image_id == image.image_id  # type: ignore[arg-type]
+            )
+        )
+        history_entries = result.scalars().all()
+        assert len(history_entries) == 1
+        entry = history_entries[0]
+        assert entry.old_status == ImageStatus.ACTIVE
+        assert entry.new_status == ImageStatus.REVIEW
+        assert entry.user_id == admin.user_id
 
     async def test_escalate_image_with_existing_review_fails(
         self, client: AsyncClient, db_session: AsyncSession

@@ -16,6 +16,7 @@ from app.config import ImageStatus, ReviewOutcome, ReviewStatus
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.image_review import ImageReviews
+from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.review_vote import ReviewVotes
 from app.models.user import Users
@@ -259,6 +260,35 @@ class TestCreateReview:
         assert response.status_code == 201
         data = response.json()
         assert data["reason"] is None
+
+    async def test_create_review_writes_status_history(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Creating a review must record the ACTIVE -> REVIEW transition in status history."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        response = await client.post(
+            f"/api/v1/admin/images/{image.image_id}/review",
+            json={"deadline_days": 7},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+
+        result = await db_session.execute(
+            select(ImageStatusHistory).where(
+                ImageStatusHistory.image_id == image.image_id  # type: ignore[arg-type]
+            )
+        )
+        history_entries = result.scalars().all()
+        assert len(history_entries) == 1
+        entry = history_entries[0]
+        assert entry.old_status == ImageStatus.ACTIVE
+        assert entry.new_status == ImageStatus.REVIEW
+        assert entry.user_id == admin.user_id
 
     async def test_create_review_with_existing_open_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
