@@ -1377,8 +1377,15 @@ async def get_image_favorites(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Get users who favorited the image
-    query = select(Users).join(Favorites).where(Favorites.image_id == image_id)  # type: ignore[arg-type]
+    # Get users who favorited the image; eager-load groups so UserResponse.groups is populated
+    query = (
+        select(Users)
+        .join(Favorites)
+        .where(Favorites.image_id == image_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group),  # type: ignore[arg-type]
+        )
+    )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -1426,7 +1433,8 @@ async def get_image_ratings_users(
     count_query = select(func.count()).where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
     total = (await db.execute(count_query)).scalar() or 0
 
-    # Join Users with their ImageRatings row for this image
+    # Join Users with their ImageRatings row for this image; eager-load groups so
+    # UserResponse.groups is populated for each rater.
     query = (
         select(
             Users,
@@ -1435,6 +1443,9 @@ async def get_image_ratings_users(
         )
         .join(ImageRatings, ImageRatings.user_id == Users.user_id)  # type: ignore[arg-type]
         .where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group),  # type: ignore[arg-type]
+        )
     )
 
     # Resolve sort column from the requested field (some live on Users, some on ImageRatings)

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
+from app.models.permissions import Groups, UserGroups
 
 
 @pytest.mark.api
@@ -3530,3 +3531,78 @@ class TestGetImageRatings:
         assert response.status_code == 200
         ids_in_order = [u["user_id"] for u in response.json()["users"]]
         assert ids_in_order == sorted(ids_in_order, reverse=True)
+
+
+@pytest.mark.api
+class TestImageUserListsIncludeGroups:
+    """User lists for an image must surface group memberships (for username coloring etc.)."""
+
+    async def _create_user_in_group(
+        self, db_session: AsyncSession, username: str, group_title: str
+    ) -> Users:
+        user = Users(
+            username=username,
+            password="hashed",
+            password_type="bcrypt",
+            salt="x" * 16,
+            email=f"{username}@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        group = Groups(title=group_title, desc=f"{group_title} group")
+        db_session.add(group)
+        await db_session.commit()
+        await db_session.refresh(group)
+
+        db_session.add(UserGroups(user_id=user.user_id, group_id=group.group_id))
+        await db_session.commit()
+        return user
+
+    async def test_image_favorites_includes_groups(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """GET /api/v1/images/{id}/favorites must include groups for each user."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        user = await self._create_user_in_group(db_session, "fav_grp_user", "Mods")
+        db_session.add(Favorites(user_id=user.user_id, image_id=image.image_id))
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/favorites")
+        assert response.status_code == 200
+
+        entry = next(
+            u for u in response.json()["users"] if u["username"] == "fav_grp_user"
+        )
+        assert "groups" in entry
+        assert "Mods" in entry["groups"]
+
+    async def test_image_ratings_includes_groups(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """GET /api/v1/images/{id}/ratings must include groups for each user."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        user = await self._create_user_in_group(db_session, "rate_grp_user", "Admins")
+        db_session.add(
+            ImageRatings(user_id=user.user_id, image_id=image.image_id, rating=8)
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/ratings")
+        assert response.status_code == 200
+
+        entry = next(
+            u for u in response.json()["users"] if u["username"] == "rate_grp_user"
+        )
+        assert "groups" in entry
+        assert "Admins" in entry["groups"]
