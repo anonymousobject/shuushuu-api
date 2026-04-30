@@ -1035,6 +1035,44 @@ class TestAdminReportEscalate:
         assert entry.new_status == ImageStatus.REVIEW
         assert entry.user_id == admin.user_id
 
+    async def test_escalate_skips_history_when_already_in_review(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """No history row should be written when previous_status is already REVIEW."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        # Image already in REVIEW status with no open review (e.g. orphaned state)
+        image = await create_test_image(db_session, admin.user_id)
+        image.status = ImageStatus.REVIEW
+        await db_session.commit()
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=2,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/escalate",
+            json={"deadline_days": 7},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        result = await db_session.execute(
+            select(ImageStatusHistory).where(
+                ImageStatusHistory.image_id == image.image_id  # type: ignore[arg-type]
+            )
+        )
+        assert result.scalars().all() == []
+
     async def test_escalate_image_with_existing_review_fails(
         self, client: AsyncClient, db_session: AsyncSession
     ):
