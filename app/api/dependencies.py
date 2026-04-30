@@ -65,6 +65,19 @@ class UserSortParams(BaseModel):
     sort_order: SortOrder = Field(default="DESC", description="Sort order")
 
 
+class ImageRatingsSortParams(BaseModel):
+    """Sorting parameters for the per-image ratings list."""
+
+    sort_by: Literal[
+        "rating",
+        "date",
+        "user_id",
+        "username",
+        "date_joined",
+    ] = Field(default="rating", description="Sort field")
+    sort_order: SortOrder = Field(default="DESC", description="Sort order")
+
+
 class TagSortParams(BaseModel):
     """Common sorting parameters for tag queries."""
 

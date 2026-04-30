@@ -9,7 +9,7 @@ import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
-from typing import Annotated
+from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import (
@@ -30,7 +30,12 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
+from app.api.dependencies import (
+    ImageRatingsSortParams,
+    ImageSortParams,
+    PaginationParams,
+    UserSortParams,
+)
 from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import (
     AdminActionType,
@@ -93,7 +98,12 @@ from app.schemas.image import (
 )
 from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
 from app.schemas.tag import LinkedTag
-from app.schemas.user import UserListResponse, UserResponse
+from app.schemas.user import (
+    ImageRatingsListResponse,
+    UserListResponse,
+    UserResponse,
+    UserWithRatingResponse,
+)
 from app.services.image_processing import (
     create_thumbnail,
     get_image_dimensions,
@@ -1394,6 +1404,75 @@ async def get_image_favorites(
         page=pagination.page,
         per_page=pagination.per_page,
         users=[UserResponse.model_validate(user) for user in users],
+    )
+
+
+@router.get("/{image_id}/ratings", response_model=ImageRatingsListResponse)
+async def get_image_ratings_users(
+    image_id: int,
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[ImageRatingsSortParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> ImageRatingsListResponse:
+    """
+    Get all users who have rated a specific image, along with their rating values.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Count is independent of the user join — hits the fk_image_ratings_image_id index directly
+    count_query = select(func.count()).where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Join Users with their ImageRatings row for this image
+    query = (
+        select(
+            Users,
+            ImageRatings.rating.label("rating_value"),  # type: ignore[attr-defined]
+            ImageRatings.date.label("rated_at"),  # type: ignore[union-attr]
+        )
+        .join(ImageRatings, ImageRatings.user_id == Users.user_id)  # type: ignore[arg-type]
+        .where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
+    )
+
+    # Resolve sort column from the requested field (some live on Users, some on ImageRatings)
+    sort_columns: dict[str, Any] = {
+        "rating": ImageRatings.rating,
+        "date": ImageRatings.date,
+        "user_id": Users.user_id,
+        "username": Users.username,
+        "date_joined": Users.date_joined,
+    }
+    sort_column = sort_columns[sorting.sort_by]
+    primary = desc(sort_column) if sorting.sort_order == "DESC" else asc(sort_column)
+    # Tiebreaker on user_id keeps order stable when sorting by a non-unique column.
+    # Skip it when the primary sort is already user_id (which is unique).
+    tiebreaker: list[Any] = (
+        [] if sorting.sort_by == "user_id" else [asc(Users.user_id)]  # type: ignore[arg-type]
+    )
+    query = (
+        query.order_by(primary, *tiebreaker).offset(pagination.offset).limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    users_with_ratings = [
+        UserWithRatingResponse(
+            **UserResponse.model_validate(user).model_dump(),
+            rating=rating,
+            rated_at=rated_at,
+        )
+        for user, rating, rated_at in rows
+    ]
+
+    return ImageRatingsListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        users=users_with_ratings,
     )
 
 
