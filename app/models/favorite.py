@@ -13,8 +13,10 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 
 class FavoriteBase(SQLModel):
@@ -34,7 +36,7 @@ class FavoriteBase(SQLModel):
     # Public timestamp
     fav_date: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column_kwargs={"server_default": text("current_timestamp()")},
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
     )
 
     # Note: Relationships are intentionally omitted.
