@@ -322,6 +322,27 @@ class TestSuspendUser:
 
         assert response.status_code == 422
 
+    async def test_suspend_naive_datetime_returns_422(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A naive suspended_until must be rejected at the schema boundary as 422,
+        not propagated to UtcDateTime where it would surface as a 500."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+        target_user = await create_regular_user(db_session, username="naivedt")
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.post(
+            f"/api/v1/admin/users/{target_user.user_id}/suspend",
+            json={
+                "suspended_until": "2027-01-01T00:00:00",  # no offset = naive
+                "reason": "Testing tz validation",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
+
     async def test_warn_user(self, client: AsyncClient, db_session: AsyncSession):
         """Test issuing a warning to a user (no suspension)."""
         admin, admin_password = await create_admin_user(db_session)
