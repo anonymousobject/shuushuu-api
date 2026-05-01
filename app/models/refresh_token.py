@@ -13,8 +13,10 @@ Security features:
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 
 class RefreshTokens(SQLModel, table=True):
@@ -59,12 +61,14 @@ class RefreshTokens(SQLModel, table=True):
     family_id: str = Field(max_length=255, index=True)
 
     # Expiration
-    created_at: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
-    expires_at: datetime
+    created_at: datetime = Field(
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+    )
+    expires_at: datetime = Field(sa_column=Column(UtcDateTime, nullable=False))
 
     # Revocation
     revoked: bool = Field(default=False)
-    revoked_at: datetime | None = Field(default=None)
+    revoked_at: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Security tracking
     ip_address: str | None = Field(default=None, max_length=45)  # Supports IPv6
