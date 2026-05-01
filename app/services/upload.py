@@ -59,7 +59,7 @@ async def check_upload_rate_limit(
     last_upload = result.scalar_one_or_none()
 
     if last_upload:
-        elapsed = (datetime.now(UTC).replace(tzinfo=None) - last_upload).total_seconds()
+        elapsed = (datetime.now(UTC) - last_upload).total_seconds()
         if elapsed < settings.UPLOAD_DELAY_SECONDS:
             wait_time = int(settings.UPLOAD_DELAY_SECONDS - elapsed)
             raise HTTPException(
