@@ -14,10 +14,11 @@ This approach eliminates field duplication while maintaining security boundaries
 from datetime import UTC, datetime
 
 from pydantic import field_validator
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
 
 from app.config import TagType
+from app.models.types import UtcDateTime
 
 
 class TagBase(SQLModel):
@@ -114,7 +115,7 @@ class Tags(TagBase, table=True):
     # Public timestamp
     date_added: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column_kwargs={"server_default": text("current_timestamp()")},
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
     )
 
     # Usage count (number of images with this tag)
