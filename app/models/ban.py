@@ -14,8 +14,10 @@ This approach eliminates field duplication while maintaining security boundaries
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 
 class BanAction(str, Enum):
@@ -100,8 +102,12 @@ class Bans(BanBase, table=True):
 
     # Override to add server default
     date: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
+
+    # Override to attach UtcDateTime column type
+    expires: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Internal fields
     banned_by: int | None = Field(default=None, foreign_key="users.user_id")

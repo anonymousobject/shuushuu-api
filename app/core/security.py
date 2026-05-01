@@ -19,6 +19,22 @@ import jwt
 from app.config import settings
 
 
+class RedactedStr(str):
+    """String subclass whose repr() hides the underlying value.
+
+    Wrap secrets (tokens, credentials) before passing them as arq job
+    arguments. arq's worker logs job args at INFO via repr() when picking
+    up a job; without this wrapper, raw tokens land in stdout and get
+    ingested into Loki for the configured retention. str()/format()/equality
+    still see the real value, so the worker code remains unchanged.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "RedactedStr('REDACTED')"
+
+
 def validate_password_strength(password: str) -> tuple[bool, str | None]:
     """
     Validate password meets security requirements.

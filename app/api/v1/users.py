@@ -38,7 +38,7 @@ from app.core.database import get_db
 from app.core.permission_cache import get_cached_user_permissions
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
-from app.core.security import get_password_hash, validate_password_strength
+from app.core.security import RedactedStr, get_password_hash, validate_password_strength
 from app.models import Favorites, Images, Privmsgs, TagLinks, Users
 from app.models.permissions import UserGroups
 from app.models.user_suspension import UserSuspensions
@@ -102,6 +102,7 @@ async def list_users(
         "username": Users.username,
         "date_joined": Users.date_joined,
         "last_login": Users.last_login,
+        "last_active": Users.last_active,
         "image_posts": Users.image_posts,
         "posts": Users.posts,
         "favorites": Users.favorites,
@@ -389,7 +390,7 @@ async def acknowledge_warnings(
     )
     suspensions = result.scalars().all()
 
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now(UTC)
     for suspension in suspensions:
         suspension.acknowledged_at = now
 
@@ -857,7 +858,13 @@ async def create_user(
     await db.commit()
     await db.refresh(new_user)
 
-    # Queue verification email via ARQ (reliable, retries on failure)
-    await enqueue_job("send_verification_email_job", user_id=new_user.user_id, token=raw_token)
+    # Queue verification email via ARQ (reliable, retries on failure).
+    # RedactedStr keeps the token usable but hides it from arq's repr-based
+    # job-arg log (INFO-level, ingested by Loki).
+    await enqueue_job(
+        "send_verification_email_job",
+        user_id=new_user.user_id,
+        token=RedactedStr(raw_token),
+    )
 
     return UserCreateResponse.model_validate(new_user)

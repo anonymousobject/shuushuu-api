@@ -28,6 +28,7 @@ from app.core.auth import (
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.security import (
+    RedactedStr,
     create_access_token,
     create_refresh_token,
     get_password_hash,
@@ -87,9 +88,7 @@ async def _check_and_handle_suspension(
         suspension = next((s for s in suspensions if s.action == SuspensionAction.SUSPENDED), None)
         if suspension:
             # Check if suspension has expired
-            if suspension.suspended_until and suspension.suspended_until < datetime.now(
-                UTC
-            ).replace(tzinfo=None):
+            if suspension.suspended_until and suspension.suspended_until < datetime.now(UTC):
                 # Auto-reactivate expired suspension
                 user.active = 1
 
@@ -105,7 +104,7 @@ async def _check_and_handle_suspension(
                 # Still suspended - build detailed message
                 if suspension.suspended_until:
                     # Temporary suspension - show duration
-                    remaining = suspension.suspended_until - datetime.now(UTC).replace(tzinfo=None)
+                    remaining = suspension.suspended_until - datetime.now(UTC)
                     days = remaining.days
                     hours = remaining.seconds // 3600
                     minutes = (remaining.seconds % 3600) // 60
@@ -284,8 +283,9 @@ async def login(
 
     # Check if account is locked
     if user.lockout_until:
-        if user.lockout_until > datetime.now(UTC):
-            remaining_minutes = int((user.lockout_until - datetime.now(UTC)).total_seconds() / 60)
+        now = datetime.now(UTC)
+        if user.lockout_until > now:
+            remaining_minutes = int((user.lockout_until - now).total_seconds() / 60)
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
                 detail=f"Account locked due to too many failed login attempts. Try again in {remaining_minutes} minutes.",
@@ -400,8 +400,7 @@ async def refresh_token(
         )
 
     # Check if token is expired
-    # Note: MySQL DATETIME is timezone-naive, so we compare with naive datetime
-    if db_token.expires_at < datetime.now(UTC).replace(tzinfo=None):
+    if db_token.expires_at < datetime.now(UTC):
         # Clean up expired token
         await db.delete(db_token)
         await db.commit()
@@ -421,15 +420,7 @@ async def refresh_token(
 
         if db_token.revoked_at:
             # Check if revoked within last 10 seconds
-            # Handle both timezone-naive (from DB) and timezone-aware (from code) datetimes
-            revoked_at = db_token.revoked_at
-            if revoked_at.tzinfo is None:
-                # Naive datetime from DB - treat as UTC
-                revoked_at_utc = revoked_at.replace(tzinfo=UTC)
-            else:
-                # Already timezone-aware
-                revoked_at_utc = revoked_at
-            time_since_revoked = datetime.now(UTC) - revoked_at_utc
+            time_since_revoked = datetime.now(UTC) - db_token.revoked_at
 
             if time_since_revoked.total_seconds() < 10:
                 # Check if a child token exists (legitimate refresh happened)
@@ -681,7 +672,7 @@ async def verify_email(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification token"
         )
 
-    if user.email_verification_expires_at < datetime.now(UTC).replace(tzinfo=None):
+    if user.email_verification_expires_at < datetime.now(UTC):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Verification token expired. Please request a new one.",
@@ -711,9 +702,7 @@ async def resend_verification(
 
     # Rate limit: only 1 resend per 5 minutes
     if current_user.email_verification_sent_at:
-        time_since_last = (
-            datetime.now(UTC).replace(tzinfo=None) - current_user.email_verification_sent_at
-        )
+        time_since_last = datetime.now(UTC) - current_user.email_verification_sent_at
         if time_since_last < timedelta(minutes=5):
             remaining_seconds = int((timedelta(minutes=5) - time_since_last).total_seconds())
             raise HTTPException(
@@ -731,8 +720,13 @@ async def resend_verification(
     current_user.email_verification_expires_at = datetime.now(UTC) + timedelta(hours=24)
     await db.commit()
 
-    # Queue verification email via ARQ (non-blocking, reliable)
-    await enqueue_job("send_verification_email_job", user_id=current_user.user_id, token=raw_token)
+    # Queue verification email via ARQ (non-blocking, reliable). RedactedStr
+    # keeps the token usable but hides it from arq's repr-based job-arg log.
+    await enqueue_job(
+        "send_verification_email_job",
+        user_id=current_user.user_id,
+        token=RedactedStr(raw_token),
+    )
 
     return MessageResponse(message="Verification email sent! Check your inbox.")
 
@@ -763,11 +757,7 @@ async def forgot_password(
     # Return generic 200 even when rate limited to prevent email enumeration
     # (a 429 only for existing users would leak whether the email exists)
     if user.password_reset_sent_at:
-        # Handle both timezone-aware (in-memory) and naive (from DB) datetimes
-        sent_at = user.password_reset_sent_at
-        if sent_at.tzinfo is not None:
-            sent_at = sent_at.replace(tzinfo=None)
-        time_since_last = datetime.now(UTC).replace(tzinfo=None) - sent_at
+        time_since_last = datetime.now(UTC) - user.password_reset_sent_at
         if time_since_last < timedelta(minutes=5):
             return MessageResponse(message=generic_message)
 
@@ -781,11 +771,12 @@ async def forgot_password(
     user.password_reset_expires_at = datetime.now(UTC) + timedelta(hours=1)
     await db.commit()
 
-    # Queue email
+    # Queue email. RedactedStr keeps the token usable but hides it from arq's
+    # repr-based job-arg log (which is INFO-level and ingested by Loki).
     await enqueue_job(
         "send_password_reset_email_job",
         user_id=user.user_id,
-        token=raw_token,
+        token=RedactedStr(raw_token),
     )
 
     return MessageResponse(message=generic_message)
@@ -828,11 +819,7 @@ async def reset_password(
             detail="Invalid or expired reset token",
         )
 
-    # Handle timezone-aware vs naive datetime comparison (same pattern as forgot-password)
-    expires_at = user.password_reset_expires_at
-    if expires_at.tzinfo is not None:
-        expires_at = expires_at.replace(tzinfo=None)
-    if expires_at < datetime.now(UTC).replace(tzinfo=None):
+    if user.password_reset_expires_at < datetime.now(UTC):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Reset token has expired. Please request a new one.",

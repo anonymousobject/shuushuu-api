@@ -258,6 +258,60 @@ class TestLogin:
         await db_session.refresh(user)
         assert user.failed_login_attempts == 1
 
+    async def test_login_with_expired_lockout_clears_and_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Login must succeed when an existing lockout_until has already expired."""
+        user = Users(
+            username="expiredlockuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="expiredlock@example.com",
+            active=1,
+            failed_login_attempts=5,
+            lockout_until=datetime.now(UTC) - timedelta(days=30),
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "expiredlockuser", "password": "TestPassword123!"},
+        )
+
+        assert response.status_code == 200
+        await db_session.refresh(user)
+        assert user.lockout_until is None
+        assert user.failed_login_attempts == 0
+
+    async def test_login_with_active_lockout_returns_423(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """An unexpired lockout_until must produce 423, not crash on tz comparison."""
+        user = Users(
+            username="activelockuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="activelock@example.com",
+            active=1,
+            failed_login_attempts=5,
+            lockout_until=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "activelockuser", "password": "TestPassword123!"},
+        )
+
+        assert response.status_code == 423
+        assert "locked" in response.json()["detail"].lower()
+
 
 @pytest.mark.api
 class TestRefresh:
@@ -643,8 +697,8 @@ class TestLoginSuspensionCheck:
         await db_session.commit()
         await db_session.refresh(user)
 
-        # Create active suspension record (use naive datetime for DB storage)
-        suspend_until = (datetime.now(UTC) + timedelta(days=7)).replace(tzinfo=None)
+        # Create active suspension record
+        suspend_until = datetime.now(UTC) + timedelta(days=7)
         suspension = UserSuspensions(
             user_id=user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -715,8 +769,8 @@ class TestLoginSuspensionCheck:
         await db_session.commit()
         await db_session.refresh(user)
 
-        # Create expired suspension record (use naive datetime)
-        suspend_until = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
+        # Create expired suspension record
+        suspend_until = datetime.now(UTC) - timedelta(days=1)
         suspension = UserSuspensions(
             user_id=user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -801,9 +855,9 @@ class TestRefreshSuspensionCheck:
         )
         assert login_response.status_code == 200
 
-        # Now suspend the user (use naive datetime)
+        # Now suspend the user
         user.active = 0
-        suspend_until = (datetime.now(UTC) + timedelta(days=7)).replace(tzinfo=None)
+        suspend_until = datetime.now(UTC) + timedelta(days=7)
         suspension = UserSuspensions(
             user_id=user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -843,9 +897,9 @@ class TestRefreshSuspensionCheck:
         )
         assert login_response.status_code == 200
 
-        # Suspend user with expired suspension (use naive datetime)
+        # Suspend user with expired suspension
         user.active = 0
-        suspend_until = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
+        suspend_until = datetime.now(UTC) - timedelta(days=1)
         suspension = UserSuspensions(
             user_id=user.user_id,
             action=SuspensionAction.SUSPENDED,

@@ -16,6 +16,8 @@ from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlalchemy.dialects.mysql import JSON
 from sqlmodel import Column, Field, SQLModel
 
+from app.models.types import UtcDateTime
+
 
 class AdminActions(SQLModel, table=True):
     """
@@ -75,17 +77,14 @@ class AdminActions(SQLModel, table=True):
     action_id: int | None = Field(default=None, primary_key=True)
 
     # Admin who performed the action
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    # FKs with ON DELETE SET NULL are defined in __table_args__; don't duplicate via foreign_key= param
+    user_id: int | None = Field(default=None)
 
-    # Action type (stored as int, mapped to AdminActionType constants)
-    # 1=report_dismiss, 2=report_action, 3=review_start, 4=review_vote,
-    # 5=review_close, 6=review_extend
     action_type: int = Field(default=0)
 
-    # Related entities (nullable - not all actions have all references)
-    report_id: int | None = Field(default=None, foreign_key="image_reports.report_id")
-    review_id: int | None = Field(default=None, foreign_key="image_reviews.review_id")
-    image_id: int | None = Field(default=None, foreign_key="images.image_id")
+    report_id: int | None = Field(default=None)
+    review_id: int | None = Field(default=None)
+    image_id: int | None = Field(default=None)
 
     # JSON details with action context
     # Examples:
@@ -97,7 +96,8 @@ class AdminActions(SQLModel, table=True):
 
     # Timestamp (indexed for pruning queries)
     created_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     # Note: Relationships are intentionally omitted.

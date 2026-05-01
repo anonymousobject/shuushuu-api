@@ -16,7 +16,7 @@ from app.models.user import Users
 @pytest.fixture
 async def sample_donations(db_session: AsyncSession) -> list[Donations]:
     """Create sample donation records."""
-    now = datetime.now()
+    now = datetime.now(UTC)
     donations = [
         Donations(date=now - timedelta(days=i), amount=(i + 1) * 10, nick=f"Donor {i}")
         for i in range(5)
@@ -307,6 +307,19 @@ class TestCreateDonation:
         assert data["amount"] == 50
         assert data["nick"] == "Generous"
         assert data["user_id"] == 123
+
+    async def test_create_naive_date_returns_422(
+        self, client: AsyncClient, user_with_donations_create: tuple[Users, str]
+    ):
+        """A naive date must be rejected at the schema boundary as 422,
+        not propagated to UtcDateTime where it would surface as a 500."""
+        _, token = user_with_donations_create
+        response = await client.post(
+            "/api/v1/donations",
+            json={"amount": 25, "date": "2027-01-01T00:00:00"},  # no offset = naive
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
 
     async def test_create_validates_amount_required(
         self, client: AsyncClient, user_with_donations_create: tuple[Users, str]

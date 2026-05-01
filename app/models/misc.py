@@ -13,8 +13,10 @@ These are generally simple utility tables with minimal relationships.
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 # ===== Banners =====
 
@@ -66,7 +68,8 @@ class Banners(BannerBase, table=True):
 
     # Timestamp
     created_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
 
@@ -209,7 +212,9 @@ class DonationBase(SQLModel):
     Note: Original table has no primary key, but we need one for SQLModel.
     """
 
-    date: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    date: datetime = Field(
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+    )
     user_id: int | None = Field(default=None)
     nick: str | None = Field(default=None, max_length=30)
     amount: int | None = Field(default=None)

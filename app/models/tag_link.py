@@ -16,8 +16,10 @@ Note: TagLinks is a junction table connecting tags to images with metadata.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
+
+from app.models.types import UtcDateTime
 
 if TYPE_CHECKING:
     from app.models.tag import Tags
@@ -86,7 +88,8 @@ class TagLinks(TagLinkBase, table=True):
 
     # Public timestamp
     date_linked: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     # Internal field

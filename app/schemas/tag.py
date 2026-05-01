@@ -13,7 +13,7 @@ from app.schemas.common import UserSummary
 
 # Tag name validation constants
 TAG_NAME_MIN_LENGTH = 2
-TAG_NAME_MAX_LENGTH = 150
+TAG_NAME_MAX_LENGTH = 255
 
 # Regex pattern for allowed characters in tag names:
 # All printable ASCII (U+0020 through U+007E) except backtick (`).
@@ -27,7 +27,7 @@ def validate_tag_name(title: str) -> str:
 
     Rules:
     - Minimum length: 2 characters
-    - Maximum length: 150 characters
+    - Maximum length: 255 characters
     - Consecutive spaces normalized to single space
     - Only printable ASCII characters (no backticks, cannot start with ! or -)
 

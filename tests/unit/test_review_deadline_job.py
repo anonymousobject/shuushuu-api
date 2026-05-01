@@ -416,8 +416,7 @@ class TestPruneAdminActions:
 
     async def test_prune_old_actions(self, db_session: AsyncSession):
         """Old admin_actions are deleted."""
-        # Use timezone-naive datetimes for MySQL compatibility
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create old action (3 years ago)
         old_action = AdminActions(
@@ -449,7 +448,7 @@ class TestPruneAdminActions:
 
     async def test_prune_no_old_actions(self, db_session: AsyncSession):
         """No actions deleted when all are within retention period."""
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
         action = AdminActions(
             user_id=1,
             action_type=AdminActionType.REPORT_DISMISS,
@@ -508,7 +507,7 @@ class TestEarlyClose:
         await db_session.refresh(review)
         await db_session.refresh(image)
 
-        assert closed is True
+        assert closed is not None
         assert review.status == ReviewStatus.CLOSED
         assert review.outcome == ReviewOutcome.KEEP
         assert image.status == ImageStatus.ACTIVE
@@ -527,7 +526,7 @@ class TestEarlyClose:
         await db_session.refresh(review)
         await db_session.refresh(image)
 
-        assert closed is True
+        assert closed is not None
         assert review.status == ReviewStatus.CLOSED
         assert review.outcome == ReviewOutcome.REMOVE
         assert image.status == ImageStatus.INAPPROPRIATE
@@ -544,7 +543,7 @@ class TestEarlyClose:
 
         await db_session.refresh(review)
 
-        assert closed is False
+        assert closed is None
         assert review.status == ReviewStatus.OPEN
 
     async def test_early_close_tie(self, db_session: AsyncSession):
@@ -559,7 +558,7 @@ class TestEarlyClose:
 
         await db_session.refresh(review)
 
-        assert closed is False
+        assert closed is None
         assert review.status == ReviewStatus.OPEN
 
     async def test_early_close_large_margin_keep(self, db_session: AsyncSession):
@@ -576,7 +575,7 @@ class TestEarlyClose:
         await db_session.refresh(review)
         await db_session.refresh(image)
 
-        assert closed is True
+        assert closed is not None
         assert review.outcome == ReviewOutcome.KEEP
         assert image.status == ImageStatus.ACTIVE
 
@@ -615,5 +614,5 @@ class TestEarlyClose:
 
         await db_session.refresh(review)
 
-        assert closed is False
+        assert closed is None
         assert review.status == ReviewStatus.OPEN

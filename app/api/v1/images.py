@@ -9,7 +9,7 @@ import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
-from typing import Annotated
+from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import (
@@ -30,7 +30,12 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
+from app.api.dependencies import (
+    ImageRatingsSortParams,
+    ImageSortParams,
+    PaginationParams,
+    UserSortParams,
+)
 from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import (
     AdminActionType,
@@ -46,6 +51,7 @@ from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optio
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
+from app.core.r2_constants import R2Location
 from app.core.redis import get_redis
 from app.models import (
     AdminActions,
@@ -92,12 +98,18 @@ from app.schemas.image import (
 )
 from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
 from app.schemas.tag import LinkedTag
-from app.schemas.user import UserListResponse, UserResponse
+from app.schemas.user import (
+    ImageRatingsListResponse,
+    UserListResponse,
+    UserResponse,
+    UserWithRatingResponse,
+)
 from app.services.image_processing import (
     create_thumbnail,
     get_image_dimensions,
     validate_image_file,
 )
+from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
 from app.services.rate_limit import check_similarity_rate_limit
@@ -786,6 +798,16 @@ async def delete_image(
     if not remove_from_iqdb(image_id):
         logger.warning("iqdb_remove_failed_for_deleted_image", image_id=image_id)
 
+    # Capture R2 metadata before DB delete
+    prior_r2_location = image.r2_location
+    prior_filename = image.filename
+    prior_ext = image.ext
+    prior_variants = ["fullsize", "thumbs"]
+    if image.medium == VariantStatus.READY:
+        prior_variants.append("medium")
+    if image.large == VariantStatus.READY:
+        prior_variants.append("large")
+
     # Capture file paths before deleting from DB
     storage_path = FilePath(settings.STORAGE_PATH)
     files_to_delete = [
@@ -818,6 +840,16 @@ async def delete_image(
         deleted_by=current_user.user_id,
         reason=reason,
     )
+
+    if settings.R2_ENABLED and prior_r2_location != R2Location.NONE:
+        await enqueue_job(
+            "r2_delete_image_job",
+            image_id=image_id,
+            r2_location=int(prior_r2_location),
+            filename=prior_filename,
+            ext=prior_ext,
+            variants=prior_variants,
+        )
 
 
 @router.patch("/{image_id}", response_model=ImageDetailedResponse)
@@ -960,6 +992,13 @@ async def update_image(
         setattr(image, field, value)
 
     await db.commit()
+
+    if new_status is not None:
+        await enqueue_r2_sync_on_status_change(
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=new_status,
+        )
 
     # Recalculate ratings for the original image after repost migration
     if new_status == ImageStatus.REPOST and replacement_id:
@@ -1339,8 +1378,15 @@ async def get_image_favorites(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Get users who favorited the image
-    query = select(Users).join(Favorites).where(Favorites.image_id == image_id)  # type: ignore[arg-type]
+    # Get users who favorited the image; eager-load groups so UserResponse.groups is populated
+    query = (
+        select(Users)
+        .join(Favorites)
+        .where(Favorites.image_id == image_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group),  # type: ignore[arg-type]
+        )
+    )
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -1366,6 +1412,79 @@ async def get_image_favorites(
         page=pagination.page,
         per_page=pagination.per_page,
         users=[UserResponse.model_validate(user) for user in users],
+    )
+
+
+@router.get("/{image_id}/ratings", response_model=ImageRatingsListResponse)
+async def get_image_ratings_users(
+    image_id: int,
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[ImageRatingsSortParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> ImageRatingsListResponse:
+    """
+    Get all users who have rated a specific image, along with their rating values.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Count is independent of the user join — hits the fk_image_ratings_image_id index directly
+    count_query = select(func.count()).where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Join Users with their ImageRatings row for this image; eager-load groups so
+    # UserResponse.groups is populated for each rater.
+    query = (
+        select(
+            Users,
+            ImageRatings.rating.label("rating_value"),  # type: ignore[attr-defined]
+            ImageRatings.date.label("rated_at"),  # type: ignore[union-attr]
+        )
+        .join(ImageRatings, ImageRatings.user_id == Users.user_id)  # type: ignore[arg-type]
+        .where(ImageRatings.image_id == image_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group),  # type: ignore[arg-type]
+        )
+    )
+
+    # Resolve sort column from the requested field (some live on Users, some on ImageRatings)
+    sort_columns: dict[str, Any] = {
+        "rating": ImageRatings.rating,
+        "date": ImageRatings.date,
+        "user_id": Users.user_id,
+        "username": Users.username,
+        "date_joined": Users.date_joined,
+    }
+    sort_column = sort_columns[sorting.sort_by]
+    primary = desc(sort_column) if sorting.sort_order == "DESC" else asc(sort_column)
+    # Tiebreaker on user_id keeps order stable when sorting by a non-unique column.
+    # Skip it when the primary sort is already user_id (which is unique).
+    tiebreaker: list[Any] = (
+        [] if sorting.sort_by == "user_id" else [asc(Users.user_id)]  # type: ignore[arg-type]
+    )
+    query = (
+        query.order_by(primary, *tiebreaker).offset(pagination.offset).limit(pagination.per_page)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    users_with_ratings = [
+        UserWithRatingResponse(
+            **UserResponse.model_validate(user).model_dump(),
+            rating=rating,
+            rated_at=rated_at,
+        )
+        for user, rating, rated_at in rows
+    ]
+
+    return ImageRatingsListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        users=users_with_ratings,
     )
 
 
@@ -2156,6 +2275,13 @@ async def upload_image(
             thumb_path=str(thumb_path),
             _defer_by=5.0,  # Wait 5 seconds for thumbnail to complete
         )
+
+        if settings.R2_ENABLED:
+            await enqueue_job(
+                "r2_finalize_upload_job",
+                image_id=image_id,
+                _defer_by=90,
+            )
 
         # Build response
         image_response = ImageResponse(

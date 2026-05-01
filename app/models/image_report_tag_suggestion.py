@@ -11,6 +11,8 @@ from datetime import datetime
 from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
+from app.models.types import UtcDateTime
+
 
 class ImageReportTagSuggestionBase(SQLModel):
     """
@@ -59,5 +61,6 @@ class ImageReportTagSuggestions(ImageReportTagSuggestionBase, table=True):
     )
 
     created_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )

@@ -17,6 +17,7 @@ from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
 from app.config import ReportStatus
+from app.models.types import UtcDateTime
 
 
 class ImageReportBase(SQLModel):
@@ -92,7 +93,8 @@ class ImageReports(ImageReportBase, table=True):
 
     # Public timestamp
     created_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     # Review tracking
@@ -104,7 +106,7 @@ class ImageReports(ImageReportBase, table=True):
             nullable=True,
         ),
     )
-    reviewed_at: datetime | None = Field(default=None)
+    reviewed_at: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

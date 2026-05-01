@@ -18,6 +18,8 @@ from datetime import datetime
 from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
+from app.models.types import UtcDateTime
+
 
 class ReviewVoteBase(SQLModel):
     """
@@ -99,7 +101,8 @@ class ReviewVotes(ReviewVoteBase, table=True):
 
     # Timestamp
     created_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     # Note: Relationships are intentionally omitted.

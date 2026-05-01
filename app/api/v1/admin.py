@@ -103,6 +103,7 @@ from app.schemas.report import (
     UnifiedReportListResponse,
     VoteResponse,
 )
+from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.rating import schedule_rating_recalculation
 from app.services.repost import migrate_repost_data
 from app.services.review_jobs import check_early_close
@@ -807,6 +808,13 @@ async def change_image_status(
 
     await db.commit()
     await db.refresh(image)
+
+    if status_data.status is not None:
+        await enqueue_r2_sync_on_status_change(
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=status_data.status,
+        )
 
     # Schedule rating recalculation for original image after repost migration
     if status_data.status == ImageStatus.REPOST and status_data.replacement_id:
@@ -1681,6 +1689,12 @@ async def action_report(
 
     await db.commit()
 
+    await enqueue_r2_sync_on_status_change(
+        image_id=report.image_id,
+        old_status=previous_status,
+        new_status=action_data.new_status,
+    )
+
     return MessageResponse(message="Report processed and image status updated")
 
 
@@ -1760,6 +1774,17 @@ async def escalate_report(
     db.add(review)
     await db.flush()  # Get review_id
 
+    # Log to public status history (skip if image was already in REVIEW
+    # without an open review — orphaned state should not record a no-op transition)
+    if previous_status != ImageStatus.REVIEW:
+        status_history = ImageStatusHistory(
+            image_id=report.image_id,
+            old_status=previous_status,
+            new_status=ImageStatus.REVIEW,
+            user_id=current_user.user_id,
+        )
+        db.add(status_history)
+
     # Log action
     action = AdminActions(
         user_id=current_user.user_id,
@@ -1773,6 +1798,12 @@ async def escalate_report(
 
     await db.commit()
     await db.refresh(review)
+
+    await enqueue_r2_sync_on_status_change(
+        image_id=report.image_id,
+        old_status=previous_status,
+        new_status=ImageStatus.REVIEW,
+    )
 
     summaries = await _build_user_summaries(db, {current_user.id})
     response = ReviewResponse.model_validate(review)
@@ -2005,6 +2036,17 @@ async def create_review(
     db.add(review)
     await db.flush()
 
+    # Log to public status history (skip if image was already in REVIEW
+    # without an open review — orphaned state should not record a no-op transition)
+    if previous_status != ImageStatus.REVIEW:
+        status_history = ImageStatusHistory(
+            image_id=image_id,
+            old_status=previous_status,
+            new_status=ImageStatus.REVIEW,
+            user_id=current_user.user_id,
+        )
+        db.add(status_history)
+
     # Log action
     action = AdminActions(
         user_id=current_user.user_id,
@@ -2021,6 +2063,12 @@ async def create_review(
 
     await db.commit()
     await db.refresh(review)
+
+    await enqueue_r2_sync_on_status_change(
+        image_id=image_id,
+        old_status=previous_status,
+        new_status=ImageStatus.REVIEW,
+    )
 
     summaries = await _build_user_summaries(db, {current_user.id})
     response = ReviewResponse.model_validate(review)
@@ -2093,10 +2141,16 @@ async def vote_on_review(
     await db.flush()
 
     # Check if vote margin triggers early close
-    await check_early_close(db, review)
+    transition = await check_early_close(db, review)
 
     await db.commit()
     await db.refresh(vote)
+
+    if transition is not None:
+        image_id, old_status, new_status = transition
+        await enqueue_r2_sync_on_status_change(
+            image_id=image_id, old_status=old_status, new_status=new_status
+        )
 
     summaries = await _build_user_summaries(db, {current_user.id})
     response = VoteResponse.model_validate(vote)
@@ -2158,6 +2212,7 @@ async def close_review(
     review.closed_by = current_user.user_id
 
     # Apply outcome to image
+    previous_image_status = image.status
     if close_data.outcome == ReviewOutcome.KEEP:
         image.status = ImageStatus.ACTIVE
     else:
@@ -2183,6 +2238,12 @@ async def close_review(
 
     await db.commit()
     await db.refresh(review)
+
+    await enqueue_r2_sync_on_status_change(
+        image_id=review.image_id,
+        old_status=previous_image_status,
+        new_status=image.status,
+    )
 
     close_user_ids: set[int] = {current_user.id}
     if review.initiated_by:
@@ -2360,7 +2421,6 @@ async def list_all_suspensions(
             reactivations_by_user[row.user_id].append(row.actioned_at)
 
     now = datetime.now(UTC)
-    now_naive = now.replace(tzinfo=None)
     active_count = 0
 
     items = []
@@ -2371,9 +2431,7 @@ async def list_all_suspensions(
             # Check if suspension is active:
             # 1. Not expired (suspended_until is None or in the future)
             # 2. No reactivation record after this suspension's actioned_at
-            not_expired = (
-                suspension.suspended_until is None or suspension.suspended_until > now_naive
-            )
+            not_expired = suspension.suspended_until is None or suspension.suspended_until > now
 
             # Check for reactivation after this suspension
             user_reactivations = reactivations_by_user.get(suspension.user_id, [])
@@ -2470,7 +2528,7 @@ async def suspend_user(
             # Only block if still suspended (no reactivation after, or suspension still active)
             if not reactivated_after and (
                 latest_suspended.suspended_until is None
-                or latest_suspended.suspended_until > datetime.now(UTC).replace(tzinfo=None)
+                or latest_suspended.suspended_until > datetime.now(UTC)
             ):
                 raise HTTPException(status_code=400, detail="User is already suspended")
 

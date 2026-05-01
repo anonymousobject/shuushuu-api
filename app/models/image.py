@@ -13,21 +13,23 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict, field_validator
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.config import ImageStatus
+from app.core.r2_constants import R2Location
+from app.models.types import UtcDateTime
 
 if TYPE_CHECKING:
     from app.models.tag_link import TagLinks
     from app.models.user import Users
 
 
-class VariantStatus(int, Enum):
+class VariantStatus(IntEnum):
     """
     Status of a medium or large image variant.
 
@@ -132,6 +134,7 @@ class ImageBase(SQLModel):
         """Validate that status is one of the allowed ImageStatus constants."""
         valid_statuses = {
             ImageStatus.REVIEW,
+            ImageStatus.LOW_QUALITY,
             ImageStatus.INAPPROPRIATE,
             ImageStatus.REPOST,
             ImageStatus.OTHER,
@@ -141,7 +144,7 @@ class ImageBase(SQLModel):
         if v not in valid_statuses:
             raise ValueError(
                 f"Invalid image status: {v}. Must be one of {valid_statuses} "
-                f"(-4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler)"
+                f"(-4=Review, -3=LowQuality, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler)"
             )
         return v
 
@@ -223,7 +226,8 @@ class Images(ImageBase, table=True):
 
     # Public timestamp
     date_added: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     # Internal tracking fields (privacy-sensitive)
@@ -235,12 +239,18 @@ class Images(ImageBase, table=True):
 
     # Internal moderation fields
     status_user_id: int | None = Field(default=None, foreign_key="users.user_id")
-    status_updated: datetime | None = Field(default=None)
-    last_post: datetime | None = Field(default=None)
+    status_updated: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
+    last_post: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Internal metadata
     total_pixels: Decimal | None = Field(default=None)
     replacement_id: int | None = Field(default=None, foreign_key="images.image_id")
+
+    # R2 sync state. NONE=0 means object is not yet in R2; the finalizer
+    # or `r2_sync.py reconcile` will flip it to PUBLIC or PRIVATE.
+    r2_location: int = Field(default=R2Location.NONE)
 
     # Relationships - Example implementation
     # This demonstrates how to add relationships when needed. Key points:

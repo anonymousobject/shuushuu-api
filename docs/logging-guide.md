@@ -1,5 +1,7 @@
 # Logging System Guide
 
+> **For querying production logs**, see [log-operations.md](log-operations.md). This document covers the application-side structlog API (how to emit logs in Python code).
+
 ## Overview
 
 The Shuushuu API uses a structured logging system that provides:
