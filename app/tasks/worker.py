@@ -102,17 +102,46 @@ async def process_review_deadlines(ctx: dict[str, Any]) -> None:
 
 async def startup(ctx: dict[str, Any]) -> None:
     """Worker startup - initialize any shared resources."""
+    from meilisearch_python_sdk import AsyncClient as MeilisearchClient
+
     from app.core.logging import get_logger
+    from app.services.search import SearchService, configure_tags_index, set_search_service
 
     logger = get_logger(__name__)
     logger.info("arq_worker_starting", redis_url=settings.ARQ_REDIS_URL)
+
+    # Initialize Meilisearch search service so worker tasks calling
+    # sync_tag_to_search / sync_tags_to_search actually sync (rather than
+    # silently no-opping on the module-level None default). Mirrors the
+    # FastAPI lifespan in app/main.py and degrades gracefully if Meilisearch
+    # is unreachable — the worker should still process non-search jobs.
+    try:
+        client = MeilisearchClient(
+            url=settings.MEILISEARCH_URL,
+            api_key=settings.MEILISEARCH_API_KEY,
+        )
+        await configure_tags_index(client)
+        set_search_service(SearchService(client))
+        ctx["meilisearch_client"] = client
+        logger.info("meilisearch_initialized", url=settings.MEILISEARCH_URL)
+    except Exception:
+        logger.warning(
+            "meilisearch_unavailable",
+            url=settings.MEILISEARCH_URL,
+            exc_info=True,
+        )
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Worker shutdown - cleanup resources."""
     from app.core.logging import get_logger
+    from app.services.search import set_search_service
 
     logger = get_logger(__name__)
+    set_search_service(None)
+    client = ctx.get("meilisearch_client")
+    if client is not None:
+        await client.aclose()
     logger.info("arq_worker_shutdown")
 
 

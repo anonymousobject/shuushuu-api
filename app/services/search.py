@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from meilisearch_python_sdk import AsyncClient
+from meilisearch_python_sdk.errors import MeilisearchApiError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -138,19 +139,10 @@ async def sync_tags_to_search(
     if svc is None:
         return
     try:
-        parent_counts = None
-        external_urls_map = None
         if db is not None:
-            parent_counts = await _get_parent_usage_counts(db, tags)
-            external_urls_map = await _get_external_urls_batch(
-                db,
-                [tag.tag_id for tag in tags],  # type: ignore[misc]
-            )
-        await svc.index_tags(
-            tags,
-            parent_usage_counts=parent_counts,
-            external_urls_map=external_urls_map,
-        )
+            await svc.index_tags_from_db(db, tags)
+        else:
+            await svc.index_tags(tags)
     except Exception:
         logger.warning("meilisearch_bulk_sync_failed", count=len(tags), exc_info=True)
 
@@ -219,9 +211,13 @@ async def configure_tags_index(client: AsyncClient) -> None:
     """
     try:
         await client.create_index(TAGS_INDEX_NAME, primary_key="tag_id")
-    except Exception:
-        # Index may already exist; log for observability in case of real failures.
-        logger.debug("meilisearch_create_tags_index_failed", exc_info=True)
+    except MeilisearchApiError as exc:
+        # "index_already_exists" is expected on every restart after the first.
+        # Anything else (auth failure, network issue, malformed request) should
+        # surface so the lifespan logs it at WARNING and downstream calls fail
+        # fast instead of silently no-opping.
+        if exc.code != "index_already_exists":
+            raise
 
     index = client.index(TAGS_INDEX_NAME)
     await index.update_ranking_rules(
@@ -292,6 +288,27 @@ class SearchService:
         index = self.client.index(TAGS_INDEX_NAME)
         await index.add_documents(docs)
         logger.debug("meilisearch_tags_indexed", count=len(docs))
+
+    async def index_tags_from_db(self, db: AsyncSession, tags: list[Tags]) -> None:
+        """Bulk index tags, fetching parent usage counts and external URLs from the DB.
+
+        Public entry point for callers (e.g. the reindex script) that have a
+        DB session and a list of tags but don't want to manage the auxiliary
+        lookups themselves. Errors propagate; for best-effort sync, use the
+        module-level `sync_tags_to_search` instead.
+        """
+        if not tags:
+            return
+        parent_counts = await _get_parent_usage_counts(db, tags)
+        external_urls_map = await _get_external_urls_batch(
+            db,
+            [tag.tag_id for tag in tags],  # type: ignore[misc]
+        )
+        await self.index_tags(
+            tags,
+            parent_usage_counts=parent_counts,
+            external_urls_map=external_urls_map,
+        )
 
     async def delete_tag(self, tag_id: int) -> None:
         """Remove a tag from the Meilisearch index."""

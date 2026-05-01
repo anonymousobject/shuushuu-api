@@ -57,7 +57,7 @@ services:
 
   # Meilisearch (search engine)
   meilisearch:
-    image: getmeili/meilisearch:v1
+    image: getmeili/meilisearch:v1.37.0
     container_name: shuushuu-meilisearch
     environment:
       - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-dev_master_key}
