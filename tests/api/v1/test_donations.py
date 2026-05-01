@@ -16,7 +16,7 @@ from app.models.user import Users
 @pytest.fixture
 async def sample_donations(db_session: AsyncSession) -> list[Donations]:
     """Create sample donation records."""
-    now = datetime.now()
+    now = datetime.now(UTC)
     donations = [
         Donations(date=now - timedelta(days=i), amount=(i + 1) * 10, nick=f"Donor {i}")
         for i in range(5)

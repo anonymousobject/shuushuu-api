@@ -445,7 +445,7 @@ class TestGetUserHistory:
         await db_session.refresh(tag)
 
         # Create audit log entries with different timestamps
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
         audit1 = TagAuditLog(
             tag_id=tag.tag_id,
             user_id=user.user_id,
@@ -522,7 +522,7 @@ class TestGetUserHistory:
         await db_session.commit()
         await db_session.refresh(tag)
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create entries with interleaved timestamps:
         # 1. tag_metadata (oldest)
