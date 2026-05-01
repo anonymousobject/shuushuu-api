@@ -11,8 +11,10 @@ Visibility rules:
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 
 class ImageStatusHistoryBase(SQLModel):
@@ -63,5 +65,5 @@ class ImageStatusHistory(ImageStatusHistoryBase, table=True):
     # Timestamp
     created_at: datetime | None = Field(
         default=None,
-        sa_column_kwargs={"server_default": text("current_timestamp()")},
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
