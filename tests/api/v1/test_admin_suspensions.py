@@ -495,7 +495,7 @@ class TestReactivateUser:
             db_session, username="wasreactivated", active=0
         )
 
-        # Create suspension and reactivation records (use naive datetimes)
+        # Create suspension and reactivation records
         now = datetime.now(UTC)
         suspension = UserSuspensions(
             user_id=target_user.user_id,
@@ -556,7 +556,7 @@ class TestUserSuspensionHistory:
         await grant_permission(db_session, admin.user_id, "user_ban")
         target_user = await create_regular_user(db_session, username="historyuser")
 
-        # Create multiple suspension records (use naive datetimes)
+        # Create multiple suspension records
         now = datetime.now(UTC)
         suspension1 = UserSuspensions(
             user_id=target_user.user_id,

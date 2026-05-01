@@ -261,12 +261,7 @@ class TestLogin:
     async def test_login_with_expired_lockout_clears_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Login must succeed when an existing lockout_until has already expired.
-
-        MySQL DATETIME is timezone-naive, so user.lockout_until comes back from the
-        DB without tzinfo. Comparing it against datetime.now(UTC) (tz-aware) raises
-        TypeError, which silently 500s the login and locks users out indefinitely.
-        """
+        """Login must succeed when an existing lockout_until has already expired."""
         user = Users(
             username="expiredlockuser",
             password=get_password_hash("TestPassword123!"),
