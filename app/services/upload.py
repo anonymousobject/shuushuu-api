@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 async def get_uploads_today(user_id: int, db: AsyncSession) -> int:
     """Count how many images a user has uploaded today."""
-    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     result = await db.execute(
         select(func.count())
         .select_from(Images)

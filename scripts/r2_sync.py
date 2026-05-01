@@ -361,7 +361,7 @@ async def reconcile(*, stale_after: int) -> None:
     from datetime import UTC, datetime, timedelta
     from pathlib import Path as FilePath
 
-    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=stale_after)
+    cutoff = datetime.now(UTC) - timedelta(seconds=stale_after)
     r2 = get_r2_storage()
 
     batch_size = 500
@@ -795,9 +795,7 @@ async def health(*, output_json: bool = False) -> dict[str, Any]:
             select(func.min(Images.date_added)).where(Images.r2_location == R2Location.NONE)  # type: ignore[arg-type]
         )
         oldest = oldest_result.scalar_one_or_none()
-        oldest_age = (
-            int((datetime.now(UTC).replace(tzinfo=None) - oldest).total_seconds()) if oldest else 0
-        )
+        oldest_age = int((datetime.now(UTC) - oldest).total_seconds()) if oldest else 0
 
     try:
         du_output = await _asyncio.to_thread(
