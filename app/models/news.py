@@ -13,8 +13,10 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 
 class NewsBase(SQLModel):
@@ -75,8 +77,12 @@ class News(NewsBase, table=True):
 
     # Override to add server default
     date: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
+
+    # Override to attach UtcDateTime column type
+    edited: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
