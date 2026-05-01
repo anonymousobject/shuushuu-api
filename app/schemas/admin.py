@@ -10,10 +10,9 @@ These schemas handle:
 - User suspensions
 """
 
-from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 
@@ -197,7 +196,7 @@ class SuspendUserRequest(BaseModel):
         "suspended",
         description="Action type: 'suspended' to suspend the account, 'warning' for verbal warning only",
     )
-    suspended_until: datetime | None = Field(
+    suspended_until: AwareDatetime | None = Field(
         None,
         description="When the suspension expires (None = permanent). Ignored for warnings.",
     )

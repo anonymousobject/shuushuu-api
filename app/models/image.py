@@ -17,11 +17,12 @@ from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict, field_validator
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.config import ImageStatus
 from app.core.r2_constants import R2Location
+from app.models.types import UtcDateTime
 
 if TYPE_CHECKING:
     from app.models.tag_link import TagLinks
@@ -225,7 +226,8 @@ class Images(ImageBase, table=True):
 
     # Public timestamp
     date_added: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     # Internal tracking fields (privacy-sensitive)
@@ -237,8 +239,10 @@ class Images(ImageBase, table=True):
 
     # Internal moderation fields
     status_user_id: int | None = Field(default=None, foreign_key="users.user_id")
-    status_updated: datetime | None = Field(default=None)
-    last_post: datetime | None = Field(default=None)
+    status_updated: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
+    last_post: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Internal metadata
     total_pixels: Decimal | None = Field(default=None)

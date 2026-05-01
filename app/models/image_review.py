@@ -24,6 +24,7 @@ from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
 from app.config import ReviewOutcome, ReviewStatus, ReviewType
+from app.models.types import UtcDateTime
 
 
 class ImageReviewBase(SQLModel):
@@ -128,13 +129,14 @@ class ImageReviews(ImageReviewBase, table=True):
     )
 
     # Voting deadline
-    deadline: datetime | None = Field(default=None)
+    deadline: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Timestamps
     created_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
-    closed_at: datetime | None = Field(default=None)
+    closed_at: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

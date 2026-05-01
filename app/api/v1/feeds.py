@@ -1,6 +1,6 @@
 """Atom feed endpoints."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import Annotated
 
@@ -35,13 +35,6 @@ def _self_url(request: Request) -> str:
     return str(request.url).split("?")[0]
 
 
-def _ensure_utc(dt: datetime) -> datetime:
-    """Treat naive datetimes as UTC — the DB stores naive timestamps for date_added."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
-
-
 def _is_not_modified(request: Request, etag: str, last_mod: datetime | None) -> bool:
     """Conditional-request evaluation.
 
@@ -64,7 +57,7 @@ def _is_not_modified(request: Request, etag: str, last_mod: datetime | None) -> 
                 ims_dt = parsedate_to_datetime(ims)
             except (TypeError, ValueError):
                 ims_dt = None
-            if ims_dt is not None and ims_dt >= _ensure_utc(last_mod):
+            if ims_dt is not None and ims_dt >= last_mod:
                 return True
 
     return False
@@ -73,7 +66,7 @@ def _is_not_modified(request: Request, etag: str, last_mod: datetime | None) -> 
 def _cacheable_headers(etag: str, last_mod: datetime | None) -> dict[str, str]:
     headers = {"Cache-Control": CACHE_CONTROL, "ETag": etag}
     if last_mod is not None:
-        headers["Last-Modified"] = format_datetime(_ensure_utc(last_mod), usegmt=True)
+        headers["Last-Modified"] = format_datetime(last_mod, usegmt=True)
     return headers
 
 

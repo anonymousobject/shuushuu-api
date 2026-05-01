@@ -8,8 +8,10 @@ logging and not exposed via API endpoints.
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 
 class UserSuspensions(SQLModel, table=True):
@@ -73,14 +75,20 @@ class UserSuspensions(SQLModel, table=True):
     actioned_by: int | None = Field(default=None, foreign_key="users.user_id")
 
     # When the action occurred
-    actioned_at: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    actioned_at: datetime = Field(
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+    )
 
     # Suspension details (only for SuspensionAction.SUSPENDED action)
-    suspended_until: datetime | None = Field(default=None)
+    suspended_until: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
     reason: str | None = Field(default=None, max_length=500)
 
     # Acknowledgement tracking (for warnings and post-suspension notices)
-    acknowledged_at: datetime | None = Field(default=None)
+    acknowledged_at: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

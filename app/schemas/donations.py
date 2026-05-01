@@ -1,8 +1,6 @@
 """Pydantic schemas for Donations endpoints."""
 
-from datetime import datetime
-
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
 from app.schemas.base import UTCDatetime
 
@@ -13,7 +11,7 @@ class DonationCreate(BaseModel):
     amount: int = Field(gt=0, description="Donation amount")
     nick: str | None = Field(default=None, max_length=30, description="Donor display name")
     user_id: int | None = Field(default=None, description="Donor user ID")
-    date: datetime | None = Field(default=None, description="Donation date (defaults to now)")
+    date: AwareDatetime | None = Field(default=None, description="Donation date (defaults to now)")
 
     @field_validator("nick", mode="before")
     @classmethod

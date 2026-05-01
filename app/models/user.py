@@ -14,8 +14,10 @@ This approach eliminates field duplication while maintaining security boundaries
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
+
+from app.models.types import UtcDateTime
 
 if TYPE_CHECKING:
     from app.models.permissions import UserGroups
@@ -113,12 +115,13 @@ class Users(UserBase, table=True):
     # Public timestamps
     date_joined: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column_kwargs={"server_default": text("current_timestamp()")},
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
     )
     last_login: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
-    last_active: datetime | None = Field(default=None)
+    last_active: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Internal status fields
     active: int = Field(default=0)
@@ -133,19 +136,29 @@ class Users(UserBase, table=True):
 
     # Account lockout (security)
     failed_login_attempts: int = Field(default=0)
-    lockout_until: datetime | None = Field(default=None)
+    lockout_until: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
 
     # Contact info (privacy-sensitive)
     email: str = Field(max_length=120)
     email_verified: bool = Field(default=False)
     email_verification_token: str | None = Field(default=None, max_length=64)
-    email_verification_sent_at: datetime | None = Field(default=None)
-    email_verification_expires_at: datetime | None = Field(default=None)
+    email_verification_sent_at: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
+    email_verification_expires_at: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
 
     # Password reset
     password_reset_token: str | None = Field(default=None, max_length=64)
-    password_reset_sent_at: datetime | None = Field(default=None)
-    password_reset_expires_at: datetime | None = Field(default=None)
+    password_reset_sent_at: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
+    password_reset_expires_at: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
 
     # User preferences (private)
     email_pm_pref: int = Field(default=1)

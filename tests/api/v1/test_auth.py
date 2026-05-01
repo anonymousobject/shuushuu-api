@@ -261,12 +261,7 @@ class TestLogin:
     async def test_login_with_expired_lockout_clears_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Login must succeed when an existing lockout_until has already expired.
-
-        MySQL DATETIME is timezone-naive, so user.lockout_until comes back from the
-        DB without tzinfo. Comparing it against datetime.now(UTC) (tz-aware) raises
-        TypeError, which silently 500s the login and locks users out indefinitely.
-        """
+        """Login must succeed when an existing lockout_until has already expired."""
         user = Users(
             username="expiredlockuser",
             password=get_password_hash("TestPassword123!"),
@@ -702,8 +697,8 @@ class TestLoginSuspensionCheck:
         await db_session.commit()
         await db_session.refresh(user)
 
-        # Create active suspension record (use naive datetime for DB storage)
-        suspend_until = (datetime.now(UTC) + timedelta(days=7)).replace(tzinfo=None)
+        # Create active suspension record
+        suspend_until = datetime.now(UTC) + timedelta(days=7)
         suspension = UserSuspensions(
             user_id=user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -774,8 +769,8 @@ class TestLoginSuspensionCheck:
         await db_session.commit()
         await db_session.refresh(user)
 
-        # Create expired suspension record (use naive datetime)
-        suspend_until = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
+        # Create expired suspension record
+        suspend_until = datetime.now(UTC) - timedelta(days=1)
         suspension = UserSuspensions(
             user_id=user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -860,9 +855,9 @@ class TestRefreshSuspensionCheck:
         )
         assert login_response.status_code == 200
 
-        # Now suspend the user (use naive datetime)
+        # Now suspend the user
         user.active = 0
-        suspend_until = (datetime.now(UTC) + timedelta(days=7)).replace(tzinfo=None)
+        suspend_until = datetime.now(UTC) + timedelta(days=7)
         suspension = UserSuspensions(
             user_id=user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -902,9 +897,9 @@ class TestRefreshSuspensionCheck:
         )
         assert login_response.status_code == 200
 
-        # Suspend user with expired suspension (use naive datetime)
+        # Suspend user with expired suspension
         user.active = 0
-        suspend_until = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
+        suspend_until = datetime.now(UTC) - timedelta(days=1)
         suspension = UserSuspensions(
             user_id=user.user_id,
             action=SuspensionAction.SUSPENDED,

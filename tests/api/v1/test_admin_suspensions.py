@@ -213,8 +213,7 @@ class TestSuspendUser:
 
         # Manually suspend the user first
         target_user.active = 0
-        # Use naive datetime to match database storage
-        suspend_until = (datetime.now(UTC) + timedelta(days=1)).replace(tzinfo=None)
+        suspend_until = datetime.now(UTC) + timedelta(days=1)
         suspension = UserSuspensions(
             user_id=target_user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -323,6 +322,27 @@ class TestSuspendUser:
 
         assert response.status_code == 422
 
+    async def test_suspend_naive_datetime_returns_422(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A naive suspended_until must be rejected at the schema boundary as 422,
+        not propagated to UtcDateTime where it would surface as a 500."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "user_ban")
+        target_user = await create_regular_user(db_session, username="naivedt")
+
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.post(
+            f"/api/v1/admin/users/{target_user.user_id}/suspend",
+            json={
+                "suspended_until": "2027-01-01T00:00:00",  # no offset = naive
+                "reason": "Testing tz validation",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
+
     async def test_warn_user(self, client: AsyncClient, db_session: AsyncSession):
         """Test issuing a warning to a user (no suspension)."""
         admin, admin_password = await create_admin_user(db_session)
@@ -407,8 +427,8 @@ class TestReactivateUser:
             db_session, username="reactivateme", active=0
         )
 
-        # Create suspension record (use naive datetime for DB storage)
-        suspend_until = (datetime.now(UTC) + timedelta(days=1)).replace(tzinfo=None)
+        # Create suspension record
+        suspend_until = datetime.now(UTC) + timedelta(days=1)
         suspension = UserSuspensions(
             user_id=target_user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -496,8 +516,8 @@ class TestReactivateUser:
             db_session, username="wasreactivated", active=0
         )
 
-        # Create suspension and reactivation records (use naive datetimes)
-        now = datetime.now(UTC).replace(tzinfo=None)
+        # Create suspension and reactivation records
+        now = datetime.now(UTC)
         suspension = UserSuspensions(
             user_id=target_user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -557,8 +577,8 @@ class TestUserSuspensionHistory:
         await grant_permission(db_session, admin.user_id, "user_ban")
         target_user = await create_regular_user(db_session, username="historyuser")
 
-        # Create multiple suspension records (use naive datetimes)
-        now = datetime.now(UTC).replace(tzinfo=None)
+        # Create multiple suspension records
+        now = datetime.now(UTC)
         suspension1 = UserSuspensions(
             user_id=target_user.user_id,
             action=SuspensionAction.SUSPENDED,
@@ -708,7 +728,7 @@ class TestUserWarningAcknowledgement:
         user = await create_regular_user(db_session, username="ackwarnuser")
         admin, _ = await create_admin_user(db_session)
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create an acknowledged warning
         acknowledged_warning = UserSuspensions(
@@ -776,7 +796,7 @@ class TestUserWarningAcknowledgement:
         user = await create_regular_user(db_session, username="suspendeduser")
         admin, _ = await create_admin_user(db_session)
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create an unacknowledged suspension
         suspension = UserSuspensions(
@@ -895,7 +915,7 @@ class TestAdminSuspensionList:
         user1 = await create_regular_user(db_session, username="suspended1")
         user2 = await create_regular_user(db_session, username="warned1")
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Active suspension for user1
         suspension1 = UserSuspensions(
@@ -958,7 +978,7 @@ class TestAdminSuspensionList:
         user1 = await create_regular_user(db_session, username="filteruser1")
         user2 = await create_regular_user(db_session, username="filteruser2")
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create suspension
         suspension = UserSuspensions(
@@ -1005,7 +1025,7 @@ class TestAdminSuspensionList:
         user1 = await create_regular_user(db_session, username="warnfilter1")
         user2 = await create_regular_user(db_session, username="warnfilter2")
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create suspension
         suspension = UserSuspensions(
@@ -1051,7 +1071,7 @@ class TestAdminSuspensionList:
 
         user = await create_regular_user(db_session, username="daysbackuser")
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Recent warning (1 day ago)
         recent = UserSuspensions(
@@ -1095,7 +1115,7 @@ class TestAdminSuspensionList:
 
         user = await create_regular_user(db_session, username="paginationuser")
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create 5 warnings
         for i in range(5):
@@ -1146,7 +1166,7 @@ class TestAdminSuspensionList:
         user2 = await create_regular_user(db_session, username="expireduser")
         user3 = await create_regular_user(db_session, username="reactivateduser")
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Active suspension (not expired, not reactivated)
         active_suspension = UserSuspensions(
@@ -1238,7 +1258,7 @@ class TestAdminSuspensionList:
 
         user = await create_regular_user(db_session, username="excludereact")
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create suspension and reactivation
         suspension = UserSuspensions(

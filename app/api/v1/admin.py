@@ -2421,7 +2421,6 @@ async def list_all_suspensions(
             reactivations_by_user[row.user_id].append(row.actioned_at)
 
     now = datetime.now(UTC)
-    now_naive = now.replace(tzinfo=None)
     active_count = 0
 
     items = []
@@ -2432,9 +2431,7 @@ async def list_all_suspensions(
             # Check if suspension is active:
             # 1. Not expired (suspended_until is None or in the future)
             # 2. No reactivation record after this suspension's actioned_at
-            not_expired = (
-                suspension.suspended_until is None or suspension.suspended_until > now_naive
-            )
+            not_expired = suspension.suspended_until is None or suspension.suspended_until > now
 
             # Check for reactivation after this suspension
             user_reactivations = reactivations_by_user.get(suspension.user_id, [])
@@ -2531,7 +2528,7 @@ async def suspend_user(
             # Only block if still suspended (no reactivation after, or suspension still active)
             if not reactivated_after and (
                 latest_suspended.suspended_until is None
-                or latest_suspended.suspended_until > datetime.now(UTC).replace(tzinfo=None)
+                or latest_suspended.suspended_until > datetime.now(UTC)
             ):
                 raise HTTPException(status_code=400, detail="User is already suspended")
 

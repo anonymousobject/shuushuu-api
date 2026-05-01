@@ -28,7 +28,7 @@ async def cleanup_unverified_accounts(db: AsyncSession) -> int:
     Returns:
         Count of deleted accounts
     """
-    cutoff_date = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=30)
+    cutoff_date = datetime.now(UTC) - timedelta(days=30)
 
     # Build query for stale unverified accounts
     query = select(Users).where(

@@ -13,8 +13,10 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 
 class TagExternalLinkBase(SQLModel):
@@ -70,11 +72,11 @@ class TagExternalLinks(TagExternalLinkBase, table=True):
     # Timestamp
     date_added: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column_kwargs={"server_default": text("current_timestamp()")},
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
     )
 
     # Dead link tracking
-    dead_at: datetime | None = Field(default=None)
+    dead_at: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
     archive_url: str | None = Field(default=None, max_length=2000)
 
     # Note: Relationships are intentionally omitted.

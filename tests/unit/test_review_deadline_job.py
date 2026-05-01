@@ -416,8 +416,7 @@ class TestPruneAdminActions:
 
     async def test_prune_old_actions(self, db_session: AsyncSession):
         """Old admin_actions are deleted."""
-        # Use timezone-naive datetimes for MySQL compatibility
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         # Create old action (3 years ago)
         old_action = AdminActions(
@@ -449,7 +448,7 @@ class TestPruneAdminActions:
 
     async def test_prune_no_old_actions(self, db_session: AsyncSession):
         """No actions deleted when all are within retention period."""
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
         action = AdminActions(
             user_id=1,
             action_type=AdminActionType.REPORT_DISMISS,

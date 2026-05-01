@@ -334,9 +334,7 @@ async def prune_admin_actions(
     Returns:
         Number of rows deleted
     """
-    # Use timezone-naive datetime for MySQL compatibility
-    # MySQL DATETIME columns don't store timezone info
-    cutoff_date = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=retention_years * 365)
+    cutoff_date = datetime.now(UTC) - timedelta(days=retention_years * 365)
 
     stmt = (
         delete(AdminActions)

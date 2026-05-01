@@ -10,6 +10,7 @@ from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
 from app.config import ReportStatus
+from app.models.types import UtcDateTime
 
 
 class CommentReportBase(SQLModel):
@@ -74,7 +75,8 @@ class CommentReports(CommentReportBase, table=True):
     )
 
     created_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     reviewed_by: int | None = Field(
@@ -85,4 +87,4 @@ class CommentReports(CommentReportBase, table=True):
             nullable=True,
         ),
     )
-    reviewed_at: datetime | None = Field(default=None)
+    reviewed_at: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))

@@ -15,8 +15,10 @@ Note: TagHistory tracks all tag additions/removals on images for auditing.
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UtcDateTime
 
 
 class TagHistoryBase(SQLModel):
@@ -95,7 +97,8 @@ class TagHistory(TagHistoryBase, table=True):
 
     # Override to add server default
     date: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     # Internal field

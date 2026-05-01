@@ -17,8 +17,10 @@ but the model is named Comments and all references use 'comment' terminology.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
+
+from app.models.types import UtcDateTime
 
 if TYPE_CHECKING:
     from app.models.user import Users
@@ -115,7 +117,9 @@ class Comments(CommentBase, table=True):
     user_id: int = Field(foreign_key="users.user_id")
 
     # Public timestamp
-    date: datetime = Field(sa_column_kwargs={"server_default": text("current_timestamp()")})
+    date: datetime = Field(
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+    )
 
     # Public update tracking
     update_count: int = Field(default=0)
@@ -124,7 +128,9 @@ class Comments(CommentBase, table=True):
     ip: str = Field(default="", max_length=15)
 
     # Internal moderation fields
-    last_updated: datetime | None = Field(default=None)
+    last_updated: datetime | None = Field(
+        default=None, sa_column=Column(UtcDateTime, nullable=True)
+    )
     last_updated_user_id: int | None = Field(default=None, foreign_key="users.user_id")
 
     # Relationships

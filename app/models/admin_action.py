@@ -16,6 +16,8 @@ from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlalchemy.dialects.mysql import JSON
 from sqlmodel import Column, Field, SQLModel
 
+from app.models.types import UtcDateTime
+
 
 class AdminActions(SQLModel, table=True):
     """
@@ -94,7 +96,8 @@ class AdminActions(SQLModel, table=True):
 
     # Timestamp (indexed for pruning queries)
     created_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"server_default": text("current_timestamp()")}
+        default=None,
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
     )
 
     # Note: Relationships are intentionally omitted.
