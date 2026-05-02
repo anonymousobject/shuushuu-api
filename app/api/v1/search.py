@@ -68,7 +68,7 @@ async def search(
     if result.tag_ids:
         AliasedTag = aliased(Tags)
         query = (
-            select(Tags, AliasedTag.title.label("alias_of_name"))
+            select(Tags, AliasedTag.title.label("alias_of_name"))  # type: ignore[union-attr]
             .outerjoin(AliasedTag, Tags.alias_of == AliasedTag.tag_id)  # type: ignore[arg-type]
             .where(Tags.tag_id.in_(result.tag_ids))  # type: ignore[union-attr]
         )
