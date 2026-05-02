@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.exceptions import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from starlette import status
 
 from app.core.database import get_db
@@ -60,17 +61,27 @@ async def search(
             detail="Search service is temporarily unavailable",
         ) from None
 
-    # Fetch full tag records from MySQL, preserving Meilisearch order
+    # Fetch full tag records from MySQL, preserving Meilisearch order.
+    # Outerjoin a self-aliased Tags so alias hits include the parent's title
+    # as alias_of_name — same pattern as list_tags in app/api/v1/tags.py.
     hits: list[TagSearchHit] = []
     if result.tag_ids:
-        query = select(Tags).where(Tags.tag_id.in_(result.tag_ids))  # type: ignore[union-attr]
+        AliasedTag = aliased(Tags)
+        query = (
+            select(Tags, AliasedTag.title.label("alias_of_name"))
+            .outerjoin(AliasedTag, Tags.alias_of == AliasedTag.tag_id)  # type: ignore[arg-type]
+            .where(Tags.tag_id.in_(result.tag_ids))  # type: ignore[union-attr]
+        )
         db_result = await db.execute(query)
-        tags_by_id = {tag.tag_id: tag for tag in db_result.scalars().all()}
+        rows_by_id = {tag.tag_id: (tag, alias_of_name) for tag, alias_of_name in db_result.all()}
 
         for tag_id in result.tag_ids:
-            tag = tags_by_id.get(tag_id)
-            if tag:
-                hits.append(TagSearchHit.model_validate(tag))
+            row = rows_by_id.get(tag_id)
+            if row:
+                tag, alias_of_name = row
+                hit = TagSearchHit.model_validate(tag)
+                hit.alias_of_name = alias_of_name
+                hits.append(hit)
 
     return SearchResponse(
         query=q,

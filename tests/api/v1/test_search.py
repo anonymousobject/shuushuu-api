@@ -270,6 +270,43 @@ class TestSearchEndpoint:
         )
         assert response.status_code == 422
 
+    async def test_search_populates_alias_of_name_for_alias_hits(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """Alias tags in search results include alias_of_name (parent tag's title)."""
+        canonical = Tags(title="cat ears", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="neko mimi", type=TagType.THEME, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[alias.tag_id, canonical.tag_id], total=2
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "cat"})
+        assert response.status_code == 200
+
+        hits = response.json()["hits"]
+        assert len(hits) == 2
+
+        alias_hit = next(h for h in hits if h["tag_id"] == alias.tag_id)
+        assert alias_hit["alias_of"] == canonical.tag_id
+        assert alias_hit["alias_of_name"] == "cat ears"
+        assert alias_hit["is_alias"] is True
+
+        canonical_hit = next(h for h in hits if h["tag_id"] == canonical.tag_id)
+        assert canonical_hit["alias_of"] is None
+        assert canonical_hit["alias_of_name"] is None
+        assert canonical_hit["is_alias"] is False
+
     async def test_search_handles_missing_db_tags_gracefully(
         self,
         client_with_search: AsyncClient,
