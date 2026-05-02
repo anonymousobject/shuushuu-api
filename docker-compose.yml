@@ -188,6 +188,8 @@ services:
         condition: service_healthy
       mariadb:
         condition: service_healthy
+      meilisearch:
+        condition: service_healthy
     develop:
       watch:
         - action: rebuild
