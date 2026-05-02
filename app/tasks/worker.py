@@ -115,6 +115,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     # silently no-opping on the module-level None default). Mirrors the
     # FastAPI lifespan in app/main.py and degrades gracefully if Meilisearch
     # is unreachable — the worker should still process non-search jobs.
+    client: MeilisearchClient | None = None
     try:
         client = MeilisearchClient(
             url=settings.MEILISEARCH_URL,
@@ -125,6 +126,8 @@ async def startup(ctx: dict[str, Any]) -> None:
         ctx["meilisearch_client"] = client
         logger.info("meilisearch_initialized", url=settings.MEILISEARCH_URL)
     except Exception:
+        if client is not None:
+            await client.aclose()
         logger.warning(
             "meilisearch_unavailable",
             url=settings.MEILISEARCH_URL,

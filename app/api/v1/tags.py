@@ -1615,6 +1615,10 @@ async def add_tag_link(
         await db.rollback()
         raise HTTPException(status_code=409, detail="URL already exists for this tag") from None
 
+    # Refresh tag: commit expires its attributes, and sync_tag_to_search reads
+    # alias_of — a lazy load there would raise MissingGreenlet (silently
+    # swallowed) and the new external URL would never reach Meilisearch.
+    await db.refresh(tag)
     await sync_tag_to_search(tag, db=db)
     return TagExternalLinkResponse.model_validate(new_link)
 
