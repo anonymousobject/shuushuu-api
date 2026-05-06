@@ -485,10 +485,15 @@ async def list_tags(
     - Get child tags of a parent: `/tags?parent_tag_id=10`
     - Exclude alias tags: `/tags?search=sakura&exclude_aliases=true`
     """
-    # Create table alias to retrieve the title of the tag that this tag is aliased to
+    # Create table alias to retrieve the parent tag's title and usage_count
+    # for any tag that is aliased to it.
     AliasedTag = aliased(Tags)
 
-    query = select(Tags, AliasedTag.title.label("alias_of_name")).outerjoin(  # type: ignore[union-attr]
+    query = select(
+        Tags,
+        AliasedTag.title.label("alias_of_name"),  # type: ignore[union-attr]
+        AliasedTag.usage_count.label("alias_of_usage_count"),  # type: ignore[attr-defined]
+    ).outerjoin(
         AliasedTag,
         Tags.alias_of == AliasedTag.tag_id,  # type: ignore[arg-type]
     )
@@ -649,9 +654,11 @@ async def list_tags(
     for row in rows:
         tag = row[0]
         alias_name = row[1]
+        alias_usage_count = row[2]
 
         tag_resp = TagResponse.model_validate(tag)
         tag_resp.alias_of_name = alias_name
+        tag_resp.alias_of_usage_count = alias_usage_count
         tags_list.append(tag_resp)
 
     return TagListResponse(

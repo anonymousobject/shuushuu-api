@@ -49,7 +49,7 @@ async def search(
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     exclude_aliases: Annotated[bool, Query(description="Exclude alias tags")] = False,
     limit: Annotated[int, Query(ge=1, le=100, description="Max results")] = 20,
-    offset: Annotated[int, Query(ge=0, le=1000, description="Results to skip")] = 0,
+    offset: Annotated[int, Query(ge=0, le=500_000, description="Results to skip")] = 0,
     sort_by: Annotated[
         TagSortBy | None,
         Query(description="Sort field (omit for relevance ranking)"),
@@ -87,19 +87,27 @@ async def search(
     if result.tag_ids:
         AliasedTag = aliased(Tags)
         query = (
-            select(Tags, AliasedTag.title.label("alias_of_name"))  # type: ignore[union-attr]
+            select(
+                Tags,
+                AliasedTag.title.label("alias_of_name"),  # type: ignore[union-attr]
+                AliasedTag.usage_count.label("alias_of_usage_count"),  # type: ignore[attr-defined]
+            )
             .outerjoin(AliasedTag, Tags.alias_of == AliasedTag.tag_id)  # type: ignore[arg-type]
             .where(Tags.tag_id.in_(result.tag_ids))  # type: ignore[union-attr]
         )
         db_result = await db.execute(query)
-        rows_by_id = {tag.tag_id: (tag, alias_of_name) for tag, alias_of_name in db_result.all()}
+        rows_by_id = {
+            tag.tag_id: (tag, alias_of_name, alias_of_usage_count)
+            for tag, alias_of_name, alias_of_usage_count in db_result.all()
+        }
 
         for tag_id in result.tag_ids:
             row = rows_by_id.get(tag_id)
             if row:
-                tag, alias_of_name = row
+                tag, alias_of_name, alias_of_usage_count = row
                 hit = TagSearchHit.model_validate(tag)
                 hit.alias_of_name = alias_of_name
+                hit.alias_of_usage_count = alias_of_usage_count
                 hits.append(hit)
 
     return SearchResponse(

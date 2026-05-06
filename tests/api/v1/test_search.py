@@ -274,14 +274,14 @@ class TestSearchEndpoint:
         assert response.status_code == 503
         assert "temporarily unavailable" in response.json()["detail"]
 
-    async def test_search_rejects_offset_over_1000(
+    async def test_search_rejects_offset_over_max_total_hits(
         self,
         client_with_search: AsyncClient,
         mock_search_service: AsyncMock,
     ):
-        """Offset above Meilisearch's maxTotalHits returns 422."""
+        """Offset above the index max_total_hits cap returns 422."""
         response = await client_with_search.get(
-            "/api/v1/search", params={"q": "test", "offset": 1001}
+            "/api/v1/search", params={"q": "test", "offset": 500_001}
         )
         assert response.status_code == 422
 
@@ -333,8 +333,8 @@ class TestSearchEndpoint:
         db_session: AsyncSession,
         mock_search_service: AsyncMock,
     ):
-        """Alias tags in search results include alias_of_name (parent tag's title)."""
-        canonical = Tags(title="cat ears", type=TagType.THEME)
+        """Alias hits include alias_of_name and alias_of_usage_count from the parent."""
+        canonical = Tags(title="cat ears", type=TagType.THEME, usage_count=5000)
         db_session.add(canonical)
         await db_session.commit()
         await db_session.refresh(canonical)
@@ -357,11 +357,13 @@ class TestSearchEndpoint:
         alias_hit = next(h for h in hits if h["tag_id"] == alias.tag_id)
         assert alias_hit["alias_of"] == canonical.tag_id
         assert alias_hit["alias_of_name"] == "cat ears"
+        assert alias_hit["alias_of_usage_count"] == 5000
         assert alias_hit["is_alias"] is True
 
         canonical_hit = next(h for h in hits if h["tag_id"] == canonical.tag_id)
         assert canonical_hit["alias_of"] is None
         assert canonical_hit["alias_of_name"] is None
+        assert canonical_hit["alias_of_usage_count"] is None
         assert canonical_hit["is_alias"] is False
 
     async def test_search_handles_missing_db_tags_gracefully(
