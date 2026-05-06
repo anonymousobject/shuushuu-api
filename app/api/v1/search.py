@@ -1,6 +1,6 @@
 """Search endpoint powered by Meilisearch."""
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.exceptions import HTTPException
@@ -9,16 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from starlette import status
 
-from app.api.dependencies import SortOrder
+from app.api.dependencies import SortOrder, TagSortBy
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.models.tag import Tags
 from app.schemas.search import SearchResponse, TagSearchHit
 from app.services.search import SearchService
-
-# Mirrors TagSortParams.sort_by — must be a subset of sortableAttributes
-# configured in app/services/search.py::configure_tags_index.
-TagSortBy = Literal["usage_count", "title", "date_added", "tag_id", "type"]
 
 logger = get_logger(__name__)
 
