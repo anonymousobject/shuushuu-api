@@ -1,4 +1,5 @@
 import logging
+import os
 
 from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
@@ -13,14 +14,19 @@ from app.models import *  # noqa: F403, F401
 # access to the values within pyproject.toml [tool.alembic]
 config = context.config
 
-# Check if database URL was passed via -x dbUrl command line option
-# This allows overriding the database URL without changing .env files
-db_url = context.get_x_argument(as_dictionary=True).get("dbUrl")
-if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
-else:
-    # Override with your DATABASE_URL_SYNC (for migrations)
-    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL_SYNC)
+# URL precedence (highest to lowest):
+#   1. -x dbUrl=...     CLI override
+#   2. $ALEMBIC_DB_URL  programmatic override (used by tests/conftest.py
+#                       to point alembic at the test DB without touching
+#                       app.config or relying on alembic's internal
+#                       cmd_opts.x attribute)
+#   3. settings.DATABASE_URL_SYNC  the application's configured DB
+db_url = (
+    context.get_x_argument(as_dictionary=True).get("dbUrl")
+    or os.getenv("ALEMBIC_DB_URL")
+    or settings.DATABASE_URL_SYNC
+)
+config.set_main_option("sqlalchemy.url", db_url)
 
 # Set up basic logging (config is now in pyproject.toml)
 logging.basicConfig(

@@ -13,6 +13,7 @@ This approach eliminates field duplication while maintaining security boundaries
 Note: Privmsgs are private messages between users.
 """
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import Column, ForeignKeyConstraint, Index, text
@@ -39,8 +40,11 @@ class PrivmsgBase(SQLModel):
     from_user_id: int
     to_user_id: int
 
-    # Thread grouping
-    thread_id: str | None = Field(default=None, max_length=36)
+    # Thread grouping. NOT NULL in the DB (migration b50f77d51a12); each
+    # privmsg belongs to a thread. The route handler computes the thread_id
+    # explicitly from the request; the default_factory is a safety net so
+    # ad-hoc construction (tests, scripts) doesn't accidentally insert NULL.
+    thread_id: str = Field(default_factory=lambda: str(uuid.uuid4()), max_length=36)
 
     # Public timestamp
     date: datetime
