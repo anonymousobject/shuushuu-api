@@ -77,21 +77,33 @@ class TestSearchEndpoint:
         assert data["hits"][0]["title"] == "Sakura"
         assert data["hits"][1]["title"] == "Sakura Kinomoto"
 
-    async def test_search_missing_query_returns_422(
+    async def test_search_missing_query_lists_all(
         self,
         client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
     ):
-        """Calling search without the required 'q' parameter returns 422."""
-        response = await client_with_search.get("/api/v1/search")
-        assert response.status_code == 422
+        """Omitting 'q' entirely defaults to a placeholder search."""
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
 
-    async def test_search_empty_query_returns_422(
+        response = await client_with_search.get("/api/v1/search")
+        assert response.status_code == 200
+        assert mock_search_service.search_tags.call_args[0][0] == ""
+
+    async def test_search_empty_query_lists_all(
         self,
         client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
     ):
-        """An empty 'q' parameter (min_length=1) returns 422."""
+        """Empty 'q' is a placeholder search: Meilisearch returns all docs
+        (filter + sort still apply). Used by the frontend's tag-list view."""
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
         response = await client_with_search.get("/api/v1/search", params={"q": ""})
-        assert response.status_code == 422
+        assert response.status_code == 200
+
+        # The empty string should reach the service unchanged.
+        mock_search_service.search_tags.assert_called_once()
+        assert mock_search_service.search_tags.call_args[0][0] == ""
 
     async def test_search_with_type_filter(
         self,

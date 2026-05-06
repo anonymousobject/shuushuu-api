@@ -39,8 +39,13 @@ def get_search_service() -> SearchService:
 
 @router.get("", response_model=SearchResponse)
 async def search(
-    q: Annotated[str, Query(min_length=1, max_length=200, description="Search query")],
     db: Annotated[AsyncSession, Depends(get_db)],
+    q: Annotated[
+        str,
+        Query(
+            max_length=200, description="Search query (empty = list all, filter+sort still apply)"
+        ),
+    ] = "",
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     exclude_aliases: Annotated[bool, Query(description="Exclude alias tags")] = False,
     limit: Annotated[int, Query(ge=1, le=100, description="Max results")] = 20,
