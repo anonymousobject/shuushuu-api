@@ -201,3 +201,33 @@ class TestUploadIQDBDuplicateDetection:
         assert response.status_code == 201
         data = response.json()
         assert data["image"]["miscmeta"] == "pixiv: 12345"
+
+    @pytest.mark.asyncio
+    async def test_upload_succeeds_for_ipv6_client(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Upload succeeds when X-Forwarded-For carries an IPv6 address.
+
+        Cloudflare forwards the real client IP via X-Forwarded-For; IPv6
+        addresses are up to 39 chars (45 with zone-id), so the Images.ip
+        column must accommodate them.
+        """
+        ipv6 = "2600:6c63:ff0:6810:c042:21d5:bfed:9bae"
+        with (
+            _mock_save_uploaded_image("ipv6upload01"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+                headers={"X-Forwarded-For": ipv6},
+            )
+
+        assert response.status_code == 201, response.text

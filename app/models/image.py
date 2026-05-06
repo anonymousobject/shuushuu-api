@@ -231,7 +231,7 @@ class Images(ImageBase, table=True):
     )
 
     # Internal tracking fields (privacy-sensitive)
-    ip: str = Field(default="", max_length=15)
+    ip: str = Field(default="", max_length=45)
 
     # Internal flags and metadata
     medium: int = Field(default=0)
