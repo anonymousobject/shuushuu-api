@@ -21,7 +21,6 @@ depends_on: str | Sequence[str] | None = None
 # (table, nullable) pairs. `posts` is the on-disk name for the Comments model
 # (PHP heritage). The legacy `bans` table was dropped by migration
 # d1e2f3a4b5c6 (user suspensions system) so it's intentionally not listed.
-# We still probe with `has_table` in case an environment is out of sync.
 IP_TABLES: tuple[tuple[str, bool], ...] = (
     ("images", False),
     ("posts", False),
@@ -36,6 +35,8 @@ def upgrade() -> None:
     address, which is IPv6 for a sizable share of users -- those uploads/
     comments fail Pydantic validation before the DB write.
     """
+    # has_table is defensive against an out-of-sync environment but in practice
+    # both tables always exist on every shuushuu-api deployment.
     inspector = sa.inspect(op.get_bind())
     for table, nullable in IP_TABLES:
         if not inspector.has_table(table):
