@@ -53,13 +53,25 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Revert ip columns to VARCHAR(15).
 
-    Note: this will fail if any existing rows have ip > 15 chars (i.e. any
-    IPv6 addresses recorded since the upgrade).
+    MariaDB/MySQL silently truncates oversized values on `MODIFY COLUMN`
+    unless `STRICT_TRANS_TABLES` / `STRICT_ALL_TABLES` is set in `sql_mode`.
+    Count any IPv6 rows first and refuse to proceed if found; the operator
+    must explicitly clear or rewrite them before re-running the downgrade.
     """
-    inspector = sa.inspect(op.get_bind())
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
     for table, nullable in IP_TABLES:
         if not inspector.has_table(table):
             continue
+        oversized = bind.execute(
+            sa.text(f"SELECT COUNT(*) FROM `{table}` WHERE LENGTH(ip) > 15")
+        ).scalar()
+        if oversized:
+            raise RuntimeError(
+                f"Cannot downgrade: {oversized} row(s) in `{table}` have ip "
+                f"values longer than 15 characters (IPv6). Truncate or rewrite "
+                f"those rows before re-running this downgrade."
+            )
         op.alter_column(
             table,
             "ip",

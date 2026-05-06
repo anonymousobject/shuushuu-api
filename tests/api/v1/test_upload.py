@@ -1,4 +1,4 @@
-"""Tests for image upload IQDB duplicate detection."""
+"""Tests for the image upload route."""
 
 from io import BytesIO
 from pathlib import Path
@@ -201,6 +201,10 @@ class TestUploadIQDBDuplicateDetection:
         assert response.status_code == 201
         data = response.json()
         assert data["image"]["miscmeta"] == "pixiv: 12345"
+
+
+class TestUploadClientIPHandling:
+    """Tests for client IP header handling on upload."""
 
     @pytest.mark.asyncio
     async def test_upload_succeeds_for_ipv6_client(
