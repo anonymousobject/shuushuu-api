@@ -28,6 +28,7 @@ RUN uv pip install --system -r pyproject.toml
 # Copy only what's needed for runtime (explicit allowlist)
 COPY app/ ./app/
 COPY alembic/ ./alembic/
+COPY scripts/ ./scripts/
 
 # Expose port
 EXPOSE 8000
