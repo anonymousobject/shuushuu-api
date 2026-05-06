@@ -192,6 +192,8 @@ def _tag_to_document(
     usage_count = tag.usage_count
     if tag.alias_of is not None and parent_usage_count is not None:
         usage_count = parent_usage_count
+    # Index date_added as a Unix int so Meilisearch can sort it numerically.
+    date_added = int(tag.date_added.timestamp()) if tag.date_added is not None else 0
     return {
         "tag_id": tag.tag_id,
         "title": tag.title,
@@ -200,6 +202,7 @@ def _tag_to_document(
         "usage_count": usage_count,
         "alias_of": tag.alias_of,
         "external_urls": external_urls or [],
+        "date_added": date_added,
     }
 
 
@@ -220,8 +223,13 @@ async def configure_tags_index(client: AsyncClient) -> None:
             raise
 
     index = client.index(TAGS_INDEX_NAME)
+    # "sort" placed first so user-selected sort dominates relevance — when a
+    # caller passes sort=["title:asc"] they expect strict alphabetical, not
+    # alphabetical-grouped-by-relevance. Without an explicit sort param the
+    # rule is a no-op and relevance ranking applies as before.
     await index.update_ranking_rules(
         [
+            "sort",
             "words",
             "typo",
             "proximity",
@@ -232,7 +240,7 @@ async def configure_tags_index(client: AsyncClient) -> None:
     )
     await index.update_filterable_attributes(["type", "alias_of"])
     await index.update_searchable_attributes(["title", "desc", "external_urls"])
-    await index.update_sortable_attributes(["usage_count"])
+    await index.update_sortable_attributes(["usage_count", "title", "type", "date_added", "tag_id"])
 
     logger.info("meilisearch_tags_index_configured")
 
@@ -324,6 +332,7 @@ class SearchService:
         offset: int = 0,
         type_filter: int | None = None,
         exclude_aliases: bool = False,
+        sort: list[str] | None = None,
     ) -> TagSearchResult:
         """Search tags via Meilisearch.
 
@@ -333,6 +342,7 @@ class SearchService:
             offset: Number of results to skip
             type_filter: Filter by tag type (TagType constant)
             exclude_aliases: If True, exclude tags that are aliases
+            sort: Meilisearch sort spec, e.g. ["title:asc"]. None = relevance.
 
         Returns:
             TagSearchResult with ordered tag IDs and total count
@@ -351,6 +361,7 @@ class SearchService:
             limit=limit,
             offset=offset,
             filter=filter_str,
+            sort=sort,
         )
 
         tag_ids = [hit["tag_id"] for hit in results.hits]

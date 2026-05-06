@@ -1,6 +1,6 @@
 """Search endpoint powered by Meilisearch."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.exceptions import HTTPException
@@ -9,11 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from starlette import status
 
+from app.api.dependencies import SortOrder
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.models.tag import Tags
 from app.schemas.search import SearchResponse, TagSearchHit
 from app.services.search import SearchService
+
+# Mirrors TagSortParams.sort_by — must be a subset of sortableAttributes
+# configured in app/services/search.py::configure_tags_index.
+TagSortBy = Literal["usage_count", "title", "date_added", "tag_id", "type"]
 
 logger = get_logger(__name__)
 
@@ -40,12 +45,20 @@ async def search(
     exclude_aliases: Annotated[bool, Query(description="Exclude alias tags")] = False,
     limit: Annotated[int, Query(ge=1, le=100, description="Max results")] = 20,
     offset: Annotated[int, Query(ge=0, le=1000, description="Results to skip")] = 0,
+    sort_by: Annotated[
+        TagSortBy | None,
+        Query(description="Sort field (omit for relevance ranking)"),
+    ] = None,
+    sort_order: Annotated[SortOrder, Query(description="Sort order")] = "DESC",
     search_service: SearchService = Depends(get_search_service),
 ) -> SearchResponse:
     """Search across entities using Meilisearch.
 
-    Currently supports tag search. Returns results in relevance order.
+    Currently supports tag search. Returns results in relevance order unless
+    sort_by is provided, in which case the user's sort dominates.
     """
+    sort = [f"{sort_by}:{sort_order.lower()}"] if sort_by is not None else None
+
     try:
         result = await search_service.search_tags(
             q,
@@ -53,6 +66,7 @@ async def search(
             offset=offset,
             type_filter=type_id,
             exclude_aliases=exclude_aliases,
+            sort=sort,
         )
     except Exception:
         logger.warning("meilisearch_search_failed", query=q, exc_info=True)

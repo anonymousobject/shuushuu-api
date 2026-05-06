@@ -121,6 +121,7 @@ class TestSearchEndpoint:
             offset=0,
             type_filter=TagType.SOURCE,
             exclude_aliases=False,
+            sort=None,
         )
 
     async def test_search_with_exclude_aliases(
@@ -144,6 +145,7 @@ class TestSearchEndpoint:
             offset=0,
             type_filter=None,
             exclude_aliases=True,
+            sort=None,
         )
 
     async def test_search_preserves_meilisearch_order(
@@ -227,6 +229,7 @@ class TestSearchEndpoint:
             offset=5,
             type_filter=None,
             exclude_aliases=False,
+            sort=None,
         )
 
     async def test_search_returns_503_when_meilisearch_unavailable(
@@ -267,6 +270,48 @@ class TestSearchEndpoint:
         """Offset above Meilisearch's maxTotalHits returns 422."""
         response = await client_with_search.get(
             "/api/v1/search", params={"q": "test", "offset": 1001}
+        )
+        assert response.status_code == 422
+
+    async def test_search_passes_sort_to_service(
+        self,
+        client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
+    ):
+        """sort_by + sort_order map to a Meilisearch sort string."""
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get(
+            "/api/v1/search",
+            params={"q": "sakura", "sort_by": "title", "sort_order": "ASC"},
+        )
+        assert response.status_code == 200
+
+        call_kwargs = mock_search_service.search_tags.call_args[1]
+        assert call_kwargs["sort"] == ["title:asc"]
+
+    async def test_search_default_sort_is_none(
+        self,
+        client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
+    ):
+        """No sort_by means sort=None — relevance ranking."""
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "sakura"})
+        assert response.status_code == 200
+
+        call_kwargs = mock_search_service.search_tags.call_args[1]
+        assert call_kwargs["sort"] is None
+
+    async def test_search_rejects_invalid_sort_by(
+        self,
+        client_with_search: AsyncClient,
+    ):
+        """sort_by not in the allowed set returns 422."""
+        response = await client_with_search.get(
+            "/api/v1/search",
+            params={"q": "sakura", "sort_by": "not_a_field"},
         )
         assert response.status_code == 422
 

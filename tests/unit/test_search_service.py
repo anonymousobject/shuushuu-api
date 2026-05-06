@@ -1,5 +1,6 @@
 """Unit tests for the search service."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -62,7 +63,9 @@ class TestIndexTag:
             "usage_count": 42,
             "alias_of": None,
             "external_urls": [],
+            "date_added": docs[0]["date_added"],
         }
+        assert isinstance(docs[0]["date_added"], int)
 
     async def test_index_tag_with_external_urls(self):
         """index_tag includes external_urls in the document."""
@@ -124,6 +127,19 @@ class TestTagToDocument:
         tag = _make_tag()
         doc = _tag_to_document(tag)
         assert doc["external_urls"] == []
+
+    def test_includes_date_added_as_unix_timestamp(self):
+        """date_added is indexed as a Unix int timestamp so Meilisearch can sort it."""
+        when = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
+        tag = _make_tag(date_added=when)
+        doc = _tag_to_document(tag)
+        assert doc["date_added"] == int(when.timestamp())
+
+    def test_handles_missing_date_added(self):
+        """date_added defaults to 0 when the tag has no date set."""
+        tag = _make_tag(date_added=None)
+        doc = _tag_to_document(tag)
+        assert doc["date_added"] == 0
 
 
 @pytest.mark.unit
@@ -240,6 +256,32 @@ class TestSearchTags:
 
         call_kwargs = index_mock.search.call_args
         assert "alias_of IS NULL" in call_kwargs[1]["filter"]
+
+    async def test_passes_sort_to_meilisearch(self):
+        """search_tags forwards a sort list to Meilisearch."""
+        client = _make_mock_client()
+        service = SearchService(client)
+
+        index_mock = client.index(TAGS_INDEX_NAME)
+        index_mock.search.return_value = MagicMock(hits=[], estimated_total_hits=0)
+
+        await service.search_tags("test", sort=["title:asc"])
+
+        call_kwargs = index_mock.search.call_args
+        assert call_kwargs[1]["sort"] == ["title:asc"]
+
+    async def test_omits_sort_when_not_provided(self):
+        """search_tags passes sort=None when caller doesn't sort."""
+        client = _make_mock_client()
+        service = SearchService(client)
+
+        index_mock = client.index(TAGS_INDEX_NAME)
+        index_mock.search.return_value = MagicMock(hits=[], estimated_total_hits=0)
+
+        await service.search_tags("test")
+
+        call_kwargs = index_mock.search.call_args
+        assert call_kwargs[1].get("sort") is None
 
     async def test_empty_query_returns_empty(self):
         """search_tags with empty results returns empty list."""
