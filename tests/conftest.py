@@ -298,8 +298,9 @@ async def _truncate_all_tables(engine) -> None:
         result = await conn.execute(
             text(
                 "SELECT table_name FROM information_schema.tables "
-                f"WHERE table_schema = '{db_name}' AND table_type = 'BASE TABLE'"
-            )
+                "WHERE table_schema = :db_name AND table_type = 'BASE TABLE'"
+            ),
+            {"db_name": db_name},
         )
         tables = [row[0] for row in result]
 
