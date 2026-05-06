@@ -117,6 +117,7 @@ class TagResponse(TagBase):
     date_added: UTCDatetime | None = None
     alias_of: int | None = None
     alias_of_name: str | None = None
+    alias_of_usage_count: int | None = None
     is_alias: bool = False
     usage_count: int = 0
 

@@ -78,10 +78,15 @@ class ImageRatingsSortParams(BaseModel):
     sort_order: SortOrder = Field(default="DESC", description="Sort order")
 
 
+TagSortBy = Literal["usage_count", "title", "date_added", "tag_id", "type"]
+"""Allowed tag sort fields. Must be a subset of `sortableAttributes`
+configured in `app/services/search.py::configure_tags_index`."""
+
+
 class TagSortParams(BaseModel):
     """Common sorting parameters for tag queries."""
 
-    sort_by: Literal["usage_count", "title", "date_added", "tag_id", "type"] | None = Field(
+    sort_by: TagSortBy | None = Field(
         default=None, description="Sort field (omit to use relevance when searching)"
     )
     sort_order: SortOrder = Field(default="DESC", description="Sort order")

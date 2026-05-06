@@ -77,21 +77,33 @@ class TestSearchEndpoint:
         assert data["hits"][0]["title"] == "Sakura"
         assert data["hits"][1]["title"] == "Sakura Kinomoto"
 
-    async def test_search_missing_query_returns_422(
+    async def test_search_missing_query_lists_all(
         self,
         client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
     ):
-        """Calling search without the required 'q' parameter returns 422."""
-        response = await client_with_search.get("/api/v1/search")
-        assert response.status_code == 422
+        """Omitting 'q' entirely defaults to a placeholder search."""
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
 
-    async def test_search_empty_query_returns_422(
+        response = await client_with_search.get("/api/v1/search")
+        assert response.status_code == 200
+        assert mock_search_service.search_tags.call_args[0][0] == ""
+
+    async def test_search_empty_query_lists_all(
         self,
         client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
     ):
-        """An empty 'q' parameter (min_length=1) returns 422."""
+        """Empty 'q' is a placeholder search: Meilisearch returns all docs
+        (filter + sort still apply). Used by the frontend's tag-list view."""
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
         response = await client_with_search.get("/api/v1/search", params={"q": ""})
-        assert response.status_code == 422
+        assert response.status_code == 200
+
+        # The empty string should reach the service unchanged.
+        mock_search_service.search_tags.assert_called_once()
+        assert mock_search_service.search_tags.call_args[0][0] == ""
 
     async def test_search_with_type_filter(
         self,
@@ -121,6 +133,7 @@ class TestSearchEndpoint:
             offset=0,
             type_filter=TagType.SOURCE,
             exclude_aliases=False,
+            sort=None,
         )
 
     async def test_search_with_exclude_aliases(
@@ -144,6 +157,7 @@ class TestSearchEndpoint:
             offset=0,
             type_filter=None,
             exclude_aliases=True,
+            sort=None,
         )
 
     async def test_search_preserves_meilisearch_order(
@@ -227,6 +241,7 @@ class TestSearchEndpoint:
             offset=5,
             type_filter=None,
             exclude_aliases=False,
+            sort=None,
         )
 
     async def test_search_returns_503_when_meilisearch_unavailable(
@@ -259,14 +274,56 @@ class TestSearchEndpoint:
         assert response.status_code == 503
         assert "temporarily unavailable" in response.json()["detail"]
 
-    async def test_search_rejects_offset_over_1000(
+    async def test_search_rejects_offset_over_max_total_hits(
         self,
         client_with_search: AsyncClient,
         mock_search_service: AsyncMock,
     ):
-        """Offset above Meilisearch's maxTotalHits returns 422."""
+        """Offset above the index max_total_hits cap returns 422."""
         response = await client_with_search.get(
-            "/api/v1/search", params={"q": "test", "offset": 1001}
+            "/api/v1/search", params={"q": "test", "offset": 500_001}
+        )
+        assert response.status_code == 422
+
+    async def test_search_passes_sort_to_service(
+        self,
+        client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
+    ):
+        """sort_by + sort_order map to a Meilisearch sort string."""
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get(
+            "/api/v1/search",
+            params={"q": "sakura", "sort_by": "title", "sort_order": "ASC"},
+        )
+        assert response.status_code == 200
+
+        call_kwargs = mock_search_service.search_tags.call_args[1]
+        assert call_kwargs["sort"] == ["title:asc"]
+
+    async def test_search_default_sort_is_none(
+        self,
+        client_with_search: AsyncClient,
+        mock_search_service: AsyncMock,
+    ):
+        """No sort_by means sort=None — relevance ranking."""
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "sakura"})
+        assert response.status_code == 200
+
+        call_kwargs = mock_search_service.search_tags.call_args[1]
+        assert call_kwargs["sort"] is None
+
+    async def test_search_rejects_invalid_sort_by(
+        self,
+        client_with_search: AsyncClient,
+    ):
+        """sort_by not in the allowed set returns 422."""
+        response = await client_with_search.get(
+            "/api/v1/search",
+            params={"q": "sakura", "sort_by": "not_a_field"},
         )
         assert response.status_code == 422
 
@@ -276,8 +333,8 @@ class TestSearchEndpoint:
         db_session: AsyncSession,
         mock_search_service: AsyncMock,
     ):
-        """Alias tags in search results include alias_of_name (parent tag's title)."""
-        canonical = Tags(title="cat ears", type=TagType.THEME)
+        """Alias hits include alias_of_name and alias_of_usage_count from the parent."""
+        canonical = Tags(title="cat ears", type=TagType.THEME, usage_count=5000)
         db_session.add(canonical)
         await db_session.commit()
         await db_session.refresh(canonical)
@@ -300,11 +357,13 @@ class TestSearchEndpoint:
         alias_hit = next(h for h in hits if h["tag_id"] == alias.tag_id)
         assert alias_hit["alias_of"] == canonical.tag_id
         assert alias_hit["alias_of_name"] == "cat ears"
+        assert alias_hit["alias_of_usage_count"] == 5000
         assert alias_hit["is_alias"] is True
 
         canonical_hit = next(h for h in hits if h["tag_id"] == canonical.tag_id)
         assert canonical_hit["alias_of"] is None
         assert canonical_hit["alias_of_name"] is None
+        assert canonical_hit["alias_of_usage_count"] is None
         assert canonical_hit["is_alias"] is False
 
     async def test_search_handles_missing_db_tags_gracefully(

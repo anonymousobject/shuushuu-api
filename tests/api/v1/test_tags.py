@@ -634,6 +634,7 @@ class TestAliasOfName:
             title="maid outfit",
             desc="Maid clothing",
             type=TagType.THEME,
+            usage_count=42,
         )
         db_session.add(original_tag)
         await db_session.commit()
@@ -664,16 +665,18 @@ class TestAliasOfName:
             if tag["tag_id"] == original_tag.tag_id:
                 original_tag_response = tag
 
-        # Verify alias_of_name is populated for the alias tag
+        # Verify alias_of_name + alias_of_usage_count are populated for the alias
         assert alias_tag_response is not None
         assert alias_tag_response["alias_of"] == original_tag.tag_id
         assert alias_tag_response["alias_of_name"] == "maid outfit"
+        assert alias_tag_response["alias_of_usage_count"] == 42
         assert alias_tag_response["is_alias"] is True
 
-        # Verify original tag has no alias_of_name
+        # Verify original tag has no alias fields populated
         assert original_tag_response is not None
         assert original_tag_response["alias_of"] is None
         assert original_tag_response["alias_of_name"] is None
+        assert original_tag_response["alias_of_usage_count"] is None
         assert original_tag_response["is_alias"] is False
 
     async def test_alias_of_name_when_tag_has_no_alias(
