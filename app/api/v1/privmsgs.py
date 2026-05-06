@@ -184,7 +184,7 @@ async def get_threads(
     )
 
     # Only include messages with a thread_id
-    thread_filter = Privmsgs.thread_id.isnot(None)  # type: ignore[union-attr]
+    thread_filter = Privmsgs.thread_id.isnot(None)  # type: ignore[attr-defined]
 
     # Aggregation query grouped by thread_id
     thread_query = (
@@ -246,7 +246,7 @@ async def get_threads(
         select(Privmsgs.thread_id, Privmsgs.text)  # type: ignore[call-overload]
         .where(
             and_(
-                Privmsgs.thread_id.in_(thread_ids),  # type: ignore[union-attr]
+                Privmsgs.thread_id.in_(thread_ids),  # type: ignore[attr-defined]
                 or_(
                     and_(Privmsgs.from_user_id == uid, Privmsgs.from_del == 0),  # type: ignore[arg-type]
                     and_(Privmsgs.to_user_id == uid, Privmsgs.to_del == 0),  # type: ignore[arg-type]

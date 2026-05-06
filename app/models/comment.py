@@ -125,7 +125,7 @@ class Comments(CommentBase, table=True):
     update_count: int = Field(default=0)
 
     # Internal tracking fields (privacy-sensitive)
-    ip: str = Field(default="", max_length=15)
+    ip: str = Field(default="", max_length=45)
 
     # Internal moderation fields
     last_updated: datetime | None = Field(
