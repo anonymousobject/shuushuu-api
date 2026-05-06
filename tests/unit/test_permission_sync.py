@@ -22,9 +22,13 @@ class TestSyncPermissions:
 
     async def test_inserts_missing_permissions(self, db_session: AsyncSession):
         """Permissions in enum but not in DB should be inserted."""
+        from sqlalchemy import delete
+
         from app.core.permission_sync import sync_permissions
 
-        # Verify DB starts empty
+        # Migrations seed the perms table; clear it (within this transaction)
+        # to test the insert path.
+        await db_session.execute(delete(Perms))
         result = await db_session.execute(select(Perms))
         assert len(result.scalars().all()) == 0
 

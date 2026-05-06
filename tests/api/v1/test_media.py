@@ -2,6 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.media import get_extension_from_filename, parse_image_id_from_filename
@@ -167,9 +168,14 @@ class TestServeImageEndpoint:
         """Protected image returns X-Accel-Redirect for moderator with IMAGE_EDIT."""
         moderator = await db_session.get(Users, 2)
         moderator.active = 1  # Must be active to authenticate
-        perm = Perms(perm_id=1, title=Permission.IMAGE_EDIT.value)
-        db_session.add(perm)
-        user_perm = UserPerms(user_id=moderator.user_id, perm_id=1, permvalue=1)
+        # Permissions are seeded by alembic migrations; look up the row instead
+        # of inserting a new one to avoid PK collisions.
+        perm = (
+            await db_session.execute(
+                select(Perms).where(Perms.title == Permission.IMAGE_EDIT.value)
+            )
+        ).scalar_one()
+        user_perm = UserPerms(user_id=moderator.user_id, perm_id=perm.perm_id, permvalue=1)
         db_session.add(user_perm)
         await db_session.commit()
 
@@ -187,9 +193,12 @@ class TestServeImageEndpoint:
         """Protected image returns X-Accel-Redirect for user with REVIEW_VIEW."""
         reviewer = await db_session.get(Users, 2)
         reviewer.active = 1  # Must be active to authenticate
-        perm = Perms(perm_id=2, title=Permission.REVIEW_VIEW.value)
-        db_session.add(perm)
-        user_perm = UserPerms(user_id=reviewer.user_id, perm_id=2, permvalue=1)
+        perm = (
+            await db_session.execute(
+                select(Perms).where(Perms.title == Permission.REVIEW_VIEW.value)
+            )
+        ).scalar_one()
+        user_perm = UserPerms(user_id=reviewer.user_id, perm_id=perm.perm_id, permvalue=1)
         db_session.add(user_perm)
         await db_session.commit()
 

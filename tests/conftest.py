@@ -125,62 +125,6 @@ def _get_test_database_url() -> tuple[str, str]:
 TEST_DATABASE_URL, TEST_DATABASE_URL_SYNC = _get_test_database_url()
 
 
-def _create_tag_search_and_popularity_features(sync_engine):
-    """
-    Create FULLTEXT index and triggers for tag search and popularity tracking.
-
-    This mirrors the schema created by alembic/versions/tag_search_and_popularity.py
-    so that test database matches production exactly. These features must be created
-    after SQLModel.metadata.create_all() since they depend on tables existing.
-
-    Args:
-        sync_engine: SQLAlchemy sync engine connected to test database
-    """
-    from sqlalchemy import text
-
-    with sync_engine.connect() as conn:
-        # Create FULLTEXT index for tag search
-        try:
-            conn.execute(text("ALTER TABLE tags ADD FULLTEXT INDEX ft_tags_title (title)"))
-        except Exception:
-            # Index may already exist; silently continue
-            pass
-
-        # Create trigger for INSERT on tag_links (increment usage_count)
-        try:
-            conn.execute(
-                text("""
-                    CREATE TRIGGER trig_tag_links_insert AFTER INSERT ON tag_links
-                    FOR EACH ROW
-                    BEGIN
-                        UPDATE tags SET usage_count = usage_count + 1
-                        WHERE tag_id = NEW.tag_id;
-                    END
-                """)
-            )
-        except Exception:
-            # Trigger may already exist; silently continue
-            pass
-
-        # Create trigger for DELETE on tag_links (decrement usage_count)
-        try:
-            conn.execute(
-                text("""
-                    CREATE TRIGGER trig_tag_links_delete AFTER DELETE ON tag_links
-                    FOR EACH ROW
-                    BEGIN
-                        UPDATE tags SET usage_count = GREATEST(0, usage_count - 1)
-                        WHERE tag_id = OLD.tag_id;
-                    END
-                """)
-            )
-        except Exception:
-            # Trigger may already exist; silently continue
-            pass
-
-        conn.commit()
-
-
 @pytest.fixture(scope="session")
 def anyio_backend():
     """Use asyncio backend for async tests."""
@@ -241,72 +185,64 @@ def setup_test_database():
         admin_engine.dispose()
     except OperationalError as e:
         # Root access not available on this server (access denied or connection refused).
-        # drop_all/create_all below handles schema reset instead.
+        # The table-by-table drop below handles schema reset instead.
         print(f"\n[conftest] Root DB setup skipped (root not available): {e}")
-
-    # Create tables using SQLAlchemy metadata (sync engine)
-    # Note: SQLModel doesn't support database triggers natively, so we create tables first,
-    # then manually create triggers to match the production Alembic migration.
-    # This ensures test schema matches production exactly.
-    from sqlmodel import SQLModel
-
-    from app.models.admin_action import AdminActions  # noqa: F401
-    from app.models.ban import Bans  # noqa: F401
-    from app.models.comment import Comments  # noqa: F401
-    from app.models.favorite import Favorites  # noqa: F401
-    from app.models.image import Images  # noqa: F401
-    from app.models.image_rating import ImageRatings  # noqa: F401
-    from app.models.image_report import ImageReports  # noqa: F401
-    from app.models.image_review import ImageReviews  # noqa: F401
-    from app.models.misc import (  # noqa: F401
-        Banners,
-        Donations,
-        ImageRatingsAvg,
-        Quicklinks,
-        Tips,
-        UserBannerPins,
-        UserBannerPreferences,
-    )
-    from app.models.news import News  # noqa: F401
-    from app.models.permissions import (  # noqa: F401
-        GroupPerms,
-        Groups,
-        Perms,
-        UserGroups,
-        UserPerms,
-    )
-    from app.models.privmsg import Privmsgs  # noqa: F401
-    from app.models.refresh_token import RefreshTokens  # noqa: F401
-    from app.models.review_vote import ReviewVotes  # noqa: F401
-    from app.models.tag import Tags  # noqa: F401
-    from app.models.tag_audit_log import TagAuditLog  # noqa: F401
-    from app.models.tag_external_link import TagExternalLinks  # noqa: F401
-    from app.models.tag_history import TagHistory  # noqa: F401
-    from app.models.tag_link import TagLinks  # noqa: F401
-    from app.models.user import Users  # noqa: F401
-    from app.models.user_suspension import UserSuspensions  # noqa: F401
-    from app.models.character_source_link import CharacterSourceLinks  # noqa: F401
-    from app.models.image_report_tag_suggestion import ImageReportTagSuggestions  # noqa: F401
-    from app.models.image_status_history import ImageStatusHistory  # noqa: F401
-    from app.models.comment_report import CommentReports  # noqa: F401
 
     sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 
-    # Create base tables from SQLModel metadata
-    SQLModel.metadata.create_all(sync_engine)
-
-    # Create database enhancements (FULLTEXT index and triggers) that match production
-    # These are defined in alembic/versions/tag_search_and_popularity.py
-    # We create them here so tests use identical schema to production
-    _create_tag_search_and_popularity_features(sync_engine)
+    # When root credentials are available the DROP/CREATE DATABASE above already
+    # left an empty schema; otherwise drop every table here so the migration
+    # chain runs from a clean slate. Either way alembic_version must be gone.
+    db_name = make_url(TEST_DATABASE_URL_SYNC).database
+    with sync_engine.begin() as conn:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        result = conn.execute(
+            text(
+                "SELECT table_name FROM information_schema.tables "
+                f"WHERE table_schema = '{db_name}' AND table_type = 'BASE TABLE'"
+            )
+        )
+        for (tbl,) in result:
+            conn.execute(text(f"DROP TABLE IF EXISTS `{tbl}`"))
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
 
     sync_engine.dispose()
 
-    # Optional: If you want to track migrations in the test DB, uncomment this
-    # alembic_cfg = Config()
-    # alembic_cfg.set_main_option("script_location", "alembic")
-    # alembic_cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL_SYNC)
-    # command.stamp(alembic_cfg, "head")  # Mark as migrated without running migrations
+    # Apply the full migration chain so the test DB matches production schema
+    # exactly -- column widths, FULLTEXT indexes, triggers, everything. This
+    # also catches broken migrations in CI instead of letting create_all paper
+    # over them.
+    #
+    # alembic/env.py unconditionally overrides sqlalchemy.url with
+    # settings.DATABASE_URL_SYNC unless `-x dbUrl=...` is set, so we route the
+    # test DB URL through cmd_opts.x to avoid migrating the production DB.
+    from argparse import Namespace
+
+    from alembic import command as alembic_command
+    from alembic.config import Config as AlembicConfig
+
+    alembic_cfg = AlembicConfig()
+    alembic_cfg.set_main_option("script_location", "alembic")
+    alembic_cfg.cmd_opts = Namespace(x=[f"dbUrl={TEST_DATABASE_URL_SYNC}"])
+    alembic_command.upgrade(alembic_cfg, "head")
+
+    # Mirror application startup: sync the Permission enum into the perms
+    # table. The seed migration uses UPDATE statements that assume a
+    # populated legacy DB and so leaves the test DB short several enum perms.
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    from app.core.permission_sync import sync_permissions
+
+    async def _sync_perms() -> None:
+        async_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+        async with AsyncSession(async_engine) as session:
+            await sync_permissions(session)
+            await session.commit()
+        await async_engine.dispose()
+
+    asyncio.run(_sync_perms())
 
     yield
 
