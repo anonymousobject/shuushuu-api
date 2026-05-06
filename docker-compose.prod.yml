@@ -28,10 +28,18 @@ services:
   redis-commander:
     profiles: [disabled]
 
+  # In production, Redis runs as a native service on the DB tier rather
+  # than as a container on the app host. Stub the service the same way
+  # mariadb is stubbed so depends_on chains keep merging cleanly without
+  # actually running a redis container.
   redis:
-    container_name: shuushuu-redis-prod
-    ports: !override []  # Internal only in production
-    logging: *default-logging
+    image: busybox:latest
+    entrypoint: ["sleep", "infinity"]
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      retries: 1
 
   frontend:
     # NOTE: Expects shuushuu-frontend repo at ../shuushuu-frontend (sibling directory)
@@ -76,8 +84,8 @@ services:
     env_file: .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=redis://redis:6379/0
-      - ARQ_REDIS_URL=redis://redis:6379/1
+      - REDIS_URL=${REDIS_URL}
+      - ARQ_REDIS_URL=${ARQ_REDIS_URL}
       - IQDB_HOST=iqdb
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
@@ -88,7 +96,6 @@ services:
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      - "fern:10.0.0.62"
     logging: *default-logging
 
   arq-worker:
@@ -98,8 +105,8 @@ services:
     env_file: .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=redis://redis:6379/0
-      - ARQ_REDIS_URL=redis://redis:6379/1
+      - REDIS_URL=${REDIS_URL}
+      - ARQ_REDIS_URL=${ARQ_REDIS_URL}
       - IQDB_HOST=iqdb
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
@@ -110,7 +117,6 @@ services:
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      - "fern:10.0.0.62"
     logging: *default-logging
 
   iqdb:
