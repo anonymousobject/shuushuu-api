@@ -199,8 +199,9 @@ def setup_test_database():
         result = conn.execute(
             text(
                 "SELECT table_name FROM information_schema.tables "
-                f"WHERE table_schema = '{db_name}' AND table_type = 'BASE TABLE'"
-            )
+                "WHERE table_schema = :db_name AND table_type = 'BASE TABLE'"
+            ),
+            {"db_name": db_name},
         )
         for (tbl,) in result:
             conn.execute(text(f"DROP TABLE IF EXISTS `{tbl}`"))
@@ -213,18 +214,24 @@ def setup_test_database():
     # also catches broken migrations in CI instead of letting create_all paper
     # over them.
     #
-    # alembic/env.py unconditionally overrides sqlalchemy.url with
-    # settings.DATABASE_URL_SYNC unless `-x dbUrl=...` is set, so we route the
-    # test DB URL through cmd_opts.x to avoid migrating the production DB.
-    from argparse import Namespace
-
+    # alembic/env.py picks up ALEMBIC_DB_URL from the environment when no
+    # `-x dbUrl=...` argument is supplied; that's how we steer programmatic
+    # alembic invocations (like this one) at the test DB instead of the
+    # production DATABASE_URL_SYNC fallback.
     from alembic import command as alembic_command
     from alembic.config import Config as AlembicConfig
 
-    alembic_cfg = AlembicConfig()
-    alembic_cfg.set_main_option("script_location", "alembic")
-    alembic_cfg.cmd_opts = Namespace(x=[f"dbUrl={TEST_DATABASE_URL_SYNC}"])
-    alembic_command.upgrade(alembic_cfg, "head")
+    prev_alembic_url = os.environ.get("ALEMBIC_DB_URL")
+    os.environ["ALEMBIC_DB_URL"] = TEST_DATABASE_URL_SYNC
+    try:
+        alembic_cfg = AlembicConfig()
+        alembic_cfg.set_main_option("script_location", "alembic")
+        alembic_command.upgrade(alembic_cfg, "head")
+    finally:
+        if prev_alembic_url is None:
+            del os.environ["ALEMBIC_DB_URL"]
+        else:
+            os.environ["ALEMBIC_DB_URL"] = prev_alembic_url
 
     # Mirror application startup: sync the Permission enum into the perms
     # table. The seed migration uses UPDATE statements that assume a
@@ -238,8 +245,8 @@ def setup_test_database():
     async def _sync_perms() -> None:
         async_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
         async with AsyncSession(async_engine) as session:
+            # sync_permissions() commits internally; no extra commit needed.
             await sync_permissions(session)
-            await session.commit()
         await async_engine.dispose()
 
     asyncio.run(_sync_perms())

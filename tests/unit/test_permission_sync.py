@@ -27,8 +27,10 @@ class TestSyncPermissions:
         from app.core.permission_sync import sync_permissions
 
         # Migrations seed the perms table; clear it (within this transaction)
-        # to test the insert path.
+        # to test the insert path. Flush so the subsequent SELECT sees an
+        # empty table regardless of ORM identity-map state.
         await db_session.execute(delete(Perms))
+        await db_session.flush()
         result = await db_session.execute(select(Perms))
         assert len(result.scalars().all()) == 0
 
