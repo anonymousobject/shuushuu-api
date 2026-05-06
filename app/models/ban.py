@@ -111,7 +111,7 @@ class Bans(BanBase, table=True):
 
     # Internal fields
     banned_by: int | None = Field(default=None, foreign_key="users.user_id")
-    ip: str | None = Field(default=None, max_length=45)
+    ip: str | None = Field(default=None, max_length=15)
 
     # Note: Relationships (e.g., user, banned_by_user) are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

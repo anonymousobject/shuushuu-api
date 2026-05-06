@@ -19,13 +19,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 # (table, nullable) pairs. `posts` is the on-disk name for the Comments model
-# (legacy PHP heritage). `bans` may not exist in every environment (the legacy
-# bans table hasn't been migrated to all v2 instances yet), so we probe the
-# database before altering each one.
+# (PHP heritage). The legacy `bans` table was dropped by migration
+# d1e2f3a4b5c6 (user suspensions system) so it's intentionally not listed.
+# We still probe with `has_table` in case an environment is out of sync.
 IP_TABLES: tuple[tuple[str, bool], ...] = (
     ("images", False),
     ("posts", False),
-    ("bans", True),
 )
 
 
