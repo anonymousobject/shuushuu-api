@@ -73,7 +73,26 @@ services:
     logging: *default-logging
 
   nginx:
-    profiles: [disabled]
+    container_name: shuushuu-nginx-prod
+    environment:
+      - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
+      - NGINX_HOST=${NGINX_HOST:?NGINX_HOST must be set in .env.prod}
+    volumes: !override
+      # Read-only image storage for nginx's static-file locations.
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}:ro
+      # Base nginx.conf and prod-specific site template (envsubst'd at
+      # entrypoint into /etc/nginx/conf.d/default.conf).
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/frontend-production.conf.template:/etc/nginx/conf.d/frontend.conf.template:ro
+      - ./docker/nginx/.htpasswd.example:/etc/nginx/.htpasswd:ro
+      # LE certs land here via the certbot service. Read-only for nginx;
+      # certbot has it RW.
+      - ./docker/certbot/conf:/etc/letsencrypt:ro
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+    logging: *default-logging
 
   api:
     container_name: shuushuu-api-prod
@@ -276,8 +295,45 @@ services:
       - socket-proxy-net
     logging: *default-logging
 
+  # certbot/dns-cloudflare ships with the dns-cloudflare plugin pre-installed.
+  # DNS-01 challenge means we don't need port 80 reachable from LE — certbot
+  # writes a TXT record via the CF API, LE polls DNS, certbot removes it.
+  #
+  # Steady state: this service loops `certbot renew` every 12h (DNS-01 every
+  # time, no webroot needed). The entrypoint override is just for the loop;
+  # for one-shot operations override entrypoint per-invocation.
+  #
+  # Initial issuance (run once after adding the CF DNS record):
+  #   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  #       --env-file ../.env.prod run --rm --entrypoint certbot certbot \
+  #       certonly --non-interactive --agree-tos \
+  #       --email <your-email> \
+  #       --dns-cloudflare \
+  #       --dns-cloudflare-credentials /run/secrets/cloudflare.ini \
+  #       --dns-cloudflare-propagation-seconds 30 \
+  #       -d $NGINX_HOST
   certbot:
-    profiles: [disabled]
+    image: certbot/dns-cloudflare:v3.0.0
+    container_name: shuushuu-certbot-prod
+    volumes:
+      - ./docker/certbot/conf:/etc/letsencrypt
+      # cloudflare.ini is rendered by ansible (compose_project role) at
+      # ./secrets/cloudflare.ini with mode 0600. The bind preserves mode,
+      # which certbot requires (refuses to read the file otherwise).
+      - ./secrets/cloudflare.ini:/run/secrets/cloudflare.ini:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        trap exit TERM
+        while :; do
+          certbot renew --quiet \
+            --dns-cloudflare \
+            --dns-cloudflare-credentials /run/secrets/cloudflare.ini \
+            --dns-cloudflare-propagation-seconds 30 || true
+          sleep 12h & wait $${!}
+        done
+    restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   # Override generic volume names with prod-specific names for data isolation
