@@ -23,8 +23,13 @@ loki.write "default" {
 
 // ---------- Docker container discovery ----------
 
+// Docker API access goes through docker-socket-proxy (tecnativa) on the
+// isolated socket-proxy-net. Alloy never sees the host socket directly —
+// the proxy enforces a CONTAINERS=1 allowlist (read-only container list +
+// inspect). Required under daemon userns-remap, where granting alloy host
+// docker-group membership isn't possible.
 discovery.docker "containers" {
-  host             = "unix:///var/run/docker.sock"
+  host             = "tcp://docker-socket-proxy:2375"
   refresh_interval = "10s"
 }
 
@@ -67,7 +72,7 @@ discovery.relabel "containers" {
 // ---------- Container log source ----------
 
 loki.source.docker "containers" {
-  host       = "unix:///var/run/docker.sock"
+  host       = "tcp://docker-socket-proxy:2375"
   targets    = discovery.relabel.containers.output
   forward_to = [loki.process.containers.receiver]
   labels     = {}  // labels come from relabel above
