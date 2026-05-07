@@ -216,6 +216,11 @@ services:
       # Both are read-only API surfaces in the proxy's allowlist.
       CONTAINERS: 1
       NETWORKS: 1
+      # Suppress per-request haproxy access lines. Alloy polls every 10s
+      # and queries /containers/json + per-container inspects + /networks/<id>,
+      # which would otherwise flood Loki with self-referential noise.
+      # Real warnings/errors are still emitted.
+      LOG_LEVEL: warning
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     # No read_only filesystem: the image's entrypoint regenerates its
