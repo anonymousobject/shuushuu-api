@@ -81,7 +81,11 @@ services:
     command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports: !override
       - "127.0.0.1:8000:8000"
-    env_file: .env.prod
+    # !override replaces (rather than merges with) the base service's
+    # env_file list; without it, compose tries to load both .env and
+    # .env.prod and errors out when the dev-only .env is absent.
+    env_file: !override
+      - .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
@@ -102,7 +106,11 @@ services:
     container_name: shuushuu-arq-worker-prod
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
     ports: []
-    env_file: .env.prod
+    # !override replaces (rather than merges with) the base service's
+    # env_file list; without it, compose tries to load both .env and
+    # .env.prod and errors out when the dev-only .env is absent.
+    env_file: !override
+      - .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
