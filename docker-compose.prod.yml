@@ -213,12 +213,12 @@ services:
       CONTAINERS: 1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    read_only: true
-    tmpfs:
-      # The image's entrypoint generates haproxy.cfg from env vars at boot;
-      # under read_only the config dir must be writable too.
-      - /usr/local/etc/haproxy
-      - /run
+    # No read_only filesystem: the image's entrypoint regenerates its
+    # haproxy config in /usr/local/etc/haproxy at boot from env vars, and
+    # tmpfs there shadows the haproxy.cfg.template that ships in the image.
+    # The container has no persistent mounts beyond the read-only docker
+    # socket, so its writable layer is ephemeral; the trust boundary is the
+    # CONTAINERS=1 allowlist and the internal-only socket-proxy-net.
     ports: []  # No host port; only reachable on socket-proxy-net
     networks:
       - socket-proxy-net
