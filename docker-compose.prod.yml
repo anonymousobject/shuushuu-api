@@ -215,6 +215,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     read_only: true
     tmpfs:
+      # The image's entrypoint generates haproxy.cfg from env vars at boot;
+      # under read_only the config dir must be writable too.
+      - /usr/local/etc/haproxy
       - /run
     ports: []  # No host port; only reachable on socket-proxy-net
     networks:
