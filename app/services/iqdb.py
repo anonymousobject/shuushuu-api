@@ -80,7 +80,11 @@ async def check_iqdb_similarity(
 def add_to_iqdb(image_id: int, thumb_path: FilePath) -> None:
     """Add image to IQDB index for future similarity searches using REST API.
 
-    Called by add_to_iqdb_job in app/tasks/image_jobs.py (ARQ task).
+    UNUSED as of this writing -- `add_to_iqdb_job` in app/tasks/image_jobs.py
+    inlines the same HTTP call rather than calling this function. Kept for
+    now in case external scripts/tools depend on it; verify no callers
+    (`grep -r 'add_to_iqdb\\b'`) before deleting.
+
     Makes HTTP POST request to IQDB images endpoint to index the thumbnail.
 
     Args:
