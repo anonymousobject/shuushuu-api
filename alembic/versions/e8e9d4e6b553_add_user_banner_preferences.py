@@ -41,6 +41,7 @@ def upgrade() -> None:
             ["users.user_id"],
             ondelete="CASCADE",
             onupdate="CASCADE",
+            name="fk_user_banner_prefs_user_id",
         ),
     )
 
@@ -61,12 +62,14 @@ def upgrade() -> None:
             ["users.user_id"],
             ondelete="CASCADE",
             onupdate="CASCADE",
+            name="fk_user_banner_pins_user_id",
         ),
         sa.ForeignKeyConstraint(
             ["banner_id"],
             ["banners.banner_id"],
             ondelete="CASCADE",
             onupdate="CASCADE",
+            name="fk_user_banner_pins_banner_id",
         ),
     )
 

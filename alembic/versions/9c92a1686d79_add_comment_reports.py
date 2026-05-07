@@ -45,18 +45,21 @@ def upgrade() -> None:
             ["posts.post_id"],
             ondelete="CASCADE",
             onupdate="CASCADE",
+            name="fk_comment_reports_comment_id",
         ),
         sa.ForeignKeyConstraint(
             ["user_id"],
             ["users.user_id"],
             ondelete="CASCADE",
             onupdate="CASCADE",
+            name="fk_comment_reports_user_id",
         ),
         sa.ForeignKeyConstraint(
             ["reviewed_by"],
             ["users.user_id"],
             ondelete="SET NULL",
             onupdate="CASCADE",
+            name="fk_comment_reports_reviewed_by",
         ),
     )
     op.create_index(
