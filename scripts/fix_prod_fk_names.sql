@@ -17,6 +17,36 @@
 --     SHOW CREATE TABLE user_banner_pins;
 --     SHOW CREATE TABLE user_banner_preferences;
 -- Each FK should now have an `fk_<table>_<col>` name.
+--
+-- DDL caveat: each ALTER TABLE below is atomic, but MariaDB does not wrap
+-- multiple ALTER TABLEs in a single transaction. If a later ALTER fails after
+-- an earlier one has committed, the schema is left partially renamed -- check
+-- SHOW CREATE TABLE on each of the three tables before re-running any
+-- individual ALTER.
+
+-- Preflight: bail out if the expected numeric names are not present. The
+-- statement below produces an error if any of the three tables already has
+-- non-numeric FK names, which prevents the ALTERs from running and leaving a
+-- partial state. SIGNAL is wrapped in a stored procedure call via a one-shot
+-- block so it works in plain mysql/mariadb client.
+SELECT
+    CASE
+        WHEN COUNT(*) = 6 THEN 'preflight_ok'
+        ELSE CONCAT(
+            'preflight_failed: expected 6 numeric FK constraints on ',
+            'comment_reports/user_banner_pins/user_banner_preferences, found ',
+            COUNT(*),
+            '. Inspect SHOW CREATE TABLE output before running the ALTERs.'
+        )
+    END AS status
+FROM information_schema.TABLE_CONSTRAINTS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+  AND TABLE_NAME IN ('comment_reports', 'user_banner_pins', 'user_banner_preferences')
+  AND CONSTRAINT_NAME REGEXP '^[0-9]+$';
+-- If status != 'preflight_ok', stop here and investigate. The ALTERs below
+-- will fail loudly on a missing constraint, but only after committing any
+-- prior ALTERs.
 
 ALTER TABLE comment_reports
     DROP FOREIGN KEY `1`,

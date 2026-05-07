@@ -17,21 +17,24 @@ from sqlalchemy import create_engine, inspect
 
 from tests.conftest import TEST_DATABASE_URL_SYNC
 
-TABLES_REQUIRING_NAMED_FKS = [
-    "comment_reports",
-    "user_banner_pins",
-    "user_banner_preferences",
-]
-
 
 @pytest.mark.integration
-def test_affected_tables_have_explicitly_named_fks():
+def test_all_fks_use_fk_prefix_convention():
+    """
+    Every FK in the migrated schema must have a name starting with ``fk_``.
+
+    This is a regression guard for the numeric-naming bug fixed in PR #209
+    and a forward-looking guard against any new migration that forgets
+    ``name=`` on a ``ForeignKeyConstraint``. The whole schema is checked
+    rather than a hardcoded subset so a new offender in any table fails the
+    suite immediately.
+    """
     engine = create_engine(TEST_DATABASE_URL_SYNC)
     try:
         inspector = inspect(engine)
         failures: list[str] = []
 
-        for table in TABLES_REQUIRING_NAMED_FKS:
+        for table in inspector.get_table_names():
             for fk in inspector.get_foreign_keys(table):
                 name = fk.get("name") or ""
                 cols = ",".join(fk.get("constrained_columns") or [])
@@ -46,5 +49,6 @@ def test_affected_tables_have_explicitly_named_fks():
         pytest.fail(
             "FK constraints without explicit fk_-prefixed names found. "
             "Add `name=` to the ForeignKeyConstraint(...) in the migration "
-            "that created the table:\n\n" + "\n".join(failures)
+            "that created the table. Convention: fk_<table>_<column>.\n\n"
+            + "\n".join(failures)
         )
