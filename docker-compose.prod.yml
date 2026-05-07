@@ -210,7 +210,12 @@ services:
       # userns_mode: host the in-container gid must match the real host gid.
       - "${DOCKER_GID:?DOCKER_GID must be set in .env.prod}"
     environment:
+      # CONTAINERS — list/inspect containers (alloy's discovery.docker)
+      # NETWORKS  — GET /networks/<id>; alloy enriches container targets
+      #             with __meta_docker_network_* labels and 403s without it.
+      # Both are read-only API surfaces in the proxy's allowlist.
       CONTAINERS: 1
+      NETWORKS: 1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     # No read_only filesystem: the image's entrypoint regenerates its
