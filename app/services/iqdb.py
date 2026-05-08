@@ -115,7 +115,7 @@ async def check_iqdb_similarity_by_hash(
             if r.get("score", 0) >= threshold
         ]
 
-    except (httpx.RequestError, httpx.TimeoutException, ValueError, KeyError):
+    except (httpx.RequestError, httpx.TimeoutException, ValueError, KeyError, TypeError):
         return []
 
 

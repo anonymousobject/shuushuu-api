@@ -17,22 +17,16 @@ class TestCheckIqdbSimilarityByHash:
         mock_response.status_code = 200
         mock_response.json.return_value = []
 
-        captured = {}
-
-        async def fake_get(url, params=None):
-            captured["url"] = url
-            captured["params"] = params
-            return mock_response
-
         mock_client = MagicMock()
-        mock_client.__aenter__.return_value.get = fake_get
+        mock_client.__aenter__.return_value.get = AsyncMock(return_value=mock_response)
         mock_client.__aexit__.return_value = False
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             await check_iqdb_similarity_by_hash("iqdb_deadbeef", threshold=50.0)
 
-        assert "/query" in captured["url"]
-        assert captured["params"] == {"h": "iqdb_deadbeef"}
+        call = mock_client.__aenter__.return_value.get.call_args
+        assert "/query" in call.args[0]
+        assert call.kwargs["params"] == {"h": "iqdb_deadbeef"}
 
     @pytest.mark.asyncio
     async def test_filters_by_threshold(self):
