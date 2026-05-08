@@ -86,3 +86,11 @@ class TestUserBannerPinsModel:
 
     def test_table_name(self):
         assert UserBannerPins.__tablename__ == "user_banner_pins"
+
+
+def test_bannerbase_has_in_r2_field():
+    from app.models.misc import BannerBase
+
+    field = BannerBase.model_fields["in_r2"]
+    assert field.annotation is bool
+    assert field.default is False
