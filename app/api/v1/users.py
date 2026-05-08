@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
-from app.config import SuspensionAction
+from app.config import SuspensionAction, settings
 from app.core.auth import (
     get_client_ip,
     get_current_user,
@@ -35,8 +35,10 @@ from app.core.auth import (
     get_optional_current_user,
 )
 from app.core.database import get_db
+from app.core.logging import get_logger
 from app.core.permission_cache import get_cached_user_permissions
 from app.core.permissions import Permission, has_permission
+from app.core.r2_client import get_r2_storage
 from app.core.redis import get_redis
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
 from app.models import Favorites, Images, Privmsgs, TagLinks, Users
@@ -55,6 +57,7 @@ from app.schemas.user import (
     UserWarningsResponse,
 )
 from app.services.avatar import (
+    _avatar_content_type,
     delete_avatar_if_orphaned,
     resize_avatar,
     save_avatar,
@@ -65,6 +68,8 @@ from app.services.rate_limit import check_registration_rate_limit
 from app.services.turnstile import verify_turnstile_token
 from app.services.upload import get_uploads_today
 from app.tasks.queue import enqueue_job
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -298,8 +303,12 @@ async def _upload_avatar(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Save old avatar filename for potential cleanup
+    # Capture old avatar state BEFORE any mutation. The orphan helper needs
+    # the old `avatar_in_r2` bit to know whether to issue an R2 delete; if we
+    # captured it after the commit below, the new value would have already
+    # overwritten the old one.
     old_avatar = user.avatar
+    old_in_r2 = user.avatar_in_r2
 
     # Save uploaded file to temp location for validation
     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
@@ -317,14 +326,47 @@ async def _upload_avatar(
         # Save to permanent storage
         new_filename = save_avatar(processed_content, ext)
 
+        # Best-effort dual-write to R2. Failure is non-fatal: the local file
+        # is the source of truth during the dual-write phase. A failed upload
+        # leaves avatar_in_r2=False and the URL falls back to local.
+        new_in_r2 = False
+        if settings.R2_ENABLED:
+            try:
+                r2 = get_r2_storage()
+                await r2.upload_bytes(
+                    bucket=settings.R2_PUBLIC_BUCKET,
+                    key=f"avatars/{new_filename}",
+                    body=processed_content,
+                    content_type=_avatar_content_type(ext),
+                )
+                new_in_r2 = True
+                logger.info(
+                    "avatar_r2_uploaded",
+                    user_id=user_id,
+                    key=f"avatars/{new_filename}",
+                )
+            except Exception as e:
+                logger.warning(
+                    "avatar_r2_upload_failed",
+                    user_id=user_id,
+                    key=f"avatars/{new_filename}",
+                    error=type(e).__name__,
+                    error_msg=str(e),
+                )
+
         # Update user record
         user.avatar = new_filename
+        user.avatar_in_r2 = new_in_r2
         await db.commit()
         await db.refresh(user)
 
-        # Clean up old avatar if orphaned (after commit to ensure new one is saved)
+        # Clean up old avatar if orphaned (after commit to ensure new one is
+        # saved). The orphan check counts users referencing old_avatar AFTER
+        # the commit — so a same-MD5 re-upload (new_filename == old_avatar)
+        # finds the user themselves still references it (count >= 1) and
+        # safely skips deletion.
         if old_avatar and old_avatar != new_filename:
-            await delete_avatar_if_orphaned(old_avatar, user.avatar_in_r2, db)
+            await delete_avatar_if_orphaned(old_avatar, old_in_r2, db)
 
     finally:
         # Clean up temp file
