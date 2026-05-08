@@ -80,14 +80,9 @@ The banner equivalent lives on `BannerResponse._image_url` and applies the same 
 
 ```python
 def upgrade() -> None:
-    op.add_column(
-        "users",
-        sa.Column(
-            "avatar_in_r2",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.text("0"),
-        ),
+    op.execute(
+        "ALTER TABLE users ADD COLUMN avatar_in_r2 BOOLEAN NOT NULL DEFAULT 0, "
+        "ALGORITHM=INSTANT, LOCK=NONE"
     )
 
 def downgrade() -> None:
@@ -98,14 +93,9 @@ def downgrade() -> None:
 
 ```python
 def upgrade() -> None:
-    op.add_column(
-        "banners",
-        sa.Column(
-            "in_r2",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.text("0"),
-        ),
+    op.execute(
+        "ALTER TABLE banners ADD COLUMN in_r2 BOOLEAN NOT NULL DEFAULT 0, "
+        "ALGORITHM=INSTANT, LOCK=NONE"
     )
 
 def downgrade() -> None:
@@ -113,6 +103,8 @@ def downgrade() -> None:
 ```
 
 Both columns default false on existing rows; no data migration required. No indexes — these columns are read alongside the row, never queried in isolation.
+
+**Locking:** the project runs MariaDB 12 (`docker-compose.yml`). Adding a `NOT NULL DEFAULT 0` column at the end of an InnoDB table with `ALGORITHM=INSTANT, LOCK=NONE` is metadata-only — no table rewrite, no row locks. A raw `op.execute` is used instead of `op.add_column` to make the algorithm/lock hints explicit and visible in code review; alembic's `add_column` does not surface them by default. The migration is expected to complete in tens of milliseconds even on the production `users` table.
 
 ### Model updates
 
@@ -135,6 +127,8 @@ def set_default_banner_storage_path(self) -> Settings:
 
 This is the on-disk path the `banners-backfill` subcommand reads from. Today there is no setting — the URL is derived from `IMAGE_BASE_URL`, but the disk path is implicit. Backfill needs an explicit knob.
 
+The `set_default_banner_storage_path` validator is a **separate** `@model_validator(mode="after")` on `Settings`, sitting alongside (not merged into) the existing `set_default_avatar_storage_path` validator at `app/config.py:244–248`. Pydantic chains all `model_validator(mode="after")` instances and runs them in declaration order; keeping them as siblings preserves the existing pattern.
+
 No new R2 settings — `R2_PUBLIC_BUCKET`, `R2_PUBLIC_CDN_URL`, and the existing R2 credentials are reused.
 
 ## Storage adapter changes
@@ -142,41 +136,72 @@ No new R2 settings — `R2_PUBLIC_BUCKET`, `R2_PUBLIC_CDN_URL`, and the existing
 `app/services/r2_storage.py` gains an `upload_bytes` method on both `R2Storage` and `DummyR2Storage`:
 
 ```python
+# R2Storage
 async def upload_bytes(
-    self, bucket: str, key: str, body: bytes, content_type: str | None = None
+    self, bucket: str, key: str, body: bytes, content_type: str
 ) -> None:
-    """Upload an in-memory bytes payload."""
+    """Upload an in-memory bytes payload with an explicit Content-Type."""
     async with self._acquire_client() as s3:
-        kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key, "Body": body}
-        if content_type:
-            kwargs["ContentType"] = content_type
-        await s3.put_object(**kwargs)
+        await s3.put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType=content_type
+        )
+
+# DummyR2Storage
+async def upload_bytes(
+    self, bucket: str, key: str, body: bytes, content_type: str
+) -> None:
+    raise RuntimeError(self._ERR)
 ```
 
-`DummyR2Storage.upload_bytes` raises the same `RuntimeError` its peers do, so a code path reaching it under `R2_ENABLED=false` surfaces loudly.
+`content_type` is **mandatory**, not optional. R2 stores whatever Content-Type is set on PUT; without one, R2 returns `application/octet-stream`, which Cloudflare's CDN passes through. `application/octet-stream` triggers download instead of inline render in some browser/CSP combinations and breaks `<img src>` under strict `X-Content-Type-Options: nosniff`. The avatar caller derives Content-Type from the extension via a small helper (`app/services/avatar.py::_avatar_content_type(ext: str) -> str` mapping `jpg/png/gif` → `image/jpeg|image/png|image/gif`). The backfill subcommands use `upload_file(path)` instead of `upload_bytes`; aioboto3's `upload_file` derives Content-Type from the filename via mimetypes, which is correct for our extensions.
 
-The avatar write path uses `upload_bytes` directly because `resize_avatar` returns the processed bytes; round-tripping through a temp file just to call `upload_file` would be wasteful. Backfill subcommands use the existing `upload_file(path)`.
+The avatar write path uses `upload_bytes` directly because `resize_avatar` returns the processed bytes; round-tripping through a temp file just to call `upload_file` would be wasteful. Backfill subcommands read existing on-disk files and use `upload_file(path)`.
+
+### Failure surface for `upload_bytes`
+
+The avatar handler catches `Exception` from the `upload_bytes` call and treats it as an R2-upload failure (log + continue with `avatar_in_r2=False`). The broad catch is intentional and matches the log-and-continue contract:
+
+- `botocore.exceptions.ClientError` — R2 5xx, auth failures, invalid bucket
+- `botocore.exceptions.EndpointConnectionError` / `ConnectionError` — network or DNS
+- `asyncio.TimeoutError` — `read_timeout` or `connect_timeout` from the existing `_R2_CLIENT_CONFIG`
+- `aiobotocore.session`-internal `BotoCoreError` subclasses
+
+Errors are logged with `error=type(e).__name__` and `error_msg=str(e)` to keep the log structure useful without committing to a static taxonomy of failure types.
 
 ## Avatar write path
 
 In `app/api/v1/users.py`, the upload-avatar handler currently calls `save_avatar(processed_content, ext)` then commits `user.avatar = new_filename`. The flow becomes:
 
-1. Validate, resize, write to local FS via `save_avatar` → returns `new_filename`.
-2. If `settings.R2_ENABLED`:
-   - Attempt `r2.upload_bytes(R2_PUBLIC_BUCKET, f"avatars/{new_filename}", processed_content, content_type=...)`.
+1. Capture `old_avatar = user.avatar` and `old_in_r2 = user.avatar_in_r2` **before** any mutation.
+2. Validate, resize, write to local FS via `save_avatar` → returns `new_filename`.
+3. If `settings.R2_ENABLED`:
+   - Attempt `r2.upload_bytes(R2_PUBLIC_BUCKET, f"avatars/{new_filename}", processed_content, content_type=_avatar_content_type(ext))`.
    - On success: `new_in_r2 = True`, log `avatar_r2_uploaded`.
-   - On exception: `new_in_r2 = False`, log `avatar_r2_upload_failed` with the error. Do **not** raise — request continues.
+   - On `Exception`: `new_in_r2 = False`, log `avatar_r2_upload_failed` with `error=type(e).__name__` and `error_msg=str(e)`. Do **not** raise — request continues.
    - Else (`R2_ENABLED=false`): `new_in_r2 = False`.
-3. Set `user.avatar = new_filename`, `user.avatar_in_r2 = new_in_r2`, commit.
-4. Old-avatar cleanup: existing `delete_avatar_if_orphaned(old_avatar, db)` runs as today, returning whether it deleted the local file. Extension: if it deleted locally **and** the old `avatar_in_r2` was true at the start of the request **and** `R2_ENABLED`, also call `r2.delete_object(R2_PUBLIC_BUCKET, f"avatars/{old_avatar}")`. Idempotent; missing keys are success.
+4. Set `user.avatar = new_filename`, `user.avatar_in_r2 = new_in_r2`, commit.
+5. Old-avatar cleanup: call `delete_avatar_if_orphaned(old_avatar, old_in_r2, db)`. The function (a) re-counts users referencing `old_avatar` (after commit, so the current user has already moved off), (b) if zero, unlinks the local file as today, (c) **if zero AND `old_in_r2 AND R2_ENABLED`**, also calls `r2.delete_object(R2_PUBLIC_BUCKET, f"avatars/{old_avatar}")`. Idempotent; missing keys are success.
 
-`delete_avatar_if_orphaned` evolves to take responsibility for the R2 delete since the orphan check (count of users referencing the file) is the only place we know it's safe. Its signature gains an `old_in_r2: bool` argument.
+`delete_avatar_if_orphaned` gains the `old_in_r2: bool` argument so the R2 delete fires only when the file was known to exist in R2 — avoiding a needless API call for legacy local-only rows.
 
-The `_delete_avatar` helper (`/me/avatar` and `/{user_id}/avatar` DELETE endpoints) follows the same orphan-cleanup path with `old_in_r2 = user.avatar_in_r2`.
+The `_delete_avatar` helper (`/me/avatar` and `/{user_id}/avatar` DELETE endpoints) follows the same orphan-cleanup path: capture `old_in_r2 = user.avatar_in_r2` before clearing, then call `delete_avatar_if_orphaned(old_avatar, old_in_r2, db)` after commit.
 
 ### Failure semantics
 
-The choice to log-and-continue on R2 upload failure is deliberate (see Goals). It mirrors the image phase-1 dual-write contract: local FS is the source of truth; R2 is best-effort during the dual-write phase. A row with `avatar_in_r2=false` after a failure is not "broken" — its URL falls back to `IMAGE_BASE_URL` and serves correctly. The `avatars-backfill` subcommand catches up such rows on a later run.
+The choice to log-and-continue on R2 upload failure is deliberate (see Goals). It mirrors the image phase-1 dual-write contract: local FS is the source of truth; R2 is best-effort during the dual-write phase. A row with `avatar_in_r2=false` after a failure is not "broken" — its URL falls back to `IMAGE_BASE_URL` and serves correctly.
+
+**No async retry queue.** This design deliberately diverges from the image pipeline, which uses `r2_finalize_upload_job` (arq) to retry uploads on failure. Avatars are different in three ways that justify the divergence:
+- Avatar uploads are infrequent and small (≤200px after resize, MAX_AVATAR_SIZE=1MB pre-resize); the cost of a missed-and-not-retried upload is one user serving from local until the next backfill run.
+- There is no equivalent of variant-generation latency — `resize_avatar` produces final bytes synchronously inside the request, so the `r2_finalize_upload_job`-style "wait until variants are ready" complexity does not apply.
+- The orphan-delete path is the only deletion path; no public/private status transitions to track. A queued retry would also need a queued-retry equivalent for the orphan delete to preserve consistency, doubling the surface area for negligible benefit.
+
+The trade-off: a transient R2 outage during the rollout window leaves some rows with `avatar_in_r2=false` even though their files are eventually uploadable. **The `avatars-backfill` subcommand catches up such rows.** Operationally this means: re-run `avatars-backfill` periodically (or on demand after a known R2 outage) to reach steady-state.
+
+### Concurrency notes
+
+- **Orphan-delete race.** Two concurrent requests can each see "0 users reference `old_avatar`" and both attempt to delete. Local `unlink` is idempotent (`exists()` check before unlink); R2 `delete_object` is idempotent (S3 treats missing keys as success). Net effect: redundant work, no incorrect state. No row lock added — the existing race is benign and the extension preserves that.
+- **Same-MD5 concurrent uploads.** Two users uploading identical bytes concurrently produce the same key (`avatars/{md5}.{ext}`). Both `put_object` calls succeed (last-write-wins on identical bytes); both `avatar_in_r2` flags settle to `true`. If one upload fails transiently and the other succeeds, the failed user's flag stays `false` and their URL falls back to local — even though the R2 object exists. Acceptable: backfill catches up.
+- **Re-upload of identical content.** A user uploading the same bytes they already have (`new_filename == old_avatar`) is a degenerate case. Step 5's orphan check counts users referencing `old_avatar` *after* `user.avatar = new_filename` is committed — the user themselves still references it, so count ≥ 1, and no delete fires. Verified by an explicit test (see Testing § "same-MD5 re-upload").
 
 ## Banner write path
 
@@ -194,15 +219,15 @@ Centralize on a single helper `app/services/avatar.py::avatar_url(filename, in_r
 
 Update sites:
 
-- `app/schemas/user.py:157` — `avatar_url` computed_field reads `self.avatar` and `self.avatar_in_r2`, calls helper.
-- `app/schemas/common.py:29` — same shape; if it's a separate base, update both.
-- `app/api/v1/privmsgs.py` — six string-concatenation sites at lines 271–273, 412–417, 565–577, 660–667, 738–743, 757–760. Each currently builds the URL inline from `IMAGE_BASE_URL` and a fetched `avatar` filename. Each query that fetches `avatar` must additionally fetch `avatar_in_r2` from the same `users` row, then pass both into the helper.
+- `app/schemas/user.py` — `avatar_url` computed_field (around line 155–161) reads `self.avatar` and `self.avatar_in_r2`, calls helper.
+- `app/schemas/common.py` — same shape (around line 27–33); if it's a separate base, update both.
+- `app/api/v1/privmsgs.py` — **seven** inline `f"{settings.IMAGE_BASE_URL}/images/avatars/{...}"` sites at lines **273, 415, 417, 577, 667, 741, 743**. Each currently builds the URL inline from `IMAGE_BASE_URL` and a fetched `avatar` filename. Each query that fetches `avatar` must additionally fetch `avatar_in_r2` from the same `users` row (the queries already select from `users`; one extra column), then pass both into the helper. Implementation will do a final pre-merge sweep over `app/api/v1/privmsgs.py` to confirm no site is missed; this is the largest concentration of inline URL building in the codebase.
 
 ### Banners
 
 Single update to `BannerResponse._image_url` in `app/schemas/banner.py:30`. `BannerResponse` adds `in_r2: bool` so it deserializes from the row via `model_config["from_attributes"]`. All four `*_image_url` computed fields use the updated helper.
 
-Cache implications: `app/services/banner.py:89` deserializes cached banners via `BannerResponse.model_validate_json(cached_str)`. The cache key (`banner:current:{theme}:{size}`) does not include `R2_ENABLED` or `in_r2`, so the cached payload contains URLs computed at cache-write time. After the bit flips on a banner row, cached entries serve stale URLs until TTL expiry (`BANNER_CACHE_TTL` = 600s + jitter). Acceptable: stale URLs still resolve through the local-FS fallback, and TTL expiry resolves the drift within minutes. No deliberate cache invalidation needed.
+Cache implications: `app/services/banner.py:89` deserializes cached banners via `BannerResponse.model_validate_json(cached_str)`. The cache key (`banner:current:{theme}:{size}`) does not include `R2_ENABLED` or `in_r2`, so the cached payload contains URLs computed at cache-write time. After the bit flips on a banner row, cached entries serve stale URLs until TTL expiry. With current settings — `BANNER_CACHE_TTL=600s`, `BANNER_CACHE_TTL_JITTER=300s` (`app/config.py:183–184`) — staleness is bounded at 600–900s (10–15 min). Acceptable: stale URLs still resolve through the local-FS fallback, and TTL expiry resolves the drift naturally. No deliberate cache invalidation needed.
 
 ## Backfill / ops tooling
 
@@ -270,10 +295,15 @@ TDD per project rules (`AGENTS.md`). New tests:
 ### `tests/services/test_avatar.py` (new or extend)
 
 - Upload with `R2_ENABLED=false` writes local only, sets `avatar_in_r2 = false`. (Already today's behavior modulo the new field.)
-- Upload with `R2_ENABLED=true` and moto bucket: writes local AND R2, sets `avatar_in_r2 = true`.
-- Upload with `R2_ENABLED=true` but R2 unavailable (closed moto port or patched `upload_bytes` raising): local write succeeds, `avatar_in_r2 = false`, request returns success, `avatar_r2_upload_failed` log captured.
+- Upload with `R2_ENABLED=true` and moto bucket: writes local AND R2, sets `avatar_in_r2 = true`. R2 object has the expected Content-Type (`image/png`/`jpeg`/`gif`).
+- Upload with `R2_ENABLED=true` but R2 unavailable (patched `upload_bytes` raising): local write succeeds, `avatar_in_r2 = false`, request returns success, `avatar_r2_upload_failed` log captured.
 - Orphan deletion with old `avatar_in_r2 = true`: local file unlinked AND R2 object deleted. With old `avatar_in_r2 = false`: R2 not touched.
 - Orphan deletion when another user still references the avatar: neither local nor R2 touched.
+- **Same-MD5 re-upload** (`new_filename == old_avatar`): the new-bytes-equal-old-bytes case. Verify the orphan check sees the user themselves still referencing the file post-commit, and neither the local nor R2 file is deleted.
+
+### Test scope notes
+
+The orphan-delete concurrency race (two requests racing to delete the last reference) is not covered by an automated test. The race is benign — both `unlink` and `delete_object` are idempotent — and reproducing it deterministically would require artificial sleeps or shared-state hacks that don't pay for themselves. Documented here so reviewers understand the gap is intentional.
 
 ### `tests/api/v1/test_users_avatar.py` (extend)
 
@@ -304,19 +334,31 @@ All R2-touching tests reuse the `ThreadedMotoServer` fixture pattern from `tests
 
 ## Rollout
 
-1. Land the feature behind the existing `R2_ENABLED` flag — schema migrations, model bits, write-path dual-write, URL helpers, backfill subcommands, tests. With `R2_ENABLED=false` everywhere (current dev/staging default), behavior is unchanged: bits default false, fall-back URLs continue to work.
-2. In production (`R2_ENABLED=true` already): run `avatars-backfill` and `banners-backfill` with `R2_ALLOW_BULK_BACKFILL=true`. Verify a random sample resolves through the CDN with `curl -I`.
-3. New uploads from this point dual-write automatically; new banners require an `r2_sync.py banners-backfill` run to flip their bit.
-4. (Future, out of scope) Once stable and IQDB/avatar/banner code paths can fully read from R2, demote local FS for these classes to read-only fallback or remove entirely.
+The feature ships as a single deploy. Schema migrations, model bits, write-path dual-write, URL helpers, and backfill subcommands all land together. The order of operations *after* deploy matters more than splitting the deploy itself.
+
+1. **Deploy.** Schema migrations apply (instant ADD COLUMN, see Database schema). All existing rows get `avatar_in_r2=false` / `in_r2=false` defaults. URL generation respects `R2_ENABLED AND row_bit` — every existing row continues to serve from local FS exactly as before. New avatar uploads start dual-writing immediately; rows uploaded after deploy will have `avatar_in_r2=true` (or `false` on R2 failure). New banners do not exist yet (no admin endpoint).
+2. **Backfill avatars.** Run `uv run python scripts/r2_sync.py avatars-backfill --concurrency 8` in production (requires `R2_ENABLED=true` and `R2_ALLOW_BULK_BACKFILL=true`, both already true in prod). Walks all `users.avatar_in_r2=false` rows and uploads. Idempotent against in-flight new uploads — content-addressed keys plus `head_object` short-circuit make racing the live write path safe.
+3. **Backfill banners.** Run `uv run python scripts/r2_sync.py banners-backfill`. Tens of rows, completes in seconds.
+4. **Verify.** Spot-check via `curl -I` that randomly-selected avatar and banner CDN URLs return 200 with the expected `Content-Type`. Confirm a few user-facing pages render avatars and banners correctly under the new URLs.
+5. **Steady state.** New uploads dual-write automatically. New banners require running `banners-backfill` after seeding files; this is documented in the script's `--help`. After a known R2 outage, re-run `avatars-backfill` to mop up rows that fell back to `avatar_in_r2=false`.
+
+**Why one-deploy is safe:** the bit defaults `false`, the URL helper is `R2_ENABLED AND bit`, and the dual-write code path correctly handles both pre-backfill (no R2 object exists) and post-backfill (R2 object exists) starting states. There is no consistency window where a URL points at a missing R2 object.
+
+**Window of partial-state operation** (between step 1 and step 2): some rows have `avatar_in_r2=true` (newly uploaded post-deploy), others `false` (pre-deploy rows not yet backfilled). Both serve correctly through their respective URL paths. Backfill should follow deploy promptly to minimize the period where the CDN is under-utilized, but there is no correctness deadline.
+
+6. **(Future, out of scope)** Once stable and IQDB/avatar/banner code paths can fully read from R2, demote local FS for these classes to read-only fallback or remove entirely.
 
 ## Risks and mitigations
 
-- **R2 upload failure on the avatar hot path** — mitigated by log-and-continue semantics. Worst case: a small number of rows have `avatar_in_r2=false` and serve from local; backfill catches up.
-- **Banner cache staleness after bit flip** — accepted; max ~15 minutes (TTL + jitter), and the fall-back URL remains valid through the staleness window.
+- **R2 upload failure on the avatar hot path** — mitigated by log-and-continue semantics. Worst case: a small number of rows have `avatar_in_r2=false` and serve from local; backfill catches up. **Important:** failed uploads are *not* retried automatically (no async finalize-job equivalent — see Avatar write path § "No async retry queue"). Operationally this means re-running `avatars-backfill` after a known R2 outage.
+- **Banner cache staleness after bit flip** — accepted; bounded at 600–900s (`BANNER_CACHE_TTL=600` + `BANNER_CACHE_TTL_JITTER=300`), and the fall-back URL remains valid through the staleness window.
 - **Partial backfill leaves rows pointing at local** — by design. The bit guarantees URL correctness regardless of backfill state. Re-running the backfill is safe.
-- **Forgotten privmsg call site** — six string-built URLs in `app/api/v1/privmsgs.py` is the largest concentration of inline URL building. Mitigated by the centralized helper plus tests for representative endpoints; a follow-up pass over the full file before merge confirms all sites are migrated.
+- **Forgotten privmsg call site** — seven string-built URLs in `app/api/v1/privmsgs.py` (lines 273, 415, 417, 577, 667, 741, 743) are the largest concentration of inline URL building. Mitigated by the centralized helper plus tests for representative endpoints; a final `grep` over `app/api/v1/privmsgs.py` for `IMAGE_BASE_URL.*avatars` before merge confirms all sites are migrated.
 - **Local-FS path for banners not configured today** — adding `BANNER_STORAGE_PATH` with a derived default keeps existing deployments working without a config change.
+- **Concurrent orphan-delete or same-MD5 upload races** — analyzed in Avatar write path § "Concurrency notes". Both local and R2 deletes are idempotent; same-MD5 PUT is last-write-wins on identical bytes. No row locks added.
 
 ## Open questions
 
-None at design time. Implementation will surface a few mechanical questions (exact log field names, helper module location for the avatar URL function) that fall through to the implementation plan.
+- **Helper module placement.** `avatar_url(filename, in_r2)` could live in `app/services/avatar.py` (alongside save/delete) or in `app/schemas/_helpers.py` (alongside the schemas that use it). Defaulting to `app/services/avatar.py` keeps avatar concerns co-located, but if circular-import issues arise (schemas → services), the helper moves to a leaf-level module with no other imports. Implementation will resolve.
+- **Log field naming.** The R2 jobs use `image_id`, `bucket`, `key` as standard fields. Avatar/banner equivalents (`user_id` for avatar, `banner_id` for banner) are intuitive, but the exact `event=` names (`avatar_r2_uploaded` vs `r2_avatar_uploaded`, etc.) should be confirmed against `app/tasks/r2_jobs.py` conventions. Listed in Observability — minor stylistic alignment.
+- **Should backfill subcommands also live in `r2_sync.py` or in a sibling script?** Defaulting to `r2_sync.py` for operational discoverability (one CLI for all R2 ops) and to reuse `require_bulk_backfill()`. The script is currently 877 lines; if these additions push it past a comfortable size, splitting into `scripts/r2/{images,avatars,banners}.py` becomes worth considering. Out of scope for this design.
