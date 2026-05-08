@@ -22,6 +22,32 @@ logger = get_logger(__name__)
 
 ALLOWED_AVATAR_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif"}
 
+_AVATAR_CONTENT_TYPES: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+}
+
+
+def _avatar_content_type(ext: str) -> str:
+    """Map an avatar extension (no dot) to its image/* MIME type."""
+    return _AVATAR_CONTENT_TYPES[ext.lower()]
+
+
+def avatar_url(filename: str | None, in_r2: bool) -> str | None:
+    """Return the public URL for an avatar, choosing CDN vs local FS.
+
+    When R2_ENABLED is false, the per-row bit is ignored and the local URL
+    is returned — preserving today's dev-only behavior even if a dev pulls
+    a prod DB dump where rows have the bit set.
+    """
+    if not filename:
+        return None
+    if settings.R2_ENABLED and in_r2:
+        return f"{settings.R2_PUBLIC_CDN_URL}/avatars/{filename}"
+    return f"{settings.IMAGE_BASE_URL}/images/avatars/{filename}"
+
 
 def validate_avatar_upload(file: UploadFile, temp_path: Path) -> None:
     """Validate uploaded avatar file.
