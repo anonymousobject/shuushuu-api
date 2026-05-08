@@ -77,7 +77,7 @@ def add_image_to_iqdb(
         for attempt in range(3):
             try:
                 with open(thumb_path, "rb") as f:
-                    files = {"file": (thumb_path.name, f, "image/jpeg")}
+                    files = {"file": (thumb_path.name, f, "image/webp")}
                     response = client.post(iqdb_url, files=files)
                 last_request_error = None
                 break

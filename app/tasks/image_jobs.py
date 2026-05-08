@@ -180,7 +180,7 @@ async def add_to_iqdb_job(
         iqdb_url = f"http://{settings.IQDB_HOST}:{settings.IQDB_PORT}/images/{image_id}"
 
         with open(thumb_file, "rb") as f:
-            files = {"file": (thumb_file.name, f, "image/jpeg")}
+            files = {"file": (thumb_file.name, f, "image/webp")}
 
             # Use sync httpx client (worker runs in thread pool)
             with httpx.Client(timeout=10.0) as client:

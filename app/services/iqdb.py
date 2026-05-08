@@ -44,7 +44,7 @@ async def check_iqdb_similarity(
 
         # Read image file
         with open(file_path, "rb") as f:
-            files = {"file": (file_path.name, f, "image/jpeg")}
+            files = {"file": (file_path.name, f, "image/webp")}
 
             # Query IQDB with 5 second timeout
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -151,7 +151,7 @@ def add_to_iqdb(image_id: int, thumb_path: FilePath) -> None:
 
         # Read thumbnail file
         with open(thumb_path, "rb") as f:
-            files = {"file": (thumb_path.name, f, "image/jpeg")}
+            files = {"file": (thumb_path.name, f, "image/webp")}
 
             # Use sync httpx client since this runs in background thread
             with httpx.Client(timeout=10.0) as client:
