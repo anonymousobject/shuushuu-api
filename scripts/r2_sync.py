@@ -647,8 +647,16 @@ async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
     half a banner because the URL helper expects all parts to be in R2 once
     ``in_r2`` flips.
 
+    Per-part upload failures are wrapped in try/except: the offending row is
+    marked failed (bit stays false, mid-upload R2 state is left as-is for
+    next-run idempotency to clean up), counted in ``failed_rows``, and the
+    loop continues. Only fully-successful rows feed the post-loop batched
+    UPDATE.
+
     Idempotent — already-present R2 objects don't re-upload. ``--dry-run``
-    logs intent without writing.
+    logs intent without writing and reports ``would_upload_parts`` (parts
+    that would have uploaded) and ``would_flip_rows`` (rows that would have
+    flipped).
 
     No ``--concurrency`` knob: banner counts are tens, not millions.
     """
@@ -657,8 +665,11 @@ async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
     banner_dir = FilePath(settings.BANNER_STORAGE_PATH)
 
     processed = 0
-    flipped = 0
     skipped_missing_local = 0
+    failed_rows = 0
+    would_upload_parts = 0
+    would_flip_rows = 0
+    flipped_banner_ids: list[int] = []
 
     logger.info("banners_backfill_started", dry_run=dry_run)
 
@@ -669,87 +680,123 @@ async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
             )
             banners = list(result.scalars())
 
-            for banner in banners:
-                processed += 1
-                paths = [
-                    p
-                    for p in (
-                        banner.full_image,
-                        banner.left_image,
-                        banner.middle_image,
-                        banner.right_image,
-                    )
-                    if p
-                ]
+        for banner in banners:
+            processed += 1
+            paths = [
+                p
+                for p in (
+                    banner.full_image,
+                    banner.left_image,
+                    banner.middle_image,
+                    banner.right_image,
+                )
+                if p
+            ]
 
-                # Pre-flight: every part must exist locally. All-or-nothing.
-                missing = [p for p in paths if not (banner_dir / p).exists()]
-                if missing:
-                    for path in missing:
-                        logger.warning(
-                            "banner_local_missing",
-                            banner_id=banner.banner_id,
-                            path=path,
-                        )
-                    skipped_missing_local += 1
+            # Pre-flight: every part must exist locally. All-or-nothing.
+            missing = [p for p in paths if not (banner_dir / p).exists()]
+            if missing:
+                for path in missing:
+                    logger.warning(
+                        "banner_local_missing",
+                        banner_id=banner.banner_id,
+                        path=path,
+                    )
+                skipped_missing_local += 1
+                continue
+
+            parts_uploaded: list[str] = []
+            parts_skipped: list[str] = []
+            row_failed = False
+            for path in paths:
+                key = f"banners/{path}"
+                if await r2.object_exists(
+                    bucket=settings.R2_PUBLIC_BUCKET, key=key
+                ):
+                    parts_skipped.append(path)
                     continue
-
-                parts_uploaded: list[str] = []
-                parts_skipped: list[str] = []
-                for path in paths:
-                    key = f"banners/{path}"
-                    if await r2.object_exists(
-                        bucket=settings.R2_PUBLIC_BUCKET, key=key
-                    ):
-                        parts_skipped.append(path)
-                        continue
-                    if dry_run:
-                        parts_uploaded.append(path)
-                        continue
-                    body = (banner_dir / path).read_bytes()
-                    ct = (
-                        mimetypes.guess_type(path)[0]
-                        or "application/octet-stream"
-                    )
+                if dry_run:
+                    parts_uploaded.append(path)
+                    would_upload_parts += 1
+                    continue
+                body = (banner_dir / path).read_bytes()
+                ct = (
+                    mimetypes.guess_type(path)[0]
+                    or "application/octet-stream"
+                )
+                try:
                     await r2.upload_bytes(
                         bucket=settings.R2_PUBLIC_BUCKET,
                         key=key,
                         body=body,
                         content_type=ct,
                     )
-                    parts_uploaded.append(path)
-
-                if not dry_run:
-                    await db.execute(
-                        update(Banners)
-                        .where(Banners.banner_id == banner.banner_id)  # type: ignore[arg-type]
-                        .values(in_r2=True)
+                except Exception as exc:
+                    # All-or-nothing: bail on this row's remaining parts;
+                    # bit stays false so next run retries. Already-uploaded
+                    # parts from this row stay in R2 (object_exists will
+                    # short-circuit them on retry).
+                    logger.warning(
+                        "banner_r2_backfill_failed",
+                        banner_id=banner.banner_id,
+                        key=key,
+                        error=type(exc).__name__,
+                        error_msg=str(exc),
                     )
-                    await db.commit()
-                    flipped += 1
-                logger.info(
-                    "banner_r2_backfilled",
-                    banner_id=banner.banner_id,
-                    parts_uploaded=parts_uploaded,
-                    parts_skipped=parts_skipped,
-                    dry_run=dry_run,
-                )
+                    row_failed = True
+                    break
+                parts_uploaded.append(path)
 
+            if row_failed:
+                failed_rows += 1
+                continue
+
+            if dry_run:
+                would_flip_rows += 1
+            else:
+                flipped_banner_ids.append(banner.banner_id)  # type: ignore[arg-type]
+            logger.info(
+                "banner_r2_backfilled",
+                banner_id=banner.banner_id,
+                parts_uploaded=parts_uploaded,
+                parts_skipped=parts_skipped,
+                dry_run=dry_run,
+            )
+
+        # Single batched UPDATE post-loop (mirrors cmd_verify's pattern).
+        if not dry_run and flipped_banner_ids:
+            async with get_async_session() as db:
+                await db.execute(
+                    update(Banners)
+                    .where(Banners.banner_id.in_(flipped_banner_ids))  # type: ignore[union-attr]
+                    .values(in_r2=True)
+                )
+                await db.commit()
+
+    flipped = len(flipped_banner_ids)
     logger.info(
         "banners_backfill_completed",
         processed=processed,
         flipped=flipped,
         skipped_missing_local=skipped_missing_local,
+        failed_rows=failed_rows,
+        would_upload_parts=would_upload_parts,
+        would_flip_rows=would_flip_rows,
         dry_run=dry_run,
     )
     print(
         f"{'[dry-run] ' if dry_run else ''}banners: processed {processed} "
-        f"(flipped {flipped}, skipped_missing_local {skipped_missing_local})"
+        f"(flipped {flipped}, skipped_missing_local {skipped_missing_local}, "
+        f"failed_rows {failed_rows}, would_upload_parts {would_upload_parts}, "
+        f"would_flip_rows {would_flip_rows})"
     )
     return {
         "processed": processed,
         "flipped": flipped,
         "skipped_missing_local": skipped_missing_local,
+        "failed_rows": failed_rows,
+        "would_upload_parts": would_upload_parts,
+        "would_flip_rows": would_flip_rows,
     }
 
 

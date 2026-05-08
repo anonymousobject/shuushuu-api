@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core import r2_client
-from app.models.misc import BannerSize, Banners
+from app.models.misc import Banners, BannerSize
 from scripts.r2_sync import cmd_banners_backfill
 
 # ---------------------------------------------------------------------------
@@ -279,9 +279,124 @@ async def test_backfill_dry_run_writes_nothing(
     assert report["processed"] == 1
     assert report["flipped"] == 0
     assert report["skipped_missing_local"] == 0
+    assert report["failed_rows"] == 0
+    assert report["would_upload_parts"] == 1
+    assert report["would_flip_rows"] == 1
 
     await db_session.refresh(banner)
     assert banner.in_r2 is False
     assert not await install_r2.object_exists(
         bucket="public", key="banners/dry/full.jpg"
     )
+
+
+@pytest.mark.unit
+async def test_backfill_dry_run_reports_would_upload_parts(
+    banner_settings,
+    install_r2,
+    patch_session,
+    db_session,
+):
+    """Two unbackfilled banners (1 full + 1 three-part), dry-run → 4 would-parts, 2 would-rows."""
+    _seed_local(banner_settings, "wu_full/full.jpg")
+    _seed_local(
+        banner_settings,
+        "wu_3p/l.png",
+        "wu_3p/m.png",
+        "wu_3p/r.png",
+    )
+
+    banner_full = Banners(
+        name="wu_full",
+        size=BannerSize.small,
+        full_image="wu_full/full.jpg",
+    )
+    banner_3p = Banners(
+        name="wu_3p",
+        size=BannerSize.large,
+        left_image="wu_3p/l.png",
+        middle_image="wu_3p/m.png",
+        right_image="wu_3p/r.png",
+    )
+    db_session.add(banner_full)
+    db_session.add(banner_3p)
+    await db_session.commit()
+    await db_session.refresh(banner_full)
+    await db_session.refresh(banner_3p)
+
+    report = await cmd_banners_backfill(dry_run=True)
+
+    assert report["processed"] == 2
+    assert report["flipped"] == 0
+    assert report["skipped_missing_local"] == 0
+    assert report["failed_rows"] == 0
+    assert report["would_upload_parts"] == 4
+    assert report["would_flip_rows"] == 2
+
+    # No R2 writes
+    for path in ("wu_full/full.jpg", "wu_3p/l.png", "wu_3p/m.png", "wu_3p/r.png"):
+        assert not await install_r2.object_exists(
+            bucket="public", key=f"banners/{path}"
+        )
+
+    # No DB writes
+    await db_session.refresh(banner_full)
+    await db_session.refresh(banner_3p)
+    assert banner_full.in_r2 is False
+    assert banner_3p.in_r2 is False
+
+
+@pytest.mark.unit
+async def test_backfill_continues_on_part_upload_failure(
+    banner_settings,
+    install_r2,
+    patch_session,
+    db_session,
+    caplog,
+):
+    """Two banners; 2nd's upload raises → 1st flipped, 2nd stays false, failed_rows == 1."""
+    _seed_local(banner_settings, "ok/full.jpg")
+    _seed_local(banner_settings, "boom/full.jpg")
+
+    banner_ok = Banners(
+        name="ok",
+        size=BannerSize.small,
+        full_image="ok/full.jpg",
+    )
+    banner_boom = Banners(
+        name="boom",
+        size=BannerSize.small,
+        full_image="boom/full.jpg",
+    )
+    db_session.add(banner_ok)
+    db_session.add(banner_boom)
+    await db_session.commit()
+    await db_session.refresh(banner_ok)
+    await db_session.refresh(banner_boom)
+
+    real_upload = install_r2.__class__.upload_bytes
+
+    async def _flaky_upload(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
+        if key == "banners/boom/full.jpg":
+            raise RuntimeError("simulated banner upload failure")
+        await real_upload(self, bucket=bucket, key=key, body=body, content_type=content_type)
+
+    with patch.object(install_r2.__class__, "upload_bytes", _flaky_upload):
+        with caplog.at_level(logging.WARNING):
+            report = await cmd_banners_backfill(dry_run=False)
+
+    assert report["processed"] == 2
+    assert report["flipped"] == 1
+    assert report["failed_rows"] == 1
+    assert report["skipped_missing_local"] == 0
+    assert report["would_upload_parts"] == 0
+    assert report["would_flip_rows"] == 0
+
+    await db_session.refresh(banner_ok)
+    await db_session.refresh(banner_boom)
+    assert banner_ok.in_r2 is True
+    assert banner_boom.in_r2 is False
+
+    # The failure log was captured.
+    log_messages = " ".join(rec.getMessage() for rec in caplog.records)
+    assert "banner_r2_backfill_failed" in log_messages
