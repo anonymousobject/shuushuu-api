@@ -44,6 +44,7 @@ class UserBase(SQLModel):
 
     # Avatar
     avatar: str = Field(default="", max_length=255)
+    avatar_in_r2: bool = Field(default=False)
     gender: str = Field(default="", max_length=50)
 
     # Public stats
