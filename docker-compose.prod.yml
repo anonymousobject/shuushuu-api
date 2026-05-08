@@ -17,6 +17,10 @@ services:
     image: busybox:latest
     entrypoint: ["sleep", "infinity"]
     restart: "no"
+    # Drop the base service's 3306 host publish — production MariaDB lives
+    # natively on tomoyo, only reached over vmbr1. The stub exists purely
+    # to keep depends_on chains merging cleanly.
+    ports: !override []
     healthcheck:
       test: ["CMD", "true"]
       interval: 5s
@@ -36,10 +40,20 @@ services:
     image: busybox:latest
     entrypoint: ["sleep", "infinity"]
     restart: "no"
+    # Same as mariadb — Redis is native on tomoyo. Stub keeps depends_on
+    # merging; no need to publish 6379 on the host.
+    ports: !override []
     healthcheck:
       test: ["CMD", "true"]
       interval: 5s
       retries: 1
+
+  # Meilisearch runs as an actual container in prod (unlike redis/mariadb),
+  # but only api/arq-worker should reach it over the compose default
+  # network. Drop the base service's 7700 host publish so it isn't
+  # accessible from outside the container network.
+  meilisearch:
+    ports: !override []
 
   frontend:
     # NOTE: Expects shuushuu-frontend repo at ../shuushuu-frontend (sibling directory)
@@ -84,6 +98,9 @@ services:
       # entrypoint into /etc/nginx/conf.d/default.conf).
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./docker/nginx/frontend-production.conf.template:/etc/nginx/conf.d/frontend.conf.template:ro
+      # Auto-included at http level via /etc/nginx/conf.d/*.conf.
+      # Maps CF-Connecting-IP -> $remote_addr for traffic from CF edges.
+      - ./docker/nginx/cloudflare-real-ip.conf:/etc/nginx/conf.d/cloudflare-real-ip.conf:ro
       - ./docker/nginx/.htpasswd.example:/etc/nginx/.htpasswd:ro
       # LE certs land here via the certbot service. Read-only for nginx;
       # certbot has it RW.
