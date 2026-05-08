@@ -43,3 +43,30 @@ def test_avatar_url_cdn_when_both_true(monkeypatch):
 )
 def test_avatar_content_type(ext, expected):
     assert _avatar_content_type(ext) == expected
+
+
+def test_user_response_avatar_url_uses_helper(monkeypatch):
+    from app.schemas.user import UserResponse
+
+    monkeypatch.setattr(settings, "R2_ENABLED", True)
+    monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+    monkeypatch.setattr(settings, "IMAGE_BASE_URL", "http://local.test")
+    # Use model_construct to bypass deep validation for fields we don't care about
+    data = {
+        "user_id": 1,
+        "username": "alice",
+        "avatar": "abc.png",
+        "avatar_in_r2": True,
+    }
+    resp = UserResponse.model_construct(**data)
+    assert resp.avatar_url == "https://cdn.test/avatars/abc.png"
+
+
+def test_user_summary_avatar_url_uses_helper(monkeypatch):
+    from app.schemas.common import UserSummary
+
+    monkeypatch.setattr(settings, "R2_ENABLED", True)
+    monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+    monkeypatch.setattr(settings, "IMAGE_BASE_URL", "http://local.test")
+    summary = UserSummary(user_id=1, username="alice", avatar="abc.png", avatar_in_r2=True)
+    assert summary.avatar_url == "https://cdn.test/avatars/abc.png"

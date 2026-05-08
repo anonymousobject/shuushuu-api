@@ -4,7 +4,6 @@ Pydantic schemas for User endpoints
 
 from pydantic import BaseModel, EmailStr, computed_field, field_validator
 
-from app.config import settings
 from app.models.user import UserBase
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 
@@ -156,9 +155,9 @@ class UserResponse(UserBase):
     @property
     def avatar_url(self) -> str | None:
         """Generate avatar URL from avatar field"""
-        if self.avatar:
-            return f"{settings.IMAGE_BASE_URL}/images/avatars/{self.avatar}"
-        return None
+        from app.services.avatar import avatar_url as _build_avatar_url
+
+        return _build_avatar_url(self.avatar, self.avatar_in_r2)
 
     @field_validator("active", "admin", mode="before")
     @classmethod
