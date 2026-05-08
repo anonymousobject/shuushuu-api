@@ -324,7 +324,7 @@ async def _upload_avatar(
 
         # Clean up old avatar if orphaned (after commit to ensure new one is saved)
         if old_avatar and old_avatar != new_filename:
-            await delete_avatar_if_orphaned(old_avatar, db)
+            await delete_avatar_if_orphaned(old_avatar, user.avatar_in_r2, db)
 
     finally:
         # Clean up temp file
@@ -465,15 +465,17 @@ async def _delete_avatar(
 
     # Save old avatar filename for cleanup
     old_avatar = user.avatar
+    old_in_r2 = user.avatar_in_r2
 
     # Clear avatar
     user.avatar = ""
+    user.avatar_in_r2 = False
     await db.commit()
     await db.refresh(user)
 
     # Clean up old avatar file if orphaned
     if old_avatar:
-        await delete_avatar_if_orphaned(old_avatar, db)
+        await delete_avatar_if_orphaned(old_avatar, old_in_r2, db)
 
     return UserResponse.model_validate(user)
 

@@ -202,15 +202,19 @@ def save_avatar(content: bytes, ext: str) -> str:
     return filename
 
 
-async def delete_avatar_if_orphaned(filename: str, db: AsyncSession) -> bool:
-    """Delete avatar file from disk if no users reference it.
+async def delete_avatar_if_orphaned(filename: str, old_in_r2: bool, db: AsyncSession) -> bool:
+    """Delete avatar file from disk (and R2 if old_in_r2) if no users reference it.
 
     Args:
         filename: Avatar filename to check
+        old_in_r2: Whether this filename's R2 object existed at the start of the
+            request — used to decide whether to issue an R2 delete. Avoids a
+            needless API call for legacy local-only rows.
         db: Database session
 
     Returns:
-        True if file was deleted, False otherwise
+        True if the local file was deleted, False otherwise. R2 delete is
+        best-effort and not reflected in the return value.
     """
     if not filename:
         return False
@@ -221,12 +225,23 @@ async def delete_avatar_if_orphaned(filename: str, db: AsyncSession) -> bool:
     )
     count = result.scalar() or 0
 
-    if count == 0:
-        # No users reference this avatar, safe to delete
-        file_path = Path(settings.AVATAR_STORAGE_PATH) / filename
-        if file_path.exists():
-            file_path.unlink()
-            logger.info("orphaned_avatar_deleted", filename=filename)
-            return True
+    if count != 0:
+        return False
 
-    return False
+    deleted_local = False
+    file_path = Path(settings.AVATAR_STORAGE_PATH) / filename
+    if file_path.exists():
+        file_path.unlink()
+        deleted_local = True
+        logger.info("orphaned_avatar_deleted", filename=filename)
+
+    if old_in_r2 and settings.R2_ENABLED:
+        # Local import avoids a circular import (r2_client → r2_storage → logging,
+        # avatar.py is imported by r2_client's caller graph).
+        from app.core.r2_client import get_r2_storage
+
+        r2 = get_r2_storage()
+        await r2.delete_object(bucket=settings.R2_PUBLIC_BUCKET, key=f"avatars/{filename}")
+        logger.info("avatar_r2_orphan_deleted", key=f"avatars/{filename}")
+
+    return deleted_local
