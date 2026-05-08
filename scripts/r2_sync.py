@@ -4,22 +4,26 @@ Subcommands:
     split-existing       — one-time move protected images from public bucket to private
     backfill-locations   — one-shot flip r2_location for existing rows (gated)
     reconcile            — heal: upload missing R2 objects from local FS (gated)
+    avatars-backfill     — one-shot upload local avatars to R2 + flip avatar_in_r2 (gated)
     image                — inspect/re-sync a single image
     verify               — audit R2 vs DB state (read-only; --fix flips drifted rows to NONE)
     purge-cache          — manually purge CDN for one image
     health               — report unsynced counts and storage usage (read-only)
 
-Guarded by R2_ENABLED=true (all commands). backfill-locations, reconcile, and
-verify --fix additionally require R2_ALLOW_BULK_BACKFILL=true to prevent
-staging from mass-touching prod-imported images against its small staging bucket.
+Guarded by R2_ENABLED=true (all commands). backfill-locations, reconcile,
+avatars-backfill, and verify --fix additionally require R2_ALLOW_BULK_BACKFILL=true
+to prevent staging from mass-touching prod-imported data against its small
+staging bucket.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import mimetypes
 import sys
 import time
+from pathlib import Path as FilePath
 from typing import Any
 
 from sqlalchemy import select, update
@@ -34,6 +38,7 @@ from app.core.r2_constants import (
     R2Location,
 )
 from app.models.image import Images, VariantStatus
+from app.models.user import Users
 from app.services.cloudflare import purge_cache_by_urls
 
 logger = get_logger(__name__)
@@ -106,6 +111,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("backfill-locations")
     rec = sub.add_parser("reconcile")
     rec.add_argument("--stale-after", type=_positive_int, default=600)
+    ab = sub.add_parser("avatars-backfill")
+    ab.add_argument("--dry-run", action="store_true")
+    ab.add_argument(
+        "--concurrency",
+        type=_positive_int,
+        default=8,
+        help="Max users processed in parallel (default: 8).",
+    )
     img = sub.add_parser("image")
     img.add_argument("image_id", type=int)
     img.add_argument(
@@ -436,6 +449,142 @@ async def reconcile(*, stale_after: int) -> None:
                     healed += len(public_healed_ids) + len(private_healed_ids)
 
     print(f"reconciled {healed}/{processed} rows")
+
+
+async def cmd_avatars_backfill(
+    *, dry_run: bool = False, concurrency: int = 8
+) -> dict[str, int]:
+    """Upload local avatars to R2 and flip avatar_in_r2=True per row.
+
+    Walks `users` rows where ``avatar != ''`` AND ``avatar_in_r2 = false``,
+    HEADs each ``avatars/{filename}`` against ``R2_PUBLIC_BUCKET``, and uploads
+    from ``AVATAR_STORAGE_PATH/{filename}`` if missing. Idempotent — already-
+    present R2 objects flip the bit without re-uploading. Missing local files
+    are logged and skipped (the bit stays false so the row will be retried on
+    the next run).
+
+    Concurrency is bounded by ``--concurrency`` (default 8); all R2 ops share
+    one aioboto3 client via ``bulk_session()`` so we don't pay TLS setup per
+    call. ``--dry-run`` logs intent without writing to R2 or the DB.
+    """
+    require_bulk_backfill()
+    r2 = get_r2_storage()
+    avatar_dir = FilePath(settings.AVATAR_STORAGE_PATH)
+    sem = asyncio.Semaphore(concurrency)
+
+    processed = 0
+    uploaded = 0
+    skipped_existing = 0
+    missing_local = 0
+
+    logger.info(
+        "avatars_backfill_started", dry_run=dry_run, concurrency=concurrency
+    )
+
+    async with r2.bulk_session():
+        async with get_async_session() as db:
+            result = await db.execute(
+                select(Users.user_id, Users.avatar).where(
+                    Users.avatar != "",  # type: ignore[arg-type]
+                    Users.avatar_in_r2 == False,  # type: ignore[arg-type]  # noqa: E712
+                )
+            )
+            rows = result.all()
+
+            async def process(user_id: int, filename: str) -> tuple[int, int, int]:
+                """Process one user. Returns (uploaded, skipped_existing, missing_local)."""
+                async with sem:
+                    local = avatar_dir / filename
+                    if not local.exists():
+                        logger.warning(
+                            "avatar_local_missing",
+                            user_id=user_id,
+                            filename=filename,
+                        )
+                        return (0, 0, 1)
+
+                    key = f"avatars/{filename}"
+                    already_present = await r2.object_exists(
+                        bucket=settings.R2_PUBLIC_BUCKET, key=key
+                    )
+                    if already_present:
+                        logger.info(
+                            "avatar_r2_backfilled",
+                            user_id=user_id,
+                            key=key,
+                            skipped_existing=True,
+                            dry_run=dry_run,
+                        )
+                        local_uploaded = 0
+                        local_skipped = 1
+                    else:
+                        if dry_run:
+                            logger.info(
+                                "avatar_r2_backfilled",
+                                user_id=user_id,
+                                key=key,
+                                skipped_existing=False,
+                                dry_run=True,
+                            )
+                            return (0, 0, 0)
+                        body = local.read_bytes()
+                        ct = (
+                            mimetypes.guess_type(filename)[0]
+                            or "application/octet-stream"
+                        )
+                        await r2.upload_bytes(
+                            bucket=settings.R2_PUBLIC_BUCKET,
+                            key=key,
+                            body=body,
+                            content_type=ct,
+                        )
+                        logger.info(
+                            "avatar_r2_backfilled",
+                            user_id=user_id,
+                            key=key,
+                            skipped_existing=False,
+                            dry_run=False,
+                        )
+                        local_uploaded = 1
+                        local_skipped = 0
+
+                    if not dry_run:
+                        await db.execute(
+                            update(Users)
+                            .where(Users.user_id == user_id)  # type: ignore[arg-type]
+                            .values(avatar_in_r2=True)
+                        )
+                        await db.commit()
+                    return (local_uploaded, local_skipped, 0)
+
+            results = await asyncio.gather(
+                *(process(uid, fn) for uid, fn in rows)
+            )
+            for u, s, m in results:
+                processed += 1
+                uploaded += u
+                skipped_existing += s
+                missing_local += m
+
+    logger.info(
+        "avatars_backfill_completed",
+        processed=processed,
+        uploaded=uploaded,
+        skipped_existing=skipped_existing,
+        missing_local=missing_local,
+        dry_run=dry_run,
+    )
+    print(
+        f"{'[dry-run] ' if dry_run else ''}avatars: processed {processed} "
+        f"(uploaded {uploaded}, skipped_existing {skipped_existing}, "
+        f"missing_local {missing_local})"
+    )
+    return {
+        "processed": processed,
+        "uploaded": uploaded,
+        "skipped_existing": skipped_existing,
+        "missing_local": missing_local,
+    }
 
 
 async def resync_image(image_id: int) -> None:
@@ -840,6 +989,10 @@ async def _run(args: argparse.Namespace) -> int:
         await backfill_locations()
     elif args.command == "reconcile":
         await reconcile(stale_after=args.stale_after)
+    elif args.command == "avatars-backfill":
+        await cmd_avatars_backfill(
+            dry_run=args.dry_run, concurrency=args.concurrency
+        )
     elif args.command == "image":
         if args.force_reupload:
             await force_reupload_image(image_id=args.image_id, dry_run=args.dry_run)
