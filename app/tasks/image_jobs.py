@@ -214,11 +214,15 @@ async def add_to_iqdb_job(
             except Exception as e:
                 # Best-effort: iqdb has the entry; the hash is just an
                 # optimization. Row stays NULL; falls through to the file
-                # path until the next reindex.
+                # path until the next reindex. Don't Retry — iqdb-rs is
+                # already updated; a retry would re-POST the bytes and
+                # delete-then-reinsert the entry needlessly. The next
+                # `populate_iqdb.py --only-missing-hash` run repairs the NULL.
                 logger.warning(
                     "iqdb_hash_persist_failed",
                     image_id=image_id,
                     error=str(e),
+                    exc_info=True,
                 )
             return {"success": True}
         else:
