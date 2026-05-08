@@ -5,15 +5,16 @@ Subcommands:
     backfill-locations   — one-shot flip r2_location for existing rows (gated)
     reconcile            — heal: upload missing R2 objects from local FS (gated)
     avatars-backfill     — one-shot upload local avatars to R2 + flip avatar_in_r2 (gated)
+    banners-backfill     — one-shot upload local banner images to R2 + flip in_r2 (gated)
     image                — inspect/re-sync a single image
     verify               — audit R2 vs DB state (read-only; --fix flips drifted rows to NONE)
     purge-cache          — manually purge CDN for one image
     health               — report unsynced counts and storage usage (read-only)
 
 Guarded by R2_ENABLED=true (all commands). backfill-locations, reconcile,
-avatars-backfill, and verify --fix additionally require R2_ALLOW_BULK_BACKFILL=true
-to prevent staging from mass-touching prod-imported data against its small
-staging bucket.
+avatars-backfill, banners-backfill, and verify --fix additionally require
+R2_ALLOW_BULK_BACKFILL=true to prevent staging from mass-touching prod-imported
+data against its small staging bucket.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from app.core.r2_constants import (
     R2Location,
 )
 from app.models.image import Images, VariantStatus
+from app.models.misc import Banners
 from app.models.user import Users
 from app.services.cloudflare import purge_cache_by_urls
 
@@ -119,6 +121,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=8,
         help="Max users processed in parallel (default: 8).",
     )
+    bb = sub.add_parser("banners-backfill")
+    bb.add_argument("--dry-run", action="store_true")
     img = sub.add_parser("image")
     img.add_argument("image_id", type=int)
     img.add_argument(
@@ -587,6 +591,124 @@ async def cmd_avatars_backfill(
     }
 
 
+async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
+    """Upload local banner images to R2 and flip in_r2=True per row.
+
+    Walks `banners` rows where ``in_r2 = false``. For each row, collects the
+    non-null path columns (``full_image`` for one-piece banners; or any of
+    ``left_image``/``middle_image``/``right_image`` for three-piece banners),
+    pre-flights local existence for ALL of them, then uploads each missing R2
+    object. Per-row atomicity: if any local file is missing, the row is
+    skipped entirely and the bit stays false — there's no point uploading
+    half a banner because the URL helper expects all parts to be in R2 once
+    ``in_r2`` flips.
+
+    Idempotent — already-present R2 objects don't re-upload. ``--dry-run``
+    logs intent without writing.
+
+    No ``--concurrency`` knob: banner counts are tens, not millions.
+    """
+    require_bulk_backfill()
+    r2 = get_r2_storage()
+    banner_dir = FilePath(settings.BANNER_STORAGE_PATH)
+
+    processed = 0
+    flipped = 0
+    skipped_missing_local = 0
+
+    logger.info("banners_backfill_started", dry_run=dry_run)
+
+    async with r2.bulk_session():
+        async with get_async_session() as db:
+            result = await db.execute(
+                select(Banners).where(Banners.in_r2 == False)  # type: ignore[arg-type]  # noqa: E712
+            )
+            banners = list(result.scalars())
+
+            for banner in banners:
+                processed += 1
+                paths = [
+                    p
+                    for p in (
+                        banner.full_image,
+                        banner.left_image,
+                        banner.middle_image,
+                        banner.right_image,
+                    )
+                    if p
+                ]
+
+                # Pre-flight: every part must exist locally. All-or-nothing.
+                missing = [p for p in paths if not (banner_dir / p).exists()]
+                if missing:
+                    for path in missing:
+                        logger.warning(
+                            "banner_local_missing",
+                            banner_id=banner.banner_id,
+                            path=path,
+                        )
+                    skipped_missing_local += 1
+                    continue
+
+                parts_uploaded: list[str] = []
+                parts_skipped: list[str] = []
+                for path in paths:
+                    key = f"banners/{path}"
+                    if await r2.object_exists(
+                        bucket=settings.R2_PUBLIC_BUCKET, key=key
+                    ):
+                        parts_skipped.append(path)
+                        continue
+                    if dry_run:
+                        parts_uploaded.append(path)
+                        continue
+                    body = (banner_dir / path).read_bytes()
+                    ct = (
+                        mimetypes.guess_type(path)[0]
+                        or "application/octet-stream"
+                    )
+                    await r2.upload_bytes(
+                        bucket=settings.R2_PUBLIC_BUCKET,
+                        key=key,
+                        body=body,
+                        content_type=ct,
+                    )
+                    parts_uploaded.append(path)
+
+                if not dry_run:
+                    await db.execute(
+                        update(Banners)
+                        .where(Banners.banner_id == banner.banner_id)  # type: ignore[arg-type]
+                        .values(in_r2=True)
+                    )
+                    await db.commit()
+                    flipped += 1
+                logger.info(
+                    "banner_r2_backfilled",
+                    banner_id=banner.banner_id,
+                    parts_uploaded=parts_uploaded,
+                    parts_skipped=parts_skipped,
+                    dry_run=dry_run,
+                )
+
+    logger.info(
+        "banners_backfill_completed",
+        processed=processed,
+        flipped=flipped,
+        skipped_missing_local=skipped_missing_local,
+        dry_run=dry_run,
+    )
+    print(
+        f"{'[dry-run] ' if dry_run else ''}banners: processed {processed} "
+        f"(flipped {flipped}, skipped_missing_local {skipped_missing_local})"
+    )
+    return {
+        "processed": processed,
+        "flipped": flipped,
+        "skipped_missing_local": skipped_missing_local,
+    }
+
+
 async def resync_image(image_id: int) -> None:
     """Debug tool: print current R2 state for one image (read-only)."""
     r2 = get_r2_storage()
@@ -993,6 +1115,8 @@ async def _run(args: argparse.Namespace) -> int:
         await cmd_avatars_backfill(
             dry_run=args.dry_run, concurrency=args.concurrency
         )
+    elif args.command == "banners-backfill":
+        await cmd_banners_backfill(dry_run=args.dry_run)
     elif args.command == "image":
         if args.force_reupload:
             await force_reupload_image(image_id=args.image_id, dry_run=args.dry_run)
