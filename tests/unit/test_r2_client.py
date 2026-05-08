@@ -39,3 +39,10 @@ class TestGetR2Storage:
         storage = DummyR2Storage()
         with pytest.raises(RuntimeError, match="R2 is disabled"):
             await storage.object_exists(bucket="b", key="k")
+
+    async def test_dummy_upload_bytes_raises(self):
+        storage = DummyR2Storage()
+        with pytest.raises(RuntimeError, match="R2 is disabled"):
+            await storage.upload_bytes(
+                bucket="x", key="y", body=b"z", content_type="image/png"
+            )

@@ -176,3 +176,17 @@ class TestR2Storage:
                 )
             # outer client still usable after inner exits
             await storage.delete_object(bucket="public", key="nested")
+
+    async def test_upload_bytes_round_trip(self, setup_buckets, moto_session, moto_server):
+        storage = setup_buckets
+        await storage.upload_bytes(
+            bucket="public",
+            key="avatars/abc.png",
+            body=b"PNG-bytes",
+            content_type="image/png",
+        )
+        assert await storage.object_exists(bucket="public", key="avatars/abc.png")
+        # Verify Content-Type was set
+        async with moto_session.client("s3", endpoint_url=moto_server) as s3:
+            head = await s3.head_object(Bucket="public", Key="avatars/abc.png")
+            assert head["ContentType"] == "image/png"
