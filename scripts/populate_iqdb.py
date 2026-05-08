@@ -52,7 +52,7 @@ async def check_iqdb_available() -> bool:
 
 
 def add_image_to_iqdb(
-    client: httpx.Client, image_id: int, filename: str, ext: str
+    client: httpx.Client, image_id: int, filename: str
 ) -> tuple[bool, str, str | None]:
     """Resolve thumbnail path and add a single image to IQDB.
 
@@ -65,7 +65,7 @@ def add_image_to_iqdb(
             success=False, message="missing" means the thumbnail doesn't exist.
     """
     try:
-        thumb_path = _get_thumbnail_path(image_id, filename, ext)
+        thumb_path = _get_thumbnail_path(image_id, filename)
         if not thumb_path.exists():
             return False, "missing", None
 
@@ -93,39 +93,39 @@ def add_image_to_iqdb(
         return False, f"Error: {str(e)[:100]}", None
 
 
-def _get_thumbnail_path(image_id: int, filename: str, ext: str) -> Path:
+def _get_thumbnail_path(image_id: int, filename: str) -> Path:
     """Construct thumbnail path from image metadata.
 
-    Thumbnails are stored as: YYYY-MM-DD-{image_id}.{ext}
-    But we can also fallback to just checking for any file with the image_id.
+    Thumbnails are stored as: YYYY-MM-DD-{image_id}.webp regardless of the
+    original image's extension.
     """
     thumbs_dir = Path(settings.STORAGE_PATH) / "thumbs"
 
     # Try exact filename match first
     if filename:
-        thumb_path = thumbs_dir / f"{filename}.jpeg"
+        thumb_path = thumbs_dir / f"{filename}.webp"
         if thumb_path.exists():
             return thumb_path
 
-    # Fallback: search for any file matching pattern *-{image_id}.{ext}
-    pattern = f"*-{image_id}.jpeg"
+    # Fallback: search for any file matching pattern *-{image_id}.webp
+    pattern = f"*-{image_id}.webp"
     matches = list(thumbs_dir.glob(pattern))
     if matches:
         return matches[0]
 
     # Return expected path even if it doesn't exist (for error reporting)
-    return thumbs_dir / f"{filename}.{ext}" if filename else thumbs_dir / f"{image_id}.{ext}"
+    return thumbs_dir / f"{filename}.webp" if filename else thumbs_dir / f"{image_id}.webp"
 
 
 async def iter_image_batches(
     engine, batch_size: int, start_from: int, *, only_missing_hash: bool
 ):
-    """Yield batches of (image_id, filename, ext, iqdb_hash) using keyset pagination."""
+    """Yield batches of (image_id, filename, iqdb_hash) using keyset pagination."""
     last_id = start_from
     while True:
         async with engine.connect() as conn:
             query = (
-                select(Images.image_id, Images.filename, Images.ext, Images.iqdb_hash)
+                select(Images.image_id, Images.filename, Images.iqdb_hash)
                 .where(Images.image_id > last_id)
                 .order_by(Images.image_id)
                 .limit(batch_size)
@@ -157,7 +157,6 @@ async def _process_one(
     session_factory,
     image_id: int,
     filename: str,
-    ext: str,
     dry_run: bool,
 ) -> tuple[int, str]:
     """Process a single image. Returns (image_id, outcome).
@@ -174,7 +173,7 @@ async def _process_one(
             # thread so all FS I/O (path resolution, exists check, file open)
             # and the iqdb POST don't block the event loop.
             success, message, iqdb_hash = await asyncio.to_thread(
-                add_image_to_iqdb, http_client, image_id, filename, ext
+                add_image_to_iqdb, http_client, image_id, filename
             )
 
             if not success:
@@ -273,10 +272,9 @@ async def populate_iqdb(
                         session_factory,
                         image_id,
                         filename,
-                        ext,
                         dry_run,
                     )
-                    for image_id, filename, ext, _hash in batch
+                    for image_id, filename, _hash in batch
                 ]
             )
 
