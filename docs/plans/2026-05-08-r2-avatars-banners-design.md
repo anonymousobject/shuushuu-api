@@ -153,9 +153,13 @@ async def upload_bytes(
     raise RuntimeError(self._ERR)
 ```
 
-`content_type` is **mandatory**, not optional. R2 stores whatever Content-Type is set on PUT; without one, R2 returns `application/octet-stream`, which Cloudflare's CDN passes through. `application/octet-stream` triggers download instead of inline render in some browser/CSP combinations and breaks `<img src>` under strict `X-Content-Type-Options: nosniff`. The avatar caller derives Content-Type from the extension via a small helper (`app/services/avatar.py::_avatar_content_type(ext: str) -> str` mapping `jpg/png/gif` → `image/jpeg|image/png|image/gif`). The backfill subcommands use `upload_file(path)` instead of `upload_bytes`; aioboto3's `upload_file` derives Content-Type from the filename via mimetypes, which is correct for our extensions.
+`content_type` is **mandatory**, not optional. R2 stores whatever Content-Type is set on PUT; without one, R2 returns `application/octet-stream`, which Cloudflare's CDN passes through. `application/octet-stream` triggers download instead of inline render in some browser/CSP combinations and breaks `<img src>` under strict `X-Content-Type-Options: nosniff`. The avatar caller derives Content-Type from the extension via a small helper (`app/services/avatar.py::_avatar_content_type(ext: str) -> str` mapping `jpg/png/gif` → `image/jpeg|image/png|image/gif`).
 
-The avatar write path uses `upload_bytes` directly because `resize_avatar` returns the processed bytes; round-tripping through a temp file just to call `upload_file` would be wasteful. Backfill subcommands read existing on-disk files and use `upload_file(path)`.
+The avatar write path uses `upload_bytes` directly because `resize_avatar` returns the processed bytes; round-tripping through a temp file just to call `upload_file` would be wasteful.
+
+**Backfill also uses `upload_bytes`, not `upload_file`.** Boto3/aioboto3's `upload_file` does **not** auto-derive Content-Type — the underlying s3transfer library uploads with whatever `ExtraArgs={"ContentType": ...}` is passed, defaulting to no Content-Type (R2 stores `application/octet-stream`). Since `upload_file`'s only advantage over `upload_bytes` is multipart-streaming for large files, and avatars (≤1MB) and banner parts (typically <1MB each) are well below the multipart threshold, backfill reads each file into memory with `path.read_bytes()` and calls `upload_bytes(bucket, key, body, content_type)` with a Content-Type derived from the extension via `mimetypes.guess_type(path)[0]` (with a fallback for unknown extensions). Using `upload_bytes` for both the live write path and backfill keeps a single Content-Type-correct code path.
+
+Note for future image backfill consistency: the existing `R2Storage.upload_file` is still used by `r2_sync.py split-existing` for image variants. Those uploads currently land without an explicit Content-Type — out of scope here, but flagged in case a follow-up wants to fix image Content-Type alongside.
 
 ### Failure surface for `upload_bytes`
 
@@ -241,9 +245,9 @@ uv run python scripts/r2_sync.py avatars-backfill [--dry-run] [--concurrency N]
 
 - Walks `users` where `avatar != ''` AND `avatar_in_r2 = false`.
 - For each user (concurrent up to N):
-  - Read local file from `{AVATAR_STORAGE_PATH}/{filename}`. If missing, log `avatar_local_missing` and skip (bit stays false).
+  - Read local file bytes from `{AVATAR_STORAGE_PATH}/{filename}`. If missing, log `avatar_local_missing` and skip (bit stays false).
   - `head_object` for `avatars/{filename}` in `R2_PUBLIC_BUCKET`. If exists, skip upload (idempotent — content-addressed key).
-  - Else `upload_file(local_path)`.
+  - Else `upload_bytes(bucket, key, body, content_type=mimetypes.guess_type(filename)[0] or "application/octet-stream")`. (See Storage adapter changes for why bytes-based upload over `upload_file`.)
   - On success, `UPDATE users SET avatar_in_r2 = true WHERE user_id = ?`.
 - Wraps the loop in `r2.bulk_session()` to share one client across the burst.
 - `--dry-run` reports counts without writing.
@@ -258,8 +262,8 @@ uv run python scripts/r2_sync.py banners-backfill [--dry-run]
 - Walks `banners` where `in_r2 = false`.
 - For each banner:
   - Collect non-null paths from `full_image`, `left_image`, `middle_image`, `right_image` (1 path for full-image banners, 3 for three-part).
-  - For each path: read `{BANNER_STORAGE_PATH}/{path}`. If any is missing, log `banner_local_missing` with the row's `banner_id` and skip the row entirely (bit stays false).
-  - For each path: `head_object` then upload-if-missing as in avatars-backfill.
+  - For each path: read bytes from `{BANNER_STORAGE_PATH}/{path}`. If any is missing, log `banner_local_missing` with the row's `banner_id` and skip the row entirely (bit stays false).
+  - For each path: `head_object` then `upload_bytes(bucket, key, body, content_type=mimetypes.guess_type(path)[0] or "application/octet-stream")` if missing.
   - If **all** parts uploaded (or already existed), `UPDATE banners SET in_r2 = true WHERE banner_id = ?`. Otherwise the bit stays false; re-running picks up where it left off.
 - Sequential row processing is fine — banners are tens of rows, not millions.
 
@@ -308,7 +312,7 @@ The orphan-delete concurrency race (two requests racing to delete the last refer
 ### `tests/api/v1/test_users_avatar.py` (extend)
 
 - Avatar URL on `UserResponse` switches to CDN URL when `R2_ENABLED=true` and `avatar_in_r2=true`; stays local otherwise.
-- Privmsg responses include avatar URLs that respect the same rule (smoke-test a few of the six call sites).
+- Privmsg responses include avatar URLs that respect the same rule (smoke-test a few of the seven call sites).
 
 ### `tests/api/v1/test_banners.py` (extend)
 
