@@ -111,6 +111,7 @@ class Settings(BaseSettings):
 
     # Avatar Settings
     AVATAR_STORAGE_PATH: str = ""  # Derived from STORAGE_PATH if not set
+    BANNER_STORAGE_PATH: str = ""  # Derived from STORAGE_PATH if not set
     MAX_AVATAR_SIZE: int = 1 * 1024 * 1024  # 1MB max upload size
     MAX_AVATAR_DIMENSION: int = 200  # Max width/height after resize
 
@@ -245,6 +246,12 @@ class Settings(BaseSettings):
     def set_default_avatar_storage_path(self) -> Settings:
         if not self.AVATAR_STORAGE_PATH:
             self.AVATAR_STORAGE_PATH = f"{self.STORAGE_PATH}/avatars"
+        return self
+
+    @model_validator(mode="after")
+    def set_default_banner_storage_path(self) -> Settings:
+        if not self.BANNER_STORAGE_PATH:
+            self.BANNER_STORAGE_PATH = f"{self.STORAGE_PATH}/banners"
         return self
 
 
