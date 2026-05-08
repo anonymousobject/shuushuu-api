@@ -1,27 +1,38 @@
 #!/usr/bin/env python3
 """
-Populate IQDB with all existing image thumbnails from the database.
+Populate iqdb-rs with image thumbnails AND capture their signature hashes
+into images.iqdb_hash.
 
-This script iterates through all images in the database and adds their
-thumbnails to IQDB for similarity search indexing.
+Originally a one-shot bootstrap; now also the backfill source for the
+iqdb_hash column. Run with --only-missing-hash for the cutover backfill.
+
+This script also heals broken iqdb entries: rows whose original
+add_to_iqdb_job exhausted retries have iqdb_hash IS NULL AND no entry in
+iqdb-rs; re-POSTing here populates both.
 
 Usage:
-    uv run python scripts/populate_iqdb.py [--batch-size 100] [--dry-run]
+    uv run python scripts/populate_iqdb.py [options]
 
 Options:
-    --batch-size N    Process N images at a time (default: 100)
-    --dry-run         Show what would be done without making changes
-    --skip-missing    Skip images with missing thumbnails instead of failing
+    --batch-size N         Process N images per DB batch (default: 100)
+    --concurrency N        Max concurrent iqdb POSTs per batch (default: 50)
+    --dry-run              Show what would be done without making changes
+    --skip-missing         Skip images with missing thumbnails
+    --start-from ID        Start from this image_id (resume helper)
+    --only-missing-hash    Process only rows where iqdb_hash IS NULL
+                           (default mode for cutover backfill — re-runs
+                           skip already-populated rows)
 """
 
 import argparse
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Add parent directory to path so we can import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -41,72 +52,173 @@ async def check_iqdb_available() -> bool:
         return False
 
 
-def add_image_to_iqdb(image_id: int, thumb_path: Path) -> tuple[bool, str]:
-    """Add a single image to IQDB.
+def add_image_to_iqdb(
+    client: httpx.Client, image_id: int, filename: str
+) -> tuple[bool, str, str | None]:
+    """Resolve thumbnail path and add a single image to IQDB.
+
+    All filesystem I/O (path resolution + existence check) is done here so
+    this function can be run inside asyncio.to_thread without stalling the
+    event loop.
 
     Returns:
-        tuple: (success: bool, message: str)
+        tuple: (success: bool, message: str, iqdb_hash: str | None)
+            success=False, message="missing" means the thumbnail doesn't exist.
     """
     try:
+        thumb_path = _get_thumbnail_path(image_id, filename)
         if not thumb_path.exists():
-            return False, f"Thumbnail not found: {thumb_path}"
+            return False, "missing", None
 
         iqdb_url = f"http://{settings.IQDB_HOST}:{settings.IQDB_PORT}/images/{image_id}"
+        last_request_error: httpx.RequestError | None = None
+        response: httpx.Response | None = None
 
-        with open(thumb_path, "rb") as f:
-            files = {"file": (thumb_path.name, f, "image/jpeg")}
+        for attempt in range(3):
+            try:
+                with open(thumb_path, "rb") as f:
+                    files = {"file": (thumb_path.name, f, "image/webp")}
+                    response = client.post(iqdb_url, files=files)
+                last_request_error = None
+                break
+            except httpx.RequestError as e:
+                last_request_error = e
+                if attempt < 2:
+                    time.sleep(0.5 * (2**attempt))
 
-            with httpx.Client(timeout=10.0) as client:
-                response = client.post(iqdb_url, files=files)
+        if response is None:
+            return False, f"Request error: {str(last_request_error)[:100]}", None
 
         if response.status_code in (200, 201):
-            return True, "OK"
-        else:
-            return False, f"HTTP {response.status_code}: {response.text[:100]}"
-
-    except httpx.RequestError as e:
-        return False, f"Request error: {str(e)[:100]}"
-    except Exception as e:
-        return False, f"Error: {str(e)[:100]}"
-
-
-async def get_all_images(engine):
-    """Fetch all images from database."""
-    async with engine.connect() as conn:
-        result = await conn.execute(
-            select(Images.image_id, Images.filename, Images.ext)
-            .where(Images.status == 1)  # Only active images
-            .order_by(Images.image_id)
+            try:
+                iqdb_hash = response.json()["hash"]
+            except (ValueError, KeyError, TypeError) as e:
+                return False, f"hash parse failed: {e}", None
+            return True, "OK", iqdb_hash
+        return (
+            False,
+            f"HTTP {response.status_code}: {response.text[:100]}",
+            None,
         )
-        return result.fetchall()
+
+    except Exception as e:
+        return False, f"Error: {str(e)[:100]}", None
 
 
-def get_thumbnail_path(image_id: int, filename: str, ext: str) -> Path:
+def _get_thumbnail_path(image_id: int, filename: str) -> Path:
     """Construct thumbnail path from image metadata.
 
-    Thumbnails are stored as: YYYY-MM-DD-{image_id}.{ext}
-    But we can also fallback to just checking for any file with the image_id.
+    Thumbnails are stored as: YYYY-MM-DD-{image_id}.webp regardless of the
+    original image's extension.
     """
     thumbs_dir = Path(settings.STORAGE_PATH) / "thumbs"
 
     # Try exact filename match first
     if filename:
-        thumb_path = thumbs_dir / f"{filename}.jpeg"
+        thumb_path = thumbs_dir / f"{filename}.webp"
         if thumb_path.exists():
             return thumb_path
 
-    # Fallback: search for any file matching pattern *-{image_id}.{ext}
-    pattern = f"*-{image_id}.jpeg"
+    # Fallback: search for any file matching pattern *-{image_id}.webp
+    pattern = f"*-{image_id}.webp"
     matches = list(thumbs_dir.glob(pattern))
     if matches:
         return matches[0]
 
     # Return expected path even if it doesn't exist (for error reporting)
-    return thumbs_dir / f"{filename}.{ext}" if filename else thumbs_dir / f"{image_id}.{ext}"
+    return thumbs_dir / f"{filename}.webp" if filename else thumbs_dir / f"{image_id}.webp"
+
+
+async def iter_image_batches(
+    engine, batch_size: int, start_from: int, *, only_missing_hash: bool
+):
+    """Yield batches of (image_id, filename, iqdb_hash) using keyset pagination."""
+    last_id = start_from
+    while True:
+        async with engine.connect() as conn:
+            query = (
+                select(Images.image_id, Images.filename, Images.iqdb_hash)
+                .where(Images.image_id > last_id)
+                .order_by(Images.image_id)
+                .limit(batch_size)
+            )
+            if only_missing_hash:
+                query = query.where(Images.iqdb_hash.is_(None))
+            result = await conn.execute(query)
+            rows = result.fetchall()
+
+        if not rows:
+            return
+        yield rows
+        last_id = rows[-1][0]
+
+
+async def get_image_count(engine, start_from: int, *, only_missing_hash: bool) -> int:
+    """Return the count of images to process."""
+    async with engine.connect() as conn:
+        query = select(func.count()).select_from(Images).where(Images.image_id > start_from)
+        if only_missing_hash:
+            query = query.where(Images.iqdb_hash.is_(None))
+        result = await conn.execute(query)
+        return result.scalar_one()
+
+
+async def _process_one(
+    semaphore: asyncio.Semaphore,
+    http_client: httpx.Client,
+    session_factory,
+    image_id: int,
+    filename: str,
+    dry_run: bool,
+) -> tuple[int, str]:
+    """Process a single image. Returns (image_id, outcome).
+
+    outcome is one of: 'ok' | 'missing' | 'error:<msg>' | 'db_error:<msg>'
+                     | 'unhandled:<type>: <msg>'
+    """
+    async with semaphore:
+        try:
+            if dry_run:
+                return image_id, "ok"
+
+            # add_image_to_iqdb is sync (uses sync httpx.Client). Run it in a
+            # thread so all FS I/O (path resolution, exists check, file open)
+            # and the iqdb POST don't block the event loop.
+            success, message, iqdb_hash = await asyncio.to_thread(
+                add_image_to_iqdb, http_client, image_id, filename
+            )
+
+            if not success:
+                if message == "missing":
+                    return image_id, "missing"
+                return image_id, f"error:{message}"
+
+            try:
+                async with session_factory() as session, session.begin():
+                    await session.execute(
+                        update(Images)
+                        .where(Images.image_id == image_id)
+                        .values(iqdb_hash=iqdb_hash)
+                    )
+            except Exception as e:
+                return image_id, f"db_error:{e}"
+
+            return image_id, "ok"
+        except Exception as e:
+            # Unexpected path (executor shutdown, etc.). Log and surface so the
+            # operator can re-target via --start-from; don't abort the batch.
+            # asyncio.CancelledError is BaseException, not Exception, so Ctrl-C
+            # still propagates correctly.
+            return image_id, f"unhandled:{type(e).__name__}: {e}"
 
 
 async def populate_iqdb(
-    batch_size: int = 100, dry_run: bool = False, skip_missing: bool = False
+    batch_size: int = 100,
+    concurrency: int = 50,
+    dry_run: bool = False,
+    skip_missing: bool = False,
+    start_from: int = 0,
+    only_missing_hash: bool = False,
 ) -> None:
     """Main function to populate IQDB with all images."""
 
@@ -116,33 +228,39 @@ async def populate_iqdb(
     print(f"IQDB Server: {settings.IQDB_HOST}:{settings.IQDB_PORT}")
     print(f"Storage Path: {settings.STORAGE_PATH}")
     print(f"Batch Size: {batch_size}")
+    print(f"Concurrency: {concurrency}")
     print(f"Dry Run: {dry_run}")
     print(f"Skip Missing: {skip_missing}")
+    print(f"Start From ID: {start_from}")
+    print(f"Only Missing Hash: {only_missing_hash}")
     print("=" * 80)
 
-    # Check IQDB availability
-    print("\nChecking IQDB server availability...")
-    if not await check_iqdb_available():
-        print("❌ ERROR: IQDB server is not reachable!")
-        print(f"   Make sure IQDB is running at {settings.IQDB_HOST}:{settings.IQDB_PORT}")
-        sys.exit(1)
-    print("✓ IQDB server is available")
+    # Check IQDB availability (skip in dry-run mode)
+    if not dry_run:
+        print("\nChecking IQDB server availability...")
+        if not await check_iqdb_available():
+            print("ERROR: IQDB server is not reachable!")
+            print(f"   Make sure IQDB is running at {settings.IQDB_HOST}:{settings.IQDB_PORT}")
+            sys.exit(1)
+        print("IQDB server is available")
 
     # Create database engine
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-    # Fetch all images
-    print("\nFetching images from database...")
-    images = await get_all_images(engine)
-    total_images = len(images)
-    print(f"✓ Found {total_images} active images")
+    # Count images to process
+    print("\nCounting images to process...")
+    total_images = await get_image_count(
+        engine, start_from, only_missing_hash=only_missing_hash
+    )
+    print(f"Found {total_images} images to process")
 
     if total_images == 0:
         print("No images to process. Exiting.")
         return
 
     if dry_run:
-        print("\n⚠️  DRY RUN MODE - No changes will be made\n")
+        print("\nDRY RUN MODE - No changes will be made\n")
 
     # Process images
     print("\nProcessing images...")
@@ -151,88 +269,97 @@ async def populate_iqdb(
     success_count = 0
     error_count = 0
     missing_count = 0
+    processed = 0
+    semaphore = asyncio.Semaphore(concurrency)
 
-    for idx, (image_id, filename, ext) in enumerate(images, 1):
-        thumb_path = get_thumbnail_path(image_id, filename, ext)
+    with httpx.Client(timeout=10.0) as http_client:
+        async for batch in iter_image_batches(
+            engine, batch_size, start_from, only_missing_hash=only_missing_hash
+        ):
+            outcomes = await asyncio.gather(
+                *[
+                    _process_one(
+                        semaphore,
+                        http_client,
+                        session_factory,
+                        image_id,
+                        filename,
+                        dry_run,
+                    )
+                    for image_id, filename, _hash in batch
+                ]
+            )
 
-        # Progress indicator
-        if idx % 10 == 0 or idx == 1:
-            print(f"Progress: {idx}/{total_images} ({idx / total_images * 100:.1f}%)")
+            for image_id, outcome in outcomes:
+                processed += 1
+                if outcome == "ok":
+                    success_count += 1
+                elif outcome == "missing":
+                    missing_count += 1
+                    if not skip_missing:
+                        print(f"  Image {image_id}: Thumbnail not found")
+                    else:
+                        print(f"  Image {image_id}: Skipping (thumbnail not found)")
+                else:
+                    error_count += 1
+                    print(f"  Image {image_id}: {outcome}")
 
-        # Check if thumbnail exists
-        if not thumb_path.exists():
-            missing_count += 1
-            if skip_missing:
-                print(f"  [{idx}] Image {image_id}: Skipping (thumbnail not found)")
-                continue
-            else:
-                print(f"  [{idx}] Image {image_id}: ❌ Thumbnail not found: {thumb_path}")
-                error_count += 1
-                continue
-
-        # Add to IQDB
-        if not dry_run:
-            success, message = add_image_to_iqdb(image_id, thumb_path)
-
-            if success:
-                success_count += 1
-                if idx % 100 == 0:  # Only print every 100th success to reduce noise
-                    print(f"  [{idx}] Image {image_id}: ✓ Added to IQDB")
-            else:
-                error_count += 1
-                print(f"  [{idx}] Image {image_id}: ❌ {message}")
-        else:
-            # Dry run - just count what we would do
-            success_count += 1
-            if idx % 100 == 0:
-                print(f"  [{idx}] Image {image_id}: Would add to IQDB")
-
-        # Small delay to avoid overwhelming IQDB
-        # if not dry_run and idx % batch_size == 0:
-        #     await asyncio.sleep(0.1)
+            pct = processed / total_images * 100 if total_images > 0 else 0
+            print(f"Progress: {processed}/{total_images} ({pct:.1f}%)")
 
     # Summary
     print("-" * 80)
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"Total images processed: {total_images}")
-    print(f"✓ Successfully added:   {success_count}")
-    print(f"❌ Errors:              {error_count}")
-    print(f"⊗ Missing thumbnails:   {missing_count}")
+    print(f"Total images processed: {processed}")
+    print(f"Successfully added:   {success_count}")
+    print(f"Errors:              {error_count}")
+    print(f"Missing thumbnails:   {missing_count}")
 
     if dry_run:
-        print("\n⚠️  This was a DRY RUN - no changes were made")
+        print("\nThis was a DRY RUN - no changes were made")
     else:
-        print("\n✓ IQDB population complete!")
+        print("\nIQDB population complete!")
 
     print("=" * 80)
 
-    # Exit with error code if there were errors (but not if just missing thumbnails with skip)
-    if error_count > 0 and not skip_missing:
+    # Exit with error code if there were real errors, or if missing thumbnails
+    # are a failure condition (skip_missing=False).
+    if error_count > 0 or (missing_count > 0 and not skip_missing):
         sys.exit(1)
 
 
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Populate IQDB with all existing image thumbnails",
+        description="Populate iqdb-rs with image thumbnails and capture signature hashes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Dry run to see what would happen
   uv run python scripts/populate_iqdb.py --dry-run
 
-  # Add all images, skip missing thumbnails
-  uv run python scripts/populate_iqdb.py --skip-missing
+  # Cutover backfill: only rows missing a hash
+  uv run python scripts/populate_iqdb.py --only-missing-hash --skip-missing
 
-  # Process in smaller batches
-  uv run python scripts/populate_iqdb.py --batch-size 50
+  # Resume from a specific image_id
+  uv run python scripts/populate_iqdb.py --start-from 500000 --only-missing-hash
+
+  # Process in smaller batches with lower concurrency
+  uv run python scripts/populate_iqdb.py --batch-size 50 --concurrency 10
         """,
     )
 
     parser.add_argument(
-        "--batch-size", type=int, default=100, help="Process N images at a time (default: 100)"
+        "--batch-size", type=int, default=100, help="Process N images per DB batch (default: 100)"
+    )
+
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=50,
+        help="Max concurrent iqdb POSTs per batch (default: 50)",
     )
 
     parser.add_argument(
@@ -245,16 +372,36 @@ Examples:
         help="Skip images with missing thumbnails instead of failing",
     )
 
+    parser.add_argument(
+        "--start-from",
+        type=int,
+        default=0,
+        metavar="ID",
+        help="Start from this image_id (resume helper, default: 0)",
+    )
+
+    parser.add_argument(
+        "--only-missing-hash",
+        action="store_true",
+        default=False,
+        help="Skip images whose iqdb_hash is already populated (resumable default for cutover backfill)",
+    )
+
     args = parser.parse_args()
 
     try:
         asyncio.run(
             populate_iqdb(
-                batch_size=args.batch_size, dry_run=args.dry_run, skip_missing=args.skip_missing
+                batch_size=args.batch_size,
+                concurrency=args.concurrency,
+                dry_run=args.dry_run,
+                skip_missing=args.skip_missing,
+                start_from=args.start_from,
+                only_missing_hash=args.only_missing_hash,
             )
         )
     except KeyboardInterrupt:
-        print("\n\n⚠️  Interrupted by user. Exiting...")
+        print("\n\nInterrupted by user. Exiting...")
         sys.exit(130)
 
 

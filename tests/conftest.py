@@ -310,6 +310,15 @@ async def _truncate_all_tables(engine) -> None:
 
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
 
+    # Re-seed perms so tests run after `needs_commit` cleanup still see
+    # the enum-mirrored Perms rows that session setup populated.
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.core.permission_sync import sync_permissions
+
+    async with AsyncSession(engine) as session:
+        await sync_permissions(session)
+
 
 async def _create_test_users(session: AsyncSession) -> None:
     """Create standard test users for foreign key constraints."""

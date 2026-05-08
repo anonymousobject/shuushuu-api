@@ -151,6 +151,72 @@ class TestSimilarImages:
         call_kwargs = mock_iqdb.call_args
         assert call_kwargs.kwargs.get("threshold") == 75
 
+    @pytest.mark.asyncio
+    async def test_uses_hash_when_iqdb_hash_populated(
+        self, client: AsyncClient, test_image, db_session
+    ):
+        """When iqdb_hash is set, route calls check_iqdb_similarity_by_hash, not _by_file."""
+        # Populate iqdb_hash on the test image.
+        from app.models.image import Images
+        from sqlalchemy import update
+
+        await db_session.execute(
+            update(Images)
+            .where(Images.image_id == test_image.image_id)
+            .values(iqdb_hash="iqdb_" + "0" * 528)
+        )
+        await db_session.commit()
+
+        with (
+            patch(
+                "app.api.v1.images.check_iqdb_similarity_by_hash",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_by_hash,
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_by_file,
+        ):
+            response = await client.get(
+                f"/api/v1/images/{test_image.image_id}/similar"
+            )
+
+        assert response.status_code == 200
+        mock_by_hash.assert_called_once()
+        mock_by_file.assert_not_called()
+        # The hash arg should be the one we set above.
+        called_hash = mock_by_hash.call_args.args[0]
+        assert called_hash == "iqdb_" + "0" * 528
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_file_when_iqdb_hash_null(
+        self, client: AsyncClient, test_image, db_session
+    ):
+        """When iqdb_hash is NULL and thumb exists, route calls the file-based path."""
+        # test_image fixture leaves iqdb_hash NULL by default.
+        with (
+            patch("app.api.v1.images.FilePath.exists", return_value=True),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity_by_hash",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_by_hash,
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_by_file,
+        ):
+            response = await client.get(
+                f"/api/v1/images/{test_image.image_id}/similar"
+            )
+
+        assert response.status_code == 200
+        mock_by_hash.assert_not_called()
+        mock_by_file.assert_called_once()
+
 
 class TestIQDBService:
     """Unit tests for the IQDB service functions."""

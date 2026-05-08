@@ -5,9 +5,12 @@ from pathlib import Path as FilePath
 from typing import Any
 
 from arq import Retry
+from sqlalchemy import update
 
 from app.config import settings
+from app.core.database import AsyncSessionLocal
 from app.core.logging import bind_context, get_logger
+from app.models.image import Images
 
 logger = get_logger(__name__)
 
@@ -177,14 +180,50 @@ async def add_to_iqdb_job(
         iqdb_url = f"http://{settings.IQDB_HOST}:{settings.IQDB_PORT}/images/{image_id}"
 
         with open(thumb_file, "rb") as f:
-            files = {"file": (thumb_file.name, f, "image/jpeg")}
+            files = {"file": (thumb_file.name, f, "image/webp")}
 
             # Use sync httpx client (worker runs in thread pool)
             with httpx.Client(timeout=10.0) as client:
                 response = client.post(iqdb_url, files=files)
 
         if response.status_code in (200, 201):
-            logger.info("iqdb_job_completed", image_id=image_id)
+            try:
+                iqdb_hash = response.json()["hash"]
+            except (ValueError, KeyError, TypeError) as e:
+                # Successful HTTP response but the body wasn't shaped like
+                # we expected. Log and return success — iqdb has the entry.
+                logger.warning(
+                    "iqdb_hash_parse_failed",
+                    image_id=image_id,
+                    error=str(e),
+                )
+                return {"success": True}
+
+            try:
+                async with AsyncSessionLocal() as session, session.begin():
+                    await session.execute(
+                        update(Images)
+                        .where(Images.image_id == image_id)  # type: ignore[arg-type]
+                        .values(iqdb_hash=iqdb_hash)
+                    )
+                logger.info(
+                    "iqdb_job_completed",
+                    image_id=image_id,
+                    hash_captured=True,
+                )
+            except Exception as e:
+                # Best-effort: iqdb has the entry; the hash is just an
+                # optimization. Row stays NULL; falls through to the file
+                # path until the next reindex. Don't Retry — iqdb-rs is
+                # already updated; a retry would re-POST the bytes and
+                # delete-then-reinsert the entry needlessly. The next
+                # `populate_iqdb.py --only-missing-hash` run repairs the NULL.
+                logger.warning(
+                    "iqdb_hash_persist_failed",
+                    image_id=image_id,
+                    error=str(e),
+                    exc_info=True,
+                )
             return {"success": True}
         else:
             logger.warning(

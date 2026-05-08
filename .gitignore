@@ -52,6 +52,7 @@ env/
 *.sqlite3
 *.sql
 shuushuu-*.sql
+!scripts/*.sql
 
 # Logs
 *.log
