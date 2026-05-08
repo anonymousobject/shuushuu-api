@@ -203,7 +203,7 @@ async def add_to_iqdb_job(
                 async with AsyncSessionLocal() as session, session.begin():
                     await session.execute(
                         update(Images)
-                        .where(Images.image_id == image_id)
+                        .where(Images.image_id == image_id)  # type: ignore[arg-type]
                         .values(iqdb_hash=iqdb_hash)
                     )
                 logger.info(
