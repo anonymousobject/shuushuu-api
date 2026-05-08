@@ -52,16 +52,22 @@ async def check_iqdb_available() -> bool:
 
 
 def add_image_to_iqdb(
-    client: httpx.Client, image_id: int, thumb_path: Path
+    client: httpx.Client, image_id: int, filename: str, ext: str
 ) -> tuple[bool, str, str | None]:
-    """Add a single image to IQDB.
+    """Resolve thumbnail path and add a single image to IQDB.
+
+    All filesystem I/O (path resolution + existence check) is done here so
+    this function can be run inside asyncio.to_thread without stalling the
+    event loop.
 
     Returns:
         tuple: (success: bool, message: str, iqdb_hash: str | None)
+            success=False, message="missing" means the thumbnail doesn't exist.
     """
     try:
+        thumb_path = _get_thumbnail_path(image_id, filename, ext)
         if not thumb_path.exists():
-            return False, f"Thumbnail not found: {thumb_path}", None
+            return False, "missing", None
 
         iqdb_url = f"http://{settings.IQDB_HOST}:{settings.IQDB_PORT}/images/{image_id}"
 
@@ -87,7 +93,7 @@ def add_image_to_iqdb(
         return False, f"Error: {str(e)[:100]}", None
 
 
-def get_thumbnail_path(image_id: int, filename: str, ext: str) -> Path:
+def _get_thumbnail_path(image_id: int, filename: str, ext: str) -> Path:
     """Construct thumbnail path from image metadata.
 
     Thumbnails are stored as: YYYY-MM-DD-{image_id}.{ext}
@@ -157,35 +163,42 @@ async def _process_one(
     """Process a single image. Returns (image_id, outcome).
 
     outcome is one of: 'ok' | 'missing' | 'error:<msg>' | 'db_error:<msg>'
+                     | 'unhandled:<type>: <msg>'
     """
     async with semaphore:
-        thumb_path = get_thumbnail_path(image_id, filename, ext)
-        if not thumb_path.exists():
-            return image_id, "missing"
-
-        if dry_run:
-            return image_id, "ok"
-
-        # add_image_to_iqdb is sync (uses sync httpx.Client). Run it in a
-        # thread so the event loop doesn't block on file IO + iqdb POST.
-        success, message, iqdb_hash = await asyncio.to_thread(
-            add_image_to_iqdb, http_client, image_id, thumb_path
-        )
-
-        if not success:
-            return image_id, f"error:{message}"
-
         try:
-            async with session_factory() as session, session.begin():
-                await session.execute(
-                    update(Images)
-                    .where(Images.image_id == image_id)
-                    .values(iqdb_hash=iqdb_hash)
-                )
-        except Exception as e:
-            return image_id, f"db_error:{e}"
+            if dry_run:
+                return image_id, "ok"
 
-        return image_id, "ok"
+            # add_image_to_iqdb is sync (uses sync httpx.Client). Run it in a
+            # thread so all FS I/O (path resolution, exists check, file open)
+            # and the iqdb POST don't block the event loop.
+            success, message, iqdb_hash = await asyncio.to_thread(
+                add_image_to_iqdb, http_client, image_id, filename, ext
+            )
+
+            if not success:
+                if message == "missing":
+                    return image_id, "missing"
+                return image_id, f"error:{message}"
+
+            try:
+                async with session_factory() as session, session.begin():
+                    await session.execute(
+                        update(Images)
+                        .where(Images.image_id == image_id)
+                        .values(iqdb_hash=iqdb_hash)
+                    )
+            except Exception as e:
+                return image_id, f"db_error:{e}"
+
+            return image_id, "ok"
+        except Exception as e:
+            # Unexpected path (executor shutdown, etc.). Log and surface so the
+            # operator can re-target via --start-from; don't abort the batch.
+            # asyncio.CancelledError is BaseException, not Exception, so Ctrl-C
+            # still propagates correctly.
+            return image_id, f"unhandled:{type(e).__name__}: {e}"
 
 
 async def populate_iqdb(
@@ -275,7 +288,6 @@ async def populate_iqdb(
                     missing_count += 1
                     if not skip_missing:
                         print(f"  Image {image_id}: Thumbnail not found")
-                        error_count += 1
                     else:
                         print(f"  Image {image_id}: Skipping (thumbnail not found)")
                 else:
@@ -302,8 +314,9 @@ async def populate_iqdb(
 
     print("=" * 80)
 
-    # Exit with error code if there were errors (but not if just missing thumbnails with skip)
-    if error_count > 0 and not skip_missing:
+    # Exit with error code if there were real errors, or if missing thumbnails
+    # are a failure condition (skip_missing=False).
+    if error_count > 0 or (missing_count > 0 and not skip_missing):
         sys.exit(1)
 
 
