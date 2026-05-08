@@ -12,7 +12,6 @@ from sqlalchemy import and_, case, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import PaginationParams
-from app.config import settings
 from app.core.auth import VerifiedUser, get_current_user
 from app.core.database import get_db
 from app.core.permissions import Permission, has_permission
@@ -26,6 +25,7 @@ from app.schemas.privmsg import (
     ThreadList,
     ThreadSummary,
 )
+from app.services.avatar import avatar_url
 from app.tasks.queue import enqueue_job
 
 router = APIRouter(prefix="/privmsgs", tags=["privmsgs"])
@@ -229,11 +229,13 @@ async def get_threads(
 
     # Fetch other user details (username, avatar)
     user_result = await db.execute(
-        select(Users.user_id, Users.username, Users.avatar).where(Users.user_id.in_(other_user_ids))  # type: ignore[call-overload,union-attr]
+        select(Users.user_id, Users.username, Users.avatar, Users.avatar_in_r2).where(  # type: ignore[call-overload]
+            Users.user_id.in_(other_user_ids)  # type: ignore[union-attr]
+        )
     )
     user_rows = user_result.all()
-    user_map: dict[int, tuple[str | None, str | None]] = {
-        row[0]: (row[1], row[2]) for row in user_rows
+    user_map: dict[int, tuple[str | None, str | None, bool]] = {
+        row[0]: (row[1], row[2], row[3]) for row in user_rows
     }
 
     # Fetch groups for other users
@@ -267,10 +269,8 @@ async def get_threads(
     # Build thread summaries
     threads: list[ThreadSummary] = []
     for row in thread_rows:
-        username, avatar = user_map.get(row.other_user_id, (None, None))
-        avatar_url: str | None = None
-        if avatar:
-            avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{avatar}"
+        username, avatar, avatar_in_r2 = user_map.get(row.other_user_id, (None, None, False))
+        other_avatar_url = avatar_url(avatar, avatar_in_r2)
 
         subject = _strip_re_prefix(row.subject or "")
         preview_text = latest_text_map.get(row.thread_id, "")
@@ -283,7 +283,7 @@ async def get_threads(
                 subject=subject,
                 other_user_id=row.other_user_id,
                 other_username=username,
-                other_avatar_url=avatar_url,
+                other_avatar_url=other_avatar_url,
                 other_groups=groups_map.get(row.other_user_id, []),
                 latest_message_preview=preview_text,
                 latest_message_date=row.latest_date.isoformat() if row.latest_date else "",
@@ -378,8 +378,10 @@ async def get_thread_messages(
             Privmsgs,
             SenderUser.c.username.label("sender_username"),
             SenderUser.c.avatar.label("sender_avatar"),
+            SenderUser.c.avatar_in_r2.label("sender_avatar_in_r2"),
             RecipientUser.c.username.label("recipient_username"),
             RecipientUser.c.avatar.label("recipient_avatar"),
+            RecipientUser.c.avatar_in_r2.label("recipient_avatar_in_r2"),
         )
         .join(SenderUser, Privmsgs.from_user_id == SenderUser.c.user_id, isouter=True)
         .join(RecipientUser, Privmsgs.to_user_id == RecipientUser.c.user_id, isouter=True)
@@ -406,15 +408,13 @@ async def get_thread_messages(
         msg = row[0]
         sender_username = row[1]
         sender_avatar = row[2]
-        recipient_username = row[3]
-        recipient_avatar = row[4]
+        sender_avatar_in_r2 = bool(row[3])
+        recipient_username = row[4]
+        recipient_avatar = row[5]
+        recipient_avatar_in_r2 = bool(row[6])
 
-        from_avatar_url: str | None = None
-        to_avatar_url: str | None = None
-        if sender_avatar:
-            from_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{sender_avatar}"
-        if recipient_avatar:
-            to_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{recipient_avatar}"
+        from_avatar_url = avatar_url(sender_avatar, sender_avatar_in_r2)
+        to_avatar_url = avatar_url(recipient_avatar, recipient_avatar_in_r2)
 
         data = {
             "privmsg_id": msg.privmsg_id,
@@ -551,7 +551,7 @@ async def get_received_privmsgs(
 
     # Query messages with sender username and avatar joined (outer join to be safe)
     query = (
-        select(Privmsgs, Users.username, Users.avatar)  # type: ignore[call-overload]
+        select(Privmsgs, Users.username, Users.avatar, Users.avatar_in_r2)  # type: ignore[call-overload]
         .join(Users, Privmsgs.from_user_id == Users.user_id, isouter=True)
         .where(Privmsgs.to_user_id == target_user_id)
         .order_by(desc(Privmsgs.date))  # type: ignore[arg-type]
@@ -572,9 +572,8 @@ async def get_received_privmsgs(
         msg: Privmsgs = row[0]
         sender_username: str | None = row[1] if len(row) > 1 else None
         sender_avatar: str | None = row[2] if len(row) > 2 else None
-        from_avatar_url: str | None = None
-        if sender_avatar:
-            from_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{sender_avatar}"
+        sender_avatar_in_r2: bool = bool(row[3]) if len(row) > 3 else False
+        from_avatar_url = avatar_url(sender_avatar, sender_avatar_in_r2)
 
         data = {
             "privmsg_id": msg.privmsg_id,
@@ -641,7 +640,7 @@ async def get_sent_privmsgs(
 
     # Query messages with recipient username and avatar joined (outer join to be safe)
     query = (
-        select(Privmsgs, Users.username, Users.avatar)  # type: ignore[call-overload]
+        select(Privmsgs, Users.username, Users.avatar, Users.avatar_in_r2)  # type: ignore[call-overload]
         .join(Users, Privmsgs.to_user_id == Users.user_id, isouter=True)
         .where(Privmsgs.from_user_id == target_user_id)
         .order_by(desc(Privmsgs.date))  # type: ignore[arg-type]
@@ -662,9 +661,8 @@ async def get_sent_privmsgs(
         msg: Privmsgs = row[0]
         recipient_username: str | None = row[1] if len(row) > 1 else None
         recipient_avatar: str | None = row[2] if len(row) > 2 else None
-        to_avatar_url: str | None = None
-        if recipient_avatar:
-            to_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{recipient_avatar}"
+        recipient_avatar_in_r2: bool = bool(row[3]) if len(row) > 3 else False
+        to_avatar_url = avatar_url(recipient_avatar, recipient_avatar_in_r2)
 
         data = {
             "privmsg_id": msg.privmsg_id,
@@ -722,25 +720,29 @@ async def get_privmsg(
 
     # Try to fetch usernames and avatars for sender/recipient
     sender_res = await db.execute(
-        select(Users.username, Users.avatar).where(Users.user_id == msg.from_user_id)  # type: ignore[call-overload]
+        select(Users.username, Users.avatar, Users.avatar_in_r2).where(  # type: ignore[call-overload]
+            Users.user_id == msg.from_user_id
+        )
     )
     sender_row = sender_res.first()
     recipient_res = await db.execute(
-        select(Users.username, Users.avatar).where(Users.user_id == msg.to_user_id)  # type: ignore[call-overload]
+        select(Users.username, Users.avatar, Users.avatar_in_r2).where(  # type: ignore[call-overload]
+            Users.user_id == msg.to_user_id
+        )
     )
     recipient_row = recipient_res.first()
 
     sender_username = sender_row[0] if sender_row else None
     sender_avatar = sender_row[1] if sender_row and len(sender_row) > 1 else None
+    sender_avatar_in_r2 = bool(sender_row[2]) if sender_row and len(sender_row) > 2 else False
     recipient_username = recipient_row[0] if recipient_row else None
     recipient_avatar = recipient_row[1] if recipient_row and len(recipient_row) > 1 else None
+    recipient_avatar_in_r2 = (
+        bool(recipient_row[2]) if recipient_row and len(recipient_row) > 2 else False
+    )
 
-    from_avatar_url: str | None = None
-    to_avatar_url: str | None = None
-    if sender_avatar:
-        from_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{sender_avatar}"
-    if recipient_avatar:
-        to_avatar_url = f"{settings.IMAGE_BASE_URL}/images/avatars/{recipient_avatar}"
+    from_avatar_url = avatar_url(sender_avatar, sender_avatar_in_r2)
+    to_avatar_url = avatar_url(recipient_avatar, recipient_avatar_in_r2)
 
     # Fetch groups for both sender and recipient
     user_ids = [uid for uid in [msg.from_user_id, msg.to_user_id] if uid]
