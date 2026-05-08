@@ -25,11 +25,15 @@ class BannerResponse(BaseModel):
     middle_image: str | None
     right_image: str | None
 
+    in_r2: bool = False
+
     model_config = {"from_attributes": True}
 
     def _image_url(self, path: str | None) -> str | None:
         if not path:
             return None
+        if settings.R2_ENABLED and self.in_r2:
+            return f"{settings.R2_PUBLIC_CDN_URL}/banners/{path.lstrip('/')}"
         return f"{settings.BANNER_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
 
     @computed_field  # type: ignore[prop-decorator]

@@ -103,3 +103,74 @@ def test_banner_response_requires_all_three_parts() -> None:
             supports_dark=True,
             supports_light=True,
         )
+
+
+def test_banner_response_uses_cdn_when_in_r2_and_enabled(monkeypatch) -> None:
+    from app.schemas.banner import BannerResponse
+
+    monkeypatch.setattr(settings, "R2_ENABLED", True)
+    monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+    monkeypatch.setattr(settings, "BANNER_BASE_URL", "http://local.test/banners")
+
+    resp = BannerResponse(
+        banner_id=1,
+        name="t",
+        author=None,
+        size=BannerSize.small,
+        supports_dark=True,
+        supports_light=True,
+        full_image="eva/full.jpg",
+        left_image=None,
+        middle_image=None,
+        right_image=None,
+        in_r2=True,
+    )
+    assert resp.full_image_url == "https://cdn.test/banners/eva/full.jpg"
+
+
+def test_banner_response_falls_back_when_bit_false(monkeypatch) -> None:
+    from app.schemas.banner import BannerResponse
+
+    monkeypatch.setattr(settings, "R2_ENABLED", True)
+    monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+    monkeypatch.setattr(settings, "BANNER_BASE_URL", "http://local.test/banners")
+
+    resp = BannerResponse(
+        banner_id=1,
+        name="t",
+        author=None,
+        size=BannerSize.small,
+        supports_dark=True,
+        supports_light=True,
+        full_image="eva/full.jpg",
+        left_image=None,
+        middle_image=None,
+        right_image=None,
+        in_r2=False,
+    )
+    assert resp.full_image_url == "http://local.test/banners/eva/full.jpg"
+
+
+def test_banner_response_three_part_uses_cdn(monkeypatch) -> None:
+    from app.schemas.banner import BannerResponse
+
+    monkeypatch.setattr(settings, "R2_ENABLED", True)
+    monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+    monkeypatch.setattr(settings, "BANNER_BASE_URL", "http://local.test/banners")
+
+    resp = BannerResponse(
+        banner_id=1,
+        name="t",
+        author=None,
+        size=BannerSize.large,
+        supports_dark=True,
+        supports_light=True,
+        full_image=None,
+        left_image="hw/l.png",
+        middle_image="hw/m.png",
+        right_image="hw/r.png",
+        in_r2=True,
+    )
+    assert resp.left_image_url == "https://cdn.test/banners/hw/l.png"
+    assert resp.middle_image_url == "https://cdn.test/banners/hw/m.png"
+    assert resp.right_image_url == "https://cdn.test/banners/hw/r.png"
