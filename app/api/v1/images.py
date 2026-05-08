@@ -111,7 +111,7 @@ from app.services.image_processing import (
 )
 from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
-from app.services.iqdb import check_iqdb_similarity, remove_from_iqdb
+from app.services.iqdb import check_iqdb_similarity, check_iqdb_similarity_by_hash, remove_from_iqdb
 from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import recalculate_image_ratings
 from app.services.search import sync_tag_to_search
@@ -1504,7 +1504,7 @@ async def get_similar_images(
 
     The query image itself is excluded from results.
     """
-    # Get the image to find its thumbnail path
+    # Get the image to find its hash (or thumbnail filename for fallback).
     result = await db.execute(
         select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
     )
@@ -1513,19 +1513,22 @@ async def get_similar_images(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Construct thumbnail path
-    thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{image.filename}.webp"
+    if image.iqdb_hash:
+        # Hash-based query — no bytes, no file dependency.
+        similar_results = await check_iqdb_similarity_by_hash(image.iqdb_hash, threshold=threshold)
+    else:
+        # Transitional fallback for rows that pre-date the iqdb_hash
+        # column. Removed once populate_iqdb.py --only-missing-hash
+        # reports zero NULLs and we trust new uploads to populate live.
+        thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{image.filename}.webp"
+        if not thumb_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Image thumbnail not found - cannot perform similarity search",
+            )
+        similar_results = await check_iqdb_similarity(thumb_path, db, threshold=threshold)
 
-    if not thumb_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Image thumbnail not found - cannot perform similarity search",
-        )
-
-    # Query IQDB for similar images (threshold is 0-100 scale)
-    similar_results = await check_iqdb_similarity(thumb_path, db, threshold=threshold)
-
-    # Filter out the query image itself
+    # Filter out the query image itself (iqdb-rs returns it with high score).
     similar_results = [r for r in similar_results if r["image_id"] != image_id]
 
     if not similar_results:
