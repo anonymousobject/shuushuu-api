@@ -231,17 +231,117 @@ async def test_backfill_dry_run_writes_nothing(
 
     report = await cmd_avatars_backfill(dry_run=True, concurrency=2)
 
-    # No write attempted (would-be uploads aren't counted as actual uploads in
-    # dry-run; the report just reflects "nothing happened").
+    # No actual upload; the would-be upload is reflected in `would_upload`.
     assert report["uploaded"] == 0
     assert report["skipped_existing"] == 0
     assert report["missing_local"] == 0
+    assert report["would_upload"] == 1
+    assert report["failed"] == 0
 
     await db_session.refresh(user)
     assert user.avatar_in_r2 is False
     assert not await install_r2.object_exists(
         bucket="public", key=f"avatars/{fname}"
     )
+
+
+@pytest.mark.unit
+async def test_backfill_dry_run_reports_would_upload(
+    avatar_settings,
+    install_r2,
+    patch_session,
+    db_session,
+):
+    """Two unbackfilled users in dry-run → would_upload == 2, no writes."""
+    fname_a = "wouldup0000000000000000000000aaa.png"
+    fname_b = "wouldup0000000000000000000000bbb.png"
+    (avatar_settings / fname_a).write_bytes(b"\x89PNG-a")
+    (avatar_settings / fname_b).write_bytes(b"\x89PNG-b")
+
+    user_a = _make_user(
+        db_session, username="bf_wa", email="bf_wa@x.test", avatar=fname_a
+    )
+    user_b = _make_user(
+        db_session, username="bf_wb", email="bf_wb@x.test", avatar=fname_b
+    )
+    await db_session.commit()
+
+    report = await cmd_avatars_backfill(dry_run=True, concurrency=4)
+
+    assert report["would_upload"] == 2
+    assert report["uploaded"] == 0
+    assert report["skipped_existing"] == 0
+    assert report["missing_local"] == 0
+    assert report["failed"] == 0
+
+    await db_session.refresh(user_a)
+    await db_session.refresh(user_b)
+    assert user_a.avatar_in_r2 is False
+    assert user_b.avatar_in_r2 is False
+    for fname in (fname_a, fname_b):
+        assert not await install_r2.object_exists(
+            bucket="public", key=f"avatars/{fname}"
+        )
+
+
+@pytest.mark.unit
+async def test_backfill_continues_on_upload_failure(
+    avatar_settings,
+    install_r2,
+    patch_session,
+    db_session,
+    caplog,
+):
+    """One upload raises → run continues; that user not flipped, others are."""
+    fname_a = "fail0000000000000000000000000aaa.png"
+    fname_b = "fail0000000000000000000000000bbb.png"
+    fname_c = "fail0000000000000000000000000ccc.png"
+    for fname in (fname_a, fname_b, fname_c):
+        (avatar_settings / fname).write_bytes(b"\x89PNG-" + fname[:1].encode())
+
+    user_a = _make_user(
+        db_session, username="bf_fa", email="bf_fa@x.test", avatar=fname_a
+    )
+    user_b = _make_user(
+        db_session, username="bf_fb", email="bf_fb@x.test", avatar=fname_b
+    )
+    user_c = _make_user(
+        db_session, username="bf_fc", email="bf_fc@x.test", avatar=fname_c
+    )
+    await db_session.commit()
+
+    real_upload = install_r2.__class__.upload_bytes
+    call_count = {"n": 0}
+
+    async def _flaky_upload(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("simulated upload failure")
+        await real_upload(self, bucket=bucket, key=key, body=body, content_type=content_type)
+
+    with patch.object(install_r2.__class__, "upload_bytes", _flaky_upload):
+        with caplog.at_level(logging.WARNING):
+            # concurrency=1 makes ordering deterministic so we know exactly
+            # which call is the 2nd (and which user lands in `failed`).
+            report = await cmd_avatars_backfill(dry_run=False, concurrency=1)
+
+    assert report["uploaded"] == 2
+    assert report["failed"] == 1
+    assert report["skipped_existing"] == 0
+    assert report["missing_local"] == 0
+    assert report["would_upload"] == 0
+
+    # Refresh all three users; exactly two have the bit set.
+    await db_session.refresh(user_a)
+    await db_session.refresh(user_b)
+    await db_session.refresh(user_c)
+    flipped = [u.avatar_in_r2 for u in (user_a, user_b, user_c)]
+    assert sum(1 for f in flipped if f is True) == 2
+    assert sum(1 for f in flipped if f is False) == 1
+
+    # The failure log was captured.
+    log_messages = " ".join(rec.getMessage() for rec in caplog.records)
+    assert "avatar_r2_backfill_failed" in log_messages
 
 
 @pytest.mark.unit

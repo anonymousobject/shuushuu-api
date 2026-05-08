@@ -465,25 +465,102 @@ async def cmd_avatars_backfill(
     from ``AVATAR_STORAGE_PATH/{filename}`` if missing. Idempotent — already-
     present R2 objects flip the bit without re-uploading. Missing local files
     are logged and skipped (the bit stays false so the row will be retried on
-    the next run).
+    the next run). Per-row upload failures are logged and counted (``failed``);
+    the rest of the run continues.
 
     Concurrency is bounded by ``--concurrency`` (default 8); all R2 ops share
     one aioboto3 client via ``bulk_session()`` so we don't pay TLS setup per
-    call. ``--dry-run`` logs intent without writing to R2 or the DB.
+    call. Per-task DB writes would be unsafe (``AsyncSession`` is not
+    concurrency-safe); instead each task returns its outcome and a single
+    batched UPDATE flips ``avatar_in_r2`` for all successful user_ids after
+    ``gather`` completes. ``--dry-run`` logs intent without writing to R2 or
+    the DB and reports ``would_upload`` for rows that would have uploaded.
     """
     require_bulk_backfill()
     r2 = get_r2_storage()
     avatar_dir = FilePath(settings.AVATAR_STORAGE_PATH)
     sem = asyncio.Semaphore(concurrency)
 
-    processed = 0
-    uploaded = 0
-    skipped_existing = 0
-    missing_local = 0
-
     logger.info(
         "avatars_backfill_started", dry_run=dry_run, concurrency=concurrency
     )
+
+    async def process(user_id: int, filename: str) -> tuple[int, str]:
+        """Process one user (R2 ops only; no DB writes).
+
+        Returns ``(user_id, outcome)`` where outcome is one of
+        ``'uploaded'`` (real-run upload succeeded), ``'skipped_existing'``
+        (R2 object already present), ``'missing_local'`` (no file on disk),
+        ``'would_upload'`` (dry-run, would have uploaded), or ``'failed'``
+        (upload raised). Only ``'uploaded'`` and ``'skipped_existing'``
+        outcomes feed the post-gather batched UPDATE.
+        """
+        async with sem:
+            local = avatar_dir / filename
+            if not local.exists():
+                logger.warning(
+                    "avatar_local_missing",
+                    user_id=user_id,
+                    filename=filename,
+                )
+                return (user_id, "missing_local")
+
+            key = f"avatars/{filename}"
+            already_present = await r2.object_exists(
+                bucket=settings.R2_PUBLIC_BUCKET, key=key
+            )
+            if already_present:
+                logger.info(
+                    "avatar_r2_backfilled",
+                    user_id=user_id,
+                    key=key,
+                    skipped_existing=True,
+                    dry_run=dry_run,
+                )
+                return (user_id, "skipped_existing")
+
+            if dry_run:
+                logger.info(
+                    "avatar_r2_backfilled",
+                    user_id=user_id,
+                    key=key,
+                    skipped_existing=False,
+                    dry_run=True,
+                )
+                return (user_id, "would_upload")
+
+            body = local.read_bytes()
+            ct = (
+                mimetypes.guess_type(filename)[0]
+                or "application/octet-stream"
+            )
+            try:
+                await r2.upload_bytes(
+                    bucket=settings.R2_PUBLIC_BUCKET,
+                    key=key,
+                    body=body,
+                    content_type=ct,
+                )
+            except Exception as exc:
+                # Don't let one transient failure abort the whole run; log
+                # and move on. The bit stays false so the row will be
+                # retried on the next backfill run.
+                logger.warning(
+                    "avatar_r2_backfill_failed",
+                    user_id=user_id,
+                    key=key,
+                    error=type(exc).__name__,
+                    error_msg=str(exc),
+                )
+                return (user_id, "failed")
+            logger.info(
+                "avatar_r2_backfilled",
+                user_id=user_id,
+                key=key,
+                skipped_existing=False,
+                dry_run=False,
+            )
+            return (user_id, "uploaded")
 
     async with r2.bulk_session():
         async with get_async_session() as db:
@@ -495,80 +572,42 @@ async def cmd_avatars_backfill(
             )
             rows = result.all()
 
-            async def process(user_id: int, filename: str) -> tuple[int, int, int]:
-                """Process one user. Returns (uploaded, skipped_existing, missing_local)."""
-                async with sem:
-                    local = avatar_dir / filename
-                    if not local.exists():
-                        logger.warning(
-                            "avatar_local_missing",
-                            user_id=user_id,
-                            filename=filename,
-                        )
-                        return (0, 0, 1)
+        # Run all R2 ops outside any DB session — AsyncSession is not safe
+        # for concurrent use across gather'd tasks (SQLAlchemy 2.0).
+        results = await asyncio.gather(*(process(uid, fn) for uid, fn in rows))
 
-                    key = f"avatars/{filename}"
-                    already_present = await r2.object_exists(
-                        bucket=settings.R2_PUBLIC_BUCKET, key=key
-                    )
-                    if already_present:
-                        logger.info(
-                            "avatar_r2_backfilled",
-                            user_id=user_id,
-                            key=key,
-                            skipped_existing=True,
-                            dry_run=dry_run,
-                        )
-                        local_uploaded = 0
-                        local_skipped = 1
-                    else:
-                        if dry_run:
-                            logger.info(
-                                "avatar_r2_backfilled",
-                                user_id=user_id,
-                                key=key,
-                                skipped_existing=False,
-                                dry_run=True,
-                            )
-                            return (0, 0, 0)
-                        body = local.read_bytes()
-                        ct = (
-                            mimetypes.guess_type(filename)[0]
-                            or "application/octet-stream"
-                        )
-                        await r2.upload_bytes(
-                            bucket=settings.R2_PUBLIC_BUCKET,
-                            key=key,
-                            body=body,
-                            content_type=ct,
-                        )
-                        logger.info(
-                            "avatar_r2_backfilled",
-                            user_id=user_id,
-                            key=key,
-                            skipped_existing=False,
-                            dry_run=False,
-                        )
-                        local_uploaded = 1
-                        local_skipped = 0
+        processed = len(results)
+        uploaded = 0
+        skipped_existing = 0
+        missing_local = 0
+        would_upload = 0
+        failed = 0
+        flip_user_ids: list[int] = []
+        for user_id, outcome in results:
+            if outcome == "uploaded":
+                uploaded += 1
+                flip_user_ids.append(user_id)
+            elif outcome == "skipped_existing":
+                skipped_existing += 1
+                flip_user_ids.append(user_id)
+            elif outcome == "missing_local":
+                missing_local += 1
+            elif outcome == "would_upload":
+                would_upload += 1
+            elif outcome == "failed":
+                failed += 1
 
-                    if not dry_run:
-                        await db.execute(
-                            update(Users)
-                            .where(Users.user_id == user_id)  # type: ignore[arg-type]
-                            .values(avatar_in_r2=True)
-                        )
-                        await db.commit()
-                    return (local_uploaded, local_skipped, 0)
-
-            results = await asyncio.gather(
-                *(process(uid, fn) for uid, fn in rows)
-            )
-            for u, s, m in results:
-                processed += 1
-                uploaded += u
-                skipped_existing += s
-                missing_local += m
+        # Single batched UPDATE post-gather (mirrors cmd_verify's pattern).
+        # Skip on dry-run — would_upload outcomes don't feed the flip list
+        # anyway, but skipped_existing rows shouldn't be flipped in dry-run.
+        if not dry_run and flip_user_ids:
+            async with get_async_session() as db:
+                await db.execute(
+                    update(Users)
+                    .where(Users.user_id.in_(flip_user_ids))  # type: ignore[union-attr]
+                    .values(avatar_in_r2=True)
+                )
+                await db.commit()
 
     logger.info(
         "avatars_backfill_completed",
@@ -576,18 +615,23 @@ async def cmd_avatars_backfill(
         uploaded=uploaded,
         skipped_existing=skipped_existing,
         missing_local=missing_local,
+        would_upload=would_upload,
+        failed=failed,
         dry_run=dry_run,
     )
     print(
         f"{'[dry-run] ' if dry_run else ''}avatars: processed {processed} "
         f"(uploaded {uploaded}, skipped_existing {skipped_existing}, "
-        f"missing_local {missing_local})"
+        f"missing_local {missing_local}, would_upload {would_upload}, "
+        f"failed {failed})"
     )
     return {
         "processed": processed,
         "uploaded": uploaded,
         "skipped_existing": skipped_existing,
         "missing_local": missing_local,
+        "would_upload": would_upload,
+        "failed": failed,
     }
 
 
