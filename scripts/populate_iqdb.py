@@ -27,6 +27,7 @@ Options:
 import argparse
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -70,10 +71,23 @@ def add_image_to_iqdb(
             return False, "missing", None
 
         iqdb_url = f"http://{settings.IQDB_HOST}:{settings.IQDB_PORT}/images/{image_id}"
+        last_request_error: httpx.RequestError | None = None
+        response: httpx.Response | None = None
 
-        with open(thumb_path, "rb") as f:
-            files = {"file": (thumb_path.name, f, "image/jpeg")}
-            response = client.post(iqdb_url, files=files)
+        for attempt in range(3):
+            try:
+                with open(thumb_path, "rb") as f:
+                    files = {"file": (thumb_path.name, f, "image/jpeg")}
+                    response = client.post(iqdb_url, files=files)
+                last_request_error = None
+                break
+            except httpx.RequestError as e:
+                last_request_error = e
+                if attempt < 2:
+                    time.sleep(0.5 * (2**attempt))
+
+        if response is None:
+            return False, f"Request error: {str(last_request_error)[:100]}", None
 
         if response.status_code in (200, 201):
             try:
@@ -87,8 +101,6 @@ def add_image_to_iqdb(
             None,
         )
 
-    except httpx.RequestError as e:
-        return False, f"Request error: {str(e)[:100]}", None
     except Exception as e:
         return False, f"Error: {str(e)[:100]}", None
 
