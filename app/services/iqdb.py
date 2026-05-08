@@ -44,7 +44,7 @@ async def check_iqdb_similarity(
 
         # Read image file
         with open(file_path, "rb") as f:
-            files = {"file": (file_path.name, f, "image/jpeg")}
+            files = {"file": (file_path.name, f, "image/webp")}
 
             # Query IQDB with 5 second timeout
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -74,6 +74,48 @@ async def check_iqdb_similarity(
         return []
     except FileNotFoundError:
         # Image file doesn't exist yet
+        return []
+
+
+async def check_iqdb_similarity_by_hash(
+    iqdb_hash: str, *, threshold: float | None = None
+) -> list[dict[str, int | float]]:
+    """Query IQDB for similar images using a stored signature hash.
+
+    Mirrors check_iqdb_similarity but without the file upload — uses
+    iqdb-rs's `GET /query?h=<hash>` path which re-runs the similarity
+    search against the in-memory index using the given signature, no
+    bytes uploaded.
+
+    Args:
+        iqdb_hash: The signature string previously stored in
+            images.iqdb_hash (captured by add_to_iqdb_job).
+        threshold: Minimum similarity score (0-100), defaults to
+            settings.IQDB_SIMILARITY_THRESHOLD.
+
+    Returns:
+        List of {image_id, score} dicts above the threshold. Empty list
+        on iqdb-rs unavailability.
+    """
+    if threshold is None:
+        threshold = settings.IQDB_SIMILARITY_THRESHOLD
+
+    try:
+        iqdb_url = f"http://{settings.IQDB_HOST}:{settings.IQDB_PORT}/query"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(iqdb_url, params={"h": iqdb_hash})
+
+        if response.status_code != 200:
+            return []
+
+        results = response.json()
+        return [
+            {"image_id": r["post_id"], "score": r["score"]}
+            for r in results
+            if r.get("score", 0) >= threshold
+        ]
+
+    except (httpx.RequestError, httpx.TimeoutException, ValueError, KeyError, TypeError):
         return []
 
 
@@ -109,7 +151,7 @@ def add_to_iqdb(image_id: int, thumb_path: FilePath) -> None:
 
         # Read thumbnail file
         with open(thumb_path, "rb") as f:
-            files = {"file": (thumb_path.name, f, "image/jpeg")}
+            files = {"file": (thumb_path.name, f, "image/webp")}
 
             # Use sync httpx client since this runs in background thread
             with httpx.Client(timeout=10.0) as client:

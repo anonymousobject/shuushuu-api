@@ -233,6 +233,12 @@ class Images(ImageBase, table=True):
     # Internal tracking fields (privacy-sensitive)
     ip: str = Field(default="", max_length=45)
 
+    # IQDB signature hash captured at index time. Lets the similar-search
+    # route query iqdb-rs by hash (GET /query?h=...) without re-uploading
+    # the thumbnail bytes. NULL = not yet captured (pre-feature row);
+    # the route falls back to the file-based path while populated.
+    iqdb_hash: str | None = Field(default=None, max_length=533)
+
     # Internal flags and metadata
     medium: int = Field(default=0)
     large: int = Field(default=0)
