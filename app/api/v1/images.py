@@ -145,6 +145,7 @@ async def _hydrate_similar_images(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             )
         )
@@ -1119,6 +1120,7 @@ async def get_image_tag_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                avatar_in_r2=user.avatar_in_r2,
                 user_title=user.user_title,
                 groups=user.groups if user else [],
             )
@@ -1204,6 +1206,7 @@ async def get_image_status_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                avatar_in_r2=user.avatar_in_r2,
                 user_title=user.user_title,
                 groups=user.groups if user else [],
             )
@@ -1326,6 +1329,7 @@ async def search_by_hash(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             )
         )
@@ -1557,6 +1561,7 @@ async def get_bookmark_image(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             )
         )
@@ -2502,6 +2507,7 @@ async def report_image(
         user_id=reporter.id,
         username=reporter.username,
         avatar=reporter.avatar,
+        avatar_in_r2=reporter.avatar_in_r2,
         user_title=reporter.user_title,
         groups=reporter.groups,
     )

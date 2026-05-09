@@ -128,6 +128,7 @@ async def _build_user_summaries(db: AsyncSession, user_ids: set[int]) -> dict[in
             user_id=user.id,
             username=user.username,
             avatar=user.avatar,
+            avatar_in_r2=user.avatar_in_r2,
             user_title=user.user_title,
             groups=user.groups,
         )

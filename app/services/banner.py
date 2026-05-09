@@ -18,6 +18,36 @@ from app.schemas.banner import BannerPinResponse, BannerPreferencesResponse, Ban
 
 BANNER_CACHE_KEY_PREFIX = "banner:current:"
 
+# Strict extension -> Content-Type mapping for banner uploads.
+# We refuse to fall back to application/octet-stream because nosniff/CSP
+# break inline rendering of any object served with that type — the whole
+# point of making R2Storage.upload_bytes' content_type mandatory was to
+# force the call site to pick a real image/* MIME type.
+_BANNER_CONTENT_TYPES: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
+
+
+def banner_content_type(path: str) -> str:
+    """Return the image/* MIME type for a banner image path.
+
+    Args:
+        path: Banner image path (e.g. ``"eva/full.jpg"``); only the
+            extension is used.
+
+    Raises:
+        ValueError: When the extension isn't in the supported banner set.
+    """
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    ct = _BANNER_CONTENT_TYPES.get(ext)
+    if ct is None:
+        raise ValueError(f"No Content-Type mapping for banner path {path!r}")
+    return ct
+
 
 def _make_cache_key(theme: str, size: str) -> str:
     return f"{BANNER_CACHE_KEY_PREFIX}{theme}:{size}"

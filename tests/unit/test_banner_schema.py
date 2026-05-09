@@ -103,3 +103,140 @@ def test_banner_response_requires_all_three_parts() -> None:
             supports_dark=True,
             supports_light=True,
         )
+
+
+def test_banner_response_uses_cdn_when_in_r2_and_enabled(monkeypatch) -> None:
+    from app.schemas.banner import BannerResponse
+
+    monkeypatch.setattr(settings, "R2_ENABLED", True)
+    monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+    monkeypatch.setattr(settings, "BANNER_BASE_URL", "http://local.test/banners")
+
+    resp = BannerResponse(
+        banner_id=1,
+        name="t",
+        author=None,
+        size=BannerSize.small,
+        supports_dark=True,
+        supports_light=True,
+        full_image="eva/full.jpg",
+        left_image=None,
+        middle_image=None,
+        right_image=None,
+        in_r2=True,
+    )
+    assert resp.full_image_url == "https://cdn.test/banners/eva/full.jpg"
+
+
+def test_banner_response_falls_back_when_bit_false(monkeypatch) -> None:
+    from app.schemas.banner import BannerResponse
+
+    monkeypatch.setattr(settings, "R2_ENABLED", True)
+    monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+    monkeypatch.setattr(settings, "BANNER_BASE_URL", "http://local.test/banners")
+
+    resp = BannerResponse(
+        banner_id=1,
+        name="t",
+        author=None,
+        size=BannerSize.small,
+        supports_dark=True,
+        supports_light=True,
+        full_image="eva/full.jpg",
+        left_image=None,
+        middle_image=None,
+        right_image=None,
+        in_r2=False,
+    )
+    assert resp.full_image_url == "http://local.test/banners/eva/full.jpg"
+
+
+def test_banner_response_three_part_uses_cdn(monkeypatch) -> None:
+    from app.schemas.banner import BannerResponse
+
+    monkeypatch.setattr(settings, "R2_ENABLED", True)
+    monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+    monkeypatch.setattr(settings, "BANNER_BASE_URL", "http://local.test/banners")
+
+    resp = BannerResponse(
+        banner_id=1,
+        name="t",
+        author=None,
+        size=BannerSize.large,
+        supports_dark=True,
+        supports_light=True,
+        full_image=None,
+        left_image="hw/l.png",
+        middle_image="hw/m.png",
+        right_image="hw/r.png",
+        in_r2=True,
+    )
+    assert resp.left_image_url == "https://cdn.test/banners/hw/l.png"
+    assert resp.middle_image_url == "https://cdn.test/banners/hw/m.png"
+    assert resp.right_image_url == "https://cdn.test/banners/hw/r.png"
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("eva/full.jpg", "image/jpeg"),
+        ("foo.JPEG", "image/jpeg"),
+        ("hw/l.png", "image/png"),
+        ("anim.gif", "image/gif"),
+        ("modern.webp", "image/webp"),
+    ],
+)
+def test_banner_content_type_known_extensions(path, expected):
+    from app.services.banner import banner_content_type
+
+    assert banner_content_type(path) == expected
+
+
+def test_banner_content_type_raises_on_unknown_extension():
+    from app.services.banner import banner_content_type
+
+    with pytest.raises(ValueError, match="No Content-Type mapping for banner path"):
+        banner_content_type("foo.bmp")
+
+
+def test_banner_content_type_raises_on_missing_extension():
+    from app.services.banner import banner_content_type
+
+    with pytest.raises(ValueError, match="No Content-Type mapping for banner path"):
+        banner_content_type("noextension")
+
+
+def test_banner_response_excludes_in_r2_from_serialization() -> None:
+    """``in_r2`` is an internal routing detail; clients only see *_url fields.
+
+    Asserts both model_dump() and model_dump_json() drop the key, while it
+    remains readable on the instance (so the computed URL fields can use it).
+    """
+    import json
+
+    from app.schemas.banner import BannerResponse
+
+    resp = BannerResponse(
+        banner_id=1,
+        name="t",
+        author=None,
+        size=BannerSize.small,
+        supports_dark=True,
+        supports_light=True,
+        full_image="eva/full.png",
+        left_image=None,
+        middle_image=None,
+        right_image=None,
+        in_r2=True,
+    )
+
+    dumped = resp.model_dump()
+    assert "in_r2" not in dumped, f"in_r2 leaked into model_dump(): {sorted(dumped)}"
+
+    dumped_json = json.loads(resp.model_dump_json())
+    assert "in_r2" not in dumped_json, (
+        f"in_r2 leaked into model_dump_json(): {sorted(dumped_json)}"
+    )
+
+    # Still readable on the instance for the URL helper.
+    assert resp.in_r2 is True
