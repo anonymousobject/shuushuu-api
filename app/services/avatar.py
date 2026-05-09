@@ -15,12 +15,46 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.logging import get_logger
+from app.core.r2_client import get_r2_storage
 from app.models import Users
 from app.services.image_processing import validate_image_file
 
 logger = get_logger(__name__)
 
 ALLOWED_AVATAR_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif"}
+
+_AVATAR_CONTENT_TYPES: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+}
+
+
+def avatar_content_type(ext: str) -> str:
+    """Map an avatar extension (no dot) to its image/* MIME type.
+
+    Raises:
+        ValueError: When the extension is not in the allowed avatar set.
+    """
+    ct = _AVATAR_CONTENT_TYPES.get(ext.lower())
+    if ct is None:
+        raise ValueError(f"No Content-Type mapping for avatar extension {ext!r}")
+    return ct
+
+
+def avatar_url(filename: str | None, in_r2: bool) -> str | None:
+    """Return the public URL for an avatar, choosing CDN vs local FS.
+
+    When R2_ENABLED is false, the per-row bit is ignored and the local URL
+    is returned — preserving today's dev-only behavior even if a dev pulls
+    a prod DB dump where rows have the bit set.
+    """
+    if not filename:
+        return None
+    if settings.R2_ENABLED and in_r2:
+        return f"{settings.R2_PUBLIC_CDN_URL}/avatars/{filename}"
+    return f"{settings.IMAGE_BASE_URL}/images/avatars/{filename}"
 
 
 def validate_avatar_upload(file: UploadFile, temp_path: Path) -> None:
@@ -176,15 +210,19 @@ def save_avatar(content: bytes, ext: str) -> str:
     return filename
 
 
-async def delete_avatar_if_orphaned(filename: str, db: AsyncSession) -> bool:
-    """Delete avatar file from disk if no users reference it.
+async def delete_avatar_if_orphaned(filename: str, old_in_r2: bool, db: AsyncSession) -> bool:
+    """Delete avatar file from disk (and R2 if old_in_r2) if no users reference it.
 
     Args:
         filename: Avatar filename to check
+        old_in_r2: Whether this filename's R2 object existed at the start of the
+            request — used to decide whether to issue an R2 delete. Avoids a
+            needless API call for legacy local-only rows.
         db: Database session
 
     Returns:
-        True if file was deleted, False otherwise
+        True if the local file was deleted, False otherwise. R2 delete is
+        best-effort and not reflected in the return value.
     """
     if not filename:
         return False
@@ -195,12 +233,19 @@ async def delete_avatar_if_orphaned(filename: str, db: AsyncSession) -> bool:
     )
     count = result.scalar() or 0
 
-    if count == 0:
-        # No users reference this avatar, safe to delete
-        file_path = Path(settings.AVATAR_STORAGE_PATH) / filename
-        if file_path.exists():
-            file_path.unlink()
-            logger.info("orphaned_avatar_deleted", filename=filename)
-            return True
+    if count != 0:
+        return False
 
-    return False
+    deleted_local = False
+    file_path = Path(settings.AVATAR_STORAGE_PATH) / filename
+    if file_path.exists():
+        file_path.unlink()
+        deleted_local = True
+        logger.info("orphaned_avatar_deleted", filename=filename)
+
+    if old_in_r2 and settings.R2_ENABLED:
+        r2 = get_r2_storage()
+        await r2.delete_object(bucket=settings.R2_PUBLIC_BUCKET, key=f"avatars/{filename}")
+        logger.info("avatar_r2_orphan_deleted", key=f"avatars/{filename}")
+
+    return deleted_local

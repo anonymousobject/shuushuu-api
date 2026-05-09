@@ -2,9 +2,7 @@
 Shared/common Pydantic schemas used across multiple endpoints
 """
 
-from pydantic import BaseModel, computed_field
-
-from app.config import settings
+from pydantic import BaseModel, Field, computed_field
 
 
 class UserSummary(BaseModel):
@@ -18,6 +16,10 @@ class UserSummary(BaseModel):
     user_id: int
     username: str
     avatar: str | None = None  # Avatar filename from database
+    # Internal storage-routing detail consumed by the avatar_url
+    # computed_field; exclude=True keeps it out of the API response while
+    # still letting the property read it.
+    avatar_in_r2: bool = Field(default=False, exclude=True)
     user_title: str | None = None
     groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
 
@@ -28,6 +30,6 @@ class UserSummary(BaseModel):
     @property
     def avatar_url(self) -> str | None:
         """Generate avatar URL from avatar field"""
-        if self.avatar:
-            return f"{settings.IMAGE_BASE_URL}/images/avatars/{self.avatar}"
-        return None
+        from app.services.avatar import avatar_url as _build_avatar_url
+
+        return _build_avatar_url(self.avatar, self.avatar_in_r2)

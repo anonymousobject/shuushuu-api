@@ -5,9 +5,11 @@ Tests cover:
 - Avatar validation (file type, size, content)
 - Avatar resizing (static images, animated GIFs)
 - Avatar storage (MD5 hashing, file saving)
+- Orphan-deletion signature (R2-aware via old_in_r2 flag)
 """
 
 import hashlib
+import inspect
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,6 +20,7 @@ from PIL import Image
 
 from app.services.avatar import (
     ALLOWED_AVATAR_EXTENSIONS,
+    delete_avatar_if_orphaned,
     resize_avatar,
     save_avatar,
     validate_avatar_upload,
@@ -353,3 +356,15 @@ class TestAllowedExtensions:
         assert ".png" in ALLOWED_AVATAR_EXTENSIONS
         assert ".gif" in ALLOWED_AVATAR_EXTENSIONS
         assert len(ALLOWED_AVATAR_EXTENSIONS) == 4
+
+
+class TestDeleteAvatarIfOrphanedR2:
+    """Orphan deletion now considers the old_in_r2 bit."""
+
+    def test_signature_accepts_old_in_r2(self):
+        """Confirm the new signature exposes old_in_r2 as a parameter."""
+        sig = inspect.signature(delete_avatar_if_orphaned)
+        assert "old_in_r2" in sig.parameters
+        # Order matters: callers pass it positionally between filename and db.
+        params = list(sig.parameters)
+        assert params == ["filename", "old_in_r2", "db"]

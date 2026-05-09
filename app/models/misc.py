@@ -52,6 +52,7 @@ class BannerBase(SQLModel):
 
     # State
     active: bool = Field(default=True)
+    in_r2: bool = Field(default=False)
 
 
 class Banners(BannerBase, table=True):

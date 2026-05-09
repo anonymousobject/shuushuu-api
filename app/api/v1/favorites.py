@@ -51,6 +51,7 @@ async def get_favorite_images(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             )
         )

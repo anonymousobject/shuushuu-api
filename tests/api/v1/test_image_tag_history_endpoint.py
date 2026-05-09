@@ -9,7 +9,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import TagType
+from app.config import TagType, settings
 from app.models.image import Images
 from app.models.tag import Tags
 from app.models.tag_history import TagHistory
@@ -392,6 +392,83 @@ class TestGetImageTagHistory:
         assert data["items"][0]["tag_history_id"] == history3.tag_history_id
         assert data["items"][1]["tag_history_id"] == history2.tag_history_id
         assert data["items"][2]["tag_history_id"] == history1.tag_history_id
+
+    async def test_user_avatar_url_uses_cdn_when_avatar_in_r2(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When R2 is enabled and the user has avatar_in_r2=True, the embedded
+        UserSummary's avatar_url must point at the CDN, not local FS.
+
+        Regression: previously the route built UserSummary without passing
+        avatar_in_r2 through, so the schema default (False) leaked and forced
+        local URLs even after backfill flipped the bit.
+        """
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+        monkeypatch.setattr(settings, "IMAGE_BASE_URL", "http://local.test")
+
+        # Create a user with avatar in R2
+        user = Users(
+            username="r2avataruser",
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email="r2avatar@example.com",
+            active=1,
+            avatar="abc.png",
+            avatar_in_r2=True,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # Create an image
+        image = Images(
+            filename="r2avatar1",
+            ext="jpg",
+            md5_hash="r2avatarmd511111111111111111111",
+            user_id=user.user_id,
+            width=100,
+            height=100,
+            filesize=1000,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # Create a tag and history entry attributed to that user
+        tag = Tags(title="r2 avatar tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        history = TagHistory(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            action="a",
+            user_id=user.user_id,
+        )
+        db_session.add(history)
+        await db_session.commit()
+
+        # GET image tag history
+        response = await client.get(f"/api/v1/images/{image.image_id}/tag-history")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert len(data["items"]) == 1
+
+        item_user = data["items"][0]["user"]
+        assert item_user is not None
+        assert item_user["user_id"] == user.user_id
+        assert item_user["avatar"] == "abc.png"
+        # avatar_in_r2 is internal routing state and is excluded from
+        # serialization; clients only see avatar_url.
+        assert "avatar_in_r2" not in item_user
+        assert item_user["avatar_url"] == "https://cdn.test/avatars/abc.png"
 
     async def test_handles_null_user(
         self, client: AsyncClient, db_session: AsyncSession
