@@ -44,7 +44,11 @@ class UserBase(SQLModel):
 
     # Avatar
     avatar: str = Field(default="", max_length=255)
-    avatar_in_r2: bool = Field(default=False)
+    # Internal storage-routing detail used by the avatar_url helper to pick
+    # CDN vs local FS. Excluded from serialization (exclude=True) — clients
+    # only ever see avatar_url, never this routing bit. Still readable on
+    # the model instance, so the computed_field can consume it.
+    avatar_in_r2: bool = Field(default=False, exclude=True)
     gender: str = Field(default="", max_length=50)
 
     # Public stats

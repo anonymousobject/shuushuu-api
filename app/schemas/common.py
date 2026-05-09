@@ -2,7 +2,7 @@
 Shared/common Pydantic schemas used across multiple endpoints
 """
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 
 
 class UserSummary(BaseModel):
@@ -16,7 +16,10 @@ class UserSummary(BaseModel):
     user_id: int
     username: str
     avatar: str | None = None  # Avatar filename from database
-    avatar_in_r2: bool = False
+    # Internal storage-routing detail consumed by the avatar_url
+    # computed_field; exclude=True keeps it out of the API response while
+    # still letting the property read it.
+    avatar_in_r2: bool = Field(default=False, exclude=True)
     user_title: str | None = None
     groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
 

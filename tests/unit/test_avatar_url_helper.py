@@ -75,3 +75,57 @@ def test_user_summary_avatar_url_uses_helper(monkeypatch):
     monkeypatch.setattr(settings, "IMAGE_BASE_URL", "http://local.test")
     summary = UserSummary(user_id=1, username="alice", avatar="abc.png", avatar_in_r2=True)
     assert summary.avatar_url == "https://cdn.test/avatars/abc.png"
+
+
+def test_user_summary_excludes_avatar_in_r2_from_serialization() -> None:
+    """``avatar_in_r2`` is an internal routing detail; clients only see avatar_url."""
+    import json
+
+    from app.schemas.common import UserSummary
+
+    summary = UserSummary(user_id=1, username="alice", avatar="abc.png", avatar_in_r2=True)
+
+    dumped = summary.model_dump()
+    assert "avatar_in_r2" not in dumped, (
+        f"avatar_in_r2 leaked into model_dump(): {sorted(dumped)}"
+    )
+
+    dumped_json = json.loads(summary.model_dump_json())
+    assert "avatar_in_r2" not in dumped_json, (
+        f"avatar_in_r2 leaked into model_dump_json(): {sorted(dumped_json)}"
+    )
+
+    # Still readable on the instance for the URL helper.
+    assert summary.avatar_in_r2 is True
+
+
+def test_user_response_excludes_avatar_in_r2_from_serialization() -> None:
+    """UserResponse inherits avatar_in_r2 from UserBase; exclude=True must propagate."""
+    from app.schemas.user import UserResponse
+
+    data = {
+        "user_id": 1,
+        "username": "alice",
+        "avatar": "abc.png",
+        "avatar_in_r2": True,
+    }
+    resp = UserResponse.model_construct(**data)
+    dumped = resp.model_dump()
+    assert "avatar_in_r2" not in dumped, (
+        f"avatar_in_r2 leaked into UserResponse.model_dump(): {sorted(dumped)}"
+    )
+    # Still readable on the instance.
+    assert resp.avatar_in_r2 is True
+
+
+def test_user_create_response_excludes_avatar_in_r2_from_serialization() -> None:
+    """UserCreateResponse inherits from UserBase; exclude=True must propagate."""
+    from app.schemas.user import UserCreateResponse
+
+    resp = UserCreateResponse.model_construct(
+        user_id=1, username="alice", email="a@x.test", avatar_in_r2=True
+    )
+    dumped = resp.model_dump()
+    assert "avatar_in_r2" not in dumped, (
+        f"avatar_in_r2 leaked into UserCreateResponse.model_dump(): {sorted(dumped)}"
+    )

@@ -465,7 +465,9 @@ class TestGetImageTagHistory:
         assert item_user is not None
         assert item_user["user_id"] == user.user_id
         assert item_user["avatar"] == "abc.png"
-        assert item_user["avatar_in_r2"] is True
+        # avatar_in_r2 is internal routing state and is excluded from
+        # serialization; clients only see avatar_url.
+        assert "avatar_in_r2" not in item_user
         assert item_user["avatar_url"] == "https://cdn.test/avatars/abc.png"
 
     async def test_handles_null_user(

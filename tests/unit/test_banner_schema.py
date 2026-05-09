@@ -204,3 +204,39 @@ def test_banner_content_type_raises_on_missing_extension():
 
     with pytest.raises(ValueError, match="No Content-Type mapping for banner path"):
         banner_content_type("noextension")
+
+
+def test_banner_response_excludes_in_r2_from_serialization() -> None:
+    """``in_r2`` is an internal routing detail; clients only see *_url fields.
+
+    Asserts both model_dump() and model_dump_json() drop the key, while it
+    remains readable on the instance (so the computed URL fields can use it).
+    """
+    import json
+
+    from app.schemas.banner import BannerResponse
+
+    resp = BannerResponse(
+        banner_id=1,
+        name="t",
+        author=None,
+        size=BannerSize.small,
+        supports_dark=True,
+        supports_light=True,
+        full_image="eva/full.png",
+        left_image=None,
+        middle_image=None,
+        right_image=None,
+        in_r2=True,
+    )
+
+    dumped = resp.model_dump()
+    assert "in_r2" not in dumped, f"in_r2 leaked into model_dump(): {sorted(dumped)}"
+
+    dumped_json = json.loads(resp.model_dump_json())
+    assert "in_r2" not in dumped_json, (
+        f"in_r2 leaked into model_dump_json(): {sorted(dumped_json)}"
+    )
+
+    # Still readable on the instance for the URL helper.
+    assert resp.in_r2 is True

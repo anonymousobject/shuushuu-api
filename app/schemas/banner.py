@@ -3,7 +3,7 @@
 Defines request/response models for banner endpoints.
 """
 
-from pydantic import BaseModel, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 from app.config import settings
 from app.models.misc import BannerSize, BannerTheme
@@ -25,7 +25,10 @@ class BannerResponse(BaseModel):
     middle_image: str | None
     right_image: str | None
 
-    in_r2: bool = False
+    # Internal storage-routing detail consumed by _image_url to pick CDN vs
+    # local FS; exclude=True keeps it out of the API response while still
+    # letting the URL helper read it.
+    in_r2: bool = Field(default=False, exclude=True)
 
     model_config = {"from_attributes": True}
 
