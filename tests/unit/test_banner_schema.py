@@ -206,13 +206,15 @@ def test_banner_content_type_raises_on_missing_extension():
         banner_content_type("noextension")
 
 
-def test_banner_response_excludes_in_r2_from_serialization() -> None:
-    """``in_r2`` is an internal routing detail; clients only see *_url fields.
+def test_banner_response_round_trip_preserves_in_r2() -> None:
+    """``in_r2`` MUST survive a model_dump_json -> model_validate_json cycle.
 
-    Asserts both model_dump() and model_dump_json() drop the key, while it
-    remains readable on the instance (so the computed URL fields can use it).
+    Banner responses are cached in redis via ``model_dump_json()`` and read back
+    via ``model_validate_json()``. If ``in_r2`` were excluded from serialization
+    (as it once was), every cache hit would deserialize with the default
+    ``False`` and silently fall back to the local-FS URL even when the DB row
+    has ``in_r2=True``.
     """
-    import json
 
     from app.schemas.banner import BannerResponse
 
@@ -230,13 +232,8 @@ def test_banner_response_excludes_in_r2_from_serialization() -> None:
         in_r2=True,
     )
 
-    dumped = resp.model_dump()
-    assert "in_r2" not in dumped, f"in_r2 leaked into model_dump(): {sorted(dumped)}"
+    round_tripped = BannerResponse.model_validate_json(resp.model_dump_json())
 
-    dumped_json = json.loads(resp.model_dump_json())
-    assert "in_r2" not in dumped_json, (
-        f"in_r2 leaked into model_dump_json(): {sorted(dumped_json)}"
+    assert round_tripped.in_r2 is True, (
+        "in_r2 was lost across the cache serialization round trip"
     )
-
-    # Still readable on the instance for the URL helper.
-    assert resp.in_r2 is True
