@@ -347,6 +347,72 @@ async def test_backfill_dry_run_reports_would_upload_parts(
 
 
 @pytest.mark.unit
+async def test_backfill_dry_run_three_part_mixed(
+    banner_settings,
+    install_r2,
+    patch_session,
+    db_session,
+):
+    """Three-part banner: 1 part pre-existing in R2, 2 parts not.
+
+    Dry-run should report:
+      - ``would_upload_parts == 2`` (the two missing parts)
+      - ``would_flip_rows == 1`` (row would flip because all parts are
+        either already present or would-upload)
+      - ``in_r2`` stays False (dry-run suppresses the actual UPDATE)
+    """
+    _seed_local(
+        banner_settings,
+        "drymix/l.png",
+        "drymix/m.png",
+        "drymix/r.png",
+    )
+
+    # Pre-upload only the middle part; left and right would need uploading.
+    await install_r2.upload_bytes(
+        bucket="public",
+        key="banners/drymix/m.png",
+        body=b"PRE-EXISTING-MIDDLE",
+        content_type="image/png",
+    )
+
+    banner = Banners(
+        name="drymix",
+        size=BannerSize.large,
+        left_image="drymix/l.png",
+        middle_image="drymix/m.png",
+        right_image="drymix/r.png",
+    )
+    db_session.add(banner)
+    await db_session.commit()
+    await db_session.refresh(banner)
+
+    report = await cmd_banners_backfill(dry_run=True)
+
+    assert report["processed"] == 1
+    assert report["flipped"] == 0
+    assert report["skipped_missing_local"] == 0
+    assert report["failed_rows"] == 0
+    assert report["would_upload_parts"] == 2
+    assert report["would_flip_rows"] == 1
+
+    await db_session.refresh(banner)
+    assert banner.in_r2 is False
+
+    # The two missing parts were not actually uploaded.
+    for path in ("drymix/l.png", "drymix/r.png"):
+        assert not await install_r2.object_exists(
+            bucket="public", key=f"banners/{path}"
+        )
+
+    # Pre-existing middle object preserved (its bytes were not overwritten).
+    async with install_r2._acquire_client() as s3:
+        obj = await s3.get_object(Bucket="public", Key="banners/drymix/m.png")
+        body = await obj["Body"].read()
+    assert body == b"PRE-EXISTING-MIDDLE"
+
+
+@pytest.mark.unit
 async def test_backfill_continues_on_part_upload_failure(
     banner_settings,
     install_r2,

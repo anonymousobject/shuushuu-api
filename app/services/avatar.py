@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.logging import get_logger
+from app.core.r2_client import get_r2_storage
 from app.models import Users
 from app.services.image_processing import validate_image_file
 
@@ -236,10 +237,6 @@ async def delete_avatar_if_orphaned(filename: str, old_in_r2: bool, db: AsyncSes
         logger.info("orphaned_avatar_deleted", filename=filename)
 
     if old_in_r2 and settings.R2_ENABLED:
-        # Local import avoids a circular import (r2_client → r2_storage → logging,
-        # avatar.py is imported by r2_client's caller graph).
-        from app.core.r2_client import get_r2_storage
-
         r2 = get_r2_storage()
         await r2.delete_object(bucket=settings.R2_PUBLIC_BUCKET, key=f"avatars/{filename}")
         logger.info("avatar_r2_orphan_deleted", key=f"avatars/{filename}")

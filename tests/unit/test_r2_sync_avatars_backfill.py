@@ -345,6 +345,51 @@ async def test_backfill_continues_on_upload_failure(
 
 
 @pytest.mark.unit
+async def test_backfill_dry_run_existing_object_does_not_flip(
+    avatar_settings,
+    install_r2,
+    patch_session,
+    db_session,
+):
+    """Pre-existing R2 object + dry-run → skipped_existing >= 1, bit stays False.
+
+    Locks in the dry-run-suppresses-flip behavior: even though
+    ``skipped_existing`` outcomes do append to ``flip_user_ids`` internally,
+    the outer ``if not dry_run`` guard prevents the batched UPDATE from
+    running.
+    """
+    fname = "dryexist000000000000000000000000.png"
+    (avatar_settings / fname).write_bytes(b"local-bytes")
+
+    # Pre-seed R2 so the script's object_exists() check returns True.
+    await install_r2.upload_bytes(
+        bucket="public",
+        key=f"avatars/{fname}",
+        body=b"r2-pre-existing-bytes",
+        content_type="image/png",
+    )
+
+    user = _make_user(
+        db_session,
+        username="bf_dryexist",
+        email="bf_dryexist@x.test",
+        avatar=fname,
+    )
+    await db_session.commit()
+
+    report = await cmd_avatars_backfill(dry_run=True, concurrency=2)
+
+    assert report["skipped_existing"] >= 1
+    assert report["uploaded"] == 0
+    assert report["would_upload"] == 0
+    assert report["missing_local"] == 0
+    assert report["failed"] == 0
+
+    await db_session.refresh(user)
+    assert user.avatar_in_r2 is False
+
+
+@pytest.mark.unit
 def test_backfill_refuses_without_bulk_flag(monkeypatch):
     """R2_ALLOW_BULK_BACKFILL=false → require_bulk_backfill raises."""
     monkeypatch.setattr(settings, "R2_ENABLED", True)

@@ -211,9 +211,7 @@ async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
     last_tick_at = started_at
     last_tick_moved = 0
 
-    logger.info(
-        "split_existing_started", dry_run=dry_run, concurrency=concurrency
-    )
+    logger.info("split_existing_started", dry_run=dry_run, concurrency=concurrency)
 
     async def process_image(image: Images) -> tuple[int, int]:
         """Process one image. Returns (moved_count, error_count)."""
@@ -225,9 +223,7 @@ async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
                 ext = "webp" if variant == "thumbs" else image.ext
                 key = f"{variant}/{image.filename}.{ext}"
                 try:
-                    if not await r2.object_exists(
-                        bucket=settings.R2_PUBLIC_BUCKET, key=key
-                    ):
+                    if not await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key):
                         continue
                     if dry_run:
                         print(
@@ -241,9 +237,7 @@ async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
                         dst_bucket=settings.R2_PRIVATE_BUCKET,
                         key=key,
                     )
-                    await r2.delete_object(
-                        bucket=settings.R2_PUBLIC_BUCKET, key=key
-                    )
+                    await r2.delete_object(bucket=settings.R2_PUBLIC_BUCKET, key=key)
                     local_moved += 1
                 except Exception as exc:
                     # Isolate per-variant failures — one bad object shouldn't
@@ -261,9 +255,7 @@ async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
         """Drain completed tasks until in_flight is below `until`."""
         nonlocal moved, errors
         while len(in_flight) > until:
-            done, _ = await asyncio.wait(
-                in_flight, return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 in_flight.discard(task)
                 m, e = task.result()
@@ -287,12 +279,8 @@ async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
                 if images_seen % 100 == 0:
                     now = time.monotonic()
                     window = now - last_tick_at
-                    recent_rate = (
-                        (moved - last_tick_moved) / window if window > 0 else 0.0
-                    )
-                    overall_rate = (
-                        moved / (now - started_at) if now > started_at else 0.0
-                    )
+                    recent_rate = (moved - last_tick_moved) / window if window > 0 else 0.0
+                    overall_rate = moved / (now - started_at) if now > started_at else 0.0
                     logger.info(
                         "split_existing_progress",
                         images_seen=images_seen,
@@ -421,7 +409,9 @@ async def reconcile(*, stale_after: int) -> None:
                     key = f"{variant}/{image.filename}.{ext}"
                     local = FilePath(settings.STORAGE_PATH) / variant / f"{image.filename}.{ext}"
                     if not local.exists():
-                        logger.warning("reconcile_local_missing", image_id=image.image_id, variant=variant)
+                        logger.warning(
+                            "reconcile_local_missing", image_id=image.image_id, variant=variant
+                        )
                         all_uploaded = False
                         break
                     if not await r2.object_exists(bucket=bucket, key=key):
@@ -455,9 +445,7 @@ async def reconcile(*, stale_after: int) -> None:
     print(f"reconciled {healed}/{processed} rows")
 
 
-async def cmd_avatars_backfill(
-    *, dry_run: bool = False, concurrency: int = 8
-) -> dict[str, int]:
+async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -> dict[str, int]:
     """Upload local avatars to R2 and flip avatar_in_r2=True per row.
 
     Walks `users` rows where ``avatar != ''`` AND ``avatar_in_r2 = false``,
@@ -481,9 +469,7 @@ async def cmd_avatars_backfill(
     avatar_dir = FilePath(settings.AVATAR_STORAGE_PATH)
     sem = asyncio.Semaphore(concurrency)
 
-    logger.info(
-        "avatars_backfill_started", dry_run=dry_run, concurrency=concurrency
-    )
+    logger.info("avatars_backfill_started", dry_run=dry_run, concurrency=concurrency)
 
     async def process(user_id: int, filename: str) -> tuple[int, str]:
         """Process one user (R2 ops only; no DB writes).
@@ -506,9 +492,7 @@ async def cmd_avatars_backfill(
                 return (user_id, "missing_local")
 
             key = f"avatars/{filename}"
-            already_present = await r2.object_exists(
-                bucket=settings.R2_PUBLIC_BUCKET, key=key
-            )
+            already_present = await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key)
             if already_present:
                 logger.info(
                     "avatar_r2_backfilled",
@@ -530,10 +514,7 @@ async def cmd_avatars_backfill(
                 return (user_id, "would_upload")
 
             body = local.read_bytes()
-            ct = (
-                mimetypes.guess_type(filename)[0]
-                or "application/octet-stream"
-            )
+            ct = mimetypes.guess_type(filename)[0] or "application/octet-stream"
             try:
                 await r2.upload_bytes(
                     bucket=settings.R2_PUBLIC_BUCKET,
@@ -598,8 +579,7 @@ async def cmd_avatars_backfill(
                 failed += 1
 
         # Single batched UPDATE post-gather (mirrors cmd_verify's pattern).
-        # Skip on dry-run — would_upload outcomes don't feed the flip list
-        # anyway, but skipped_existing rows shouldn't be flipped in dry-run.
+        # Suppressed in dry-run regardless of which outcomes landed in flip_user_ids.
         if not dry_run and flip_user_ids:
             async with get_async_session() as db:
                 await db.execute(
@@ -710,9 +690,7 @@ async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
             row_failed = False
             for path in paths:
                 key = f"banners/{path}"
-                if await r2.object_exists(
-                    bucket=settings.R2_PUBLIC_BUCKET, key=key
-                ):
+                if await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key):
                     parts_skipped.append(path)
                     continue
                 if dry_run:
@@ -720,10 +698,7 @@ async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
                     would_upload_parts += 1
                     continue
                 body = (banner_dir / path).read_bytes()
-                ct = (
-                    mimetypes.guess_type(path)[0]
-                    or "application/octet-stream"
-                )
+                ct = mimetypes.guess_type(path)[0] or "application/octet-stream"
                 try:
                     await r2.upload_bytes(
                         bucket=settings.R2_PUBLIC_BUCKET,
@@ -970,12 +945,8 @@ async def verify(
                 ext = "webp" if variant == "thumbs" else image.ext
                 key = f"{variant}/{image.filename}.{ext}"
                 try:
-                    in_public = await r2.object_exists(
-                        bucket=settings.R2_PUBLIC_BUCKET, key=key
-                    )
-                    in_private = await r2.object_exists(
-                        bucket=settings.R2_PRIVATE_BUCKET, key=key
-                    )
+                    in_public = await r2.object_exists(bucket=settings.R2_PUBLIC_BUCKET, key=key)
+                    in_private = await r2.object_exists(bucket=settings.R2_PRIVATE_BUCKET, key=key)
                 except Exception as exc:
                     # Don't report bogus discrepancies on transient HEAD failures.
                     logger.error(
@@ -1112,10 +1083,7 @@ async def verify(
         "errors": errors,
     }
     suffix = f", flipped {flipped} to NONE" if fix else ""
-    print(
-        f"checked {checked} rows, {len(discrepancies)} discrepancies"
-        f" ({errors} errors){suffix}"
-    )
+    print(f"checked {checked} rows, {len(discrepancies)} discrepancies ({errors} errors){suffix}")
     for d in discrepancies[:20]:
         location = f"{d['bucket']}/{d['key']}" if d.get("bucket") else d["key"]
         print(f"  {d['kind']}: {location} (image_id={d['image_id']})")
@@ -1203,9 +1171,7 @@ async def _run(args: argparse.Namespace) -> int:
     elif args.command == "reconcile":
         await reconcile(stale_after=args.stale_after)
     elif args.command == "avatars-backfill":
-        await cmd_avatars_backfill(
-            dry_run=args.dry_run, concurrency=args.concurrency
-        )
+        await cmd_avatars_backfill(dry_run=args.dry_run, concurrency=args.concurrency)
     elif args.command == "banners-backfill":
         await cmd_banners_backfill(dry_run=args.dry_run)
     elif args.command == "image":
