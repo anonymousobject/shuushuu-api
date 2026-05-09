@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import mimetypes
 import sys
 import time
 from pathlib import Path as FilePath
@@ -41,6 +40,8 @@ from app.core.r2_constants import (
 from app.models.image import Images, VariantStatus
 from app.models.misc import Banners
 from app.models.user import Users
+from app.services.avatar import avatar_content_type
+from app.services.banner import banner_content_type
 from app.services.cloudflare import purge_cache_by_urls
 
 logger = get_logger(__name__)
@@ -514,8 +515,14 @@ async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -
                 return (user_id, "would_upload")
 
             body = local.read_bytes()
-            ct = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            # Avatars are constrained to ALLOWED_AVATAR_EXTENSIONS at upload
+            # time, so the strict mapping in avatar_content_type is correct;
+            # an unknown extension here means a corrupted DB row and should
+            # surface as a per-row failure (not silently uploaded as
+            # application/octet-stream, which nosniff/CSP would reject).
+            ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
             try:
+                ct = avatar_content_type(ext)
                 await r2.upload_bytes(
                     bucket=settings.R2_PUBLIC_BUCKET,
                     key=key,
@@ -698,8 +705,12 @@ async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
                     would_upload_parts += 1
                     continue
                 body = (banner_dir / path).read_bytes()
-                ct = mimetypes.guess_type(path)[0] or "application/octet-stream"
+                # Strict extension -> Content-Type mapping; refuse to fall
+                # back to application/octet-stream because nosniff/CSP would
+                # block inline rendering. An unknown banner extension is an
+                # operator-actionable failure, not something to paper over.
                 try:
+                    ct = banner_content_type(path)
                     await r2.upload_bytes(
                         bucket=settings.R2_PUBLIC_BUCKET,
                         key=key,

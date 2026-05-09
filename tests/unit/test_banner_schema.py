@@ -174,3 +174,33 @@ def test_banner_response_three_part_uses_cdn(monkeypatch) -> None:
     assert resp.left_image_url == "https://cdn.test/banners/hw/l.png"
     assert resp.middle_image_url == "https://cdn.test/banners/hw/m.png"
     assert resp.right_image_url == "https://cdn.test/banners/hw/r.png"
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("eva/full.jpg", "image/jpeg"),
+        ("foo.JPEG", "image/jpeg"),
+        ("hw/l.png", "image/png"),
+        ("anim.gif", "image/gif"),
+        ("modern.webp", "image/webp"),
+    ],
+)
+def test_banner_content_type_known_extensions(path, expected):
+    from app.services.banner import banner_content_type
+
+    assert banner_content_type(path) == expected
+
+
+def test_banner_content_type_raises_on_unknown_extension():
+    from app.services.banner import banner_content_type
+
+    with pytest.raises(ValueError, match="No Content-Type mapping for banner path"):
+        banner_content_type("foo.bmp")
+
+
+def test_banner_content_type_raises_on_missing_extension():
+    from app.services.banner import banner_content_type
+
+    with pytest.raises(ValueError, match="No Content-Type mapping for banner path"):
+        banner_content_type("noextension")
