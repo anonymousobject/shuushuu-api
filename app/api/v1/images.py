@@ -1120,6 +1120,7 @@ async def get_image_tag_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                avatar_in_r2=user.avatar_in_r2,
                 user_title=user.user_title,
                 groups=user.groups if user else [],
             )
@@ -1205,6 +1206,7 @@ async def get_image_status_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                avatar_in_r2=user.avatar_in_r2,
                 user_title=user.user_title,
                 groups=user.groups if user else [],
             )
@@ -2505,6 +2507,7 @@ async def report_image(
         user_id=reporter.id,
         username=reporter.username,
         avatar=reporter.avatar,
+        avatar_in_r2=reporter.avatar_in_r2,
         user_title=reporter.user_title,
         groups=reporter.groups,
     )
