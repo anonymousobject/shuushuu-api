@@ -3,7 +3,7 @@
 import pytest
 
 from app.config import settings
-from app.services.avatar import _avatar_content_type, avatar_url
+from app.services.avatar import avatar_content_type, avatar_url
 
 
 def test_avatar_url_returns_none_for_empty():
@@ -42,7 +42,12 @@ def test_avatar_url_cdn_when_both_true(monkeypatch):
     ],
 )
 def test_avatar_content_type(ext, expected):
-    assert _avatar_content_type(ext) == expected
+    assert avatar_content_type(ext) == expected
+
+
+def test_avatar_content_type_raises_on_unknown_extension():
+    with pytest.raises(ValueError, match="No Content-Type mapping for avatar extension"):
+        avatar_content_type("webp")
 
 
 def test_user_response_avatar_url_uses_helper(monkeypatch):

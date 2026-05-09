@@ -57,7 +57,7 @@ from app.schemas.user import (
     UserWarningsResponse,
 )
 from app.services.avatar import (
-    _avatar_content_type,
+    avatar_content_type,
     delete_avatar_if_orphaned,
     resize_avatar,
     save_avatar,
@@ -337,7 +337,7 @@ async def _upload_avatar(
                     bucket=settings.R2_PUBLIC_BUCKET,
                     key=f"avatars/{new_filename}",
                     body=processed_content,
-                    content_type=_avatar_content_type(ext),
+                    content_type=avatar_content_type(ext),
                 )
                 new_in_r2 = True
                 logger.info(

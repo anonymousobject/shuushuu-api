@@ -31,9 +31,16 @@ _AVATAR_CONTENT_TYPES: dict[str, str] = {
 }
 
 
-def _avatar_content_type(ext: str) -> str:
-    """Map an avatar extension (no dot) to its image/* MIME type."""
-    return _AVATAR_CONTENT_TYPES[ext.lower()]
+def avatar_content_type(ext: str) -> str:
+    """Map an avatar extension (no dot) to its image/* MIME type.
+
+    Raises:
+        ValueError: When the extension is not in the allowed avatar set.
+    """
+    ct = _AVATAR_CONTENT_TYPES.get(ext.lower())
+    if ct is None:
+        raise ValueError(f"No Content-Type mapping for avatar extension {ext!r}")
+    return ct
 
 
 def avatar_url(filename: str | None, in_r2: bool) -> str | None:
