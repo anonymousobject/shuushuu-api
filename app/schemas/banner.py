@@ -25,10 +25,13 @@ class BannerResponse(BaseModel):
     middle_image: str | None
     right_image: str | None
 
-    # Internal storage-routing detail consumed by _image_url to pick CDN vs
-    # local FS; exclude=True keeps it out of the API response while still
-    # letting the URL helper read it.
-    in_r2: bool = Field(default=False, exclude=True)
+    # Storage-routing flag consumed by _image_url to pick CDN vs local FS.
+    # NOT excluded from serialization: BannerResponse instances are cached
+    # to redis via model_dump_json(), and a field-level exclude=True drops
+    # the value from the cached payload — every subsequent cache hit then
+    # deserializes with in_r2=default=False and silently falls back to the
+    # local FS path even when the row in the DB has in_r2=True.
+    in_r2: bool = Field(default=False)
 
     model_config = {"from_attributes": True}
 
