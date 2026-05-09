@@ -763,6 +763,7 @@ async def get_images_by_tag(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             )
         )
@@ -933,6 +934,7 @@ async def get_tag(
             user_id=user.user_id or 0,
             username=user.username,
             avatar=user.avatar or None,
+            avatar_in_r2=user.avatar_in_r2,
             user_title=user.user_title,
             groups=user.groups,  # Uses the eager-loaded groups property
         )
@@ -1100,6 +1102,7 @@ async def get_tag_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                avatar_in_r2=user.avatar_in_r2,
                 user_title=user.user_title,
                 groups=user.groups if user else [],
             )
@@ -1216,6 +1219,7 @@ async def get_tag_usage_history(
                 user_id=user.user_id,
                 username=user.username,
                 avatar=user.avatar,
+                avatar_in_r2=user.avatar_in_r2,
                 user_title=user.user_title,
                 groups=user.groups if user else [],
             )

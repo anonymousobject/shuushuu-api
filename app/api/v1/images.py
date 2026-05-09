@@ -145,6 +145,7 @@ async def _hydrate_similar_images(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             )
         )
@@ -1326,6 +1327,7 @@ async def search_by_hash(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             )
         )
@@ -1557,6 +1559,7 @@ async def get_bookmark_image(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             )
         )

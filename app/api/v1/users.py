@@ -670,6 +670,7 @@ async def get_user_images(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             ),
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
@@ -784,6 +785,7 @@ async def get_user_favorites(
                 Users.user_id,  # type: ignore[arg-type]
                 Users.username,  # type: ignore[arg-type]
                 Users.avatar,  # type: ignore[arg-type]
+                Users.avatar_in_r2,  # type: ignore[arg-type]
                 Users.user_title,  # type: ignore[arg-type]
             ),
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]

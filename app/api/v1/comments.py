@@ -666,6 +666,7 @@ async def report_comment(
             user_id=reporter.id,
             username=reporter.username,
             avatar=reporter.avatar,
+            avatar_in_r2=reporter.avatar_in_r2,
             user_title=reporter.user_title,
             groups=reporter.groups,
         ),
