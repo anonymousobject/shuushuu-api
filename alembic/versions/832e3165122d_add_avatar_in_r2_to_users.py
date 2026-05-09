@@ -35,5 +35,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove avatar_in_r2 column."""
-    op.drop_column("users", "avatar_in_r2")
+    """Remove avatar_in_r2 column.
+
+    Mirror the upgrade's metadata-only ALTER (ALGORITHM=INSTANT, LOCK=NONE)
+    so the rollback path is non-locking too.
+    """
+    op.execute(
+        "ALTER TABLE users DROP COLUMN avatar_in_r2, "
+        "ALGORITHM=INSTANT, LOCK=NONE"
+    )
