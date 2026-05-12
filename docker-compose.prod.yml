@@ -388,6 +388,9 @@ volumes:
   grafana_data:
     name: grafana_data_prod
     driver: local
+  mediawiki-images:
+    name: mediawiki_images_prod
+    driver: local
   alloy_data:
     name: alloy_data_prod
     driver: local
