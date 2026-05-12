@@ -93,6 +93,13 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Legacy mediawiki URLs lived at e-shuushuu.net/wiki/*. After the
+    # move to wiki.<apex>/* (no /wiki prefix), this 301 keeps existing
+    # links working. Bare /wiki and /wiki/ also land at the new root.
+    location = /wiki  { return 301 https://wiki.${NGINX_HOST}/; }
+    location = /wiki/ { return 301 https://wiki.${NGINX_HOST}/; }
+    location ~ ^/wiki/(.*)$ { return 301 https://wiki.${NGINX_HOST}/$1; }
+
     # Protected image routes - proxy to FastAPI for permission checks
     location ~ "^/images/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
         proxy_pass http://api:8000;

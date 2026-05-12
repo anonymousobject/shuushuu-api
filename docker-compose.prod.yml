@@ -102,12 +102,31 @@ services:
       # Maps CF-Connecting-IP -> $remote_addr for traffic from CF edges.
       - ./docker/nginx/cloudflare-real-ip.conf:/etc/nginx/conf.d/cloudflare-real-ip.conf:ro
       - ./docker/nginx/.htpasswd.example:/etc/nginx/.htpasswd:ro
+      # Mediawiki vhost — rendered by the compose_project ansible role
+      # into ./docker/nginx/conf.d/wiki.conf when the host's
+      # compose_project_wiki_hostname is set. The .conf glob in
+      # nginx.conf picks it up; matches the same pattern as the CF
+      # real-IP file above.
+      - ./docker/nginx/conf.d/wiki.conf:/etc/nginx/conf.d/wiki.conf:ro
       # LE certs land here via the certbot service. Read-only for nginx;
       # certbot has it RW.
       - ./docker/certbot/conf:/etc/letsencrypt:ro
     depends_on:
       - api
       - frontend
+    restart: unless-stopped
+    logging: *default-logging
+
+  mediawiki:
+    image: mediawiki:1.45
+    container_name: shuushuu-mediawiki-prod
+    ports: !override []   # nginx fronts it; no host port
+    volumes:
+      # Rendered by ansible (compose_project role) with vault secrets +
+      # the kyouko host's compose_project_wiki_hostname.
+      - ./mediawiki/LocalSettings.php:/var/www/html/LocalSettings.php:ro
+      # Wiki uploads (16 GB+ migrated from chiyo:/shuushuu/site/wiki/images/).
+      - mediawiki-images:/var/www/html/images
     restart: unless-stopped
     logging: *default-logging
 
