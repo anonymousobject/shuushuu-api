@@ -254,8 +254,8 @@ services:
   # remapped container can't be granted host docker-group membership directly.
   # The proxy is the *only* component with host-level docker access — alloy
   # itself stays under userns-remap and reaches the API only via TCP on an
-  # isolated network. Allowlist is CONTAINERS=1 only: read /containers/json
-  # (and read-only inspect endpoints), no exec/create/networks/volumes/etc.
+  # isolated network. Allowlist is CONTAINERS=1 + NETWORKS=1 only — both
+  # read-only inspect endpoints; no exec/create/volumes/auth/etc.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0
     container_name: shuushuu-docker-socket-proxy-prod
@@ -284,7 +284,7 @@ services:
     # tmpfs there shadows the haproxy.cfg.template that ships in the image.
     # The container has no persistent mounts beyond the read-only docker
     # socket, so its writable layer is ephemeral; the trust boundary is the
-    # CONTAINERS=1 allowlist and the internal-only socket-proxy-net.
+    # CONTAINERS=1 + NETWORKS=1 allowlist and the internal-only socket-proxy-net.
     ports: []  # No host port; only reachable on socket-proxy-net
     networks:
       - socket-proxy-net
@@ -298,13 +298,12 @@ services:
     # daemon's userns-remap. It does NOT have host docker.sock access; it
     # talks to docker-socket-proxy over TCP on socket-proxy-net.
     user: "473:473"
-    group_add:
-      # adm — needed to read /var/log/nginx/* (mode 640 www-data:adm) once
-      # the host nginx role lands. WARNING: under userns-remap this gid is
-      # translated to a host gid that is not adm, so this currently does
-      # nothing. Will be revisited when nginx logging is wired up (likely
-      # by reading nginx logs through the socket proxy too, not a bind mount).
-      - "4"
+    # No group_add for adm: under the daemon's userns-remap, container
+    # gids are translated to host gids that aren't `adm`, so any
+    # group_add here is a no-op for reading host /var/log/nginx (mode
+    # 640 www-data:adm). When nginx log ingestion is wired up later
+    # we'll do it through the socket proxy, not a bind mount, which
+    # sidesteps the gid problem entirely.
     environment:
       - TZ=${TZ:-UTC}
     command: >
@@ -363,10 +362,15 @@ services:
       - |
         trap exit TERM
         while :; do
-          certbot renew --quiet \
+          # Drop --quiet so renewal errors hit stderr → container logs → Loki.
+          # `|| echo` keeps the loop alive on transient failures while still
+          # surfacing them; without it a silent --quiet || true could mask
+          # a broken CF token or DNS issue until the cert literally expires.
+          certbot renew \
             --dns-cloudflare \
             --dns-cloudflare-credentials /run/secrets/cloudflare.ini \
-            --dns-cloudflare-propagation-seconds 30 || true
+            --dns-cloudflare-propagation-seconds 30 \
+            || echo "certbot renew FAILED at $(date -u +%FT%TZ)" >&2
           sleep 12h & wait $${!}
         done
     restart: unless-stopped
