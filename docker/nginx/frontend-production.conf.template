@@ -95,9 +95,8 @@ server {
 
     # Legacy mediawiki URLs lived at e-shuushuu.net/wiki/*. After the
     # move to wiki.e-shuushuu.net/* (no /wiki prefix), this 301 keeps
-    # existing links working. Hardcoded target (not derived from
-    # NGINX_HOST) because the wiki uses its production hostname even
-    # while the main app is still on staging.<apex>.
+    # existing links working. Hardcoded target rather than derived
+    # from NGINX_HOST so the same redirect works on any apex variant.
     location = /wiki  { return 301 https://wiki.e-shuushuu.net/; }
     location = /wiki/ { return 301 https://wiki.e-shuushuu.net/; }
     location ~ ^/wiki/(.*)$ { return 301 https://wiki.e-shuushuu.net/$1; }
