@@ -1,6 +1,6 @@
-# Production override — host nginx as edge proxy
-# Docker provides: api, frontend, arq-worker, redis, iqdb
-# Host provides: nginx (SSL, wiki/forums), certbot, PHP-FPM
+# Production override — containerised nginx + certbot as TLS edge
+# Docker provides: api, arq-worker, frontend, nginx, certbot, mediawiki, meilisearch, iqdb, loki, grafana, alloy, docker-socket-proxy
+# DB tier (native, out-of-stack): mariadb + redis reached over private network; containers are busybox stubs
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d
 
 x-logging: &default-logging
@@ -17,6 +17,11 @@ services:
     image: busybox:latest
     entrypoint: ["sleep", "infinity"]
     restart: "no"
+    # Drop the base service's 3306 host publish — production MariaDB
+    # lives natively on a separate DB tier reached over a private
+    # network. The stub exists purely to keep depends_on chains
+    # merging cleanly.
+    ports: !override []
     healthcheck:
       test: ["CMD", "true"]
       interval: 5s
@@ -28,10 +33,28 @@ services:
   redis-commander:
     profiles: [disabled]
 
+  # In production, Redis runs as a native service on the DB tier rather
+  # than as a container on the app host. Stub the service the same way
+  # mariadb is stubbed so depends_on chains keep merging cleanly without
+  # actually running a redis container.
   redis:
-    container_name: shuushuu-redis-prod
-    ports: !override []  # Internal only in production
-    logging: *default-logging
+    image: busybox:latest
+    entrypoint: ["sleep", "infinity"]
+    restart: "no"
+    # Same as mariadb — Redis is native on the DB tier. Stub keeps
+    # depends_on merging; no need to publish 6379 on the host.
+    ports: !override []
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      retries: 1
+
+  # Meilisearch runs as an actual container in prod (unlike redis/mariadb),
+  # but only api/arq-worker should reach it over the compose default
+  # network. Drop the base service's 7700 host publish so it isn't
+  # accessible from outside the container network.
+  meilisearch:
+    ports: !override []
 
   frontend:
     # NOTE: Expects shuushuu-frontend repo at ../shuushuu-frontend (sibling directory)
@@ -65,7 +88,52 @@ services:
     logging: *default-logging
 
   nginx:
-    profiles: [disabled]
+    container_name: shuushuu-nginx-prod
+    environment:
+      - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
+      - NGINX_HOST=${NGINX_HOST:?NGINX_HOST must be set in .env.prod}
+    volumes: !override
+      # Read-only image storage for nginx's static-file locations.
+      - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}:ro
+      # Base nginx.conf and prod-specific site template (envsubst'd at
+      # entrypoint into /etc/nginx/conf.d/default.conf).
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/frontend-production.conf.template:/etc/nginx/conf.d/frontend.conf.template:ro
+      # Auto-included at http level via /etc/nginx/conf.d/*.conf.
+      # Maps CF-Connecting-IP -> $remote_addr for traffic from CF edges.
+      - ./docker/nginx/cloudflare-real-ip.conf:/etc/nginx/conf.d/cloudflare-real-ip.conf:ro
+      - ./docker/nginx/.htpasswd.example:/etc/nginx/.htpasswd:ro
+      # Mediawiki vhost — tracked in the repo (not ansible-rendered).
+      # Hostname is hardcoded (wiki.e-shuushuu.net) because the wiki
+      # only runs in prod and its public URL is fixed. The .conf glob
+      # in nginx.conf picks it up automatically.
+      - ./docker/nginx/conf.d/wiki.conf:/etc/nginx/conf.d/wiki.conf:ro
+      # LE certs land here via the certbot service. Read-only for nginx;
+      # certbot has it RW.
+      - ./docker/certbot/conf:/etc/letsencrypt:ro
+    depends_on:
+      - api
+      - frontend
+      # wiki.conf proxies to the mediawiki container. Docker DNS
+      # resolves the name regardless, but without this nginx can accept
+      # wiki traffic before php-fpm is ready and return a transient 502
+      # on a fresh `compose up`.
+      - mediawiki
+    restart: unless-stopped
+    logging: *default-logging
+
+  mediawiki:
+    image: mediawiki:1.45
+    container_name: shuushuu-mediawiki-prod
+    ports: !override []   # nginx fronts it; no host port
+    volumes:
+      # Rendered by ansible (compose_project role) with vault secrets
+      # + the host's configured wiki hostname.
+      - ./mediawiki/LocalSettings.php:/var/www/html/LocalSettings.php:ro
+      # Wiki uploads volume — populated by the IaC layer.
+      - mediawiki-images:/var/www/html/images
+    restart: unless-stopped
+    logging: *default-logging
 
   api:
     container_name: shuushuu-api-prod
@@ -73,11 +141,15 @@ services:
     command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports: !override
       - "127.0.0.1:8000:8000"
-    env_file: .env.prod
+    # !override replaces (rather than merges with) the base service's
+    # env_file list; without it, compose tries to load both .env and
+    # .env.prod and errors out when the dev-only .env is absent.
+    env_file: !override
+      - .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=redis://redis:6379/0
-      - ARQ_REDIS_URL=redis://redis:6379/1
+      - REDIS_URL=${REDIS_URL}
+      - ARQ_REDIS_URL=${ARQ_REDIS_URL}
       - IQDB_HOST=iqdb
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
@@ -88,18 +160,21 @@ services:
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      - "fern:10.0.0.62"
     logging: *default-logging
 
   arq-worker:
     container_name: shuushuu-arq-worker-prod
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
     ports: []
-    env_file: .env.prod
+    # !override replaces (rather than merges with) the base service's
+    # env_file list; without it, compose tries to load both .env and
+    # .env.prod and errors out when the dev-only .env is absent.
+    env_file: !override
+      - .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=redis://redis:6379/0
-      - ARQ_REDIS_URL=redis://redis:6379/1
+      - REDIS_URL=${REDIS_URL}
+      - ARQ_REDIS_URL=${ARQ_REDIS_URL}
       - IQDB_HOST=iqdb
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
@@ -110,7 +185,6 @@ services:
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      - "fern:10.0.0.62"
     logging: *default-logging
 
   iqdb:
@@ -178,31 +252,62 @@ services:
       - logging-net
     logging: *default-logging
 
+  # Brokers Docker Engine API access for alloy. Runs with userns_mode: host so
+  # it can read the real /var/run/docker.sock (which is root:docker on the
+  # host); under userns-remap, container UIDs/GIDs are translated and a
+  # remapped container can't be granted host docker-group membership directly.
+  # The proxy is the *only* component with host-level docker access — alloy
+  # itself stays under userns-remap and reaches the API only via TCP on an
+  # isolated network. Allowlist is CONTAINERS=1 + NETWORKS=1 only — both
+  # read-only inspect endpoints; no exec/create/volumes/auth/etc.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: shuushuu-docker-socket-proxy-prod
+    userns_mode: "host"
+    group_add:
+      # Host docker GID, rendered into .env.prod by ansible (gathered via
+      # `getent group docker` on the host). Required because under
+      # userns_mode: host the in-container gid must match the real host gid.
+      - "${DOCKER_GID:?DOCKER_GID must be set in .env.prod}"
+    environment:
+      # CONTAINERS — list/inspect containers (alloy's discovery.docker)
+      # NETWORKS  — GET /networks/<id>; alloy enriches container targets
+      #             with __meta_docker_network_* labels and 403s without it.
+      # Both are read-only API surfaces in the proxy's allowlist.
+      CONTAINERS: 1
+      NETWORKS: 1
+      # Suppress per-request haproxy access lines. Alloy polls every 10s
+      # and queries /containers/json + per-container inspects + /networks/<id>,
+      # which would otherwise flood Loki with self-referential noise.
+      # Real warnings/errors are still emitted.
+      LOG_LEVEL: warning
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # No read_only filesystem: the image's entrypoint regenerates its
+    # haproxy config in /usr/local/etc/haproxy at boot from env vars, and
+    # tmpfs there shadows the haproxy.cfg.template that ships in the image.
+    # The container has no persistent mounts beyond the read-only docker
+    # socket, so its writable layer is ephemeral; the trust boundary is the
+    # CONTAINERS=1 + NETWORKS=1 allowlist and the internal-only socket-proxy-net.
+    ports: []  # No host port; only reachable on socket-proxy-net
+    networks:
+      - socket-proxy-net
+    restart: unless-stopped
+    logging: *default-logging
+
   alloy:
     image: grafana/alloy:v1.5.1
     container_name: shuushuu-alloy-prod
-    # Alloy's image default user is uid 473 (`alloy`); /var/lib/alloy/data is owned by 473.
-    # We keep that uid and use group_add for the supplementary groups Alloy needs:
-    #   docker — to read /var/run/docker.sock (gid varies; check with getent on prod)
-    #   adm    — to read /var/log/nginx/* (added in Chunk 4)
-    #
-    # SECURITY NOTE: membership in the host `docker` group grants effective root
-    # via the socket. The threat model treats Alloy as a trusted in-cluster agent
-    # (same posture as cAdvisor, Watchtower). See logging design doc, "Security
-    # considerations".
+    # Alloy runs as its image-default user (uid 473) and stays under the
+    # daemon's userns-remap. It does NOT have host docker.sock access; it
+    # talks to docker-socket-proxy over TCP on socket-proxy-net.
     user: "473:473"
-    group_add:
-      # WARNING: gids vary per host. Wrong docker gid → no container logs flow;
-      # wrong adm gid → no host nginx logs flow. Both fail silently (Alloy stays
-      # healthy). Verify on prod before deploying:
-      #   getent group docker | cut -d: -f3   # commonly 999 on Debian/Ubuntu
-      #   getent group adm    | cut -d: -f3   # commonly 4 on Debian/Ubuntu
-      - "116"  # docker
-      - "4"    # adm — needed to read /var/log/nginx/* (mode 640 www-data:adm)
-    # nginx error log timestamps are written in the host's local time without
-    # an offset. Pass the host TZ through so stage.timestamp's `location =
-    # "Local"` interprets them correctly. Default UTC; override via .env.prod
-    # if nginx is logging in a non-UTC zone.
+    # No group_add for adm: under the daemon's userns-remap, container
+    # gids are translated to host gids that aren't `adm`, so any
+    # group_add here is a no-op for reading host /var/log/nginx (mode
+    # 640 www-data:adm). When nginx log ingestion is wired up later
+    # we'll do it through the socket proxy, not a bind mount, which
+    # sidesteps the gid problem entirely.
     environment:
       - TZ=${TZ:-UTC}
     command: >
@@ -213,27 +318,74 @@ services:
     ports: !override []  # Internal only
     volumes:
       - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/log/nginx:/var/log/nginx:ro
       - alloy_data:/var/lib/alloy/data
     depends_on:
       loki:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     # No healthcheck: grafana/alloy ships without wget/curl/nc, so the standard
     # HTTP probe pattern doesn't work. Alloy is a leaf service — nothing depends
     # on its `service_healthy` status — and `restart: unless-stopped` plus
-    # docker's process supervision are sufficient. If a future service ever
-    # needs to wait for Alloy, swap to a bash /dev/tcp probe.
+    # docker's process supervision are sufficient.
     restart: unless-stopped
-    # Alloy reads container logs via the docker socket (filesystem-level, not
-    # network) and host nginx logs from a bind mount, so it doesn't need the
-    # app network to monitor app containers — only network access to Loki.
     networks:
       - logging-net
+      - socket-proxy-net
     logging: *default-logging
 
+  # certbot/dns-cloudflare ships with the dns-cloudflare plugin pre-installed.
+  # DNS-01 challenge means we don't need port 80 reachable from LE — certbot
+  # writes a TXT record via the CF API, LE polls DNS, certbot removes it.
+  #
+  # Steady state: this service loops `certbot renew` every 12h (DNS-01 every
+  # time, no webroot needed). The entrypoint override is just for the loop;
+  # for one-shot operations override entrypoint per-invocation.
+  #
+  # Initial issuance (run once, before `docker compose up`):
+  # nginx.conf unconditionally includes wiki.conf, which references
+  # /etc/letsencrypt/live/wiki.e-shuushuu.net/… — nginx -t fails and the
+  # container won't start until both certs exist. Issue them first:
+  #
+  #   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  #       --env-file ../.env.prod run --rm --entrypoint certbot certbot \
+  #       certonly --non-interactive --agree-tos \
+  #       --email <your-email> \
+  #       --dns-cloudflare \
+  #       --dns-cloudflare-credentials /run/secrets/cloudflare.ini \
+  #       --dns-cloudflare-propagation-seconds 30 \
+  #       -d $NGINX_HOST
+  #
+  # Then issue (or add as a SAN in a second invocation) the wiki cert:
+  #   … certonly … -d wiki.e-shuushuu.net
   certbot:
-    profiles: [disabled]
+    image: certbot/dns-cloudflare:v3.0.0
+    container_name: shuushuu-certbot-prod
+    volumes:
+      - ./docker/certbot/conf:/etc/letsencrypt
+      # cloudflare.ini is rendered by ansible (compose_project role) at
+      # ./secrets/cloudflare.ini with mode 0600. The bind preserves mode,
+      # which certbot requires (refuses to read the file otherwise).
+      - ./secrets/cloudflare.ini:/run/secrets/cloudflare.ini:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        trap exit TERM
+        while :; do
+          # Drop --quiet so renewal errors hit stderr → container logs → Loki.
+          # `|| echo` keeps the loop alive on transient failures while still
+          # surfacing them; without it a silent --quiet || true could mask
+          # a broken CF token or DNS issue until the cert literally expires.
+          certbot renew \
+            --dns-cloudflare \
+            --dns-cloudflare-credentials /run/secrets/cloudflare.ini \
+            --dns-cloudflare-propagation-seconds 30 \
+            || echo "certbot renew FAILED at $(date -u +%FT%TZ)" >&2
+          sleep 12h & wait $${!}
+        done
+    restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   # Override generic volume names with prod-specific names for data isolation
@@ -252,6 +404,14 @@ volumes:
   grafana_data:
     name: grafana_data_prod
     driver: local
+  mediawiki-images:
+    name: mediawiki_images_prod
+    # external: managed outside compose. The volume is populated by the
+    # cutover runbook (tar-piped from chiyo on first migration; restic
+    # restore on DR) and backed up by the IaC layer's backup_client.
+    # Compose shouldn't recreate/delete it. Fresh deploys must run
+    # `docker volume create mediawiki_images_prod` before `compose up`.
+    external: true
   alloy_data:
     name: alloy_data_prod
     driver: local
@@ -260,3 +420,10 @@ networks:
   logging-net:
     name: shuushuu-logging-net-prod
     driver: bridge
+  # Carries only alloy ↔ docker-socket-proxy traffic. Internal so nothing
+  # outside this network can reach the proxy (which would otherwise be a
+  # docker-API gateway from the broader compose project).
+  socket-proxy-net:
+    name: shuushuu-socket-proxy-net-prod
+    driver: bridge
+    internal: true

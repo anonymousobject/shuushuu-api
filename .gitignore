@@ -119,3 +119,8 @@ shuu-php/
 AGENTS.md
 CLAUDE.md
 .github/copilot-instructions.md
+
+# Ansible-rendered prod config (compose_project role on the prod host).
+# Not tracked — rendered fresh from vault each apply.
+/mediawiki/
+/secrets/
