@@ -103,11 +103,10 @@ services:
       # Maps CF-Connecting-IP -> $remote_addr for traffic from CF edges.
       - ./docker/nginx/cloudflare-real-ip.conf:/etc/nginx/conf.d/cloudflare-real-ip.conf:ro
       - ./docker/nginx/.htpasswd.example:/etc/nginx/.htpasswd:ro
-      # Mediawiki vhost — rendered by the compose_project ansible role
-      # into ./docker/nginx/conf.d/wiki.conf when the host's
-      # compose_project_wiki_hostname is set. The .conf glob in
-      # nginx.conf picks it up; matches the same pattern as the CF
-      # real-IP file above.
+      # Mediawiki vhost — tracked in the repo (not ansible-rendered).
+      # Hostname is hardcoded (wiki.e-shuushuu.net) because the wiki
+      # only runs in prod and its public URL is fixed. The .conf glob
+      # in nginx.conf picks it up automatically.
       - ./docker/nginx/conf.d/wiki.conf:/etc/nginx/conf.d/wiki.conf:ro
       # LE certs land here via the certbot service. Read-only for nginx;
       # certbot has it RW.
@@ -115,10 +114,10 @@ services:
     depends_on:
       - api
       - frontend
-      # nginx's ansible-rendered wiki.conf proxies to the mediawiki
-      # container. Docker DNS resolves the name regardless, but without
-      # this nginx can accept wiki traffic before php-fpm is ready and
-      # return a transient 502 on a fresh `compose up`.
+      # wiki.conf proxies to the mediawiki container. Docker DNS
+      # resolves the name regardless, but without this nginx can accept
+      # wiki traffic before php-fpm is ready and return a transient 502
+      # on a fresh `compose up`.
       - mediawiki
     restart: unless-stopped
     logging: *default-logging
@@ -344,7 +343,11 @@ services:
   # time, no webroot needed). The entrypoint override is just for the loop;
   # for one-shot operations override entrypoint per-invocation.
   #
-  # Initial issuance (run once after adding the CF DNS record):
+  # Initial issuance (run once, before `docker compose up`):
+  # nginx.conf unconditionally includes wiki.conf, which references
+  # /etc/letsencrypt/live/wiki.e-shuushuu.net/… — nginx -t fails and the
+  # container won't start until both certs exist. Issue them first:
+  #
   #   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
   #       --env-file ../.env.prod run --rm --entrypoint certbot certbot \
   #       certonly --non-interactive --agree-tos \
@@ -353,6 +356,9 @@ services:
   #       --dns-cloudflare-credentials /run/secrets/cloudflare.ini \
   #       --dns-cloudflare-propagation-seconds 30 \
   #       -d $NGINX_HOST
+  #
+  # Then issue (or add as a SAN in a second invocation) the wiki cert:
+  #   … certonly … -d wiki.e-shuushuu.net
   certbot:
     image: certbot/dns-cloudflare:v3.0.0
     container_name: shuushuu-certbot-prod
