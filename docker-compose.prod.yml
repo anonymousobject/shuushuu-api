@@ -17,9 +17,10 @@ services:
     image: busybox:latest
     entrypoint: ["sleep", "infinity"]
     restart: "no"
-    # Drop the base service's 3306 host publish — production MariaDB lives
-    # natively on tomoyo, only reached over vmbr1. The stub exists purely
-    # to keep depends_on chains merging cleanly.
+    # Drop the base service's 3306 host publish — production MariaDB
+    # lives natively on a separate DB tier reached over a private
+    # network. The stub exists purely to keep depends_on chains
+    # merging cleanly.
     ports: !override []
     healthcheck:
       test: ["CMD", "true"]
@@ -40,8 +41,8 @@ services:
     image: busybox:latest
     entrypoint: ["sleep", "infinity"]
     restart: "no"
-    # Same as mariadb — Redis is native on tomoyo. Stub keeps depends_on
-    # merging; no need to publish 6379 on the host.
+    # Same as mariadb — Redis is native on the DB tier. Stub keeps
+    # depends_on merging; no need to publish 6379 on the host.
     ports: !override []
     healthcheck:
       test: ["CMD", "true"]
@@ -122,10 +123,10 @@ services:
     container_name: shuushuu-mediawiki-prod
     ports: !override []   # nginx fronts it; no host port
     volumes:
-      # Rendered by ansible (compose_project role) with vault secrets +
-      # the kyouko host's compose_project_wiki_hostname.
+      # Rendered by ansible (compose_project role) with vault secrets
+      # + the host's configured wiki hostname.
       - ./mediawiki/LocalSettings.php:/var/www/html/LocalSettings.php:ro
-      # Wiki uploads (16 GB+ migrated from chiyo:/shuushuu/site/wiki/images/).
+      # Wiki uploads volume — populated by the IaC layer.
       - mediawiki-images:/var/www/html/images
     restart: unless-stopped
     logging: *default-logging
