@@ -115,6 +115,11 @@ services:
     depends_on:
       - api
       - frontend
+      # nginx's ansible-rendered wiki.conf proxies to the mediawiki
+      # container. Docker DNS resolves the name regardless, but without
+      # this nginx can accept wiki traffic before php-fpm is ready and
+      # return a transient 502 on a fresh `compose up`.
+      - mediawiki
     restart: unless-stopped
     logging: *default-logging
 
