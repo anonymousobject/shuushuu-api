@@ -406,7 +406,12 @@ volumes:
     driver: local
   mediawiki-images:
     name: mediawiki_images_prod
-    driver: local
+    # external: managed outside compose. The volume is populated by the
+    # cutover runbook (tar-piped from chiyo on first migration; restic
+    # restore on DR) and backed up by the IaC layer's backup_client.
+    # Compose shouldn't recreate/delete it. Fresh deploys must run
+    # `docker volume create mediawiki_images_prod` before `compose up`.
+    external: true
   alloy_data:
     name: alloy_data_prod
     driver: local
