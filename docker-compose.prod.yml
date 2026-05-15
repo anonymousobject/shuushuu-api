@@ -1,6 +1,6 @@
-# Production override — host nginx as edge proxy
-# Docker provides: api, frontend, arq-worker, redis, iqdb
-# Host provides: nginx (SSL, wiki/forums), certbot, PHP-FPM
+# Production override — containerised nginx + certbot as TLS edge
+# Docker provides: api, arq-worker, frontend, nginx, certbot, mediawiki, meilisearch, iqdb, loki, grafana, alloy, docker-socket-proxy
+# DB tier (native, out-of-stack): mariadb + redis reached over private network; containers are busybox stubs
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d
 
 x-logging: &default-logging
