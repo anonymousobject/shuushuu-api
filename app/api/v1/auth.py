@@ -310,6 +310,9 @@ async def login(
     # Verify password
     password_valid = False
     migrate_to_bcrypt = False
+    # Capture pre-migration type so the success log records what the user
+    # actually authenticated with (user.password_type gets overwritten below).
+    original_password_type = user.password_type
 
     if user.password_type == "bcrypt":
         password_valid = verify_password(credentials.password, user.password)
@@ -398,7 +401,7 @@ async def login(
         outcome="success",
         username=user.username,
         user_id=user.user_id,
-        password_type=user.password_type,
+        password_type=original_password_type,
         migrated_to_bcrypt=migrate_to_bcrypt,
     )
 
@@ -805,7 +808,6 @@ async def forgot_password(
         logger.info(
             "forgot_password_attempt",
             outcome="user_inactive",
-            email=request_data.email,
             user_id=user.user_id,
         )
         return MessageResponse(message=generic_message)
@@ -819,7 +821,6 @@ async def forgot_password(
             logger.info(
                 "forgot_password_attempt",
                 outcome="rate_limited",
-                email=request_data.email,
                 user_id=user.user_id,
                 seconds_since_last=int(time_since_last.total_seconds()),
             )
@@ -846,7 +847,6 @@ async def forgot_password(
     logger.info(
         "forgot_password_attempt",
         outcome="enqueued",
-        email=request_data.email,
         user_id=user.user_id,
     )
 
