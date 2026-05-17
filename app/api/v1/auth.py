@@ -276,6 +276,11 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user:
+        logger.info(
+            "login_attempt",
+            outcome="user_not_found",
+            username=credentials.username,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -286,6 +291,13 @@ async def login(
         now = datetime.now(UTC)
         if user.lockout_until > now:
             remaining_minutes = int((user.lockout_until - now).total_seconds() / 60)
+            logger.info(
+                "login_attempt",
+                outcome="account_locked",
+                username=user.username,
+                user_id=user.user_id,
+                lockout_until=user.lockout_until.isoformat(),
+            )
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
                 detail=f"Account locked due to too many failed login attempts. Try again in {remaining_minutes} minutes.",
@@ -298,6 +310,9 @@ async def login(
     # Verify password
     password_valid = False
     migrate_to_bcrypt = False
+    # Capture pre-migration type so the success log records what the user
+    # actually authenticated with (user.password_type gets overwritten below).
+    original_password_type = user.password_type
 
     if user.password_type == "bcrypt":
         password_valid = verify_password(credentials.password, user.password)
@@ -317,6 +332,14 @@ async def login(
         if user.failed_login_attempts >= 5:
             user.lockout_until = datetime.now(UTC) + timedelta(minutes=15)
             await db.commit()
+            logger.warning(
+                "login_attempt",
+                outcome="lockout_triggered",
+                username=user.username,
+                user_id=user.user_id,
+                failed_attempts=user.failed_login_attempts,
+                password_type=user.password_type,
+            )
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
                 detail="Account locked due to too many failed login attempts. Try again in 15 minutes.",
@@ -324,10 +347,25 @@ async def login(
 
         await db.commit()
         if user.password_type == "md5":
+            logger.info(
+                "login_attempt",
+                outcome="md5_unsupported",
+                username=user.username,
+                user_id=user.user_id,
+                failed_attempts=user.failed_login_attempts,
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Your account uses a legacy password format that is no longer supported. Please reset your password.",
             )
+        logger.info(
+            "login_attempt",
+            outcome="wrong_password",
+            username=user.username,
+            user_id=user.user_id,
+            failed_attempts=user.failed_login_attempts,
+            password_type=user.password_type,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -357,6 +395,15 @@ async def login(
     user.last_login = now
     user.last_active = now
     await db.commit()
+
+    logger.info(
+        "login_attempt",
+        outcome="success",
+        username=user.username,
+        user_id=user.user_id,
+        password_type=original_password_type,
+        migrated_to_bcrypt=migrate_to_bcrypt,
+    )
 
     return TokenResponse(
         access_token=access_token,
@@ -750,7 +797,19 @@ async def forgot_password(
     user = result.scalar_one_or_none()
 
     # Silently do nothing if user not found or inactive
-    if not user or not user.active:
+    if not user:
+        logger.info(
+            "forgot_password_attempt",
+            outcome="user_not_found",
+            email=request_data.email,
+        )
+        return MessageResponse(message=generic_message)
+    if not user.active:
+        logger.info(
+            "forgot_password_attempt",
+            outcome="user_inactive",
+            user_id=user.user_id,
+        )
         return MessageResponse(message=generic_message)
 
     # Rate limit: 1 reset per 5 minutes
@@ -759,6 +818,12 @@ async def forgot_password(
     if user.password_reset_sent_at:
         time_since_last = datetime.now(UTC) - user.password_reset_sent_at
         if time_since_last < timedelta(minutes=5):
+            logger.info(
+                "forgot_password_attempt",
+                outcome="rate_limited",
+                user_id=user.user_id,
+                seconds_since_last=int(time_since_last.total_seconds()),
+            )
             return MessageResponse(message=generic_message)
 
     # Generate token
@@ -777,6 +842,12 @@ async def forgot_password(
         "send_password_reset_email_job",
         user_id=user.user_id,
         token=RedactedStr(raw_token),
+    )
+
+    logger.info(
+        "forgot_password_attempt",
+        outcome="enqueued",
+        user_id=user.user_id,
     )
 
     return MessageResponse(message=generic_message)
