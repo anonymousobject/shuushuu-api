@@ -3,7 +3,6 @@ Image processing utilities for validation, dimension extraction, and thumbnail g
 """
 
 import hashlib
-from datetime import datetime
 from pathlib import Path as FilePath
 
 from fastapi import HTTPException, UploadFile, status
@@ -19,6 +18,18 @@ logger = get_logger(__name__)
 
 # Load sRGB profile for color space conversion
 _srgb_profile = ImageCms.createProfile("sRGB")
+
+
+def _date_prefix_from_source(source_path: FilePath) -> str:
+    """Extract the YYYY-MM-DD prefix from a source filename in the form
+    `{date}-{image_id}.{ext}`. Raises if the stem can't be split — a
+    malformed source name would otherwise produce a silently-orphaned
+    variant whose path no consumer can derive.
+    """
+    parts = source_path.stem.rsplit("-", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Unexpected source filename format: {source_path.name!r}")
+    return parts[0]
 
 
 async def _update_image_variant_field(image_id: int, field: str, value: int) -> None:
@@ -79,8 +90,10 @@ def _create_variant(
     variant_dir = FilePath(storage_path) / variant_type
     variant_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate variant filename
-    date_prefix = datetime.now().strftime("%Y-%m-%d")
+    # Mirror the source filename's date prefix so disk names stay consistent
+    # with the fullsize/thumb/DB at a local-midnight boundary (otherwise
+    # datetime.now() in this job can land on the next day relative to upload).
+    date_prefix = _date_prefix_from_source(source_path)
     variant_filename = f"{date_prefix}-{image_id}.{ext}"
     variant_path = variant_dir / variant_filename
 
@@ -257,8 +270,7 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
         thumbs_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate thumbnail filename (WebP format for better compression)
-        # Extract date prefix from source filename (assumes format: {date_prefix}-{image_id}.{ext})
-        date_prefix = source_path.stem.rsplit("-", 1)[0]
+        date_prefix = _date_prefix_from_source(source_path)
         thumb_filename = f"{date_prefix}-{image_id}.webp"
         thumb_path = thumbs_dir / thumb_filename
 

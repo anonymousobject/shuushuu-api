@@ -2164,9 +2164,10 @@ async def upload_image(
         # Calculate total pixels (in megapixels)
         total_pixels = Decimal((width * height) / 1_000_000)
 
-        # Generate filename for storage (date-id format)
-        date_prefix = datetime.now().strftime("%Y-%m-%d")
-        filename = f"{date_prefix}-{image_id}"  # Store without extension
+        # Derive from the actually-saved fullsize path so DB.filename matches
+        # the on-disk name even when upload straddles a local-midnight boundary
+        # (datetime.now() recomputed here can land on the next day).
+        filename = file_path.stem  # e.g. "2026-05-18-1116164"
 
         # Check IQDB for near-duplicate images unless user confirmed
         if not confirm_similar:
@@ -2276,7 +2277,7 @@ async def upload_image(
 
         # Add to IQDB index AFTER thumbnail is created
         # Use defer to ensure thumbnail completes first (simple approach)
-        thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{date_prefix}-{image_id}.webp"
+        thumb_path = FilePath(settings.STORAGE_PATH) / "thumbs" / f"{filename}.webp"
         await enqueue_job(
             "add_to_iqdb_job",
             image_id=image_id,
