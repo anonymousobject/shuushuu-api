@@ -3,7 +3,6 @@ Image processing utilities for validation, dimension extraction, and thumbnail g
 """
 
 import hashlib
-from datetime import datetime
 from pathlib import Path as FilePath
 
 from fastapi import HTTPException, UploadFile, status
@@ -79,8 +78,10 @@ def _create_variant(
     variant_dir = FilePath(storage_path) / variant_type
     variant_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate variant filename
-    date_prefix = datetime.now().strftime("%Y-%m-%d")
+    # Mirror the source filename's date prefix so disk names stay consistent
+    # with the fullsize/thumb/DB at a local-midnight boundary (otherwise
+    # datetime.now() in this job can land on the next day relative to upload).
+    date_prefix = source_path.stem.rsplit("-", 1)[0]
     variant_filename = f"{date_prefix}-{image_id}.{ext}"
     variant_path = variant_dir / variant_filename
 

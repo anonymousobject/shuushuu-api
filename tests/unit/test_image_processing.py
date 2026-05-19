@@ -4,7 +4,6 @@ Tests for image processing utilities.
 
 import tempfile
 from pathlib import Path
-from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -97,9 +96,7 @@ class TestCreateMediumVariant:
         assert medium_dir.exists()
 
         # Check that variant file exists with correct naming
-
-
-        date_prefix = datetime.now().strftime("%Y-%m-%d")
+        date_prefix = test_image_large.stem.rsplit("-", 1)[0]
         expected_filename = f"{date_prefix}-{image_id}.{ext}"
         variant_path = medium_dir / expected_filename
         assert variant_path.exists()
@@ -166,7 +163,7 @@ class TestCreateLargeVariant:
         assert large_dir.exists()
 
         # Check that variant file exists with correct naming
-        date_prefix = datetime.now().strftime("%Y-%m-%d")
+        date_prefix = test_image_large.stem.rsplit("-", 1)[0]
         expected_filename = f"{date_prefix}-{image_id}.{ext}"
         variant_path = large_dir / expected_filename
         assert variant_path.exists()
@@ -234,7 +231,7 @@ class TestFileSizeValidation:
 
         # Get variant path
         medium_dir = Path(temp_storage) / "medium"
-        date_prefix = datetime.now().strftime("%Y-%m-%d")
+        date_prefix = original_path.stem.rsplit("-", 1)[0]
         expected_filename = f"{date_prefix}-{image_id}.{ext}"
         variant_path = medium_dir / expected_filename
 
@@ -278,7 +275,7 @@ class TestFileSizeValidation:
 
         # Get variant path
         large_dir = Path(temp_storage) / "large"
-        date_prefix = datetime.now().strftime("%Y-%m-%d")
+        date_prefix = original_path.stem.rsplit("-", 1)[0]
         expected_filename = f"{date_prefix}-{image_id}.{ext}"
         variant_path = large_dir / expected_filename
 
