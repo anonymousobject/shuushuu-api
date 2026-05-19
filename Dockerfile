@@ -1,8 +1,10 @@
 # Dockerfile for Shuushuu API with uv
 FROM python:3.14-slim
 
-# Install uv from Astral's uv image (copy binaries into a directory on PATH)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+# Install uv from Astral's uv image. Pinned because :latest defeats the
+# point of locking the Python deps below — a uv minor release can change
+# `sync` semantics or lockfile format. Bump deliberately, same as `uv lock`.
+COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /usr/local/bin/
 
 # Set working directory
 WORKDIR /app
