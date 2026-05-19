@@ -2294,7 +2294,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pyjwt", specifier = ">=2.8.0,<3.0.0" },
-    { name = "pymysql", specifier = ">=1.1.0" },
+    { name = "pymysql", specifier = ">=1.1.0,<1.2" },
     { name = "python-json-logger", specifier = ">=2.0.7" },
     { name = "redis", specifier = ">=5.0.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
