@@ -14,37 +14,39 @@ from app.config import settings
 from app.services.image_processing import create_large_variant, create_medium_variant, validate_image_file
 
 
+# Fixtures use production-format names (`YYYY-MM-DD-<id>.<ext>`) so the
+# date-prefix extraction logic under test is exercised against realistic
+# input. A bare `tempfile.NamedTemporaryFile` stem has no hyphens, in which
+# case both the test and the impl trivially agree on a non-date value and
+# a regression (e.g. reverting to `datetime.now()`) wouldn't be caught.
 @pytest.fixture
 def test_image_large():
     """Create a temporary large test image (3000x2000 pixels)."""
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "2026-05-18-99001.jpg"
         img = Image.new("RGB", (3000, 2000), color="red")
-        img.save(f.name, quality=95)
-        yield Path(f.name)
-        # Cleanup
-        Path(f.name).unlink(missing_ok=True)
+        img.save(path, quality=95)
+        yield path
 
 
 @pytest.fixture
 def test_image_medium():
     """Create a temporary medium test image (1500x1000 pixels)."""
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "2026-05-18-99002.jpg"
         img = Image.new("RGB", (1500, 1000), color="blue")
-        img.save(f.name, quality=95)
-        yield Path(f.name)
-        # Cleanup
-        Path(f.name).unlink(missing_ok=True)
+        img.save(path, quality=95)
+        yield path
 
 
 @pytest.fixture
 def test_image_small():
     """Create a temporary small test image (800x600 pixels)."""
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "2026-05-18-99003.jpg"
         img = Image.new("RGB", (800, 600), color="green")
-        img.save(f.name, quality=95)
-        yield Path(f.name)
-        # Cleanup
-        Path(f.name).unlink(missing_ok=True)
+        img.save(path, quality=95)
+        yield path
 
 
 @pytest.fixture
@@ -57,14 +59,13 @@ def temp_storage():
 @pytest.fixture
 def test_image_highly_compressed():
     """Create a temporary highly compressed small image for size validation tests."""
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "2026-05-18-99004.jpg"
         # Create a small 100x100 solid color image with very low quality
         # This will be tiny and resizing won't make it smaller
         img = Image.new("RGB", (100, 100), color="red")
-        img.save(f.name, quality=1)  # Extremely low quality
-        yield Path(f.name)
-        # Cleanup
-        Path(f.name).unlink(missing_ok=True)
+        img.save(path, quality=1)  # Extremely low quality
+        yield path
 
 
 class TestCreateMediumVariant:
@@ -208,7 +209,7 @@ class TestFileSizeValidation:
         """Test that medium variant is deleted if it's larger than the original."""
         # Create an already-optimized tiny image that will produce a LARGER resized version
         # Use a very small JPEG with maximum compression
-        original_path = Path(temp_storage) / "original.jpg"
+        original_path = Path(temp_storage) / "2026-05-18-99999.jpg"
         # Tiny image with extreme compression
         img = Image.new("RGB", (1500, 1000), color=(255, 0, 0))
         img.save(original_path, format="JPEG", quality=1, optimize=True)
@@ -252,7 +253,7 @@ class TestFileSizeValidation:
     def test_large_variant_deleted_when_larger_than_original(self, temp_storage):
         """Test that large variant is deleted if it's larger than the original."""
         # Create an already-optimized tiny image that will produce a LARGER resized version
-        original_path = Path(temp_storage) / "original.jpg"
+        original_path = Path(temp_storage) / "2026-05-18-99999.jpg"
         # Tiny image with extreme compression
         img = Image.new("RGB", (3000, 2000), color=(0, 255, 0))
         img.save(original_path, format="JPEG", quality=1, optimize=True)
