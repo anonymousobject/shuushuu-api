@@ -113,6 +113,94 @@ Use the **Explore** tab in Grafana, datasource `Loki`.
 topk(10, sum by (path) (count_over_time({service="nginx"} | regexp `"\S+ (?P<path>\S+) HTTP` [1h])))
 ```
 
+### Failed login attempts (any reason)
+
+The `login` endpoint emits one `login_attempt` event per request with an
+`outcome` field. Inverting on `success` covers every failure path:
+wrong password, unknown username, locked account, suspended, legacy
+MD5 hash.
+
+```logql
+{service="api"} |= "login_attempt" | json | outcome != "success"
+```
+
+### Login attempts for a specific user (e.g. "I can't log in")
+
+```logql
+{service="api"} |= "login_attempt" | json | username = "centersolace"
+```
+
+Username is logged for every outcome including `user_not_found` (the
+input the client sent), so typos and credential-stuffing show up too.
+
+### Accounts hitting the 5-failure lockout
+
+Lockout transitions log at `warning` level — useful as a security
+signal, distinct from per-attempt failures.
+
+```logql
+{service="api", level="warning"} |= "lockout_triggered"
+```
+
+### Password reset activity for a specific user/email
+
+```logql
+{service="api"} |= "forgot_password_attempt" | json | user_id = "819159"
+```
+
+For unknown-email attempts (the `user_not_found` outcome has no
+`user_id`), filter on the email instead:
+
+```logql
+{service="api"} |= "forgot_password_attempt" | json | email = "centersolace@yahoo.com"
+```
+
+### Trace a reset from API → arq → SMTP
+
+```logql
+{service=~"api|arq-worker"} |~ "forgot_password_attempt|send_password_reset_email" | json | user_id = "819159"
+```
+
+`api` logs the `forgot_password_attempt outcome=enqueued` event, then
+the arq worker logs `password_reset_email_sent` / `_failed`. If the
+api event is present but no arq one, the job didn't run (check Redis /
+worker health). If arq says `_sent` but the user didn't receive,
+cross-reference your SMTP provider dashboard.
+
+### Stuck R2 uploads / iqdb indexing (e.g. midnight-boundary filename drift)
+
+```logql
+{service="arq-worker"} |~ "r2_finalize_retry_missing_variant|iqdb_job_thumbnail_missing"
+```
+
+Both events fire when a worker job expects a path that doesn't exist
+on disk. Repeated retries for the same `image_id` mean the file was
+written under a different name (typically the midnight-boundary drift
+fixed in PR #218). Compare the logged `path` to the actual file with
+`ls /shuushuu/images/<variant>/*<image_id>*` on the api container.
+
+### DB connection-pool ping errors (sqlalchemy ↔ pymysql version drift)
+
+```logql
+{service="api"} |~ "ping\\(\\) missing|AsyncAdapt_aiomysql_connection.ping"
+```
+
+Catches the pymysql 1.2 / sqlalchemy aiomysql adapter incompatibility
+seen during the 5/19 incident. Any hit here means a transitive dep
+drifted past what `uv.lock` pins; rebuild from a clean lock.
+
+### nginx upstream connection refused (stale DNS after recreate)
+
+```logql
+{service="nginx"} |= "connect() failed" |= "Connection refused"
+```
+
+The pattern that surfaced when nginx cached the old api container's IP
+after a `prod-deploy api`. With the resolver directive in place (PR
+#217) these should now only appear during a brief window while DNS
+re-resolves (≤10s); a sustained run of them means nginx config has
+regressed.
+
 ## Retention
 
 60 days, deleted by Loki's compactor. To change:
