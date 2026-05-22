@@ -132,6 +132,12 @@ services:
       - ./mediawiki/LocalSettings.php:/var/www/html/LocalSettings.php:ro
       # Wiki uploads volume — populated by the IaC layer.
       - mediawiki-images:/var/www/html/images
+      # Shadow the bundled placeholder logo at the in-image default
+      # path so $wgLogo can stay at "/resources/assets/wiki.png" (no
+      # LocalSettings change needed). PNG is mode 0644 → readable by
+      # apache (uid 33 in container → host uid 100033 under
+      # userns-remap).
+      - ./docker/mediawiki/wiki.png:/var/www/html/resources/assets/wiki.png:ro
     restart: unless-stopped
     logging: *default-logging
 
