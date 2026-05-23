@@ -238,6 +238,16 @@ class UserHistoryItem(BaseModel):
     old_title: str | None = None
     new_title: str | None = None
 
+    # For tag_metadata: the *other* tag involved in the action. Populated per
+    # action_type — alias_set/alias_removed → alias_tag, parent_set/parent_removed
+    # → parent_tag, source_linked/source_unlinked → source_tag + character_tag.
+    # Naming mirrors TagAuditLogResponse so the frontend can reuse its
+    # getLinkedTag() helper.
+    alias_tag: LinkedTag | None = None
+    parent_tag: LinkedTag | None = None
+    source_tag: LinkedTag | None = None
+    character_tag: LinkedTag | None = None
+
 
 class UserHistoryListResponse(BaseModel):
     """Paginated list of user history items."""

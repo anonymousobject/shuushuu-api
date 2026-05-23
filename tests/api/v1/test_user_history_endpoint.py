@@ -629,3 +629,313 @@ class TestGetUserHistory:
 
         item = tag_usage_items[0]
         assert item["action"] == "removed"
+
+
+@pytest.mark.api
+class TestUserHistoryLinkedTags:
+    """
+    The user-history endpoint must surface the *second* tag involved in each
+    tag_metadata action (alias_set/removed, parent_set/removed,
+    source_linked/unlinked). Without it the frontend renders things like
+    "Removed tag alias [yua]" with no way to say what it was removed from.
+
+    Field naming mirrors TagAuditLogResponse 1:1 so the frontend can reuse
+    its existing getLinkedTag() helper. See
+    https://github.com/anonymousobject/shuushuu-frontend/blob/main/docs/plans/2026-05-23-history-linked-tags-api-requirements.md
+    """
+
+    async def _make_user(self, db_session: AsyncSession, username: str) -> Users:
+        user = Users(
+            username=username,
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email=f"{username}@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+        return user
+
+    async def _find_metadata_item(
+        self, client: AsyncClient, user_id: int, action_type: str
+    ) -> dict:
+        response = await client.get(f"/api/v1/users/{user_id}/history")
+        assert response.status_code == 200
+        items = [
+            item
+            for item in response.json()["items"]
+            if item["type"] == "tag_metadata" and item["action_type"] == action_type
+        ]
+        assert len(items) == 1, f"expected one {action_type} row, got {len(items)}"
+        return items[0]
+
+    async def test_alias_set_includes_alias_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "linkedalias_set")
+        source_tag = Tags(title="Pixiv 481037", type=TagType.THEME)
+        target_tag = Tags(title="yua", type=TagType.CHARACTER)
+        db_session.add_all([source_tag, target_tag])
+        await db_session.commit()
+        await db_session.refresh(source_tag)
+        await db_session.refresh(target_tag)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=source_tag.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.ALIAS_SET,
+                new_alias_of=target_tag.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        item = await self._find_metadata_item(client, user.user_id, "alias_set")
+        assert item["alias_tag"] is not None
+        assert item["alias_tag"]["tag_id"] == target_tag.tag_id
+        assert item["alias_tag"]["title"] == "yua"
+        assert item["alias_tag"]["type"] == TagType.CHARACTER
+        assert item["parent_tag"] is None
+        assert item["source_tag"] is None
+        assert item["character_tag"] is None
+
+    async def test_alias_removed_includes_alias_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "linkedalias_rm")
+        source_tag = Tags(title="Pixiv 740604", type=TagType.THEME)
+        prev_target = Tags(title="yua", type=TagType.CHARACTER)
+        db_session.add_all([source_tag, prev_target])
+        await db_session.commit()
+        await db_session.refresh(source_tag)
+        await db_session.refresh(prev_target)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=source_tag.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.ALIAS_REMOVED,
+                old_alias_of=prev_target.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        item = await self._find_metadata_item(client, user.user_id, "alias_removed")
+        assert item["alias_tag"] is not None
+        assert item["alias_tag"]["tag_id"] == prev_target.tag_id
+        assert item["alias_tag"]["title"] == "yua"
+        assert item["alias_tag"]["type"] == TagType.CHARACTER
+        assert item["parent_tag"] is None
+        assert item["source_tag"] is None
+        assert item["character_tag"] is None
+
+    async def test_parent_set_includes_parent_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "linkedparent_set")
+        child = Tags(title="school uniform", type=TagType.THEME)
+        parent = Tags(title="clothing", type=TagType.THEME)
+        db_session.add_all([child, parent])
+        await db_session.commit()
+        await db_session.refresh(child)
+        await db_session.refresh(parent)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=child.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.PARENT_SET,
+                new_parent_id=parent.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        item = await self._find_metadata_item(client, user.user_id, "parent_set")
+        assert item["parent_tag"] is not None
+        assert item["parent_tag"]["tag_id"] == parent.tag_id
+        assert item["parent_tag"]["title"] == "clothing"
+        assert item["parent_tag"]["type"] == TagType.THEME
+        assert item["alias_tag"] is None
+        assert item["source_tag"] is None
+        assert item["character_tag"] is None
+
+    async def test_parent_removed_includes_parent_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "linkedparent_rm")
+        child = Tags(title="school uniform", type=TagType.THEME)
+        prev_parent = Tags(title="clothing", type=TagType.THEME)
+        db_session.add_all([child, prev_parent])
+        await db_session.commit()
+        await db_session.refresh(child)
+        await db_session.refresh(prev_parent)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=child.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.PARENT_REMOVED,
+                old_parent_id=prev_parent.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        item = await self._find_metadata_item(client, user.user_id, "parent_removed")
+        assert item["parent_tag"] is not None
+        assert item["parent_tag"]["tag_id"] == prev_parent.tag_id
+        assert item["parent_tag"]["title"] == "clothing"
+        assert item["parent_tag"]["type"] == TagType.THEME
+        assert item["alias_tag"] is None
+        assert item["source_tag"] is None
+        assert item["character_tag"] is None
+
+    async def test_source_linked_includes_character_and_source_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "linkedsrc_set")
+        character = Tags(title="Sakura Kinomoto", type=TagType.CHARACTER)
+        source = Tags(title="Cardcaptor Sakura", type=TagType.SOURCE)
+        db_session.add_all([character, source])
+        await db_session.commit()
+        await db_session.refresh(character)
+        await db_session.refresh(source)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=character.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.SOURCE_LINKED,
+                character_tag_id=character.tag_id,
+                source_tag_id=source.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        item = await self._find_metadata_item(client, user.user_id, "source_linked")
+        assert item["character_tag"] is not None
+        assert item["character_tag"]["tag_id"] == character.tag_id
+        assert item["character_tag"]["title"] == "Sakura Kinomoto"
+        assert item["character_tag"]["type"] == TagType.CHARACTER
+        assert item["source_tag"] is not None
+        assert item["source_tag"]["tag_id"] == source.tag_id
+        assert item["source_tag"]["title"] == "Cardcaptor Sakura"
+        assert item["source_tag"]["type"] == TagType.SOURCE
+        assert item["alias_tag"] is None
+        assert item["parent_tag"] is None
+
+    async def test_source_unlinked_includes_character_and_source_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "linkedsrc_rm")
+        character = Tags(title="Tomoyo Daidouji", type=TagType.CHARACTER)
+        source = Tags(title="Cardcaptor Sakura", type=TagType.SOURCE)
+        db_session.add_all([character, source])
+        await db_session.commit()
+        await db_session.refresh(character)
+        await db_session.refresh(source)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=character.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.SOURCE_UNLINKED,
+                character_tag_id=character.tag_id,
+                source_tag_id=source.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        item = await self._find_metadata_item(client, user.user_id, "source_unlinked")
+        assert item["character_tag"] is not None
+        assert item["character_tag"]["tag_id"] == character.tag_id
+        assert item["character_tag"]["title"] == "Tomoyo Daidouji"
+        assert item["character_tag"]["type"] == TagType.CHARACTER
+        assert item["source_tag"] is not None
+        assert item["source_tag"]["tag_id"] == source.tag_id
+        assert item["source_tag"]["title"] == "Cardcaptor Sakura"
+        assert item["source_tag"]["type"] == TagType.SOURCE
+        assert item["alias_tag"] is None
+        assert item["parent_tag"] is None
+
+    async def test_self_contained_actions_have_null_linked_tag_fields(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Actions with no linked tag (rename, type_change) should leave all four fields null."""
+        user = await self._make_user(db_session, "linkedrename")
+        tag = Tags(title="Cirno", type=TagType.CHARACTER)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        db_session.add_all(
+            [
+                TagAuditLog(
+                    tag_id=tag.tag_id,
+                    user_id=user.user_id,
+                    action_type=TagAuditActionType.RENAME,
+                    old_title="Cirno (9)",
+                    new_title="Cirno",
+                ),
+                TagAuditLog(
+                    tag_id=tag.tag_id,
+                    user_id=user.user_id,
+                    action_type=TagAuditActionType.TYPE_CHANGE,
+                    old_type=TagType.THEME,
+                    new_type=TagType.CHARACTER,
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        for action_type in ("rename", "type_change"):
+            item = await self._find_metadata_item(client, user.user_id, action_type)
+            assert item["alias_tag"] is None, action_type
+            assert item["parent_tag"] is None, action_type
+            assert item["source_tag"] is None, action_type
+            assert item["character_tag"] is None, action_type
+
+    async def test_non_metadata_rows_have_null_linked_tag_fields(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """tag_usage and status_change rows should never populate the new fields."""
+        user = await self._make_user(db_session, "linkedusage")
+        tag = Tags(title="aviator glasses", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image = Images(
+            filename="linkedusage1",
+            ext="jpg",
+            md5_hash="linkedusagemd5111111111111111",
+            user_id=user.user_id,
+            width=100,
+            height=100,
+            filesize=1000,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        db_session.add(
+            TagHistory(
+                image_id=image.image_id,
+                tag_id=tag.tag_id,
+                user_id=user.user_id,
+                action="a",
+                date=datetime.now(UTC),
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+        assert response.status_code == 200
+        usage_items = [i for i in response.json()["items"] if i["type"] == "tag_usage"]
+        assert len(usage_items) == 1
+        item = usage_items[0]
+        assert item["alias_tag"] is None
+        assert item["parent_tag"] is None
+        assert item["source_tag"] is None
+        assert item["character_tag"] is None
