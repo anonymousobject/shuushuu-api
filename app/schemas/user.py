@@ -2,10 +2,16 @@
 Pydantic schemas for User endpoints
 """
 
-from pydantic import BaseModel, EmailStr, computed_field, field_validator
+from pydantic import BaseModel, EmailStr, StrictBool, computed_field, field_validator
 
 from app.models.user import UserBase
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+
+# Canonical set of allowed theme presets. Adding a new preset requires:
+# 1) appending the id here, 2) adding the matching entry to the frontend
+# registry (src/lib/stores/themePresets.ts), 3) adding the CSS block to
+# src/routes/layout.css, and 4) extending the FOUC allowlist in src/app.html.
+THEME_PRESETS_ALLOWED: frozenset[str] = frozenset({"modern", "classic", "sakura"})
 
 
 class UserCreate(BaseModel):
@@ -52,6 +58,12 @@ class UserUpdate(BaseModel):
 
     # Navigation
     bookmark: int | None = None  # Bookmarked image_id
+
+    # Theme preferences
+    theme_preset: str | None = None
+    dark_mode: StrictBool | None = (
+        None  # Strict: reject "yes"/1/etc. — frontend sends real booleans
+    )
 
     # Admin-only fields (requires USER_EDIT_PROFILE permission)
     maximgperday: int | None = None  # Max images per day upload limit
@@ -135,6 +147,17 @@ class UserUpdate(BaseModel):
             raise ValueError("maximgperday must be a positive integer")
         return v
 
+    @field_validator("theme_preset")
+    @classmethod
+    def validate_theme_preset(cls, v: str | None) -> str | None:
+        """Validate theme_preset against the canonical allowlist."""
+        if v is None:
+            return v
+        if v not in THEME_PRESETS_ALLOWED:
+            allowed = ", ".join(sorted(THEME_PRESETS_ALLOWED))
+            raise ValueError(f"theme_preset must be one of: {allowed}")
+        return v
+
 
 class UserResponse(UserBase):
     """Schema for user response - what API returns"""
@@ -206,6 +229,10 @@ class UserPrivateResponse(UserResponse):
 
     # Navigation
     bookmark: int | None  # Bookmarked image_id (for "continue where I left off")
+
+    # Theme preferences (NULL = no explicit preference; frontend default applies)
+    theme_preset: str | None = None
+    dark_mode: bool | None = None
 
     # Computed at request time
     uploads_remaining_today: int = 0  # How many more images the user can upload today
