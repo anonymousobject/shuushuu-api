@@ -11,7 +11,7 @@ authors = [
 
 dependencies = [
     # Core Framework
-    "fastapi[standard]>=0.115.0,<=0.122.0",
+    "fastapi[standard]>=0.115.0,<=0.136.1", # cap lift: 0.122 capped starlette<0.51, pinning us to vulnerable starlette 0.50.0 (PYSEC-2026-161, fix in 1.0.1). 0.133+ supports starlette 1.0.0+; 0.136.1 is current latest.
     # Database (MySQL)
     "sqlalchemy[asyncio]>=2.0.0",
     "aiomysql>=0.2.0",
