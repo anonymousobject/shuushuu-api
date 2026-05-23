@@ -641,7 +641,7 @@ class TestUserHistoryLinkedTags:
 
     Field naming mirrors TagAuditLogResponse 1:1 so the frontend can reuse
     its existing getLinkedTag() helper. See
-    /home/dtaylor/shuu/shuushuu-frontend/docs/plans/2026-05-23-history-linked-tags-api-requirements.md
+    https://github.com/anonymousobject/shuushuu-frontend/blob/main/docs/plans/2026-05-23-history-linked-tags-api-requirements.md
     """
 
     async def _make_user(self, db_session: AsyncSession, username: str) -> Users:
@@ -859,32 +859,42 @@ class TestUserHistoryLinkedTags:
         assert item["alias_tag"] is None
         assert item["parent_tag"] is None
 
-    async def test_rename_has_null_linked_tag_fields(
+    async def test_self_contained_actions_have_null_linked_tag_fields(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """Self-contained actions (rename, type_change) should leave all four fields null."""
+        """Actions with no linked tag (rename, type_change) should leave all four fields null."""
         user = await self._make_user(db_session, "linkedrename")
         tag = Tags(title="Cirno", type=TagType.CHARACTER)
         db_session.add(tag)
         await db_session.commit()
         await db_session.refresh(tag)
 
-        db_session.add(
-            TagAuditLog(
-                tag_id=tag.tag_id,
-                user_id=user.user_id,
-                action_type=TagAuditActionType.RENAME,
-                old_title="Cirno (9)",
-                new_title="Cirno",
-            )
+        db_session.add_all(
+            [
+                TagAuditLog(
+                    tag_id=tag.tag_id,
+                    user_id=user.user_id,
+                    action_type=TagAuditActionType.RENAME,
+                    old_title="Cirno (9)",
+                    new_title="Cirno",
+                ),
+                TagAuditLog(
+                    tag_id=tag.tag_id,
+                    user_id=user.user_id,
+                    action_type=TagAuditActionType.TYPE_CHANGE,
+                    old_type=TagType.THEME,
+                    new_type=TagType.CHARACTER,
+                ),
+            ]
         )
         await db_session.commit()
 
-        item = await self._find_metadata_item(client, user.user_id, "rename")
-        assert item["alias_tag"] is None
-        assert item["parent_tag"] is None
-        assert item["source_tag"] is None
-        assert item["character_tag"] is None
+        for action_type in ("rename", "type_change"):
+            item = await self._find_metadata_item(client, user.user_id, action_type)
+            assert item["alias_tag"] is None, action_type
+            assert item["parent_tag"] is None, action_type
+            assert item["source_tag"] is None, action_type
+            assert item["character_tag"] is None, action_type
 
     async def test_non_metadata_rows_have_null_linked_tag_fields(
         self, client: AsyncClient, db_session: AsyncSession
