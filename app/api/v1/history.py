@@ -95,10 +95,45 @@ async def get_user_history(
     # Using (timestamp, type_priority, source_id) for stable sorting.
     items_with_sort_keys: list[tuple[datetime, int, int, UserHistoryItem]] = []
 
+    # Batch-load the "other" tags referenced by tag_metadata rows so the
+    # frontend can render things like "Aliased to <X>" without a follow-up
+    # request. Mirrors the per-tag /tags/{id}/history endpoint.
+    linked_tag_ids: set[int] = set()
+    for audit_log, _ in tag_audit_rows:
+        for fk in (
+            audit_log.old_alias_of,
+            audit_log.new_alias_of,
+            audit_log.old_parent_id,
+            audit_log.new_parent_id,
+            audit_log.character_tag_id,
+            audit_log.source_tag_id,
+        ):
+            if fk:
+                linked_tag_ids.add(fk)
+
+    linked_tags_map: dict[int, LinkedTag] = {}
+    if linked_tag_ids:
+        linked_tags_result = await db.execute(
+            select(Tags.tag_id, Tags.title, Tags.type).where(  # type: ignore[call-overload]
+                Tags.tag_id.in_(linked_tag_ids)  # type: ignore[union-attr]
+            )
+        )
+        linked_tags_map = {
+            row[0]: LinkedTag(tag_id=row[0], title=row[1], type=row[2])
+            for row in linked_tags_result.all()
+        }
+
     # Transform tag audit log entries (type_priority=1)
     for audit_log, tag in tag_audit_rows:
         timestamp = audit_log.created_at or datetime.min
         tag_info = LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type) if tag else None
+
+        # Resolve the "other" tag(s) per action_type. Matches the per-tag
+        # endpoint: alias uses new_alias_of OR old_alias_of (whichever is set
+        # for this row's set/removed variant), parent likewise, and source-
+        # linked rows carry both character and source side-by-side.
+        alias_target_id = audit_log.new_alias_of or audit_log.old_alias_of
+        parent_target_id = audit_log.new_parent_id or audit_log.old_parent_id
         item = UserHistoryItem(
             type="tag_metadata",
             action_type=audit_log.action_type,
@@ -106,6 +141,18 @@ async def get_user_history(
             old_title=audit_log.old_title,
             new_title=audit_log.new_title,
             created_at=timestamp,
+            alias_tag=linked_tags_map.get(alias_target_id) if alias_target_id else None,
+            parent_tag=linked_tags_map.get(parent_target_id) if parent_target_id else None,
+            character_tag=(
+                linked_tags_map.get(audit_log.character_tag_id)
+                if audit_log.character_tag_id and audit_log.source_tag_id
+                else None
+            ),
+            source_tag=(
+                linked_tags_map.get(audit_log.source_tag_id)
+                if audit_log.character_tag_id and audit_log.source_tag_id
+                else None
+            ),
         )
         items_with_sort_keys.append((timestamp, 1, audit_log.id or 0, item))
 
