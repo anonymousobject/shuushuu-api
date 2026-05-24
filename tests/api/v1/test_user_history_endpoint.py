@@ -859,6 +859,36 @@ class TestUserHistoryLinkedTags:
         assert item["alias_tag"] is None
         assert item["parent_tag"] is None
 
+    async def test_type_change_includes_old_and_new_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "linkedtype")
+        tag = Tags(title="bunny ears", type=TagType.CHARACTER)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.TYPE_CHANGE,
+                old_type=TagType.THEME,
+                new_type=TagType.CHARACTER,
+            )
+        )
+        await db_session.commit()
+
+        item = await self._find_metadata_item(client, user.user_id, "type_change")
+        assert item["old_type"] == TagType.THEME
+        assert item["new_type"] == TagType.CHARACTER
+        assert item["old_title"] is None
+        assert item["new_title"] is None
+        assert item["alias_tag"] is None
+        assert item["parent_tag"] is None
+        assert item["source_tag"] is None
+        assert item["character_tag"] is None
+
     async def test_self_contained_actions_have_null_linked_tag_fields(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
