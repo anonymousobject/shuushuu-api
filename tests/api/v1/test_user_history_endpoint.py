@@ -859,6 +859,36 @@ class TestUserHistoryLinkedTags:
         assert item["alias_tag"] is None
         assert item["parent_tag"] is None
 
+    async def test_type_change_includes_old_and_new_type(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "linkedtype")
+        tag = Tags(title="bunny ears", type=TagType.CHARACTER)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.TYPE_CHANGE,
+                old_type=TagType.THEME,
+                new_type=TagType.CHARACTER,
+            )
+        )
+        await db_session.commit()
+
+        item = await self._find_metadata_item(client, user.user_id, "type_change")
+        assert item["old_type"] == TagType.THEME
+        assert item["new_type"] == TagType.CHARACTER
+        assert item["old_title"] is None
+        assert item["new_title"] is None
+        assert item["alias_tag"] is None
+        assert item["parent_tag"] is None
+        assert item["source_tag"] is None
+        assert item["character_tag"] is None
+
     async def test_self_contained_actions_have_null_linked_tag_fields(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
@@ -895,6 +925,16 @@ class TestUserHistoryLinkedTags:
             assert item["parent_tag"] is None, action_type
             assert item["source_tag"] is None, action_type
             assert item["character_tag"] is None, action_type
+
+        # Symmetric pin: rename rows carry no type info; type_change rows
+        # carry no title info. Catches accidental cross-population if the
+        # serializer is ever refactored.
+        rename_item = await self._find_metadata_item(client, user.user_id, "rename")
+        assert rename_item["old_type"] is None
+        assert rename_item["new_type"] is None
+        type_change_item = await self._find_metadata_item(client, user.user_id, "type_change")
+        assert type_change_item["old_title"] is None
+        assert type_change_item["new_title"] is None
 
     async def test_non_metadata_rows_have_null_linked_tag_fields(
         self, client: AsyncClient, db_session: AsyncSession
@@ -939,3 +979,5 @@ class TestUserHistoryLinkedTags:
         assert item["parent_tag"] is None
         assert item["source_tag"] is None
         assert item["character_tag"] is None
+        assert item["old_type"] is None
+        assert item["new_type"] is None
