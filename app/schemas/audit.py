@@ -208,7 +208,9 @@ class UserHistoryItem(BaseModel):
     Combines different history types into a unified format.
     The exact fields present depend on the `type` field:
 
-    - tag_metadata: action_type, tag, old_title/new_title (for rename), created_at
+    - tag_metadata: action_type, tag, old_title/new_title (for rename),
+      old_type/new_type (for type_change), alias_tag/parent_tag/source_tag/
+      character_tag (for the corresponding link/unlink actions), created_at
     - tag_usage: action, tag, image_id, date
     - status_change: image_id, old_status, new_status, new_status_label, created_at
     """

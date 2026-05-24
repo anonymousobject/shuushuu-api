@@ -926,6 +926,16 @@ class TestUserHistoryLinkedTags:
             assert item["source_tag"] is None, action_type
             assert item["character_tag"] is None, action_type
 
+        # Symmetric pin: rename rows carry no type info; type_change rows
+        # carry no title info. Catches accidental cross-population if the
+        # serializer is ever refactored.
+        rename_item = await self._find_metadata_item(client, user.user_id, "rename")
+        assert rename_item["old_type"] is None
+        assert rename_item["new_type"] is None
+        type_change_item = await self._find_metadata_item(client, user.user_id, "type_change")
+        assert type_change_item["old_title"] is None
+        assert type_change_item["new_title"] is None
+
     async def test_non_metadata_rows_have_null_linked_tag_fields(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
@@ -969,3 +979,5 @@ class TestUserHistoryLinkedTags:
         assert item["parent_tag"] is None
         assert item["source_tag"] is None
         assert item["character_tag"] is None
+        assert item["old_type"] is None
+        assert item["new_type"] is None
