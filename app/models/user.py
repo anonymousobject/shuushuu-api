@@ -173,6 +173,11 @@ class Users(UserBase, table=True):
     sorting_pref_order: str = Field(default="DESC", max_length=10)
     images_per_page: int = Field(default=20)
     show_all_images: int = Field(default=0)
+    # Theme preferences (nullable — NULL means "no explicit preference,
+    # frontend default applies"). theme_preset is validated against an
+    # allowlist at the API layer (see app/schemas/user.py).
+    theme_preset: str | None = Field(default=None, max_length=32)
+    dark_mode: bool | None = Field(default=None)
 
     # Rate limiting
     maximgperday: int = Field(default=15)

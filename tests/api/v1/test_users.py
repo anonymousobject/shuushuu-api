@@ -947,6 +947,143 @@ class TestUpdateUserProfile:
         )
         assert response.status_code == 403
 
+    async def test_update_theme_preferences_via_me(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """PATCH /api/v1/users/me accepts theme_preset and dark_mode."""
+        user = Users(
+            username="themeprefs",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="themeprefs@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "themeprefs", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Defaults are null on a brand-new user
+        me_response = await client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert me_response.status_code == 200
+        assert me_response.json().get("theme_preset") is None
+        assert me_response.json().get("dark_mode") is None
+
+        # Set both preferences
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"theme_preset": "sakura", "dark_mode": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("theme_preset") == "sakura"
+        assert data.get("dark_mode") is True
+
+        await db_session.refresh(user)
+        assert user.theme_preset == "sakura"
+        assert user.dark_mode is True
+
+        # Clearing via explicit null is supported (frontend uses this when
+        # a user resets to system default)
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"theme_preset": None, "dark_mode": None},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        await db_session.refresh(user)
+        assert user.theme_preset is None
+        assert user.dark_mode is None
+
+    async def test_theme_preset_allowlist(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """PATCH /api/v1/users/me rejects unknown theme_preset values."""
+        user = Users(
+            username="themeallowlist",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="themeallowlist@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "themeallowlist", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # All three known presets accepted
+        for preset in ("modern", "classic", "sakura"):
+            response = await client.patch(
+                "/api/v1/users/me",
+                json={"theme_preset": preset},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 200, f"preset {preset!r} should be accepted"
+
+        # Unknown value rejected
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"theme_preset": "purple"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+        # Non-string also rejected
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"theme_preset": 5},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+    async def test_dark_mode_type_validation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """PATCH /api/v1/users/me requires dark_mode to be a boolean or null."""
+        user = Users(
+            username="darkmodevalidation",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="darkmodevalidation@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "darkmodevalidation", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # StrictBool rejects string and integer coercions. The integer cases
+        # are the more common JSON footgun — some serializers emit 0/1.
+        for bad_value in ("yes", "true", 1, 0):
+            response = await client.patch(
+                "/api/v1/users/me",
+                json={"dark_mode": bad_value},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 422, (
+                f"dark_mode={bad_value!r} should be rejected"
+            )
+
 
 @pytest.mark.api
 class TestGetUserImages:
