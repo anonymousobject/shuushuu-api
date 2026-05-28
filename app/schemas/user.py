@@ -2,7 +2,9 @@
 Pydantic schemas for User endpoints
 """
 
-from pydantic import BaseModel, EmailStr, StrictBool, computed_field, field_validator
+from typing import Annotated
+
+from pydantic import BaseModel, EmailStr, Field, StrictBool, computed_field, field_validator
 
 from app.models.user import UserBase
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
@@ -60,10 +62,9 @@ class UserUpdate(BaseModel):
     bookmark: int | None = None  # Bookmarked image_id
 
     # Theme preferences
-    theme_preset: str | None = None
-    dark_mode: StrictBool | None = (
-        None  # Strict: reject "yes"/1/etc. — frontend sends real booleans
-    )
+    theme_preset: Annotated[str, Field(max_length=32)] | None = None
+    # Strict: reject "yes"/1/0/etc. — frontend sends real booleans.
+    dark_mode: StrictBool | None = None
 
     # Admin-only fields (requires USER_EDIT_PROFILE permission)
     maximgperday: int | None = None  # Max images per day upload limit

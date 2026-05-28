@@ -1072,13 +1072,17 @@ class TestUpdateUserProfile:
         )
         access_token = login_response.json()["access_token"]
 
-        # Non-bool string rejected (we don't want JSON "true"/"false" to slip through)
-        response = await client.patch(
-            "/api/v1/users/me",
-            json={"dark_mode": "yes"},
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        assert response.status_code == 422
+        # StrictBool rejects string and integer coercions. The integer cases
+        # are the more common JSON footgun — some serializers emit 0/1.
+        for bad_value in ("yes", "true", 1, 0):
+            response = await client.patch(
+                "/api/v1/users/me",
+                json={"dark_mode": bad_value},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 422, (
+                f"dark_mode={bad_value!r} should be rejected"
+            )
 
 
 @pytest.mark.api
