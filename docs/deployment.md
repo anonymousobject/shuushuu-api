@@ -8,7 +8,7 @@ CLI plugin.
 ## How zero-downtime works here
 
 nginx proxies `/api/` to `api:8000` and `/` to `frontend:3000` using the
-*variable* form of `proxy_pass` plus `resolver 127.0.0.1:11 valid=10s`
+*variable* form of `proxy_pass` plus `resolver 127.0.0.11 valid=10s`
 (`docker/nginx/nginx.conf`). That means nginx re-resolves those service names
 against Docker's embedded DNS every ≤10s, at request time, instead of pinning
 an IP at config load.

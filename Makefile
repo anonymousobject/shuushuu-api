@@ -135,6 +135,9 @@ prod-build-frontend:
 # still reads must not disappear yet. Defer destructive (contract) changes to a
 # later release, once no old container remains.
 prod-migrate:
+	# prod-deploy rebuilds too; this build ensures the migrator runs the NEW
+	# migration code even if prod-migrate is run on its own. The duplicate
+	# build is a cache-cheap no-op.
 	$(COMPOSE_PROD) build api
 	$(COMPOSE_PROD) run --rm --no-deps api uv run --no-project alembic upgrade head
 
