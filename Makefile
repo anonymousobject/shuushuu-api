@@ -55,10 +55,15 @@ COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml -
 
 # Zero-downtime rollout via the docker-rollout CLI plugin. Same files/env as
 # COMPOSE_PROD so it acts on the identical merged config. Install once on the
-# host (see docs/deployment.md):
-#   curl -fsSL https://raw.githubusercontent.com/wowu/docker-rollout/main/docker-rollout \
+# host (see docs/deployment.md); pinned to a release tag, not main, to avoid
+# silently picking up upstream changes:
+#   curl -fsSL https://raw.githubusercontent.com/wowu/docker-rollout/v0.13/docker-rollout \
 #     -o ~/.docker/cli-plugins/docker-rollout && chmod +x ~/.docker/cli-plugins/docker-rollout
-ROLLOUT_PROD = docker rollout -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod
+#
+# --timeout 90: the new replica's healthcheck can take up to ~50s to pass
+# (start_period 20s + interval 10s x 3 retries); 90 leaves headroom above that
+# and self-documents the expected window (plugin default is only 60s).
+ROLLOUT_PROD = docker rollout --timeout 90 -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod
 
 # App services that support zero-downtime rollout: stateless, fronted by nginx
 # which re-resolves their service name via Docker DNS at request time. Override

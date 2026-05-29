@@ -37,13 +37,19 @@ This required (see `docker-compose.prod.yml`):
 
 Install the plugin on the production host:
 
+Pin to a release tag (not `main`) so a host doesn't silently pick up upstream
+changes to a script that runs against production:
+
 ```bash
 mkdir -p ~/.docker/cli-plugins
-curl -fsSL https://raw.githubusercontent.com/wowu/docker-rollout/main/docker-rollout \
+curl -fsSL https://raw.githubusercontent.com/wowu/docker-rollout/v0.13/docker-rollout \
   -o ~/.docker/cli-plugins/docker-rollout
 chmod +x ~/.docker/cli-plugins/docker-rollout
-docker rollout --help   # verify
+docker rollout --help   # verify it loaded
 ```
+
+When bumping the pin, update the version in both this doc and the `ROLLOUT_PROD`
+comment in the `Makefile`.
 
 ## Deploying app changes
 
