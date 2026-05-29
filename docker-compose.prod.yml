@@ -66,9 +66,10 @@ services:
         - PUBLIC_API_URL=http://api:8000
         - PUBLIC_DEBUG=false
         - PUBLIC_TURNSTILE_SITE_KEY=${TURNSTILE_SITE_KEY}
-    container_name: shuushuu-frontend-prod
-    ports: !override
-      - "127.0.0.1:3000:3000"
+    # No container_name / host port: docker-rollout scales this to two replicas
+    # transiently during a zero-downtime deploy. nginx reaches it over the
+    # compose network (frontend:3000), so the host publish was debug-only.
+    ports: !override []
     environment:
       - PUBLIC_ENVIRONMENT=production
       - PUBLIC_API_URL=http://api:8000
@@ -142,11 +143,16 @@ services:
     logging: *default-logging
 
   api:
-    container_name: shuushuu-api-prod
+    # No container_name: docker-rollout scales this service to two replicas
+    # transiently during a zero-downtime deploy, so its name can't be fixed.
+    # !reset drops the base service's container_name from the merged config.
+    container_name: !reset null
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
     command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000
-    ports: !override
-      - "127.0.0.1:8000:8000"
+    # No host port publish: two replicas can't bind the same host port during a
+    # rollout, and nginx reaches the api over the compose network (api:8000), so
+    # the publish was debug-only. Use `docker compose exec api …` for host access.
+    ports: !override []
     # !override replaces (rather than merges with) the base service's
     # env_file list; without it, compose tries to load both .env and
     # .env.prod and errors out when the dev-only .env is absent.
@@ -160,6 +166,15 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
+    # docker-rollout waits for this healthcheck on the new replica before
+    # draining the old one — without it the rollout can't tell when uvicorn is
+    # actually serving and would cut over into a still-booting container.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     # List form replaces base depends_on entirely (removes mariadb dependency)
     depends_on:
       - redis

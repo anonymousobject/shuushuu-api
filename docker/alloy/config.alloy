@@ -34,32 +34,44 @@ discovery.docker "containers" {
 }
 
 // Map container metadata into the labels we want.
-// Container name like "/shuushuu-api-prod" becomes service="api".
+// `service` comes from the compose service label (e.g. "api", "frontend").
 discovery.relabel "containers" {
   targets = discovery.docker.containers.targets
 
-  // Strip leading slash from container name
+  // Strip leading slash from container name (kept as a display label).
   rule {
     source_labels = ["__meta_docker_container_name"]
     regex         = "/(.*)"
     target_label  = "container_name"
   }
 
-  // Derive `service` label by stripping shuushuu- prefix and -prod suffix
+  // Derive `service` from the compose service label rather than parsing the
+  // container name. This survives docker-rollout, which scales api/frontend to
+  // two replicas transiently (named `<project>-<service>-<n>`) and drops their
+  // fixed `container_name` — neither of which the old `shuushuu-(.*)-prod` name
+  // regex would have matched, so their logs would have silently vanished.
   rule {
-    source_labels = ["container_name"]
-    regex         = "shuushuu-(.*)-prod"
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
     target_label  = "service"
   }
 
-  // Keep only containers whose name matched `shuushuu-(.*)-prod`.
-  // This intentionally drops:
-  //   - The mariadb busybox stub (named `shuushuu-mariadb`, no `-prod` suffix; stub has no useful logs anyway)
-  //   - Any one-off `docker run` debug containers a human might launch on the host
+  // Keep only containers that belong to a compose service. This drops any
+  // one-off `docker run` debug container a human launches on the host (no
+  // compose label → empty `service`).
   rule {
     source_labels = ["service"]
     regex         = ".+"
     action        = "keep"
+  }
+
+  // Drop the mariadb/redis busybox stubs: they exist only to keep depends_on
+  // chains merging and run `sleep infinity`, so they emit no useful logs.
+  // (The old name-based filter dropped them implicitly; the compose-label
+  // filter above would otherwise keep them.)
+  rule {
+    source_labels = ["service"]
+    regex         = "mariadb|redis"
+    action        = "drop"
   }
 
   // Carry through compose project label for multi-project hosts

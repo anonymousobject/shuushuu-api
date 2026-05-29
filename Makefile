@@ -4,7 +4,7 @@
 # Ensure bash is used for all commands (required for read -p in clean target)
 SHELL := /bin/bash
 
-.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-restart prod-deploy clean
+.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy clean
 
 # Capture extra arguments for logs commands (e.g., `make dev-logs api`)
 ARGS = $(filter-out $@,$(MAKECMDGOALS))
@@ -36,8 +36,9 @@ help:
 	@echo "  prod-ps      Show running containers"
 	@echo "  prod-build   Build all production images"
 	@echo "  prod-build-frontend  Rebuild frontend image"
-	@echo "  prod-restart Recreate service(s) (e.g., make prod-restart frontend)"
-	@echo "  prod-deploy  Build and recreate service(s) (e.g., make prod-deploy api frontend)"
+	@echo "  prod-migrate Apply DB migrations (run BEFORE prod-deploy when a release has one)"
+	@echo "  prod-deploy  Zero-downtime rollout of app service(s) (default: api frontend)"
+	@echo "  prod-restart Force-recreate service(s) — CAUSES DOWNTIME; use for nginx/infra"
 	@echo ""
 	@echo "Other:"
 	@echo "  clean        Stop all and remove volumes (DESTRUCTIVE)"
@@ -51,6 +52,19 @@ help:
 COMPOSE_DEV = docker compose -f docker-compose.yml -f docker-compose.override.yml
 COMPOSE_TEST = docker compose -f docker-compose.yml -f docker-compose.test.yml --env-file .env.test
 COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod
+
+# Zero-downtime rollout via the docker-rollout CLI plugin. Same files/env as
+# COMPOSE_PROD so it acts on the identical merged config. Install once on the
+# host (see docs/deployment.md):
+#   curl -fsSL https://raw.githubusercontent.com/wowu/docker-rollout/main/docker-rollout \
+#     -o ~/.docker/cli-plugins/docker-rollout && chmod +x ~/.docker/cli-plugins/docker-rollout
+ROLLOUT_PROD = docker rollout -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod
+
+# App services that support zero-downtime rollout: stateless, fronted by nginx
+# which re-resolves their service name via Docker DNS at request time. Override
+# by passing service names, e.g. `make prod-deploy api`.
+ROLLOUT_SERVICES = api frontend
+DEPLOY_SERVICES = $(if $(ARGS),$(ARGS),$(ROLLOUT_SERVICES))
 
 # Development targets
 dev:
@@ -109,11 +123,32 @@ prod-build:
 prod-build-frontend:
 	$(COMPOSE_PROD) build --no-cache frontend
 
-prod-restart:
-	$(COMPOSE_PROD) up -d --force-recreate $(ARGS)
+# Apply database migrations as an explicit, gated step. Run this BEFORE
+# prod-deploy when a release includes a migration. Migrations must be
+# backward-compatible (expand/contract): during the rollout the old and new app
+# versions briefly run against the same DB at once, so a column the old code
+# still reads must not disappear yet. Defer destructive (contract) changes to a
+# later release, once no old container remains.
+prod-migrate:
+	$(COMPOSE_PROD) build api
+	$(COMPOSE_PROD) run --rm --no-deps api uv run --no-project alembic upgrade head
 
+# Zero-downtime deploy: build the app image(s), then roll each service one at a
+# time. docker-rollout starts a new replica, waits for its healthcheck, then
+# drains the old one — nginx re-resolves the service name via Docker DNS, so no
+# requests are dropped. Does NOT run migrations (see prod-migrate).
 prod-deploy:
-	$(COMPOSE_PROD) build $(ARGS)
+	$(COMPOSE_PROD) build $(DEPLOY_SERVICES)
+	@for svc in $(DEPLOY_SERVICES); do \
+		echo "==> Rolling out $$svc (zero-downtime)"; \
+		$(ROLLOUT_PROD) $$svc || exit 1; \
+	done
+
+# Force-recreate service(s). This is the OLD deploy path and CAUSES a brief
+# outage (stop-then-start with no overlap), and with no args it recreates nginx
+# and everything else. Use it for nginx/config/infra changes, not app code —
+# for api/frontend use prod-deploy.
+prod-restart:
 	$(COMPOSE_PROD) up -d --force-recreate $(ARGS)
 
 # Cleanup (removes volumes - use with caution)
