@@ -757,6 +757,20 @@ class TestMissingTagTypes:
         assert missing_both.image_id in image_ids
         assert missing_source_only.image_id not in image_ids
 
+    async def test_missing_invalid_type_id_returns_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Type IDs outside 1-4 (incl. 0=All) are rejected with 400 echoing the bad id(s)."""
+        for bad in ("0", "99", "3,0"):
+            response = await client.get(f"/api/v1/images?missing_tag_types={bad}")
+            assert response.status_code == 400, f"expected 400 for {bad!r}"
+            detail = response.json()["detail"]
+            assert "Valid types are" in detail
+            # the offending id(s) are echoed back to the client
+            expected_invalid = [t for t in bad.split(",") if int(t) not in {1, 2, 3, 4}]
+            for bad_id in expected_invalid:
+                assert bad_id in detail, f"{bad_id} not echoed in detail for {bad!r}: {detail}"
+
 
 @pytest.mark.api
 class TestTagHierarchySearch:

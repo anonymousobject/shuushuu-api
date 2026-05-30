@@ -464,6 +464,15 @@ async def list_images(
             {int(t.strip()) for t in missing_tag_types.split(",") if t.strip().isdigit()}
         )
         if missing_type_ids:
+            invalid = [t for t in missing_type_ids if t not in {1, 2, 3, 4}]
+            if invalid:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Invalid tag type(s): {', '.join(map(str, invalid))}. "
+                        "Valid types are 1=Theme, 2=Source, 3=Artist, 4=Character."
+                    ),
+                )
             if missing_tag_types_mode == "all":
                 # Missing ALL listed types: no tag of any listed type
                 query = query.where(
