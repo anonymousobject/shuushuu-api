@@ -723,6 +723,40 @@ class TestMissingTagTypes:
         assert no_artist.image_id in image_ids
         assert has_artist.image_id not in image_ids
 
+    async def test_missing_all_mode_requires_all_types_absent(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """mode=all returns only images missing EVERY listed type."""
+        missing_both = Images(**{**sample_image_data, "filename": "mtt_all1", "md5_hash": "c" * 32})
+        missing_source_only = Images(
+            **{**sample_image_data, "filename": "mtt_all2", "md5_hash": "d" * 32}
+        )
+        db_session.add_all([missing_both, missing_source_only])
+        await db_session.flush()
+
+        artist_tag = Tags(title="artist x", desc="Artist", type=TagType.ARTIST)
+        theme_tag = Tags(title="theme x", desc="Theme", type=TagType.THEME)
+        db_session.add_all([artist_tag, theme_tag])
+        await db_session.flush()
+
+        # missing_both: only a theme tag -> lacks both source and artist
+        db_session.add(TagLinks(image_id=missing_both.image_id, tag_id=theme_tag.tag_id, user_id=1))
+        # missing_source_only: has an artist tag -> lacks source but NOT artist
+        db_session.add(
+            TagLinks(image_id=missing_source_only.image_id, tag_id=artist_tag.tag_id, user_id=1)
+        )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images?missing_tag_types={TagType.SOURCE},{TagType.ARTIST}"
+            "&missing_tag_types_mode=all"
+        )
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert missing_both.image_id in image_ids
+        assert missing_source_only.image_id not in image_ids
+
 
 @pytest.mark.api
 class TestTagHierarchySearch:

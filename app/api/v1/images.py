@@ -464,15 +464,25 @@ async def list_images(
             {int(t.strip()) for t in missing_tag_types.split(",") if t.strip().isdigit()}
         )
         if missing_type_ids:
-            # Missing ANY listed type
-            def lacks_type(type_id: int) -> Any:
-                return Images.image_id.notin_(  # type: ignore[union-attr]
-                    select(TagLinks.image_id)  # type: ignore[call-overload]
-                    .join(Tags, TagLinks.tag_id == Tags.tag_id)
-                    .where(Tags.type == type_id)
+            if missing_tag_types_mode == "all":
+                # Missing ALL listed types: no tag of any listed type
+                query = query.where(
+                    Images.image_id.notin_(  # type: ignore[union-attr]
+                        select(TagLinks.image_id)  # type: ignore[call-overload]
+                        .join(Tags, TagLinks.tag_id == Tags.tag_id)
+                        .where(Tags.type.in_(missing_type_ids))  # type: ignore[attr-defined]
+                    )
                 )
+            else:
+                # Missing ANY listed type
+                def lacks_type(type_id: int) -> Any:
+                    return Images.image_id.notin_(  # type: ignore[union-attr]
+                        select(TagLinks.image_id)  # type: ignore[call-overload]
+                        .join(Tags, TagLinks.tag_id == Tags.tag_id)
+                        .where(Tags.type == type_id)
+                    )
 
-            query = query.where(or_(*(lacks_type(t) for t in missing_type_ids)))
+                query = query.where(or_(*(lacks_type(t) for t in missing_type_ids)))
 
     # Date filtering
     if date_from:
