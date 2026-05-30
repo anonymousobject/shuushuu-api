@@ -187,22 +187,24 @@ Wrap the existing ANY logic in an if/else on the mode. Replace the `# Missing AN
                 # Missing ALL listed types: no tag of any listed type
                 query = query.where(
                     Images.image_id.notin_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id)
-                        .join(Tags, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
-                        .where(Tags.type.in_(missing_type_ids))  # type: ignore[attr-defined]
+                        select(TagLinks.image_id)  # type: ignore[call-overload]
+                        .join(Tags, TagLinks.tag_id == Tags.tag_id)
+                        .where(Tags.type.in_(missing_type_ids))
                     )
                 )
             else:
                 # Missing ANY listed type
-                def lacks_type(type_id: int):
+                def lacks_type(type_id: int) -> Any:
                     return Images.image_id.notin_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id)
-                        .join(Tags, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
-                        .where(Tags.type == type_id)  # type: ignore[arg-type]
+                        select(TagLinks.image_id)  # type: ignore[call-overload]
+                        .join(Tags, TagLinks.tag_id == Tags.tag_id)
+                        .where(Tags.type == type_id)
                     )
 
                 query = query.where(or_(*(lacks_type(t) for t in missing_type_ids)))
 ```
+
+**mypy note:** these are the reconciled `# type: ignore` codes (verified mypy-clean for the any-branch in Task 1): `[union-attr]` on the `notin_` line, `[call-overload]` on the `select(...)` line, and NO ignore on `.join()`/`.where()`. `Any` is already imported (`images.py:12`). After editing, run `uv run mypy app/api/v1/images.py` and confirm zero errors before committing; the `Tags.type.in_(...)` line may need its own code reconciliation — let mypy's actual output drive it.
 
 - [ ] **Step 4: Run test to verify it passes**
 
