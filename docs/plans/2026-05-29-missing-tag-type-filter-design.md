@@ -32,6 +32,18 @@ Two new optional query params on `list_images` (`app/api/v1/images.py`):
 
 Type IDs (not names) are used, consistent with the existing `tags`/`exclude_tags` params. The frontend constructs the API call.
 
+Added to the `list_images` signature mirroring the existing `tags_mode` style:
+
+```python
+missing_tag_types: Annotated[
+    str | None,
+    Query(description="Comma-separated tag type IDs the image must be missing (1=Theme,2=Source,3=Artist,4=Character)"),
+] = None,
+missing_tag_types_mode: Annotated[
+    str, Query(pattern="^(any|all)$", description="Match ANY or ALL missing types")
+] = "any",
+```
+
 ## Semantics
 
 "Image lacks a tag of type X" is expressed as:
@@ -51,11 +63,15 @@ Images.image_id NOT IN (
 
 These clauses compose with `AND` against all existing filters (`tags`, `exclude_tags`, date filters, etc.), the same as every other where-clause in the handler.
 
+### Aliases are intentionally not resolved
+
+Unlike `tags`/`exclude_tags`, this filter does **not** resolve tag aliases. The presence of a tag type on an image is determined by the `type` of the tag actually applied (`tag_links.tag_id → tags.type`). An alias tag carries its own `type` column, and the API enforces that an alias and its canonical share a type. So an image whose only artist tag is itself an *alias* tag correctly counts as "has an artist tag" and is excluded by `missing_tag_types=3`. Resolving aliases here would be wrong: the applied tag's own type is authoritative.
+
 ## Validation & errors
 
 - Parse `missing_tag_types` like `exclude_tags`: split on comma, keep digit tokens, dedupe.
 - Reject any value outside `{1, 2, 3, 4}` (type `0`/"All" is not a real per-image tag type) → `400 Bad Request` with a message listing the valid IDs.
-- Invalid `missing_tag_types_mode` (not `any`/`all`) → `400`. Match however `tags_mode` is validated (`Query(pattern=...)` vs. manual check) — confirm during implementation.
+- Invalid `missing_tag_types_mode` (not `any`/`all`) → handled by `Query(pattern="^(any|all)$")`, which mirrors the existing `tags_mode` param and yields a **`422 Unprocessable Entity`** automatically — no manual check or `400` branch.
 - Empty/whitespace `missing_tag_types` → treated as absent (no filter applied), matching how `tags`/`exclude_tags` behave.
 
 ## Implementation
@@ -76,25 +92,25 @@ if missing_tag_types:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    f"Invalid tag type(s): {invalid}. "
+                    f"Invalid tag type(s): {', '.join(map(str, invalid))}. "
                     "Valid types are 1=Theme, 2=Source, 3=Artist, 4=Character."
                 ),
             )
 
         def lacks_type(type_id: int):
-            return Images.image_id.notin_(
+            return Images.image_id.notin_(  # type: ignore[union-attr]
                 select(TagLinks.image_id)
-                .join(Tags, TagLinks.tag_id == Tags.tag_id)
-                .where(Tags.type == type_id)
+                .join(Tags, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+                .where(Tags.type == type_id)  # type: ignore[arg-type]
             )
 
         if missing_tag_types_mode == "all":
             # Missing ALL listed types: no tag of any listed type
             query = query.where(
-                Images.image_id.notin_(
+                Images.image_id.notin_(  # type: ignore[union-attr]
                     select(TagLinks.image_id)
-                    .join(Tags, TagLinks.tag_id == Tags.tag_id)
-                    .where(Tags.type.in_(missing_type_ids))
+                    .join(Tags, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+                    .where(Tags.type.in_(missing_type_ids))  # type: ignore[attr-defined]
                 )
             )
         else:
@@ -102,22 +118,31 @@ if missing_tag_types:
             query = query.where(or_(*(lacks_type(t) for t in missing_type_ids)))
 ```
 
-(Final form will match exact imports and `# type: ignore` comments already used in the file.)
+`# type: ignore` annotations follow the existing tag-subquery blocks in this file (the `exclude_tags` block uses `[union-attr]` on `Images.image_id.notin_` and `[call-overload,attr-defined]` on the inner select); the exact codes will be reconciled against `mypy` during implementation.
 
-Requires `Tags` and `or_` to be imported in `app/api/v1/images.py` — confirm and add if missing.
+Both `Tags` (`images.py:67`) and `or_` (`images.py:28`) are already imported — no new imports needed.
+
+### Count and pagination
+
+The filter is added to the shared `query` object before the count query (`select(func.count()).select_from(query.subquery())`) and the pagination subquery are derived from it, so the `total` and the returned page both reflect the filter. This matches placement of the existing `exclude_tags` clause.
 
 ### Note on handler size
 
 `list_images` is already ~360 lines, well over the 50-line guideline, with all tag filtering inline. Extracting the tag-filter building into a helper is worthwhile but is a pre-existing concern best handled in its own dedicated refactor, not bundled into this feature. This change follows the file's established inline pattern.
 
+### Performance
+
+The `tags → tag_links` subquery is index-friendly: `WHERE tags.type = X` uses the `type_alias` index (leading column `type`), and the join is covered by the `tag_links` composite PK `(tag_id, image_id)`. The cost is the anti-join (`NOT IN`) against the images set — the same shape as the existing `exclude_tags` clause. In `all` mode this is a single anti-join; in `any` mode it is up to four OR'd anti-joins. This is within established patterns, but during implementation run `EXPLAIN` on one `any`-mode query to confirm the planner uses the indexes rather than a full anti-join scan.
+
 ## Tests
 
-API tests (TDD) in the images search test module. Seed a small fixture set:
+API tests (TDD) in the images search test module. Seed a small fixture set, all with a public `status` (the `sample_image_data` fixture uses `status=1`, so tests run unauthenticated — do not seed non-public statuses):
 
 - An image tagged with all four types.
 - An image missing only an artist tag.
 - An image missing only a source tag.
 - An image with no tags at all.
+- An image whose only artist tag is an **alias** tag (link points at the alias row, not the canonical).
 
 Cases:
 
@@ -125,5 +150,7 @@ Cases:
 2. `missing_tag_types=2,3&missing_tag_types_mode=any` → images lacking a source OR an artist.
 3. `missing_tag_types=2,3&missing_tag_types_mode=all` → only images lacking both.
 4. Combined with a `tags=` include filter → both filters apply (AND).
-5. Validation: `missing_tag_types=0` → 400; `missing_tag_types=99` → 400; invalid mode → 400.
-6. Omitted param → unchanged behavior (no filtering).
+5. Alias: the image whose only artist tag is an alias is **not** returned by `missing_tag_types=3` (alias resolution is intentionally skipped; the applied tag's `type` is authoritative).
+6. The no-tags image appears for every `missing_tag_types` value in both modes.
+7. Validation: `missing_tag_types=0` → 400; `missing_tag_types=99` → 400; invalid mode (e.g. `missing_tag_types_mode=foo`) → **422** (from the `Query` pattern).
+8. Omitted param → unchanged behavior (no filtering).
