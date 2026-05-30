@@ -389,7 +389,8 @@ async def list_images(
     # Tag filtering
     tag_ids: list[int] = []
     if tags:
-        tag_ids = [int(tid.strip()) for tid in tags.split(",") if tid.strip().isdigit()]
+        # isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
+        tag_ids = [int(tid.strip()) for tid in tags.split(",") if tid.strip().isdecimal()]
         if len(tag_ids) > settings.MAX_SEARCH_TAGS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -432,8 +433,9 @@ async def list_images(
 
     # Exclude tag filtering (always exact match, no hierarchy expansion)
     if exclude_tags:
+        # isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
         exclude_tag_ids = [
-            int(tid.strip()) for tid in exclude_tags.split(",") if tid.strip().isdigit()
+            int(tid.strip()) for tid in exclude_tags.split(",") if tid.strip().isdecimal()
         ]
         if exclude_tag_ids:
             # Enforce shared MAX_SEARCH_TAGS limit across include + exclude

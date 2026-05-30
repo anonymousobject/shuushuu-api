@@ -450,6 +450,24 @@ class TestTagSearchValidation:
         assert image1.image_id in found_ids
         assert image2.image_id in found_ids
 
+    async def test_tags_unicode_digit_token_does_not_500(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A Unicode digit int() can't parse ('²') is dropped, not crashed on (no 500).
+
+        '²'.isdigit() is True but int('²') raises ValueError; the parser must use
+        isdecimal() so the token is silently ignored, leaving the filter a no-op.
+        """
+        image = Images(**{**sample_image_data, "filename": "uni_tags", "md5_hash": "7a" * 16})
+        db_session.add(image)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?tags=²")
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert image.image_id in image_ids  # token dropped -> no filtering
+
 
 @pytest.mark.api
 class TestExcludeTags:
@@ -692,6 +710,24 @@ class TestExcludeTags:
         data = response.json()
         image_ids = [img["image_id"] for img in data["images"]]
         assert image1.image_id not in image_ids, "Image with child tag should be excluded"
+
+    async def test_exclude_tags_unicode_digit_token_does_not_500(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A Unicode digit int() can't parse ('²') is dropped, not crashed on (no 500).
+
+        '²'.isdigit() is True but int('²') raises ValueError; the parser must use
+        isdecimal() so the token is silently ignored, leaving the exclude a no-op.
+        """
+        image = Images(**{**sample_image_data, "filename": "uni_excl", "md5_hash": "8b" * 16})
+        db_session.add(image)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?exclude_tags=²")
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert image.image_id in image_ids  # token dropped -> nothing excluded
 
 
 @pytest.mark.api
