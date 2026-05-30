@@ -69,10 +69,10 @@ Unlike `tags`/`exclude_tags`, this filter does **not** resolve tag aliases. The 
 
 ## Validation & errors
 
-- Parse `missing_tag_types` like `exclude_tags`: split on comma, keep digit tokens, dedupe.
-- Reject any value outside `{1, 2, 3, 4}` (type `0`/"All" is not a real per-image tag type) → `400 Bad Request` with a message listing the valid IDs.
+- Split `missing_tag_types` on comma and strip; ignore empty tokens.
+- Reject any non-empty token that is not a valid type ID — whether non-digit (`artist`) or numeric-but-out-of-range (`0`/"All", `99`) → `400 Bad Request` with the offending token(s) echoed. This is a single unified check: unlike `tags`/`exclude_tags` (which silently drop non-digit tokens), this param has a strict "invalid → 400" contract, so silently dropping garbage would be internally inconsistent and could mask a caller's typo (e.g. `3,artist` quietly filtering only on artist).
 - Invalid `missing_tag_types_mode` (not `any`/`all`) → handled by `Query(pattern="^(any|all)$")`, which mirrors the existing `tags_mode` param and yields a **`422 Unprocessable Entity`** automatically — no manual check or `400` branch.
-- Empty/whitespace `missing_tag_types` → treated as absent (no filter applied), matching how `tags`/`exclude_tags` behave.
+- Empty/whitespace `missing_tag_types` → treated as absent (no filter applied).
 
 ## Implementation
 

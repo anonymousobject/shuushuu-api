@@ -460,19 +460,20 @@ async def list_images(
     # Missing tag-type filtering (images lacking a tag of the given type[s]).
     # Aliases are intentionally NOT resolved here: the applied tag's own `type` is authoritative.
     if missing_tag_types:
-        missing_type_ids = sorted(
-            {int(t.strip()) for t in missing_tag_types.split(",") if t.strip().isdigit()}
-        )
+        # Reject any token that is not a valid type ID (non-digit or out of range), rather
+        # than silently dropping it. Empty tokens are ignored (empty param = no filter).
+        raw_tokens = [t.strip() for t in missing_tag_types.split(",") if t.strip()]
+        invalid = [t for t in raw_tokens if not (t.isdigit() and int(t) in {1, 2, 3, 4})]
+        if invalid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid tag type(s): {', '.join(invalid)}. "
+                    "Valid types are 1=Theme, 2=Source, 3=Artist, 4=Character."
+                ),
+            )
+        missing_type_ids = sorted({int(t) for t in raw_tokens})
         if missing_type_ids:
-            invalid = [t for t in missing_type_ids if t not in {1, 2, 3, 4}]
-            if invalid:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        f"Invalid tag type(s): {', '.join(map(str, invalid))}. "
-                        "Valid types are 1=Theme, 2=Source, 3=Artist, 4=Character."
-                    ),
-                )
             if missing_tag_types_mode == "all":
                 # Missing ALL listed types: no tag of any listed type
                 query = query.where(

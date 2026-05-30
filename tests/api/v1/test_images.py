@@ -771,6 +771,20 @@ class TestMissingTagTypes:
             for bad_id in expected_invalid:
                 assert bad_id in detail, f"{bad_id} not echoed in detail for {bad!r}: {detail}"
 
+    async def test_missing_non_digit_token_returns_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Non-digit tokens are rejected with 400, not silently dropped to a no-op filter."""
+        for bad in ("artist", "abc", "3,artist"):
+            response = await client.get(f"/api/v1/images?missing_tag_types={bad}")
+            assert response.status_code == 400, f"expected 400 for {bad!r}"
+            assert "Valid types are" in response.json()["detail"]
+        # the offending non-digit token is echoed back, even alongside a valid id
+        detail = (
+            await client.get("/api/v1/images?missing_tag_types=3,artist")
+        ).json()["detail"]
+        assert "artist" in detail, detail
+
     async def test_missing_any_mode_returns_image_missing_only_one_type(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
