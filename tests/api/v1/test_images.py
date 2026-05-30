@@ -771,6 +771,150 @@ class TestMissingTagTypes:
             for bad_id in expected_invalid:
                 assert bad_id in detail, f"{bad_id} not echoed in detail for {bad!r}: {detail}"
 
+    async def test_missing_any_mode_returns_image_missing_only_one_type(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """mode=any returns an image that has one listed type but lacks another (OR, not AND).
+
+        Discriminates OR semantics: an image WITH an artist tag but WITHOUT a source must be
+        returned by missing_tag_types=2,3&mode=any, yet excluded by mode=all.
+        """
+        has_artist_no_source = Images(
+            **{**sample_image_data, "filename": "mtt_any1", "md5_hash": "3" * 32}
+        )
+        db_session.add(has_artist_no_source)
+        await db_session.flush()
+
+        artist_tag = Tags(title="any artist", desc="Artist", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.flush()
+        db_session.add(
+            TagLinks(image_id=has_artist_no_source.image_id, tag_id=artist_tag.tag_id, user_id=1)
+        )
+        await db_session.commit()
+
+        types = f"{TagType.SOURCE},{TagType.ARTIST}"
+
+        any_resp = await client.get(
+            f"/api/v1/images?missing_tag_types={types}&missing_tag_types_mode=any"
+        )
+        assert any_resp.status_code == 200
+        any_ids = [img["image_id"] for img in any_resp.json()["images"]]
+        assert has_artist_no_source.image_id in any_ids  # missing source -> matched by ANY
+
+        all_resp = await client.get(
+            f"/api/v1/images?missing_tag_types={types}&missing_tag_types_mode=all"
+        )
+        assert all_resp.status_code == 200
+        all_ids = [img["image_id"] for img in all_resp.json()["images"]]
+        assert has_artist_no_source.image_id not in all_ids  # has artist -> excluded by ALL
+
+    async def test_missing_artist_does_not_resolve_alias(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """The APPLIED tag's own type is authoritative; aliases are NOT resolved to canonical.
+
+        The image is linked to an alias whose own type is ARTIST, but whose canonical has a
+        DIFFERENT type (THEME). The filter must key off the applied tag's type (ARTIST), so the
+        image counts as having an artist tag and is excluded from missing_tag_types=3. If the
+        code resolved the alias to its canonical (THEME), the image would wrongly be returned.
+        """
+        aliased = Images(**{**sample_image_data, "filename": "mtt_alias", "md5_hash": "e" * 32})
+        db_session.add(aliased)
+        await db_session.flush()
+
+        # Canonical is THEME, deliberately different from the alias's ARTIST type, so the test
+        # discriminates "applied tag's type" from "canonical's type".
+        canonical = Tags(title="canon theme", desc="Theme", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.flush()
+        alias = Tags(
+            title="alias artist", desc="Alias", type=TagType.ARTIST, alias_of=canonical.tag_id
+        )
+        db_session.add(alias)
+        await db_session.flush()
+
+        # Image is linked to the ALIAS tag (type ARTIST), not the canonical one
+        db_session.add(TagLinks(image_id=aliased.image_id, tag_id=alias.tag_id, user_id=1))
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?missing_tag_types={TagType.ARTIST}")
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert aliased.image_id not in image_ids
+
+    async def test_missing_combined_with_include_tags(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """tags= include filter AND missing_tag_types both apply."""
+        keep = Images(**{**sample_image_data, "filename": "mtt_cmb1", "md5_hash": "f" * 32})
+        drop = Images(**{**sample_image_data, "filename": "mtt_cmb2", "md5_hash": "0" * 32})
+        db_session.add_all([keep, drop])
+        await db_session.flush()
+
+        theme_tag = Tags(title="cmb theme", desc="Theme", type=TagType.THEME)
+        artist_tag = Tags(title="cmb artist", desc="Artist", type=TagType.ARTIST)
+        db_session.add_all([theme_tag, artist_tag])
+        await db_session.flush()
+
+        # keep: has the theme tag, no artist -> matches include + missing artist
+        db_session.add(TagLinks(image_id=keep.image_id, tag_id=theme_tag.tag_id, user_id=1))
+        # drop: has theme tag AND an artist tag -> matches include but NOT missing artist
+        db_session.add(TagLinks(image_id=drop.image_id, tag_id=theme_tag.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=drop.image_id, tag_id=artist_tag.tag_id, user_id=1))
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images?tags={theme_tag.tag_id}&missing_tag_types={TagType.ARTIST}"
+        )
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert keep.image_id in image_ids
+        assert drop.image_id not in image_ids
+
+    async def test_image_with_no_tags_matches_every_type_both_modes(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """An image with no tags is missing every type, in both any and all modes."""
+        untagged = Images(**{**sample_image_data, "filename": "mtt_none", "md5_hash": "1" * 32})
+        db_session.add(untagged)
+        await db_session.commit()
+
+        for query in (
+            f"missing_tag_types={TagType.ARTIST}",
+            f"missing_tag_types={TagType.SOURCE},{TagType.ARTIST}&missing_tag_types_mode=any",
+            f"missing_tag_types={TagType.SOURCE},{TagType.ARTIST}&missing_tag_types_mode=all",
+        ):
+            response = await client.get(f"/api/v1/images?{query}")
+            assert response.status_code == 200, query
+            image_ids = [img["image_id"] for img in response.json()["images"]]
+            assert untagged.image_id in image_ids, query
+
+    async def test_missing_invalid_mode_returns_422(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Invalid mode is rejected by the Query pattern with 422."""
+        response = await client.get(
+            f"/api/v1/images?missing_tag_types={TagType.ARTIST}&missing_tag_types_mode=foo"
+        )
+        assert response.status_code == 422
+
+    async def test_omitted_param_does_not_filter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Without the param, behavior is unchanged (image is returned)."""
+        img = Images(**{**sample_image_data, "filename": "mtt_omit", "md5_hash": "2" * 32})
+        db_session.add(img)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images")
+
+        assert response.status_code == 200
+        image_ids = [i["image_id"] for i in response.json()["images"]]
+        assert img.image_id in image_ids
+
 
 @pytest.mark.api
 class TestTagHierarchySearch:
