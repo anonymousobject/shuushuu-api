@@ -785,6 +785,18 @@ class TestMissingTagTypes:
         ).json()["detail"]
         assert "artist" in detail, detail
 
+    async def test_missing_unicode_digit_token_returns_400_not_500(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A Unicode digit that int() cannot parse must 400, not crash with a 500.
+
+        '²' (superscript two) is str.isdigit()==True but int('²') raises ValueError,
+        so the token check must use isdecimal() to reject it cleanly.
+        """
+        response = await client.get("/api/v1/images?missing_tag_types=²")
+        assert response.status_code == 400
+        assert "Valid types are" in response.json()["detail"]
+
     async def test_missing_any_mode_returns_image_missing_only_one_type(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):

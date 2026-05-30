@@ -463,7 +463,9 @@ async def list_images(
         # Reject any token that is not a valid type ID (non-digit or out of range), rather
         # than silently dropping it. Empty tokens are ignored (empty param = no filter).
         raw_tokens = [t.strip() for t in missing_tag_types.split(",") if t.strip()]
-        invalid = [t for t in raw_tokens if not (t.isdigit() and int(t) in {1, 2, 3, 4})]
+        # isdecimal() (not isdigit()): int() only parses decimal digits, while isdigit()
+        # also matches chars like '²' that int() rejects (would otherwise 500 on int()).
+        invalid = [t for t in raw_tokens if not (t.isdecimal() and int(t) in {1, 2, 3, 4})]
         if invalid:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
