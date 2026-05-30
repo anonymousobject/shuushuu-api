@@ -97,13 +97,6 @@ if missing_tag_types:
                 ),
             )
 
-        def lacks_type(type_id: int):
-            return Images.image_id.notin_(  # type: ignore[union-attr]
-                select(TagLinks.image_id)
-                .join(Tags, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
-                .where(Tags.type == type_id)  # type: ignore[arg-type]
-            )
-
         if missing_tag_types_mode == "all":
             # Missing ALL listed types: no tag of any listed type
             query = query.where(
@@ -115,6 +108,13 @@ if missing_tag_types:
             )
         else:
             # Missing ANY listed type
+            def lacks_type(type_id: int):
+                return Images.image_id.notin_(  # type: ignore[union-attr]
+                    select(TagLinks.image_id)
+                    .join(Tags, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+                    .where(Tags.type == type_id)  # type: ignore[arg-type]
+                )
+
             query = query.where(or_(*(lacks_type(t) for t in missing_type_ids)))
 ```
 
