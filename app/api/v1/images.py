@@ -274,6 +274,16 @@ async def list_images(
     exclude_tags: Annotated[
         str | None, Query(description="Comma-separated tag IDs to exclude (e.g., '4,5,6')")
     ] = None,
+    missing_tag_types: Annotated[
+        str | None,
+        Query(
+            description="Comma-separated tag type IDs the image must be MISSING "
+            "(1=Theme, 2=Source, 3=Artist, 4=Character)."
+        ),
+    ] = None,
+    missing_tag_types_mode: Annotated[
+        str, Query(pattern="^(any|all)$", description="Match ANY or ALL missing types")
+    ] = "any",
     # Date filtering
     date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
     date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
@@ -446,6 +456,23 @@ async def list_images(
                     select(TagLinks.image_id).where(TagLinks.tag_id.in_(resolved_exclude_ids))  # type: ignore[call-overload,attr-defined]
                 )
             )
+
+    # Missing tag-type filtering (images lacking a tag of the given type[s]).
+    # Aliases are intentionally NOT resolved here: the applied tag's own `type` is authoritative.
+    if missing_tag_types:
+        missing_type_ids = sorted(
+            {int(t.strip()) for t in missing_tag_types.split(",") if t.strip().isdigit()}
+        )
+        if missing_type_ids:
+            # Missing ANY listed type
+            def lacks_type(type_id: int) -> Any:
+                return Images.image_id.notin_(  # type: ignore[union-attr]
+                    select(TagLinks.image_id)  # type: ignore[call-overload]
+                    .join(Tags, TagLinks.tag_id == Tags.tag_id)
+                    .where(Tags.type == type_id)
+                )
+
+            query = query.where(or_(*(lacks_type(t) for t in missing_type_ids)))
 
     # Date filtering
     if date_from:

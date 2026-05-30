@@ -695,6 +695,36 @@ class TestExcludeTags:
 
 
 @pytest.mark.api
+class TestMissingTagTypes:
+    """Tests for missing_tag_types / missing_tag_types_mode params on image search."""
+
+    async def test_missing_single_type_excludes_images_that_have_it(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """missing_tag_types=3 returns images lacking an artist tag, excludes those that have one."""
+        has_artist = Images(**{**sample_image_data, "filename": "mtt_a1", "md5_hash": "a" * 32})
+        no_artist = Images(**{**sample_image_data, "filename": "mtt_a2", "md5_hash": "b" * 32})
+        db_session.add_all([has_artist, no_artist])
+        await db_session.flush()
+
+        artist_tag = Tags(title="some artist", desc="Artist", type=TagType.ARTIST)
+        theme_tag = Tags(title="some theme", desc="Theme", type=TagType.THEME)
+        db_session.add_all([artist_tag, theme_tag])
+        await db_session.flush()
+
+        db_session.add(TagLinks(image_id=has_artist.image_id, tag_id=artist_tag.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=no_artist.image_id, tag_id=theme_tag.tag_id, user_id=1))
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?missing_tag_types={TagType.ARTIST}")
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert no_artist.image_id in image_ids
+        assert has_artist.image_id not in image_ids
+
+
+@pytest.mark.api
 class TestTagHierarchySearch:
     """Tests for image search with tag hierarchy expansion.
 
