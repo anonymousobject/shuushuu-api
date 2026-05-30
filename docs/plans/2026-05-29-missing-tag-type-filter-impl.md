@@ -39,6 +39,7 @@
 Append a new test class after `TestExcludeTags` in `tests/api/v1/test_images.py`. `TagType` is already imported in this file; confirm `from app.config import TagType` is at the top (it is used by existing tests).
 
 ```python
+@pytest.mark.api
 class TestMissingTagTypes:
     """Tests for missing_tag_types / missing_tag_types_mode params on image search."""
 
@@ -283,9 +284,49 @@ These confirm behavior already guaranteed by Tasks 1-3 (alias non-resolution, AN
 **Files:**
 - Test: `tests/api/v1/test_images.py` (`TestMissingTagTypes`)
 
+Note: confirm `import pytest` and `from app.config import TagType` are present at the top of `test_images.py` (both are — used by existing tests/classes). The class decorator `@pytest.mark.api` (added in Task 1) keeps these tests in the `api` marker set, matching every other class in the file.
+
 - [ ] **Step 1: Write the tests**
 
 ```python
+    async def test_missing_any_mode_returns_image_missing_only_one_type(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """mode=any returns an image that has one listed type but lacks another (OR, not AND).
+
+        Discriminates OR semantics: an image WITH an artist tag but WITHOUT a source must be
+        returned by missing_tag_types=2,3&mode=any, yet excluded by mode=all.
+        """
+        has_artist_no_source = Images(
+            **{**sample_image_data, "filename": "mtt_any1", "md5_hash": "3" * 32}
+        )
+        db_session.add(has_artist_no_source)
+        await db_session.flush()
+
+        artist_tag = Tags(title="any artist", desc="Artist", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.flush()
+        db_session.add(
+            TagLinks(image_id=has_artist_no_source.image_id, tag_id=artist_tag.tag_id, user_id=1)
+        )
+        await db_session.commit()
+
+        types = f"{TagType.SOURCE},{TagType.ARTIST}"
+
+        any_resp = await client.get(
+            f"/api/v1/images?missing_tag_types={types}&missing_tag_types_mode=any"
+        )
+        assert any_resp.status_code == 200
+        any_ids = [img["image_id"] for img in any_resp.json()["images"]]
+        assert has_artist_no_source.image_id in any_ids  # missing source -> matched by ANY
+
+        all_resp = await client.get(
+            f"/api/v1/images?missing_tag_types={types}&missing_tag_types_mode=all"
+        )
+        assert all_resp.status_code == 200
+        all_ids = [img["image_id"] for img in all_resp.json()["images"]]
+        assert has_artist_no_source.image_id not in all_ids  # has artist -> excluded by ALL
+
     async def test_missing_artist_does_not_resolve_alias(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
