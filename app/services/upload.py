@@ -13,6 +13,7 @@ from app.config import settings
 from app.core.logging import get_logger
 from app.models import Images, TagLinks, Tags
 from app.services.image_processing import calculate_md5, validate_image_file
+from app.services.tag_type_flags import refresh_image_tag_type_flags
 
 logger = get_logger(__name__)
 
@@ -155,3 +156,5 @@ async def link_tags_to_image(
             user_id=user_id,
         )
         db.add(tag_link)
+
+    await refresh_image_tag_type_flags(db, image_id)

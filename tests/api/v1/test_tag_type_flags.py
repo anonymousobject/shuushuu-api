@@ -7,6 +7,7 @@ from app.services.tag_type_flags import (
     refresh_image_tag_type_flags,
     refresh_images_tag_type_flags,
 )
+from app.services.upload import link_tags_to_image
 
 
 @pytest.mark.api
@@ -90,3 +91,25 @@ class TestTagTypeFlagsHelper:
 
     async def test_refresh_empty_set_is_noop(self, db_session: AsyncSession):
         await refresh_images_tag_type_flags(db_session, [])  # must not raise
+
+
+@pytest.mark.api
+class TestUploadTagFlags:
+    async def test_link_tags_to_image_sets_tag_type_flags(
+        self, db_session: AsyncSession, sample_image_data: dict
+    ):
+        img = Images(**{**sample_image_data, "filename": "utf1", "md5_hash": "aa" * 16})
+        db_session.add(img)
+        await db_session.flush()
+        artist = Tags(title="utf artist", desc="a", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.flush()
+
+        await link_tags_to_image(img.image_id, [artist.tag_id], user_id=1, db=db_session)
+        await db_session.commit()
+
+        await db_session.refresh(img)
+        assert img.has_artist is True
+        assert img.has_theme is False
+        assert img.has_source is False
+        assert img.has_character is False
