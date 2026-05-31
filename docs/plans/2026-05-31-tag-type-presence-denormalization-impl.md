@@ -61,10 +61,10 @@ def upgrade() -> None:
     # Metadata-only column add (INSTANT) — instant on the 1.1M-row table.
     op.execute(
         "ALTER TABLE images "
-        "ADD COLUMN has_theme TINYINT(1) NOT NULL DEFAULT 0, "
-        "ADD COLUMN has_source TINYINT(1) NOT NULL DEFAULT 0, "
-        "ADD COLUMN has_artist TINYINT(1) NOT NULL DEFAULT 0, "
-        "ADD COLUMN has_character TINYINT(1) NOT NULL DEFAULT 0, "
+        "ADD COLUMN has_theme BOOLEAN NOT NULL DEFAULT 0, "
+        "ADD COLUMN has_source BOOLEAN NOT NULL DEFAULT 0, "
+        "ADD COLUMN has_artist BOOLEAN NOT NULL DEFAULT 0, "
+        "ADD COLUMN has_character BOOLEAN NOT NULL DEFAULT 0, "
         "ALGORITHM=INSTANT, LOCK=NONE"
     )
     # Online index builds (INPLACE, non-blocking).
@@ -305,7 +305,10 @@ And after each fixture's link `commit()`, e.g.:
                 4: Images.has_character,
             }
             # "missing type T" == that image's has_<type> flag is False.
-            clauses = [type_column[t] == False for t in missing_type_ids]  # noqa: E712
+            clauses = [
+                type_column[t] == False  # type: ignore[arg-type]  # noqa: E712
+                for t in missing_type_ids
+            ]
             if missing_tag_types_mode == "all":
                 query = query.where(and_(*clauses))  # missing every listed type
             else:
@@ -316,7 +319,7 @@ Leave the param definitions, `raw_tokens` parsing, `isdecimal()` validation, and
 
 - [ ] **Step 4: Run the class → PASS.** `uv run pytest "tests/api/v1/test_images.py::TestMissingTagTypes" -v` (all behavior tests green against the new flag-based mechanism).
 
-- [ ] **Step 5: mypy/ruff reconcile.** `uv run mypy app/api/v1/images.py` → clean (the `== False` comparison may need a `# type: ignore[...]`; add exactly what mypy reports, mirroring the file's existing ignores). `uv run ruff check app/api/v1/images.py` → the `# noqa: E712` suppresses the comparison lint.
+- [ ] **Step 5: mypy/ruff reconcile.** `uv run mypy app/api/v1/images.py` → clean. The house idiom (verified at `app/api/v1/comments.py:95`) is `col == False  # type: ignore[arg-type]  # noqa: E712`; apply that to each clause (the `noqa` suppresses ruff E712, the `type: ignore[arg-type]` satisfies mypy). `uv run ruff check app/api/v1/images.py` → clean.
 
 - [ ] **Step 6: Commit.**
 ```bash
@@ -329,6 +332,8 @@ git commit -m "feat(images): filter missing_tag_types via denormalized flags"
 ## Chunk 2: Maintenance hooks
 
 Pattern for every hook task: call the recompute helper for the affected image(s) **before** the path's `await db.commit()`, then add an integration test that drives the real endpoint/service and asserts the flag flips. Import inside the function or at module top, matching the file's import style.
+
+**Test assertion caveat (applies to every Chunk 2 task):** the recompute is a raw `UPDATE` that bypasses the ORM, and conftest uses `expire_on_commit=False`, so a pre-fetched `Images` object keeps **stale** `has_*` attributes. Assert by **re-querying** the image (`select(Images).where(...)`) or `await db.refresh(img)` first — never on an `Images` instance loaded before the helper ran. (The filter tests in Task 3 are unaffected: they hit the SQL WHERE clause, not a Python object.)
 
 ### Task 4: Single add/remove tag (images.py)
 
@@ -381,11 +386,13 @@ Import the helper. (One call for the image; the helper flushes the pending links
 
 - [ ] **Step 1: Failing tests.** Batch-add an artist tag to two images → both `has_artist` True; batch-remove → both False.
 - [ ] **Step 2: Run → FAIL.**
-- [ ] **Step 3: Implement.** In each function, collect the set of affected `image_id`s processed (the images that actually got a link added/removed), and before the `await db.commit()` call:
+- [ ] **Step 3: Implement.** Reuse the bookkeeping each function already keeps (no new tracking needed), and call before the `await db.commit()`:
 ```python
     await refresh_images_tag_type_flags(db, affected_image_ids)
 ```
-For `batch_add_tags`, `affected_image_ids` = the image_ids for which a `TagLinks` was added (track in the existing add loop). For `batch_remove_tags`, the image_ids in `pairs_to_remove`. Import `refresh_images_tag_type_flags`.
+- `batch_add_tags`: `affected_image_ids = {i.image_id for i in added}` (the existing `added` result list; each item carries `image_id`).
+- `batch_remove_tags`: `affected_image_ids = {p[0] for p in pairs_to_remove}` (the existing `pairs_to_remove` set of `(image_id, tag_id)`).
+Import `refresh_images_tag_type_flags`.
 - [ ] **Step 4: Run → PASS.**
 - [ ] **Step 5: mypy + commit.** `git commit -m "feat(batch-tag): maintain tag-type flags on batch add/remove"`
 
@@ -413,9 +420,9 @@ Import the helper. This covers both callers (`images.py:1023`, `admin.py:770`) a
 
 **Files:**
 - Modify: `app/api/v1/admin.py` (the suggestion loop ~lines 1559–1595; find the handler's `await db.commit()` after the loop)
-- Test: `tests/api/v1/test_admin*.py`
+- Test: `tests/api/v1/test_admin_images.py` (report/suggestion setup) — there is no `admin_client` fixture; admin tests create an admin via the per-file `create_admin_user(db_session, "name")` helper (see `tests/api/v1/test_admin_actions.py:29`). Reuse that pattern and the report-setup fixtures already in `test_admin_images.py`.
 
-- [ ] **Step 1: Failing test.** Approve an "add artist tag" suggestion for a report's image → image `has_artist` True; approve a "remove" of the last artist tag → False.
+- [ ] **Step 1: Failing test.** Approve an "add artist tag" suggestion for a report's image → image `has_artist` True; approve a "remove" of the last artist tag → False. Assert by re-querying the image (see Chunk 2 caveat).
 - [ ] **Step 2: Run → FAIL.**
 - [ ] **Step 3: Implement.** After the suggestion loop and before the handler's `await db.commit()`, add a single refresh for the report's image:
 ```python
@@ -454,10 +461,12 @@ Import `refresh_images_tag_type_flags`.
 
 ---
 
+> **Note (Tasks 10 & 11):** `update_tag` has a SINGLE `await db.commit()` (~line 1558) covering both the type-change branch (~1360) and the alias branch (~1455). Don't look for two commits. Both recompute calls land before that one commit; a combined type+alias PATCH runs both (idempotent, harmless).
+
 ### Task 10: Tag type change (tags.py update_tag)
 
 **Files:**
-- Modify: `app/api/v1/tags.py` (`update_tag`, type-change branch ~line 1360; commit ~line 1558)
+- Modify: `app/api/v1/tags.py` (`update_tag`, type-change branch ~line 1360; single commit ~line 1558)
 - Test: `tests/api/v1/test_tags*.py`
 
 - [ ] **Step 1: Failing test.** Image linked to a tag of type ARTIST (`has_artist` True, `has_source` False). PATCH the tag's `type` to SOURCE. Assert the image is now `has_artist` False, `has_source` True.
