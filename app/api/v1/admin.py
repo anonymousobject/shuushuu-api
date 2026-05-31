@@ -107,6 +107,7 @@ from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.rating import schedule_rating_recalculation
 from app.services.repost import migrate_repost_data
 from app.services.review_jobs import check_early_close
+from app.services.tag_type_flags import refresh_image_tag_type_flags
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -1619,6 +1620,8 @@ async def apply_tag_suggestions(
         },
     )
     db.add(action)
+
+    await refresh_image_tag_type_flags(db, report.image_id)
 
     await db.commit()
 
