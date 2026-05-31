@@ -977,6 +977,19 @@ class TestMissingTagTypes:
         image_ids = [i["image_id"] for i in response.json()["images"]]
         assert img.image_id in image_ids
 
+    async def test_new_image_defaults_tag_type_flags_false(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """The denormalized presence flags exist and default to False on a fresh image."""
+        img = Images(**{**sample_image_data, "filename": "flags_default", "md5_hash": "9c" * 16})
+        db_session.add(img)
+        await db_session.commit()
+        await db_session.refresh(img)
+        assert img.has_theme is False
+        assert img.has_source is False
+        assert img.has_artist is False
+        assert img.has_character is False
+
 
 @pytest.mark.api
 class TestTagHierarchySearch:
