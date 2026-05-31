@@ -15,6 +15,7 @@ from app.schemas.tag import (
     BatchTagSkippedItem,
 )
 from app.services.search import sync_tags_to_search
+from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 logger = get_logger(__name__)
 
@@ -131,6 +132,8 @@ async def batch_add_tags(
 
             # Track as existing to prevent duplicates within same batch
             existing_links.add((image_id, resolved_tag_id))
+
+    await refresh_images_tag_type_flags(db, {item.image_id for item in added})
 
     try:
         await db.commit()
@@ -271,6 +274,8 @@ async def batch_remove_tags(
                     user_id=user_id,
                 )
             )
+
+    await refresh_images_tag_type_flags(db, {item.image_id for item in removed})
 
     try:
         await db.commit()

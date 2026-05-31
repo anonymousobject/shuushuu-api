@@ -2,6 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
@@ -11,6 +12,7 @@ from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
+from app.services.tag_type_flags import refresh_image_tag_type_flags
 
 
 async def _create_user_with_tag_permission(
@@ -317,8 +319,6 @@ class TestBatchTagAdd:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Each new tag link creates a tag history entry."""
-        from sqlalchemy import func, select
-
         from app.models.tag_history import TagHistory
 
         user = await _create_user_with_tag_permission(db_session)
@@ -482,8 +482,6 @@ class TestBatchTagRemove:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Each removed tag link creates a tag history entry with action 'r'."""
-        from sqlalchemy import func, select
-
         from app.models.tag_history import TagHistory
 
         user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
@@ -559,8 +557,6 @@ class TestBatchTagRemove:
         assert data["removed"][0]["tag_id"] == canonical.tag_id
 
         # Verify the link was actually deleted
-        from sqlalchemy import select
-
         link_result = await db_session.execute(
             select(TagLinks).where(
                 TagLinks.image_id == images[0].image_id,
@@ -594,3 +590,112 @@ class TestBatchTagRemove:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 403
+
+
+@pytest.mark.api
+class TestBatchTagTypeFlags:
+    """Tests that batch add/remove keep has_* tag-type flags correct."""
+
+    async def test_batch_add_sets_has_artist_flag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Batch-adding an ARTIST tag sets has_artist=True on all affected images."""
+        user = await _create_user_with_tag_permission(db_session, ["image_tag_add"])
+        token = create_access_token(user.id)
+        images = await _create_test_images(db_session, user, 2)
+
+        artist_tag = Tags(title="Test Artist", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.commit()
+        await db_session.refresh(artist_tag)
+
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "add",
+                "tag_ids": [artist_tag.tag_id],
+                "image_ids": [img.image_id for img in images],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        assert len(response.json()["added"]) == 2
+
+        # Fresh reads — bypass identity map
+        for img in images:
+            result = await db_session.execute(
+                select(Images)
+                .where(Images.image_id == img.image_id)
+                .execution_options(populate_existing=True)
+            )
+            fresh = result.scalar_one()
+            assert fresh.has_artist is True, (
+                f"image {img.image_id} has_artist should be True after batch add"
+            )
+
+    async def test_batch_remove_clears_has_artist_flag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Batch-removing the only ARTIST tag clears has_artist=False on all affected images."""
+        user = await _create_user_with_tag_permission(
+            db_session, ["image_tag_add", "image_tag_remove"]
+        )
+        token = create_access_token(user.id)
+        images = await _create_test_images(db_session, user, 2)
+
+        artist_tag = Tags(title="Test Artist Remove", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.commit()
+        await db_session.refresh(artist_tag)
+
+        # Pre-link the artist tag to both images
+        for img in images:
+            db_session.add(
+                TagLinks(
+                    image_id=img.image_id,
+                    tag_id=artist_tag.tag_id,
+                    user_id=user.user_id,
+                )
+            )
+        await db_session.commit()
+
+        # Establish the real pre-state: recompute flags so has_artist=True
+        for img in images:
+            await refresh_image_tag_type_flags(db_session, img.image_id)
+        await db_session.commit()
+
+        # Precondition: has_artist must be True before the remove
+        for img in images:
+            result = await db_session.execute(
+                select(Images)
+                .where(Images.image_id == img.image_id)
+                .execution_options(populate_existing=True)
+            )
+            pre = result.scalar_one()
+            assert pre.has_artist is True, (
+                f"image {img.image_id} has_artist should be True before batch remove"
+            )
+
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "remove",
+                "tag_ids": [artist_tag.tag_id],
+                "image_ids": [img.image_id for img in images],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        assert len(response.json()["removed"]) == 2
+
+        # Fresh reads — bypass identity map
+        for img in images:
+            result = await db_session.execute(
+                select(Images)
+                .where(Images.image_id == img.image_id)
+                .execution_options(populate_existing=True)
+            )
+            fresh = result.scalar_one()
+            assert fresh.has_artist is False, (
+                f"image {img.image_id} has_artist should be False after batch remove"
+            )
