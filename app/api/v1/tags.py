@@ -1463,6 +1463,12 @@ async def update_tag(
     if tag.alias_of is not None and tag.alias_of != original_alias_of:
         canonical_id = tag.alias_of
 
+        # Capture affected image_ids before any deletes/moves for flag recompute
+        flag_affected = await db.execute(
+            select(TagLinks.image_id).where(TagLinks.tag_id == tag_id)  # type: ignore[call-overload]
+        )
+        flag_affected_ids = [row[0] for row in flag_affected]
+
         # Find images already linked to canonical tag (to avoid PK conflicts)
         existing_result = await db.execute(
             select(TagLinks.image_id).where(TagLinks.tag_id == canonical_id)  # type: ignore[call-overload]
@@ -1494,6 +1500,9 @@ async def update_tag(
             await db.execute(
                 update(Tags).where(Tags.tag_id == tid).values(usage_count=count_result.scalar())  # type: ignore[arg-type]
             )
+
+        # Idempotent drift-guard: links moved alias->canonical (same type), recompute flags.
+        await refresh_images_tag_type_flags(db, flag_affected_ids)
 
         # Migrate external links from alias to canonical tag
         existing_urls_result = await db.execute(
