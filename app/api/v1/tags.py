@@ -1368,6 +1368,13 @@ async def update_tag(
         )
         db.add(audit_entry)
 
+        # A type change shifts every linked image between has_<old> and has_<new>;
+        # recompute all images linked to this tag (set-based, bounded by usage).
+        affected = await db.execute(
+            select(TagLinks.image_id).where(TagLinks.tag_id == tag_id)  # type: ignore[call-overload]
+        )
+        await refresh_images_tag_type_flags(db, [row[0] for row in affected])
+
     # Check for alias change
     if tag.alias_of != original_alias_of:
         if original_alias_of is None and tag.alias_of is not None:

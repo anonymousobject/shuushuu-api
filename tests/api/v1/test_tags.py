@@ -3526,6 +3526,88 @@ class TestUpdateTag:
         assert response.status_code == 400
         assert "different type" in response.json()["detail"]
 
+    async def test_type_change_recomputes_tag_type_flags(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Changing a tag's type via PUT must recompute has_* flags for all linked images."""
+        from app.services.tag_type_flags import refresh_image_tag_type_flags
+
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user with TAG_UPDATE permission
+        admin = Users(
+            username="admintypeflags",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admintypeflags@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.flush()
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create an ARTIST-type tag
+        artist_tag = Tags(title="artist for type-change flag test", desc="", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.flush()
+
+        # Create an image and link the artist tag to it
+        img_data = sample_image_data.copy()
+        img_data.update({"filename": "type-change-flag-img", "md5_hash": "typechangeflg0000000"})
+        img = Images(**img_data)
+        db_session.add(img)
+        await db_session.flush()
+
+        db_session.add(TagLinks(tag_id=artist_tag.tag_id, image_id=img.image_id))
+        await db_session.flush()
+
+        # Establish has_artist=True via the flag service, then commit
+        await refresh_image_tag_type_flags(db_session, img.image_id)
+        await db_session.commit()
+
+        # Precondition: fresh-read confirms has_artist=True, has_source=False
+        pre_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        pre_img = pre_result.scalar_one()
+        assert pre_img.has_artist is True, "Precondition failed: has_artist should be True before type change"
+        assert pre_img.has_source is False, "Precondition failed: has_source should be False before type change"
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admintypeflags", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change the tag's type from ARTIST to SOURCE via the real endpoint
+        response = await client.put(
+            f"/api/v1/tags/{artist_tag.tag_id}",
+            json={"title": "artist for type-change flag test", "type": TagType.SOURCE},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Fresh-read the image; has_artist must now be False, has_source must be True
+        post_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        post_img = post_result.scalar_one()
+        assert post_img.has_artist is False, "has_artist should be False after tag type changed from ARTIST to SOURCE"
+        assert post_img.has_source is True, "has_source should be True after tag type changed from ARTIST to SOURCE"
+
 
 @pytest.mark.api
 class TestDeleteTag:
