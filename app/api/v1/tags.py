@@ -53,6 +53,7 @@ from app.schemas.tag import (
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
+from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 SUGGESTION_STATS_MIN_THRESHOLD = 5
 
@@ -1589,7 +1590,15 @@ async def delete_tag(
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
+    # Capture images linked to this tag BEFORE the FK CASCADE removes the links.
+    affected = await db.execute(
+        select(TagLinks.image_id).where(TagLinks.tag_id == tag_id)  # type: ignore[call-overload]
+    )
+    affected_image_ids = [row[0] for row in affected]
+
     await db.delete(tag)
+    await db.flush()  # apply the FK CASCADE within this transaction before recompute
+    await refresh_images_tag_type_flags(db, affected_image_ids)
     await db.commit()
 
     await sync_tag_delete_to_search(tag_id)

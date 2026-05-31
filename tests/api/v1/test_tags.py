@@ -3623,6 +3623,89 @@ class TestDeleteTag:
         )
         assert response.status_code == 403
 
+    async def test_delete_tag_clears_has_artist_flag(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Deleting the only artist tag linked to an image must reset has_artist to False."""
+        from app.services.tag_type_flags import refresh_image_tag_type_flags
+
+        # Fetch the pre-seeded tag_delete permission (seeded by sync_permissions at startup)
+        perm_result = await db_session.execute(
+            select(Perms).where(Perms.title == "tag_delete")  # type: ignore[call-overload]
+        )
+        perm = perm_result.scalar_one()
+
+        # Create admin user with TAG_DELETE permission
+        admin = Users(
+            username="admindeleteflags",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindeleteflags@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.flush()
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create an ARTIST-type tag
+        artist_tag = Tags(title="artist for flag test", desc="", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.flush()
+
+        # Create an image and link the artist tag to it
+        img_data = sample_image_data.copy()
+        img_data.update({"filename": "flag-test-img", "md5_hash": "flagtest0000000000000"})
+        img = Images(**img_data)
+        db_session.add(img)
+        await db_session.flush()
+
+        db_session.add(TagLinks(tag_id=artist_tag.tag_id, image_id=img.image_id))
+        await db_session.flush()
+
+        # Establish has_artist=True via the flag service, then commit
+        await refresh_image_tag_type_flags(db_session, img.image_id)
+        await db_session.commit()
+
+        # Precondition: confirm has_artist is True (fresh read to bypass identity map)
+        fresh_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        pre_img = fresh_result.scalar_one()
+        assert pre_img.has_artist is True, "Precondition failed: has_artist should be True before delete"
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindeleteflags", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # DELETE the artist tag via the real endpoint
+        response = await client.delete(
+            f"/api/v1/tags/{artist_tag.tag_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 204
+
+        # Fresh-read the image; has_artist must now be False
+        post_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        post_img = post_result.scalar_one()
+        assert post_img.has_artist is False, "has_artist should be False after the only artist tag is deleted"
+
 
 @pytest.mark.api
 class TestAddTagLink:
