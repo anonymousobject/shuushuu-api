@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import TagType, settings
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 from app.models.permissions import Groups, UserGroups
+from app.services.tag_type_flags import refresh_image_tag_type_flags
 
 
 @pytest.mark.api
@@ -752,6 +753,11 @@ class TestMissingTagTypes:
         db_session.add(TagLinks(image_id=no_artist.image_id, tag_id=theme_tag.tag_id, user_id=1))
         await db_session.commit()
 
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (has_artist, no_artist):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
+        await db_session.commit()
+
         response = await client.get(f"/api/v1/images?missing_tag_types={TagType.ARTIST}")
 
         assert response.status_code == 200
@@ -781,6 +787,11 @@ class TestMissingTagTypes:
         db_session.add(
             TagLinks(image_id=missing_source_only.image_id, tag_id=artist_tag.tag_id, user_id=1)
         )
+        await db_session.commit()
+
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (missing_both, missing_source_only):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
         await db_session.commit()
 
         response = await client.get(
@@ -855,6 +866,11 @@ class TestMissingTagTypes:
         )
         await db_session.commit()
 
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (has_artist_no_source,):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
+        await db_session.commit()
+
         types = f"{TagType.SOURCE},{TagType.ARTIST}"
 
         any_resp = await client.get(
@@ -900,6 +916,11 @@ class TestMissingTagTypes:
         db_session.add(TagLinks(image_id=aliased.image_id, tag_id=alias.tag_id, user_id=1))
         await db_session.commit()
 
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (aliased,):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
+        await db_session.commit()
+
         response = await client.get(f"/api/v1/images?missing_tag_types={TagType.ARTIST}")
 
         assert response.status_code == 200
@@ -925,6 +946,11 @@ class TestMissingTagTypes:
         # drop: has theme tag AND an artist tag -> matches include but NOT missing artist
         db_session.add(TagLinks(image_id=drop.image_id, tag_id=theme_tag.tag_id, user_id=1))
         db_session.add(TagLinks(image_id=drop.image_id, tag_id=artist_tag.tag_id, user_id=1))
+        await db_session.commit()
+
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (keep, drop):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
         await db_session.commit()
 
         response = await client.get(

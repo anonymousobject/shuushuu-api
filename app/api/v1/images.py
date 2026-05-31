@@ -478,25 +478,21 @@ async def list_images(
             )
         missing_type_ids = sorted({int(t) for t in raw_tokens})
         if missing_type_ids:
+            type_column = {
+                1: Images.has_theme,
+                2: Images.has_source,
+                3: Images.has_artist,
+                4: Images.has_character,
+            }
+            # "missing type T" == that image's has_<type> flag is False.
+            clauses = [
+                type_column[t] == False  # noqa: E712
+                for t in missing_type_ids
+            ]
             if missing_tag_types_mode == "all":
-                # Missing ALL listed types: no tag of any listed type
-                query = query.where(
-                    Images.image_id.notin_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id)  # type: ignore[call-overload]
-                        .join(Tags, TagLinks.tag_id == Tags.tag_id)
-                        .where(Tags.type.in_(missing_type_ids))  # type: ignore[attr-defined]
-                    )
-                )
+                query = query.where(and_(*clauses))  # type: ignore[arg-type]  # missing every listed type
             else:
-                # Missing ANY listed type
-                def lacks_type(type_id: int) -> Any:
-                    return Images.image_id.notin_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id)  # type: ignore[call-overload]
-                        .join(Tags, TagLinks.tag_id == Tags.tag_id)
-                        .where(Tags.type == type_id)
-                    )
-
-                query = query.where(or_(*(lacks_type(t) for t in missing_type_ids)))
+                query = query.where(or_(*clauses))  # type: ignore[arg-type]  # missing at least one listed type
 
     # Date filtering
     if date_from:
