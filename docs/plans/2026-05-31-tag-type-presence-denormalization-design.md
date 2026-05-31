@@ -128,6 +128,8 @@ These change the type composition of *every image linked to the tag*. Gather the
 
 This is the highest-risk part: a missed site causes silent drift. The plan must enumerate and cover every site with a test, and the backfill script (below) doubles as a reconciliation tool if drift is ever suspected.
 
+**Standing risk:** flag correctness rests on two invariants — `tags.type` is authoritative (handled by the type-change hook) and an alias shares its canonical's type (API-enforced). Any future raw-SQL or bulk path that mutates `tag_links`/`tags.type` directly, or bypasses the alias type check, would drift the flags silently. The backfill script is the reconciliation path; a scheduled reconciliation job is intentionally out of scope for now (KISS).
+
 Note: the existing `tags.usage_count` increment/decrement triggers on `tag_links` are orthogonal to these flags — no interaction.
 
 ## Backfill
