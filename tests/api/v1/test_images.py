@@ -9,6 +9,7 @@ These tests cover the /api/v1/images endpoints including:
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
@@ -2424,6 +2425,100 @@ class TestTagUsageCount:
         assert response.status_code == 204
         await db_session.refresh(tag)
         assert tag.usage_count == 2
+
+@pytest.mark.api
+class TestTagTypeFlagMaintenance:
+    """Tests that the denormalized has_* flags are updated by the add/remove-tag endpoints."""
+
+    async def test_add_artist_tag_sets_has_artist(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """Adding an ARTIST tag via the endpoint sets has_artist=True on the image."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image_data["filename"] = "ttfm_add1"
+        image_data["md5_hash"] = "a1" * 16
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="ttfm_artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        response = await authenticated_client.post(
+            f"/api/v1/images/{image.image_id}/tags/{tag.tag_id}"
+        )
+        assert response.status_code == 201
+
+        # Re-query with populate_existing to bypass identity map (raw UPDATE skips ORM cache)
+        result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == image.image_id)
+            .execution_options(populate_existing=True)
+        )
+        fresh = result.scalar_one()
+        assert fresh.has_artist is True
+
+    async def test_remove_artist_tag_clears_has_artist(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """Removing the last ARTIST tag via the endpoint sets has_artist=False on the image."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image_data["filename"] = "ttfm_rem1"
+        image_data["md5_hash"] = "b2" * 16
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="ttfm_artist_rem", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Link the tag directly so has_artist starts True
+        tag_link = TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=sample_user.user_id)
+        db_session.add(tag_link)
+        await db_session.commit()
+        await refresh_image_tag_type_flags(db_session, image.image_id)
+        await db_session.commit()
+
+        # Confirm the flag is set before the removal (populate_existing bypasses identity map)
+        pre = (
+            await db_session.execute(
+                select(Images)
+                .where(Images.image_id == image.image_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        assert pre.has_artist is True
+
+        response = await authenticated_client.delete(
+            f"/api/v1/images/{image.image_id}/tags/{tag.tag_id}"
+        )
+        assert response.status_code == 204
+
+        # Re-query with populate_existing to bypass identity map (raw UPDATE skips ORM cache)
+        result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == image.image_id)
+            .execution_options(populate_existing=True)
+        )
+        fresh = result.scalar_one()
+        assert fresh.has_artist is False
+
 
 @pytest.mark.api
 class TestCommentFilters:

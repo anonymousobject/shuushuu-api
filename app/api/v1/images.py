@@ -115,6 +115,7 @@ from app.services.iqdb import check_iqdb_similarity, check_iqdb_similarity_by_ha
 from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import recalculate_image_ratings
 from app.services.search import sync_tag_to_search
+from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
 
@@ -1820,6 +1821,7 @@ async def add_tag_to_image(
     )
     db.add(history_entry)
 
+    await refresh_image_tag_type_flags(db, image_id)
     await db.commit()
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
@@ -1892,6 +1894,7 @@ async def remove_tag_from_image(
             TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
         )
     )
+    await refresh_image_tag_type_flags(db, image_id)
     await db.commit()
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
