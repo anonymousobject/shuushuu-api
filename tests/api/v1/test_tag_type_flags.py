@@ -57,5 +57,36 @@ class TestTagTypeFlagsHelper:
         await db_session.refresh(img)
         assert img.has_artist is False
 
+    async def test_refresh_keeps_flag_when_another_same_type_tag_remains(
+        self, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Removing one of two same-type tags must keep the flag True (recompute-from-source).
+
+        This is the defining property vs. a naive decrement: the flag tracks presence of
+        ANY tag of the type, so it only clears when the LAST one is gone.
+        """
+        img = Images(**{**sample_image_data, "filename": "ttf3", "md5_hash": "33" * 16})
+        db_session.add(img)
+        await db_session.flush()
+        artist_a = Tags(title="ttf artist a", desc="a", type=TagType.ARTIST)
+        artist_b = Tags(title="ttf artist b", desc="b", type=TagType.ARTIST)
+        db_session.add_all([artist_a, artist_b])
+        await db_session.flush()
+        db_session.add(TagLinks(image_id=img.image_id, tag_id=artist_a.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=img.image_id, tag_id=artist_b.tag_id, user_id=1))
+        await refresh_image_tag_type_flags(db_session, img.image_id)
+        await db_session.refresh(img)
+        assert img.has_artist is True
+
+        from sqlalchemy import delete
+        await db_session.execute(
+            delete(TagLinks).where(
+                TagLinks.image_id == img.image_id, TagLinks.tag_id == artist_a.tag_id
+            )
+        )
+        await refresh_image_tag_type_flags(db_session, img.image_id)
+        await db_session.refresh(img)
+        assert img.has_artist is True  # artist_b still linked -> flag stays True
+
     async def test_refresh_empty_set_is_noop(self, db_session: AsyncSession):
         await refresh_images_tag_type_flags(db_session, [])  # must not raise
