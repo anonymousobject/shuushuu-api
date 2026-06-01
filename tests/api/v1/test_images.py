@@ -280,6 +280,18 @@ class TestImagesFiltering:
         assert response.status_code == 200
         assert response.json()["total"] == 2  # 2023-06-15, 2024-01-01
 
+    async def test_filter_by_date_invalid_format(self, client: AsyncClient):
+        """Malformed date_from/date_to return HTTP 400 (not 500), naming the bad field."""
+        # Non-date string.
+        response = await client.get("/api/v1/images?date_from=not-a-date")
+        assert response.status_code == 400
+        assert "date_from" in response.json()["detail"]
+
+        # Wrong separator / non-ISO format.
+        response = await client.get("/api/v1/images?date_to=2024/12/31")
+        assert response.status_code == 400
+        assert "date_to" in response.json()["detail"]
+
     async def test_filter_by_num_ratings(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
