@@ -209,6 +209,10 @@ class Images(ImageBase, table=True):
         Index("idx_status", "status"),
         Index("idx_top_images", "num_ratings"),
         Index("idx_total_pixels", "total_pixels"),
+        Index("idx_images_has_theme", "has_theme", "image_id"),
+        Index("idx_images_has_source", "has_source", "image_id"),
+        Index("idx_images_has_artist", "has_artist", "image_id"),
+        Index("idx_images_has_character", "has_character", "image_id"),
     )
 
     # Primary key
@@ -253,6 +257,13 @@ class Images(ImageBase, table=True):
     # Internal metadata
     total_pixels: Decimal | None = Field(default=None)
     replacement_id: int | None = Field(default=None, foreign_key="images.image_id")
+
+    # Denormalized tag-type presence (maintained by app.services.tag_type_flags).
+    # Internal cache of "image has >=1 tag of this type"; source of truth is tag_links + tags.type.
+    has_theme: bool = Field(default=False)
+    has_source: bool = Field(default=False)
+    has_artist: bool = Field(default=False)
+    has_character: bool = Field(default=False)
 
     # R2 sync state. NONE=0 means object is not yet in R2; the finalizer
     # or `r2_sync.py reconcile` will flip it to PUBLIC or PRIVATE.

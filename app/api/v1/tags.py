@@ -53,6 +53,7 @@ from app.schemas.tag import (
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
+from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 SUGGESTION_STATS_MIN_THRESHOLD = 5
 
@@ -1367,6 +1368,13 @@ async def update_tag(
         )
         db.add(audit_entry)
 
+        # A type change shifts every linked image between has_<old> and has_<new>;
+        # recompute all images linked to this tag (set-based, bounded by usage).
+        affected = await db.execute(
+            select(TagLinks.image_id).where(TagLinks.tag_id == tag_id)  # type: ignore[call-overload]
+        )
+        await refresh_images_tag_type_flags(db, [row[0] for row in affected])
+
     # Check for alias change
     if tag.alias_of != original_alias_of:
         if original_alias_of is None and tag.alias_of is not None:
@@ -1455,6 +1463,12 @@ async def update_tag(
     if tag.alias_of is not None and tag.alias_of != original_alias_of:
         canonical_id = tag.alias_of
 
+        # Capture affected image_ids before any deletes/moves for flag recompute
+        flag_affected = await db.execute(
+            select(TagLinks.image_id).where(TagLinks.tag_id == tag_id)  # type: ignore[call-overload]
+        )
+        flag_affected_ids = [row[0] for row in flag_affected]
+
         # Find images already linked to canonical tag (to avoid PK conflicts)
         existing_result = await db.execute(
             select(TagLinks.image_id).where(TagLinks.tag_id == canonical_id)  # type: ignore[call-overload]
@@ -1486,6 +1500,9 @@ async def update_tag(
             await db.execute(
                 update(Tags).where(Tags.tag_id == tid).values(usage_count=count_result.scalar())  # type: ignore[arg-type]
             )
+
+        # Idempotent drift-guard: links moved alias->canonical (same type), recompute flags.
+        await refresh_images_tag_type_flags(db, flag_affected_ids)
 
         # Migrate external links from alias to canonical tag
         existing_urls_result = await db.execute(
@@ -1589,7 +1606,15 @@ async def delete_tag(
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
+    # Capture images linked to this tag BEFORE the FK CASCADE removes the links.
+    affected = await db.execute(
+        select(TagLinks.image_id).where(TagLinks.tag_id == tag_id)  # type: ignore[call-overload]
+    )
+    affected_image_ids = [row[0] for row in affected]
+
     await db.delete(tag)
+    await db.flush()  # apply the FK CASCADE within this transaction before recompute
+    await refresh_images_tag_type_flags(db, affected_image_ids)
     await db.commit()
 
     await sync_tag_delete_to_search(tag_id)

@@ -12,6 +12,7 @@ from app.models.favorite import Favorites
 from app.models.image import Images
 from app.models.image_rating import ImageRatings
 from app.models.tag_link import TagLinks
+from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 
 async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession) -> dict[str, int]:
@@ -150,6 +151,8 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
             TagLinks.image_id == repost_id  # type: ignore[arg-type]
         )
     )
+
+    await refresh_images_tag_type_flags(db, [original_id, repost_id])
 
     return {
         "favorites_moved": favorites_moved,

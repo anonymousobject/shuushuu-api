@@ -9,11 +9,13 @@ These tests cover the /api/v1/images endpoints including:
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 from app.models.permissions import Groups, UserGroups
+from app.services.tag_type_flags import refresh_image_tag_type_flags
 
 
 @pytest.mark.api
@@ -450,6 +452,24 @@ class TestTagSearchValidation:
         assert image1.image_id in found_ids
         assert image2.image_id in found_ids
 
+    async def test_tags_unicode_digit_token_does_not_500(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A Unicode digit int() can't parse ('²') is dropped, not crashed on (no 500).
+
+        '²'.isdigit() is True but int('²') raises ValueError; the parser must use
+        isdecimal() so the token is silently ignored, leaving the filter a no-op.
+        """
+        image = Images(**{**sample_image_data, "filename": "uni_tags", "md5_hash": "7a" * 16})
+        db_session.add(image)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?tags=²")
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert image.image_id in image_ids  # token dropped -> no filtering
+
 
 @pytest.mark.api
 class TestExcludeTags:
@@ -692,6 +712,310 @@ class TestExcludeTags:
         data = response.json()
         image_ids = [img["image_id"] for img in data["images"]]
         assert image1.image_id not in image_ids, "Image with child tag should be excluded"
+
+    async def test_exclude_tags_unicode_digit_token_does_not_500(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A Unicode digit int() can't parse ('²') is dropped, not crashed on (no 500).
+
+        '²'.isdigit() is True but int('²') raises ValueError; the parser must use
+        isdecimal() so the token is silently ignored, leaving the exclude a no-op.
+        """
+        image = Images(**{**sample_image_data, "filename": "uni_excl", "md5_hash": "8b" * 16})
+        db_session.add(image)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?exclude_tags=²")
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert image.image_id in image_ids  # token dropped -> nothing excluded
+
+
+@pytest.mark.api
+class TestMissingTagTypes:
+    """Tests for missing_tag_types / missing_tag_types_mode params on image search."""
+
+    async def test_missing_single_type_excludes_images_that_have_it(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """missing_tag_types=3 returns images lacking an artist tag, excludes those that have one."""
+        has_artist = Images(**{**sample_image_data, "filename": "mtt_a1", "md5_hash": "a" * 32})
+        no_artist = Images(**{**sample_image_data, "filename": "mtt_a2", "md5_hash": "b" * 32})
+        db_session.add_all([has_artist, no_artist])
+        await db_session.flush()
+
+        artist_tag = Tags(title="some artist", desc="Artist", type=TagType.ARTIST)
+        theme_tag = Tags(title="some theme", desc="Theme", type=TagType.THEME)
+        db_session.add_all([artist_tag, theme_tag])
+        await db_session.flush()
+
+        db_session.add(TagLinks(image_id=has_artist.image_id, tag_id=artist_tag.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=no_artist.image_id, tag_id=theme_tag.tag_id, user_id=1))
+        await db_session.commit()
+
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (has_artist, no_artist):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?missing_tag_types={TagType.ARTIST}")
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert no_artist.image_id in image_ids
+        assert has_artist.image_id not in image_ids
+
+    async def test_missing_all_mode_requires_all_types_absent(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """mode=all returns only images missing EVERY listed type."""
+        missing_both = Images(**{**sample_image_data, "filename": "mtt_all1", "md5_hash": "c" * 32})
+        missing_source_only = Images(
+            **{**sample_image_data, "filename": "mtt_all2", "md5_hash": "d" * 32}
+        )
+        db_session.add_all([missing_both, missing_source_only])
+        await db_session.flush()
+
+        artist_tag = Tags(title="artist x", desc="Artist", type=TagType.ARTIST)
+        theme_tag = Tags(title="theme x", desc="Theme", type=TagType.THEME)
+        db_session.add_all([artist_tag, theme_tag])
+        await db_session.flush()
+
+        # missing_both: only a theme tag -> lacks both source and artist
+        db_session.add(TagLinks(image_id=missing_both.image_id, tag_id=theme_tag.tag_id, user_id=1))
+        # missing_source_only: has an artist tag -> lacks source but NOT artist
+        db_session.add(
+            TagLinks(image_id=missing_source_only.image_id, tag_id=artist_tag.tag_id, user_id=1)
+        )
+        await db_session.commit()
+
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (missing_both, missing_source_only):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images?missing_tag_types={TagType.SOURCE},{TagType.ARTIST}"
+            "&missing_tag_types_mode=all"
+        )
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert missing_both.image_id in image_ids
+        assert missing_source_only.image_id not in image_ids
+
+    async def test_missing_invalid_type_id_returns_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Type IDs outside 1-4 (incl. 0=All) are rejected with 400 echoing the bad id(s)."""
+        for bad in ("0", "99", "3,0"):
+            response = await client.get(f"/api/v1/images?missing_tag_types={bad}")
+            assert response.status_code == 400, f"expected 400 for {bad!r}"
+            detail = response.json()["detail"]
+            assert "Valid types are" in detail
+            # the offending id(s) are echoed back to the client
+            expected_invalid = [t for t in bad.split(",") if int(t) not in {1, 2, 3, 4}]
+            for bad_id in expected_invalid:
+                assert bad_id in detail, f"{bad_id} not echoed in detail for {bad!r}: {detail}"
+
+    async def test_missing_non_digit_token_returns_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Non-digit tokens are rejected with 400, not silently dropped to a no-op filter."""
+        for bad in ("artist", "abc", "3,artist"):
+            response = await client.get(f"/api/v1/images?missing_tag_types={bad}")
+            assert response.status_code == 400, f"expected 400 for {bad!r}"
+            assert "Valid types are" in response.json()["detail"]
+        # the offending non-digit token is echoed back, even alongside a valid id
+        detail = (
+            await client.get("/api/v1/images?missing_tag_types=3,artist")
+        ).json()["detail"]
+        assert "artist" in detail, detail
+
+    async def test_missing_unicode_digit_token_returns_400_not_500(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A Unicode digit that int() cannot parse must 400, not crash with a 500.
+
+        '²' (superscript two) is str.isdigit()==True but int('²') raises ValueError,
+        so the token check must use isdecimal() to reject it cleanly.
+        """
+        response = await client.get("/api/v1/images?missing_tag_types=²")
+        assert response.status_code == 400
+        assert "Valid types are" in response.json()["detail"]
+
+    async def test_missing_any_mode_returns_image_missing_only_one_type(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """mode=any returns an image that has one listed type but lacks another (OR, not AND).
+
+        Discriminates OR semantics: an image WITH an artist tag but WITHOUT a source must be
+        returned by missing_tag_types=2,3&mode=any, yet excluded by mode=all.
+        """
+        has_artist_no_source = Images(
+            **{**sample_image_data, "filename": "mtt_any1", "md5_hash": "3" * 32}
+        )
+        db_session.add(has_artist_no_source)
+        await db_session.flush()
+
+        artist_tag = Tags(title="any artist", desc="Artist", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.flush()
+        db_session.add(
+            TagLinks(image_id=has_artist_no_source.image_id, tag_id=artist_tag.tag_id, user_id=1)
+        )
+        await db_session.commit()
+
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (has_artist_no_source,):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
+        await db_session.commit()
+
+        types = f"{TagType.SOURCE},{TagType.ARTIST}"
+
+        any_resp = await client.get(
+            f"/api/v1/images?missing_tag_types={types}&missing_tag_types_mode=any"
+        )
+        assert any_resp.status_code == 200
+        any_ids = [img["image_id"] for img in any_resp.json()["images"]]
+        assert has_artist_no_source.image_id in any_ids  # missing source -> matched by ANY
+
+        all_resp = await client.get(
+            f"/api/v1/images?missing_tag_types={types}&missing_tag_types_mode=all"
+        )
+        assert all_resp.status_code == 200
+        all_ids = [img["image_id"] for img in all_resp.json()["images"]]
+        assert has_artist_no_source.image_id not in all_ids  # has artist -> excluded by ALL
+
+    async def test_missing_artist_does_not_resolve_alias(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """The APPLIED tag's own type is authoritative; aliases are NOT resolved to canonical.
+
+        The image is linked to an alias whose own type is ARTIST, but whose canonical has a
+        DIFFERENT type (THEME). The filter must key off the applied tag's type (ARTIST), so the
+        image counts as having an artist tag and is excluded from missing_tag_types=3. If the
+        code resolved the alias to its canonical (THEME), the image would wrongly be returned.
+        """
+        aliased = Images(**{**sample_image_data, "filename": "mtt_alias", "md5_hash": "e" * 32})
+        db_session.add(aliased)
+        await db_session.flush()
+
+        # Canonical is THEME, deliberately different from the alias's ARTIST type, so the test
+        # discriminates "applied tag's type" from "canonical's type".
+        canonical = Tags(title="canon theme", desc="Theme", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.flush()
+        alias = Tags(
+            title="alias artist", desc="Alias", type=TagType.ARTIST, alias_of=canonical.tag_id
+        )
+        db_session.add(alias)
+        await db_session.flush()
+
+        # Image is linked to the ALIAS tag (type ARTIST), not the canonical one
+        db_session.add(TagLinks(image_id=aliased.image_id, tag_id=alias.tag_id, user_id=1))
+        await db_session.commit()
+
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (aliased,):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?missing_tag_types={TagType.ARTIST}")
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert aliased.image_id not in image_ids
+
+    async def test_missing_combined_with_include_tags(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """tags= include filter AND missing_tag_types both apply."""
+        keep = Images(**{**sample_image_data, "filename": "mtt_cmb1", "md5_hash": "f" * 32})
+        drop = Images(**{**sample_image_data, "filename": "mtt_cmb2", "md5_hash": "0" * 32})
+        db_session.add_all([keep, drop])
+        await db_session.flush()
+
+        theme_tag = Tags(title="cmb theme", desc="Theme", type=TagType.THEME)
+        artist_tag = Tags(title="cmb artist", desc="Artist", type=TagType.ARTIST)
+        db_session.add_all([theme_tag, artist_tag])
+        await db_session.flush()
+
+        # keep: has the theme tag, no artist -> matches include + missing artist
+        db_session.add(TagLinks(image_id=keep.image_id, tag_id=theme_tag.tag_id, user_id=1))
+        # drop: has theme tag AND an artist tag -> matches include but NOT missing artist
+        db_session.add(TagLinks(image_id=drop.image_id, tag_id=theme_tag.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=drop.image_id, tag_id=artist_tag.tag_id, user_id=1))
+        await db_session.commit()
+
+        # Maintain the denormalized flags the filter now reads (prod does this via hooks).
+        for _img in (keep, drop):
+            await refresh_image_tag_type_flags(db_session, _img.image_id)
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images?tags={theme_tag.tag_id}&missing_tag_types={TagType.ARTIST}"
+        )
+
+        assert response.status_code == 200
+        image_ids = [img["image_id"] for img in response.json()["images"]]
+        assert keep.image_id in image_ids
+        assert drop.image_id not in image_ids
+
+    async def test_image_with_no_tags_matches_every_type_both_modes(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """An image with no tags is missing every type, in both any and all modes."""
+        untagged = Images(**{**sample_image_data, "filename": "mtt_none", "md5_hash": "1" * 32})
+        db_session.add(untagged)
+        await db_session.commit()
+
+        for query in (
+            f"missing_tag_types={TagType.ARTIST}",
+            f"missing_tag_types={TagType.SOURCE},{TagType.ARTIST}&missing_tag_types_mode=any",
+            f"missing_tag_types={TagType.SOURCE},{TagType.ARTIST}&missing_tag_types_mode=all",
+        ):
+            response = await client.get(f"/api/v1/images?{query}")
+            assert response.status_code == 200, query
+            image_ids = [img["image_id"] for img in response.json()["images"]]
+            assert untagged.image_id in image_ids, query
+
+    async def test_missing_invalid_mode_returns_422(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Invalid mode is rejected by the Query pattern with 422."""
+        response = await client.get(
+            f"/api/v1/images?missing_tag_types={TagType.ARTIST}&missing_tag_types_mode=foo"
+        )
+        assert response.status_code == 422
+
+    async def test_omitted_param_does_not_filter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Without the param, behavior is unchanged (image is returned)."""
+        img = Images(**{**sample_image_data, "filename": "mtt_omit", "md5_hash": "2" * 32})
+        db_session.add(img)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images")
+
+        assert response.status_code == 200
+        image_ids = [i["image_id"] for i in response.json()["images"]]
+        assert img.image_id in image_ids
+
+    async def test_new_image_defaults_tag_type_flags_false(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """The denormalized presence flags exist and default to False on a fresh image."""
+        img = Images(**{**sample_image_data, "filename": "flags_default", "md5_hash": "9c" * 16})
+        db_session.add(img)
+        await db_session.commit()
+        await db_session.refresh(img)
+        assert img.has_theme is False
+        assert img.has_source is False
+        assert img.has_artist is False
+        assert img.has_character is False
 
 
 @pytest.mark.api
@@ -2101,6 +2425,100 @@ class TestTagUsageCount:
         assert response.status_code == 204
         await db_session.refresh(tag)
         assert tag.usage_count == 2
+
+@pytest.mark.api
+class TestTagTypeFlagMaintenance:
+    """Tests that the denormalized has_* flags are updated by the add/remove-tag endpoints."""
+
+    async def test_add_artist_tag_sets_has_artist(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """Adding an ARTIST tag via the endpoint sets has_artist=True on the image."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image_data["filename"] = "ttfm_add1"
+        image_data["md5_hash"] = "a1" * 16
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="ttfm_artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        response = await authenticated_client.post(
+            f"/api/v1/images/{image.image_id}/tags/{tag.tag_id}"
+        )
+        assert response.status_code == 201
+
+        # Re-query with populate_existing to bypass identity map (raw UPDATE skips ORM cache)
+        result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == image.image_id)
+            .execution_options(populate_existing=True)
+        )
+        fresh = result.scalar_one()
+        assert fresh.has_artist is True
+
+    async def test_remove_artist_tag_clears_has_artist(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """Removing the last ARTIST tag via the endpoint sets has_artist=False on the image."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image_data["filename"] = "ttfm_rem1"
+        image_data["md5_hash"] = "b2" * 16
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="ttfm_artist_rem", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Link the tag directly so has_artist starts True
+        tag_link = TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=sample_user.user_id)
+        db_session.add(tag_link)
+        await db_session.commit()
+        await refresh_image_tag_type_flags(db_session, image.image_id)
+        await db_session.commit()
+
+        # Confirm the flag is set before the removal (populate_existing bypasses identity map)
+        pre = (
+            await db_session.execute(
+                select(Images)
+                .where(Images.image_id == image.image_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        assert pre.has_artist is True
+
+        response = await authenticated_client.delete(
+            f"/api/v1/images/{image.image_id}/tags/{tag.tag_id}"
+        )
+        assert response.status_code == 204
+
+        # Re-query with populate_existing to bypass identity map (raw UPDATE skips ORM cache)
+        result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == image.image_id)
+            .execution_options(populate_existing=True)
+        )
+        fresh = result.scalar_one()
+        assert fresh.has_artist is False
+
 
 @pytest.mark.api
 class TestCommentFilters:

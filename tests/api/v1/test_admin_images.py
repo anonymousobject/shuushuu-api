@@ -9,12 +9,14 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import AdminActionType, ImageStatus
+from app.config import AdminActionType, ImageStatus, ReportStatus, TagType
 from app.core.security import get_password_hash
 from app.models.admin_action import AdminActions
 from app.models.favorite import Favorites
 from app.models.image import Images
 from app.models.image_rating import ImageRatings
+from app.models.image_report import ImageReports
+from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
@@ -693,3 +695,143 @@ class TestImageLocked:
         )
 
         assert response.status_code == 422  # Validation error
+
+
+@pytest.mark.api
+class TestApplyTagSuggestionsUpdatesTagTypeFlags:
+    """Tests for POST /api/v1/admin/reports/{report_id}/apply-tag-suggestions
+    ensuring that has_* tag-type flags on the image are updated when tag
+    suggestions are applied or removed.
+    """
+
+    async def test_add_artist_tag_sets_has_artist(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Approving an ADD suggestion for an artist tag sets has_artist=True."""
+        admin, password = await create_admin_user(
+            db_session, username="flagtest_add", email="flagtest_add@example.com"
+        )
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        token = await login_user(client, admin.username, password)
+
+        # Image with no artist tag — has_artist should start False
+        image = Images(
+            user_id=admin.user_id,
+            filename="flagtest_add_img",
+            ext="jpg",
+            md5_hash="flagtest_add_md5hash00000001",
+            status=ImageStatus.ACTIVE,
+            has_artist=False,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        assert image.has_artist is False  # precondition
+
+        # Create an ARTIST-type tag
+        artist_tag = Tags(title="test_artist_add", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.commit()
+        await db_session.refresh(artist_tag)
+
+        # Create a TAG_SUGGESTIONS report for this image
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestion = ImageReportTagSuggestions(
+            report_id=report.report_id,
+            tag_id=artist_tag.tag_id,
+            suggestion_type=1,  # add
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+
+        # Resolve: approve the ADD suggestion
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": [suggestion.suggestion_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert artist_tag.tag_id in data["applied_tags"]
+
+        # Fresh read to bypass stale ORM identity-map state
+        await db_session.refresh(image)
+        assert image.has_artist is True
+
+    async def test_remove_artist_tag_clears_has_artist(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Approving a REMOVE suggestion for the only artist tag clears has_artist."""
+        admin, password = await create_admin_user(
+            db_session, username="flagtest_rem", email="flagtest_rem@example.com"
+        )
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        token = await login_user(client, admin.username, password)
+
+        # Create an ARTIST-type tag
+        artist_tag = Tags(title="test_artist_rem", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.commit()
+        await db_session.refresh(artist_tag)
+
+        # Image linked to the artist tag — has_artist starts True
+        image = Images(
+            user_id=admin.user_id,
+            filename="flagtest_rem_img",
+            ext="jpg",
+            md5_hash="flagtest_rem_md5hash00000001",
+            status=ImageStatus.ACTIVE,
+            has_artist=True,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_link = TagLinks(image_id=image.image_id, tag_id=artist_tag.tag_id)
+        db_session.add(tag_link)
+        await db_session.commit()
+        await db_session.refresh(image)
+        assert image.has_artist is True  # precondition
+
+        # Create a TAG_SUGGESTIONS report for this image
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,  # TAG_SUGGESTIONS
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestion = ImageReportTagSuggestions(
+            report_id=report.report_id,
+            tag_id=artist_tag.tag_id,
+            suggestion_type=2,  # remove
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+
+        # Resolve: approve the REMOVE suggestion
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": [suggestion.suggestion_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert artist_tag.tag_id in data["removed_tags"]
+
+        # Fresh read to bypass stale ORM identity-map state
+        await db_session.refresh(image)
+        assert image.has_artist is False

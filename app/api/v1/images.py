@@ -115,6 +115,7 @@ from app.services.iqdb import check_iqdb_similarity, check_iqdb_similarity_by_ha
 from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import recalculate_image_ratings
 from app.services.search import sync_tag_to_search
+from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
 
@@ -274,6 +275,16 @@ async def list_images(
     exclude_tags: Annotated[
         str | None, Query(description="Comma-separated tag IDs to exclude (e.g., '4,5,6')")
     ] = None,
+    missing_tag_types: Annotated[
+        str | None,
+        Query(
+            description="Comma-separated tag type IDs the image must be MISSING "
+            "(1=Theme, 2=Source, 3=Artist, 4=Character)."
+        ),
+    ] = None,
+    missing_tag_types_mode: Annotated[
+        str, Query(pattern="^(any|all)$", description="Match ANY or ALL missing types")
+    ] = "any",
     # Date filtering
     date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
     date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
@@ -379,7 +390,8 @@ async def list_images(
     # Tag filtering
     tag_ids: list[int] = []
     if tags:
-        tag_ids = [int(tid.strip()) for tid in tags.split(",") if tid.strip().isdigit()]
+        # isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
+        tag_ids = [int(tid.strip()) for tid in tags.split(",") if tid.strip().isdecimal()]
         if len(tag_ids) > settings.MAX_SEARCH_TAGS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -422,8 +434,9 @@ async def list_images(
 
     # Exclude tag filtering (always exact match, no hierarchy expansion)
     if exclude_tags:
+        # isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
         exclude_tag_ids = [
-            int(tid.strip()) for tid in exclude_tags.split(",") if tid.strip().isdigit()
+            int(tid.strip()) for tid in exclude_tags.split(",") if tid.strip().isdecimal()
         ]
         if exclude_tag_ids:
             # Enforce shared MAX_SEARCH_TAGS limit across include + exclude
@@ -446,6 +459,41 @@ async def list_images(
                     select(TagLinks.image_id).where(TagLinks.tag_id.in_(resolved_exclude_ids))  # type: ignore[call-overload,attr-defined]
                 )
             )
+
+    # Missing tag-type filtering (images lacking a tag of the given type[s]).
+    # Aliases are intentionally NOT resolved here: the applied tag's own `type` is authoritative.
+    if missing_tag_types:
+        # Reject any token that is not a valid type ID (non-digit or out of range), rather
+        # than silently dropping it. Empty tokens are ignored (empty param = no filter).
+        raw_tokens = [t.strip() for t in missing_tag_types.split(",") if t.strip()]
+        # isdecimal() (not isdigit()): int() only parses decimal digits, while isdigit()
+        # also matches chars like '²' that int() rejects (would otherwise 500 on int()).
+        invalid = [t for t in raw_tokens if not (t.isdecimal() and int(t) in {1, 2, 3, 4})]
+        if invalid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid tag type(s): {', '.join(invalid)}. "
+                    "Valid types are 1=Theme, 2=Source, 3=Artist, 4=Character."
+                ),
+            )
+        missing_type_ids = sorted({int(t) for t in raw_tokens})
+        if missing_type_ids:
+            type_column = {
+                1: Images.has_theme,
+                2: Images.has_source,
+                3: Images.has_artist,
+                4: Images.has_character,
+            }
+            # "missing type T" == that image's has_<type> flag is False.
+            clauses = [
+                type_column[t] == False  # noqa: E712
+                for t in missing_type_ids
+            ]
+            if missing_tag_types_mode == "all":
+                query = query.where(and_(*clauses))  # type: ignore[arg-type]  # missing every listed type
+            else:
+                query = query.where(or_(*clauses))  # type: ignore[arg-type]  # missing at least one listed type
 
     # Date filtering
     if date_from:
@@ -1773,6 +1821,7 @@ async def add_tag_to_image(
     )
     db.add(history_entry)
 
+    await refresh_image_tag_type_flags(db, image_id)
     await db.commit()
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
@@ -1845,6 +1894,7 @@ async def remove_tag_from_image(
             TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
         )
     )
+    await refresh_image_tag_type_flags(db, image_id)
     await db.commit()
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)

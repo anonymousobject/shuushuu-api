@@ -11,6 +11,7 @@ from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.services.repost import migrate_repost_data
+from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 
 async def _create_user(db: AsyncSession, username: str) -> Users:
@@ -264,3 +265,50 @@ class TestMigrateRepostData:
         assert result["favorites_moved"] == 0
         assert result["ratings_moved"] == 0
         assert result["tags_moved"] == 0
+
+    async def test_tag_type_flags_updated_after_migrate(self, db_session: AsyncSession):
+        """Tag-type flags must be refreshed after repost migration.
+
+        original gains an artist tag (has_artist 0→1);
+        repost loses its artist tag (has_artist 1→0).
+        """
+        user = await _create_user(db_session, "flaguser")
+        # original has only a theme tag (type=1) — no artist
+        original = await _create_image(db_session, user.user_id, "orig10")
+        theme_tag = Tags(title="a theme tag", type=1)
+        db_session.add(theme_tag)
+        await db_session.flush()
+        await db_session.refresh(theme_tag)
+        db_session.add(TagLinks(
+            tag_id=theme_tag.tag_id, image_id=original.image_id, user_id=user.user_id
+        ))
+
+        # repost has an artist tag (type=3)
+        repost = await _create_image(db_session, user.user_id, "repo10")
+        artist_tag = Tags(title="an artist tag", type=3)
+        db_session.add(artist_tag)
+        await db_session.flush()
+        await db_session.refresh(artist_tag)
+        db_session.add(TagLinks(
+            tag_id=artist_tag.tag_id, image_id=repost.image_id, user_id=user.user_id
+        ))
+
+        # Establish baseline flags
+        await refresh_images_tag_type_flags(db_session, [original.image_id, repost.image_id])
+        await db_session.commit()
+
+        # Precondition: original has no artist; repost has artist
+        await db_session.refresh(original)
+        await db_session.refresh(repost)
+        assert original.has_artist is False, "precondition: original should not have artist flag"
+        assert repost.has_artist is True, "precondition: repost should have artist flag"
+
+        # Migrate and commit
+        await migrate_repost_data(repost.image_id, original.image_id, db_session)
+        await db_session.commit()
+
+        # Fresh reads to bypass identity-map staleness
+        await db_session.refresh(original)
+        await db_session.refresh(repost)
+        assert original.has_artist is True, "original should gain artist flag after migration"
+        assert repost.has_artist is False, "repost should lose artist flag after migration"

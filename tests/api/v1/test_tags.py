@@ -3526,6 +3526,174 @@ class TestUpdateTag:
         assert response.status_code == 400
         assert "different type" in response.json()["detail"]
 
+    async def test_type_change_recomputes_tag_type_flags(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Changing a tag's type via PUT must recompute has_* flags for all linked images."""
+        from app.services.tag_type_flags import refresh_image_tag_type_flags
+
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user with TAG_UPDATE permission
+        admin = Users(
+            username="admintypeflags",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admintypeflags@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.flush()
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create an ARTIST-type tag
+        artist_tag = Tags(title="artist for type-change flag test", desc="", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.flush()
+
+        # Create an image and link the artist tag to it
+        img_data = sample_image_data.copy()
+        img_data.update({"filename": "type-change-flag-img", "md5_hash": "typechangeflg0000000"})
+        img = Images(**img_data)
+        db_session.add(img)
+        await db_session.flush()
+
+        db_session.add(TagLinks(tag_id=artist_tag.tag_id, image_id=img.image_id))
+        await db_session.flush()
+
+        # Establish has_artist=True via the flag service, then commit
+        await refresh_image_tag_type_flags(db_session, img.image_id)
+        await db_session.commit()
+
+        # Precondition: fresh-read confirms has_artist=True, has_source=False
+        pre_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        pre_img = pre_result.scalar_one()
+        assert pre_img.has_artist is True, "Precondition failed: has_artist should be True before type change"
+        assert pre_img.has_source is False, "Precondition failed: has_source should be False before type change"
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admintypeflags", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change the tag's type from ARTIST to SOURCE via the real endpoint
+        response = await client.put(
+            f"/api/v1/tags/{artist_tag.tag_id}",
+            json={"title": "artist for type-change flag test", "type": TagType.SOURCE},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Fresh-read the image; has_artist must now be False, has_source must be True
+        post_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        post_img = post_result.scalar_one()
+        assert post_img.has_artist is False, "has_artist should be False after tag type changed from ARTIST to SOURCE"
+        assert post_img.has_source is True, "has_source should be True after tag type changed from ARTIST to SOURCE"
+
+    async def test_alias_reassignment_preserves_tag_type_flags(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Setting alias_of must not corrupt tag-type flags on linked images.
+
+        The canonical and alias share the same type (API-enforced), so moving
+        tag_links from alias->canonical is a no-op for flag values.  This test
+        acts as a regression guard against any drift that could zero out the flag.
+        """
+        from app.services.tag_type_flags import refresh_image_tag_type_flags
+
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user with TAG_UPDATE permission
+        admin = Users(
+            username="adminaliasflags",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaliasflags@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.flush()
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        # Create canonical ARTIST tag and a soon-to-be-alias ARTIST tag
+        canonical_tag = Tags(title="canonical artist flag test", desc="", type=TagType.ARTIST)
+        alias_tag = Tags(title="alias artist flag test", desc="", type=TagType.ARTIST)
+        db_session.add_all([canonical_tag, alias_tag])
+        await db_session.flush()
+
+        # Create an image and link the soon-to-be-alias tag to it
+        img_data = sample_image_data.copy()
+        img_data.update({"filename": "alias-flag-test-img", "md5_hash": "aliasflagtst00000000"})
+        img = Images(**img_data)
+        db_session.add(img)
+        await db_session.flush()
+
+        db_session.add(TagLinks(tag_id=alias_tag.tag_id, image_id=img.image_id))
+        await db_session.flush()
+
+        # Establish has_artist=True via the flag service, then commit
+        await refresh_image_tag_type_flags(db_session, img.image_id)
+        await db_session.commit()
+
+        # Precondition: fresh-read confirms has_artist=True
+        pre_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        pre_img = pre_result.scalar_one()
+        assert pre_img.has_artist is True, "Precondition failed: has_artist should be True before alias reassignment"
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaliasflags", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Set alias_of on the alias tag (triggers link migration alias->canonical)
+        response = await client.put(
+            f"/api/v1/tags/{alias_tag.tag_id}",
+            json={"title": "alias artist flag test", "alias_of": canonical_tag.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Fresh-read the image; has_artist must still be True (now via canonical tag)
+        post_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        post_img = post_result.scalar_one()
+        assert post_img.has_artist is True, "has_artist should still be True after alias reassignment"
+
 
 @pytest.mark.api
 class TestDeleteTag:
@@ -3622,6 +3790,89 @@ class TestDeleteTag:
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 403
+
+    async def test_delete_tag_clears_has_artist_flag(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Deleting the only artist tag linked to an image must reset has_artist to False."""
+        from app.services.tag_type_flags import refresh_image_tag_type_flags
+
+        # Fetch the pre-seeded tag_delete permission (seeded by sync_permissions at startup)
+        perm_result = await db_session.execute(
+            select(Perms).where(Perms.title == "tag_delete")  # type: ignore[call-overload]
+        )
+        perm = perm_result.scalar_one()
+
+        # Create admin user with TAG_DELETE permission
+        admin = Users(
+            username="admindeleteflags",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindeleteflags@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.flush()
+
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+
+        # Create an ARTIST-type tag
+        artist_tag = Tags(title="artist for flag test", desc="", type=TagType.ARTIST)
+        db_session.add(artist_tag)
+        await db_session.flush()
+
+        # Create an image and link the artist tag to it
+        img_data = sample_image_data.copy()
+        img_data.update({"filename": "flag-test-img", "md5_hash": "flagtest0000000000000"})
+        img = Images(**img_data)
+        db_session.add(img)
+        await db_session.flush()
+
+        db_session.add(TagLinks(tag_id=artist_tag.tag_id, image_id=img.image_id))
+        await db_session.flush()
+
+        # Establish has_artist=True via the flag service, then commit
+        await refresh_image_tag_type_flags(db_session, img.image_id)
+        await db_session.commit()
+
+        # Precondition: confirm has_artist is True (fresh read to bypass identity map)
+        fresh_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        pre_img = fresh_result.scalar_one()
+        assert pre_img.has_artist is True, "Precondition failed: has_artist should be True before delete"
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindeleteflags", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # DELETE the artist tag via the real endpoint
+        response = await client.delete(
+            f"/api/v1/tags/{artist_tag.tag_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 204
+
+        # Fresh-read the image; has_artist must now be False
+        post_result = await db_session.execute(
+            select(Images)
+            .where(Images.image_id == img.image_id)
+            .execution_options(populate_existing=True)
+        )
+        post_img = post_result.scalar_one()
+        assert post_img.has_artist is False, "has_artist should be False after the only artist tag is deleted"
 
 
 @pytest.mark.api
