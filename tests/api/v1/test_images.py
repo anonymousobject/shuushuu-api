@@ -7,6 +7,8 @@ These tests cover the /api/v1/images endpoints including:
 - Searching and filtering
 """
 
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -236,6 +238,47 @@ class TestImagesFiltering:
         assert data["total"] == 3  # 5.0, 7.5, 10.0
         for img in data["images"]:
             assert img["rating"] >= 5.0
+
+    async def test_filter_by_date(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Test filtering images by upload date (date_from / date_to as YYYY-MM-DD).
+
+        Regression: date_added is a UtcDateTime column whose process_bind_param
+        calls .tzinfo on the bound value. Passing the raw "YYYY-MM-DD" string
+        straight into the comparison raised "'str' object has no attribute
+        'tzinfo'" (HTTP 500). The endpoint must parse the strings to tz-aware
+        UTC datetimes, with date_to inclusive of the whole end day.
+        """
+        dates = [
+            datetime(2023, 6, 15, 12, 0, tzinfo=UTC),
+            datetime(2024, 1, 1, 0, 0, tzinfo=UTC),
+            datetime(2024, 6, 15, 12, 0, tzinfo=UTC),
+            datetime(2024, 12, 31, 23, 30, tzinfo=UTC),
+            datetime(2025, 3, 1, 8, 0, tzinfo=UTC),
+        ]
+        for idx, dt in enumerate(dates):
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"date-{idx}"
+            image_data["md5_hash"] = f"date{idx:024d}"
+            image_data["date_added"] = dt
+            db_session.add(Images(**image_data))
+        await db_session.commit()
+
+        # Closed range covering all of 2024 — inclusive of the Dec 31 23:30 image.
+        response = await client.get("/api/v1/images?date_from=2024-01-01&date_to=2024-12-31")
+        assert response.status_code == 200
+        assert response.json()["total"] == 3  # 2024-01-01, 2024-06-15, 2024-12-31
+
+        # From only.
+        response = await client.get("/api/v1/images?date_from=2024-06-15")
+        assert response.status_code == 200
+        assert response.json()["total"] == 3  # 2024-06-15, 2024-12-31, 2025-03-01
+
+        # To only (inclusive of the whole day).
+        response = await client.get("/api/v1/images?date_to=2024-01-01")
+        assert response.status_code == 200
+        assert response.json()["total"] == 2  # 2023-06-15, 2024-01-01
 
     async def test_filter_by_num_ratings(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
@@ -661,9 +704,7 @@ class TestExcludeTags:
         await db_session.commit()
 
         # Include and exclude the same tag — exclusion should win
-        response = await client.get(
-            f"/api/v1/images?tags={tag.tag_id}&exclude_tags={tag.tag_id}"
-        )
+        response = await client.get(f"/api/v1/images?tags={tag.tag_id}&exclude_tags={tag.tag_id}")
 
         assert response.status_code == 200
         data = response.json()
@@ -684,7 +725,9 @@ class TestExcludeTags:
         await db_session.flush()
 
         child_tag = Tags(
-            title="school mizugi", desc="School swimsuit", type=1,
+            title="school mizugi",
+            desc="School swimsuit",
+            type=1,
             inheritedfrom_id=parent_tag.tag_id,
         )
         db_session.add(child_tag)
@@ -828,9 +871,7 @@ class TestMissingTagTypes:
             assert response.status_code == 400, f"expected 400 for {bad!r}"
             assert "Valid types are" in response.json()["detail"]
         # the offending non-digit token is echoed back, even alongside a valid id
-        detail = (
-            await client.get("/api/v1/images?missing_tag_types=3,artist")
-        ).json()["detail"]
+        detail = (await client.get("/api/v1/images?missing_tag_types=3,artist")).json()["detail"]
         assert "artist" in detail, detail
 
     async def test_missing_unicode_digit_token_returns_400_not_500(
@@ -1123,9 +1164,7 @@ class TestTagHierarchySearch:
         await db_session.refresh(parent1)
         await db_session.refresh(parent2)
 
-        child1 = Tags(
-            title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id
-        )
+        child1 = Tags(title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id)
         child2 = Tags(title="cake", type=TagType.THEME, inheritedfrom_id=parent2.tag_id)
         db_session.add_all([child1, child2])
         await db_session.commit()
@@ -1176,9 +1215,7 @@ class TestTagHierarchySearch:
         await db_session.refresh(parent1)
         await db_session.refresh(parent2)
 
-        child1 = Tags(
-            title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id
-        )
+        child1 = Tags(title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id)
         child2 = Tags(title="cake", type=TagType.THEME, inheritedfrom_id=parent2.tag_id)
         db_session.add_all([child1, child2])
         await db_session.commit()
@@ -1217,9 +1254,7 @@ class TestTagHierarchySearch:
         await db_session.refresh(parent1)
         await db_session.refresh(parent2)
 
-        child1 = Tags(
-            title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id
-        )
+        child1 = Tags(title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id)
         db_session.add(child1)
         await db_session.commit()
         await db_session.refresh(child1)
@@ -1297,9 +1332,7 @@ class TestTagDepthFiltering:
         await db_session.commit()
 
         # tag_depth=0: only exact tag, no children
-        response = await client.get(
-            f"/api/v1/images?tags={parent_tag.tag_id}&tag_depth=0"
-        )
+        response = await client.get(f"/api/v1/images?tags={parent_tag.tag_id}&tag_depth=0")
 
         assert response.status_code == 200
         data = response.json()
@@ -1358,9 +1391,7 @@ class TestTagDepthFiltering:
         await db_session.commit()
 
         # tag_depth=1: grandparent + direct children (dress), NOT grandchildren (sundress)
-        response = await client.get(
-            f"/api/v1/images?tags={grandparent.tag_id}&tag_depth=1"
-        )
+        response = await client.get(f"/api/v1/images?tags={grandparent.tag_id}&tag_depth=1")
 
         assert response.status_code == 200
         data = response.json()
@@ -1424,12 +1455,8 @@ class TestTagDepthFiltering:
         await db_session.refresh(parent1)
         await db_session.refresh(parent2)
 
-        child1 = Tags(
-            title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id
-        )
-        child2 = Tags(
-            title="red", type=TagType.THEME, inheritedfrom_id=parent2.tag_id
-        )
+        child1 = Tags(title="dress", type=TagType.THEME, inheritedfrom_id=parent1.tag_id)
+        child2 = Tags(title="red", type=TagType.THEME, inheritedfrom_id=parent2.tag_id)
         db_session.add_all([child1, child2])
         await db_session.commit()
         await db_session.refresh(child1)
@@ -1949,7 +1976,9 @@ class TestFavoritedByUserIdFilter:
         image_0 = Images(**image_data_0)
         db_session.add(image_0)
         await db_session.flush()
-        tag_link_0 = TagLinks(image_id=image_0.image_id, tag_id=tag1.tag_id, user_id=uploader.user_id)
+        tag_link_0 = TagLinks(
+            image_id=image_0.image_id, tag_id=tag1.tag_id, user_id=uploader.user_id
+        )
         db_session.add(tag_link_0)
         fav_0 = Favorites(user_id=favoriter.user_id, image_id=image_0.image_id)
         db_session.add(fav_0)
@@ -1962,7 +1991,9 @@ class TestFavoritedByUserIdFilter:
         image_1 = Images(**image_data_1)
         db_session.add(image_1)
         await db_session.flush()
-        tag_link_1 = TagLinks(image_id=image_1.image_id, tag_id=tag1.tag_id, user_id=uploader2.user_id)
+        tag_link_1 = TagLinks(
+            image_id=image_1.image_id, tag_id=tag1.tag_id, user_id=uploader2.user_id
+        )
         db_session.add(tag_link_1)
         fav_1 = Favorites(user_id=favoriter.user_id, image_id=image_1.image_id)
         db_session.add(fav_1)
@@ -1975,7 +2006,9 @@ class TestFavoritedByUserIdFilter:
         image_2 = Images(**image_data_2)
         db_session.add(image_2)
         await db_session.flush()
-        tag_link_2 = TagLinks(image_id=image_2.image_id, tag_id=tag2.tag_id, user_id=uploader.user_id)
+        tag_link_2 = TagLinks(
+            image_id=image_2.image_id, tag_id=tag2.tag_id, user_id=uploader.user_id
+        )
         db_session.add(tag_link_2)
         fav_2 = Favorites(user_id=favoriter.user_id, image_id=image_2.image_id)
         db_session.add(fav_2)
@@ -2235,9 +2268,7 @@ class TestImageFavorites:
         data = response.json()
         assert "not found" in data["detail"].lower()
 
-    async def test_favorite_nonexistent_image_returns_404(
-        self, authenticated_client: AsyncClient
-    ):
+    async def test_favorite_nonexistent_image_returns_404(self, authenticated_client: AsyncClient):
         """Test favoriting a nonexistent image returns 404."""
         response = await authenticated_client.post("/api/v1/images/999999/favorite")
         assert response.status_code == 404
@@ -2320,7 +2351,11 @@ class TestTagUsageCount:
     """Tests for automatic tag usage_count updates via database triggers."""
 
     async def test_tag_usage_count_increments_on_add(
-        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user: Users, sample_image_data: dict
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
     ):
         """Test that tag usage_count increments when a tag is added to an image."""
         # Create an image owned by the authenticated user
@@ -2351,7 +2386,11 @@ class TestTagUsageCount:
         assert tag.usage_count == 1
 
     async def test_tag_usage_count_decrements_on_remove(
-        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user: Users, sample_image_data: dict
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
     ):
         """Test that tag usage_count decrements when a tag is removed from an image."""
         # Create image and tag
@@ -2385,7 +2424,11 @@ class TestTagUsageCount:
         assert tag.usage_count == 0
 
     async def test_tag_usage_count_multiple_images(
-        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user: Users, sample_image_data: dict
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
     ):
         """Test that usage_count tracks multiple images with the same tag."""
         # Create multiple images
@@ -2425,6 +2468,7 @@ class TestTagUsageCount:
         assert response.status_code == 204
         await db_session.refresh(tag)
         assert tag.usage_count == 2
+
 
 @pytest.mark.api
 class TestTagTypeFlagMaintenance:
@@ -2666,7 +2710,9 @@ class TestCommentFilters:
         assert data["images"][0]["filename"] == "img3"
 
         # Search for non-existent text
-        response = await client.get("/api/v1/images?commentsearch=nonexistent&commentsearch_mode=like")
+        response = await client.get(
+            "/api/v1/images?commentsearch=nonexistent&commentsearch_mode=like"
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 0
@@ -2770,7 +2816,9 @@ class TestCommentFilters:
         # Filter: user1's comments containing "awesome"
         # Should get only image1 (user1 commented, and comment text contains "awesome")
         # Use LIKE mode to work in test environment
-        response = await client.get(f"/api/v1/images?commenter={user1.id}&commentsearch=awesome&commentsearch_mode=like")
+        response = await client.get(
+            f"/api/v1/images?commenter={user1.id}&commentsearch=awesome&commentsearch_mode=like"
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -2817,7 +2865,9 @@ class TestCommentFilters:
         await db_session.flush()
 
         # Add comments - using substring that fulltext might not find but LIKE will
-        comment1 = Comments(image_id=image1.image_id, user_id=user.id, post_text="concatenation test")
+        comment1 = Comments(
+            image_id=image1.image_id, user_id=user.id, post_text="concatenation test"
+        )
         comment2 = Comments(image_id=image2.image_id, user_id=user.id, post_text="nothing here")
         db_session.add_all([comment1, comment2])
         await db_session.commit()
@@ -2967,12 +3017,14 @@ class TestShowAllImagesFilter:
 
         for i, (status_val, filename) in enumerate(statuses):
             img_data = sample_image_data.copy()
-            img_data.update({
-                "filename": filename,
-                "md5_hash": f"hash_status_{i:03d}",
-                "status": status_val,
-                "user_id": user.user_id,
-            })
+            img_data.update(
+                {
+                    "filename": filename,
+                    "md5_hash": f"hash_status_{i:03d}",
+                    "status": status_val,
+                    "user_id": user.user_id,
+                }
+            )
             db_session.add(Images(**img_data))
 
         await db_session.commit()
@@ -3022,12 +3074,14 @@ class TestShowAllImagesFilter:
         ]
         for i, (status_val, filename) in enumerate(user1_images):
             img_data = sample_image_data.copy()
-            img_data.update({
-                "filename": filename,
-                "md5_hash": f"hash_u1_{i:03d}",
-                "status": status_val,
-                "user_id": user1.user_id,
-            })
+            img_data.update(
+                {
+                    "filename": filename,
+                    "md5_hash": f"hash_u1_{i:03d}",
+                    "status": status_val,
+                    "user_id": user1.user_id,
+                }
+            )
             db_session.add(Images(**img_data))
 
         # User2's images (various statuses)
@@ -3037,12 +3091,14 @@ class TestShowAllImagesFilter:
         ]
         for i, (status_val, filename) in enumerate(user2_images):
             img_data = sample_image_data.copy()
-            img_data.update({
-                "filename": filename,
-                "md5_hash": f"hash_u2_{i:03d}",
-                "status": status_val,
-                "user_id": user2.user_id,
-            })
+            img_data.update(
+                {
+                    "filename": filename,
+                    "md5_hash": f"hash_u2_{i:03d}",
+                    "status": status_val,
+                    "user_id": user2.user_id,
+                }
+            )
             db_session.add(Images(**img_data))
 
         await db_session.commit()
@@ -3107,12 +3163,14 @@ class TestShowAllImagesFilter:
 
         for i, (status_val, filename) in enumerate(statuses):
             img_data = sample_image_data.copy()
-            img_data.update({
-                "filename": filename,
-                "md5_hash": f"hash_all_{i:03d}",
-                "status": status_val,
-                "user_id": other_user.user_id,
-            })
+            img_data.update(
+                {
+                    "filename": filename,
+                    "md5_hash": f"hash_all_{i:03d}",
+                    "status": status_val,
+                    "user_id": other_user.user_id,
+                }
+            )
             db_session.add(Images(**img_data))
 
         await db_session.commit()
@@ -3129,8 +3187,12 @@ class TestShowAllImagesFilter:
         assert data["total"] == 6
         filenames = {img["filename"] for img in data["images"]}
         assert filenames == {
-            "review_img", "inapp_img", "repost_img",
-            "other_img", "active_img", "spoiler_img"
+            "review_img",
+            "inapp_img",
+            "repost_img",
+            "other_img",
+            "active_img",
+            "spoiler_img",
         }
 
     async def test_explicit_status_param_overrides_setting(
@@ -3163,12 +3225,14 @@ class TestShowAllImagesFilter:
 
         for i, (status_val, filename) in enumerate(statuses):
             img_data = sample_image_data.copy()
-            img_data.update({
-                "filename": filename,
-                "md5_hash": f"hash_override_{i:03d}",
-                "status": status_val,
-                "user_id": user.user_id,
-            })
+            img_data.update(
+                {
+                    "filename": filename,
+                    "md5_hash": f"hash_override_{i:03d}",
+                    "status": status_val,
+                    "user_id": user.user_id,
+                }
+            )
             db_session.add(Images(**img_data))
 
         await db_session.commit()
@@ -3218,12 +3282,14 @@ class TestShowAllImagesFilter:
 
         for i, (status_val, filename) in enumerate(statuses):
             img_data = sample_image_data.copy()
-            img_data.update({
-                "filename": filename,
-                "md5_hash": f"hash_multi_{i:03d}",
-                "status": status_val,
-                "user_id": user.user_id,
-            })
+            img_data.update(
+                {
+                    "filename": filename,
+                    "md5_hash": f"hash_multi_{i:03d}",
+                    "status": status_val,
+                    "user_id": user.user_id,
+                }
+            )
             db_session.add(Images(**img_data))
 
         await db_session.commit()
@@ -3258,17 +3324,21 @@ class TestShowAllImagesFilter:
         db_session.add(user)
         await db_session.flush()
 
-        for i, (status_val, filename) in enumerate([
-            (ImageStatus.ACTIVE, "active1"),
-            (ImageStatus.SPOILER, "spoiler1"),
-        ]):
+        for i, (status_val, filename) in enumerate(
+            [
+                (ImageStatus.ACTIVE, "active1"),
+                (ImageStatus.SPOILER, "spoiler1"),
+            ]
+        ):
             img_data = sample_image_data.copy()
-            img_data.update({
-                "filename": filename,
-                "md5_hash": f"hash_single_{i:03d}",
-                "status": status_val,
-                "user_id": user.user_id,
-            })
+            img_data.update(
+                {
+                    "filename": filename,
+                    "md5_hash": f"hash_single_{i:03d}",
+                    "status": status_val,
+                    "user_id": user.user_id,
+                }
+            )
             db_session.add(Images(**img_data))
 
         await db_session.commit()
@@ -3287,9 +3357,7 @@ class TestShowAllImagesFilter:
 class TestBookmarkPage:
     """Tests for GET /images/bookmark/page endpoint."""
 
-    async def test_no_bookmark_returns_404(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_no_bookmark_returns_404(self, client: AsyncClient, db_session: AsyncSession):
         """User with no bookmark should get 404."""
         from app.core.security import create_access_token
 
@@ -3341,12 +3409,14 @@ class TestBookmarkPage:
         images = []
         for i in range(25):
             img_data = sample_image_data.copy()
-            img_data.update({
-                "filename": f"bkm_img_{i:03d}",
-                "md5_hash": f"hash_bkm_{i:03d}",
-                "status": ImageStatus.ACTIVE,
-                "user_id": user.user_id,
-            })
+            img_data.update(
+                {
+                    "filename": f"bkm_img_{i:03d}",
+                    "md5_hash": f"hash_bkm_{i:03d}",
+                    "status": ImageStatus.ACTIVE,
+                    "user_id": user.user_id,
+                }
+            )
             img = Images(**img_data)
             db_session.add(img)
             images.append(img)
@@ -3395,12 +3465,14 @@ class TestBookmarkPage:
 
         # Create a hidden image (status=0, OTHER)
         img_data = sample_image_data.copy()
-        img_data.update({
-            "filename": "hidden_bkm",
-            "md5_hash": "hash_hidden_bkm",
-            "status": ImageStatus.OTHER,  # Not in PUBLIC_IMAGE_STATUSES
-            "user_id": owner.user_id,
-        })
+        img_data.update(
+            {
+                "filename": "hidden_bkm",
+                "md5_hash": "hash_hidden_bkm",
+                "status": ImageStatus.OTHER,  # Not in PUBLIC_IMAGE_STATUSES
+                "user_id": owner.user_id,
+            }
+        )
         hidden_img = Images(**img_data)
         db_session.add(hidden_img)
         await db_session.flush()
@@ -3455,12 +3527,14 @@ class TestBookmarkPage:
 
         # Create user's own hidden image
         img_data = sample_image_data.copy()
-        img_data.update({
-            "filename": "own_hidden",
-            "md5_hash": "hash_own_hidden",
-            "status": ImageStatus.OTHER,  # Hidden status
-            "user_id": user.user_id,  # Owned by user
-        })
+        img_data.update(
+            {
+                "filename": "own_hidden",
+                "md5_hash": "hash_own_hidden",
+                "status": ImageStatus.OTHER,  # Hidden status
+                "user_id": user.user_id,  # Owned by user
+            }
+        )
         own_img = Images(**img_data)
         db_session.add(own_img)
         await db_session.flush()
@@ -3500,12 +3574,14 @@ class TestBookmarkPage:
 
         # Create a hidden image not owned by user
         img_data = sample_image_data.copy()
-        img_data.update({
-            "filename": "other_hidden",
-            "md5_hash": "hash_other_hidden",
-            "status": ImageStatus.OTHER,
-            "user_id": owner.user_id,
-        })
+        img_data.update(
+            {
+                "filename": "other_hidden",
+                "md5_hash": "hash_other_hidden",
+                "status": ImageStatus.OTHER,
+                "user_id": owner.user_id,
+            }
+        )
         hidden_img = Images(**img_data)
         db_session.add(hidden_img)
         await db_session.flush()
@@ -3708,14 +3784,10 @@ class TestGetImageRatings:
         await db_session.commit()
         for u in users:
             await db_session.refresh(u)
-            db_session.add(
-                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=7)
-            )
+            db_session.add(ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=7))
         await db_session.commit()
 
-        response = await client.get(
-            f"/api/v1/images/{image.image_id}/ratings?page=1&per_page=2"
-        )
+        response = await client.get(f"/api/v1/images/{image.image_id}/ratings?page=1&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 5
@@ -3818,9 +3890,7 @@ class TestGetImageRatings:
         await db_session.commit()
         for u in users:
             await db_session.refresh(u)
-            db_session.add(
-                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5)
-            )
+            db_session.add(ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5))
         await db_session.commit()
 
         response = await client.get(
@@ -3839,9 +3909,7 @@ class TestGetImageRatings:
         await db_session.commit()
         await db_session.refresh(image)
 
-        response = await client.get(
-            f"/api/v1/images/{image.image_id}/ratings?sort_by=email"
-        )
+        response = await client.get(f"/api/v1/images/{image.image_id}/ratings?sort_by=email")
         assert response.status_code == 422
 
     async def test_response_includes_rated_at_timestamp(
@@ -3865,9 +3933,7 @@ class TestGetImageRatings:
         await db_session.commit()
         await db_session.refresh(user)
 
-        db_session.add(
-            ImageRatings(user_id=user.user_id, image_id=image.image_id, rating=7)
-        )
+        db_session.add(ImageRatings(user_id=user.user_id, image_id=image.image_id, rating=7))
         await db_session.commit()
 
         response = await client.get(f"/api/v1/images/{image.image_id}/ratings")
@@ -3903,9 +3969,7 @@ class TestGetImageRatings:
         await db_session.commit()
         for u in users:
             await db_session.refresh(u)
-            db_session.add(
-                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5)
-            )
+            db_session.add(ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5))
         await db_session.commit()
 
         response = await client.get(
@@ -3938,9 +4002,7 @@ class TestGetImageRatings:
         await db_session.commit()
         for u in users:
             await db_session.refresh(u)
-            db_session.add(
-                ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5)
-            )
+            db_session.add(ImageRatings(user_id=u.user_id, image_id=image.image_id, rating=5))
         await db_session.commit()
 
         response = await client.get(
@@ -3995,9 +4057,7 @@ class TestImageUserListsIncludeGroups:
         response = await client.get(f"/api/v1/images/{image.image_id}/favorites")
         assert response.status_code == 200
 
-        entry = next(
-            u for u in response.json()["users"] if u["username"] == "fav_grp_user"
-        )
+        entry = next(u for u in response.json()["users"] if u["username"] == "fav_grp_user")
         assert "groups" in entry
         assert "Mods" in entry["groups"]
 
@@ -4011,16 +4071,12 @@ class TestImageUserListsIncludeGroups:
         await db_session.refresh(image)
 
         user = await self._create_user_in_group(db_session, "rate_grp_user", "Admins")
-        db_session.add(
-            ImageRatings(user_id=user.user_id, image_id=image.image_id, rating=8)
-        )
+        db_session.add(ImageRatings(user_id=user.user_id, image_id=image.image_id, rating=8))
         await db_session.commit()
 
         response = await client.get(f"/api/v1/images/{image.image_id}/ratings")
         assert response.status_code == 200
 
-        entry = next(
-            u for u in response.json()["users"] if u["username"] == "rate_grp_user"
-        )
+        entry = next(u for u in response.json()["users"] if u["username"] == "rate_grp_user")
         assert "groups" in entry
         assert "Admins" in entry["groups"]

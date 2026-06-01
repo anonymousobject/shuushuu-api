@@ -6,7 +6,7 @@ import math
 import random
 import shutil
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path as FilePath
 from typing import Annotated, Any
@@ -495,11 +495,30 @@ async def list_images(
             else:
                 query = query.where(or_(*clauses))  # type: ignore[arg-type]  # missing at least one listed type
 
-    # Date filtering
+    # Date filtering. date_from/date_to arrive as "YYYY-MM-DD" strings; the
+    # date_added column is a tz-aware UtcDateTime, so the raw string must be
+    # parsed to a tz-aware UTC datetime before comparison (otherwise the column's
+    # bind hook raises "'str' object has no attribute 'tzinfo'" -> HTTP 500).
+    # date_to is treated as inclusive of the whole day by using an exclusive
+    # upper bound at the start of the following day.
     if date_from:
-        query = query.where(Images.date_added >= date_from)  # type: ignore[arg-type,operator]
+        try:
+            from_dt = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=UTC)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="date_from must be in YYYY-MM-DD format.",
+            ) from None
+        query = query.where(Images.date_added >= from_dt)  # type: ignore[arg-type,operator]
     if date_to:
-        query = query.where(Images.date_added <= date_to)  # type: ignore[arg-type,operator]
+        try:
+            to_dt = datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=UTC)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="date_to must be in YYYY-MM-DD format.",
+            ) from None
+        query = query.where(Images.date_added < to_dt + timedelta(days=1))  # type: ignore[arg-type,operator]
 
     # Size filtering
     if min_width:
