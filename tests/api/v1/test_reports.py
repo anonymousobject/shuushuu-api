@@ -1038,6 +1038,42 @@ class TestAdminReportAction:
         )).scalars().all()
         assert any(h.new_status == ImageStatus.DEACTIVATED and h.reason == "too blurry" for h in hist)
 
+    async def test_resolved_report_exposes_action_and_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A resolved report exposes the action + mod reason (derived); reporter reason untouched."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        await grant_permission(db_session, admin.user_id, "report_view")
+        token = await login_user(client, admin.username, password)
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id, user_id=admin.user_id, category=2,
+            reason_text="i think this is AI", status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+        rid = report.report_id
+
+        await client.post(
+            f"/api/v1/admin/reports/{rid}/action",
+            json={
+                "new_status": ImageStatus.DEACTIVATED,
+                "reason_category": DeactivationReason.LOW_QUALITY,
+                "reason": "not AI, low quality",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        r = await client.get(
+            f"/api/v1/admin/reports/{rid}", headers={"Authorization": f"Bearer {token}"}
+        )
+        data = r.json()
+        assert data["reason_text"] == "i think this is AI"  # reporter's reason untouched
+        assert data["resolution_kind"] == "action"
+        assert data["resolution_status"] == ImageStatus.DEACTIVATED  # action taken
+        assert data["resolution_reason"] == "not AI, low quality"  # mod's reason, distinct
+
 
 @pytest.mark.api
 class TestAdminReportEscalate:

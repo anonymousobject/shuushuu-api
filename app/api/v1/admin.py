@@ -941,6 +941,8 @@ async def list_reports(
                 response.suggested_tags = suggestions_by_report[report.report_id]
             image_reports.append(response)
 
+        await _populate_report_resolutions(db, list(zip(image_reports, reports, strict=True)))
+
     # Fetch comment reports if requested
     if report_type in ("comment", "all"):
         # Build filtered query for CommentReports
@@ -1023,6 +1025,56 @@ async def list_reports(
         page=page,
         per_page=per_page,
     )
+
+
+async def _populate_report_resolutions(
+    db: AsyncSession, pairs: list[tuple[ReportResponse, ImageReports]]
+) -> None:
+    """Derive each resolved report's outcome from its AdminActions row (no stored duplicate).
+
+    REPORT_ACTION -> action + resulting status + mod reason; REVIEW_START -> escalated;
+    REPORT_DISMISS -> dismissed. Newest matching action wins.
+    """
+    resolved = {rep.report_id: resp for resp, rep in pairs if rep.status != ReportStatus.PENDING}
+    if not resolved:
+        return
+    rows = (
+        (
+            await db.execute(
+                select(AdminActions)
+                .where(AdminActions.report_id.in_(list(resolved.keys())))  # type: ignore[union-attr]
+                .where(
+                    AdminActions.action_type.in_(  # type: ignore[attr-defined]
+                        [
+                            AdminActionType.REPORT_ACTION,
+                            AdminActionType.REVIEW_START,
+                            AdminActionType.REPORT_DISMISS,
+                        ]
+                    )
+                )
+                .order_by(desc(AdminActions.created_at))  # type: ignore[arg-type]
+            )
+        )
+        .scalars()
+        .all()
+    )
+    seen: set[int] = set()
+    for act in rows:
+        if act.report_id is None or act.report_id in seen:
+            continue
+        seen.add(act.report_id)
+        resp = resolved[act.report_id]
+        details = act.details or {}
+        if act.action_type == AdminActionType.REPORT_ACTION:
+            ns = details.get("new_status")
+            resp.resolution_kind = "action"
+            resp.resolution_status = ns
+            resp.resolution_status_label = ImageStatus.get_label(ns) if ns is not None else None
+            resp.resolution_reason = details.get("reason")
+        elif act.action_type == AdminActionType.REVIEW_START:
+            resp.resolution_kind = "escalated"
+        elif act.action_type == AdminActionType.REPORT_DISMISS:
+            resp.resolution_kind = "dismissed"
 
 
 @router.get("/reports/{report_id}", response_model=ReportResponse)
@@ -1111,6 +1163,8 @@ async def get_report(
             )
             for suggestion, tag in suggestions
         ]
+
+    await _populate_report_resolutions(db, [(response, report)])
 
     return response
 

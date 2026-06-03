@@ -101,6 +101,11 @@ class ReportResponse(BaseModel):
     admin_notes: str | None = None
     suggested_tags: list[TagSuggestion] | None = None
     skipped_tags: SkippedTagsInfo | None = None  # Only in create response
+    # Resolution, derived from the audit log for reviewed/dismissed reports
+    resolution_kind: str | None = None  # "action" | "escalated" | "dismissed"
+    resolution_status: int | None = None
+    resolution_status_label: str | None = None
+    resolution_reason: str | None = None
 
     model_config = {"from_attributes": True}
 
