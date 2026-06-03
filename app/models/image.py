@@ -134,10 +134,10 @@ class ImageBase(SQLModel):
         """Validate that status is one of the allowed ImageStatus constants."""
         valid_statuses = {
             ImageStatus.REVIEW,
-            ImageStatus.LOW_QUALITY,
-            ImageStatus.INAPPROPRIATE,
+            ImageStatus.LOW_QUALITY,  # legacy value, still loadable from old rows
+            ImageStatus.INAPPROPRIATE,  # legacy value, still loadable from old rows
             ImageStatus.REPOST,
-            ImageStatus.OTHER,
+            ImageStatus.DEACTIVATED,  # == 0 (formerly OTHER)
             ImageStatus.ACTIVE,
             ImageStatus.SPOILER,
         }
@@ -257,6 +257,11 @@ class Images(ImageBase, table=True):
     # Internal metadata
     total_pixels: Decimal | None = Field(default=None)
     replacement_id: int | None = Field(default=None, foreign_key="images.image_id")
+
+    # Deactivation detail (set when status == DEACTIVATED)
+    reason_category: int | None = Field(default=None)
+    # Free-text reason for the current status (visibility scoped at the API layer)
+    status_reason: str | None = Field(default=None, max_length=1000)
 
     # Denormalized tag-type presence (maintained by app.services.tag_type_flags).
     # Internal cache of "image has >=1 tag of this type"; source of truth is tag_links + tags.type.

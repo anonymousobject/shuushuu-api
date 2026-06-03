@@ -62,6 +62,11 @@ class ImageStatusHistory(ImageStatusHistoryBase, table=True):
     # User who made the change (nullable for system actions)
     user_id: int | None = Field(default=None)
 
+    # Reason metadata for this transition (mirrors images.reason_category / status_reason
+    # at the time of the change). Nullable: legacy rows and non-deactivation transitions.
+    reason_category: int | None = Field(default=None)
+    reason: str | None = Field(default=None, max_length=1000)
+
     # Timestamp
     created_at: datetime | None = Field(
         default=None,
