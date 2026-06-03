@@ -150,6 +150,11 @@ class ImageStatusHistoryResponse(BaseModel):
     new_status: int
     new_status_label: str
 
+    # Deactivation reason category (shown to everyone); free-text reason is
+    # owner/mod-only for hidden-status transitions (gated by the endpoint).
+    reason_category: int | None = None
+    reason: str | None = None
+
     # Who made the change (may be null for hidden statuses)
     user: UserSummary | None = None
 

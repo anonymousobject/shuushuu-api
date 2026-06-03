@@ -50,7 +50,7 @@ from app.config import (
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
-from app.core.permissions import Permission, has_permission
+from app.core.permissions import Permission, has_any_permission, has_permission
 from app.core.r2_constants import R2Location
 from app.core.redis import get_redis
 from app.models import (
@@ -1216,6 +1216,7 @@ async def get_image_tag_history(
 async def get_image_status_history(
     image_id: Annotated[int, Path(description="Image ID")],
     pagination: Annotated[PaginationParams, Depends()],
+    current_user: Annotated[Users | None, Depends(get_optional_current_user)],
     db: AsyncSession = Depends(get_db),
 ) -> ImageStatusHistoryListResponse:
     """
@@ -1223,11 +1224,21 @@ async def get_image_status_history(
 
     Returns paginated list of status changes.
     User info is shown only for public status changes (repost, spoiler, active).
+    The free-text reason is shown only for public-destination transitions, or to
+    the image owner / moderators; the reason_category is always shown.
     """
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
-    if not image_result.scalar_one_or_none():
+    image = image_result.scalar_one_or_none()
+    if not image:
         raise HTTPException(status_code=404, detail="Image not found")
+    owner_id = image.user_id
+
+    is_privileged_viewer = False
+    if current_user is not None and current_user.user_id is not None:
+        is_privileged_viewer = current_user.user_id == owner_id or await has_any_permission(
+            db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
+        )
 
     # Query status history with user info
     # Eager load user groups for UserSummary
@@ -1278,6 +1289,12 @@ async def get_image_status_history(
                 groups=user.groups if user else [],
             )
 
+        # The free-text reason describes the *destination* state, so it is public
+        # only when the new status is publicly visible; otherwise owner/mods only.
+        # reason_category is always exposed.
+        reason_is_public = history.new_status in ImageStatus.VISIBLE_USER_STATUSES
+        can_see_reason = reason_is_public or is_privileged_viewer
+
         items.append(
             ImageStatusHistoryResponse(
                 id=history.id,
@@ -1286,6 +1303,8 @@ async def get_image_status_history(
                 old_status_label=ImageStatus.get_label(history.old_status),
                 new_status=history.new_status,
                 new_status_label=ImageStatus.get_label(history.new_status),
+                reason_category=history.reason_category,
+                reason=history.reason if can_see_reason else None,
                 user=user_summary,
                 created_at=history.created_at,
             )
