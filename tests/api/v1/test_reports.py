@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
 
-from app.config import ImageStatus, ReportStatus, ReviewStatus
+from app.config import DeactivationReason, ImageStatus, ReportStatus, ReviewStatus
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.image_report import ImageReports
@@ -945,7 +945,11 @@ class TestAdminReportAction:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/action",
-            json={"new_status": ImageStatus.INAPPROPRIATE},
+            json={
+                "new_status": ImageStatus.DEACTIVATED,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "inappropriate content",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -953,7 +957,86 @@ class TestAdminReportAction:
 
         # Verify image status changed
         await db_session.refresh(image)
-        assert image.status == ImageStatus.INAPPROPRIATE
+        assert image.status == ImageStatus.DEACTIVATED
+
+    async def test_action_deactivate_requires_category_and_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Deactivate via triage requires reason_category + reason (mirrors the mod dialog)."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        token = await login_user(client, admin.username, password)
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id, user_id=admin.user_id, category=2, status=ReportStatus.PENDING
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        r = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/action",
+            json={"new_status": ImageStatus.DEACTIVATED},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422
+
+    async def test_action_repost_requires_replacement(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Marking repost via triage now enforces replacement_id (was silently allowed)."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        token = await login_user(client, admin.username, password)
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id, user_id=admin.user_id, category=1, status=ReportStatus.PENDING
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        r = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/action",
+            json={"new_status": ImageStatus.REPOST},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 400
+
+    async def test_action_deactivate_writes_history_with_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Deactivate via triage writes a public history row carrying category + mod reason."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        token = await login_user(client, admin.username, password)
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id, user_id=admin.user_id, category=2, status=ReportStatus.PENDING
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+        iid = image.image_id
+
+        r = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/action",
+            json={
+                "new_status": ImageStatus.DEACTIVATED,
+                "reason_category": DeactivationReason.LOW_QUALITY,
+                "reason": "too blurry",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        db_session.expire_all()
+        img = (await db_session.execute(select(Images).where(Images.image_id == iid))).scalar_one()
+        assert img.status == ImageStatus.DEACTIVATED
+        assert img.reason_category == DeactivationReason.LOW_QUALITY
+        hist = (await db_session.execute(
+            select(ImageStatusHistory).where(ImageStatusHistory.image_id == iid)
+        )).scalars().all()
+        assert any(h.new_status == ImageStatus.DEACTIVATED and h.reason == "too blurry" for h in hist)
 
 
 @pytest.mark.api
@@ -1167,7 +1250,11 @@ class TestReportPermissionDenials:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/action",
-            json={"new_status": ImageStatus.INAPPROPRIATE},
+            json={
+                "new_status": ImageStatus.DEACTIVATED,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "x",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 

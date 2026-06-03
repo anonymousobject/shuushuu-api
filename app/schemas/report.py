@@ -140,12 +140,56 @@ class ReportDismissRequest(BaseModel):
 
 
 class ReportActionRequest(BaseModel):
-    """Schema for taking action on a report (changing image status)."""
+    """Schema for taking action on a report — mirrors the deactivate contract.
 
-    new_status: int = Field(
-        ...,
-        description="New image status (-4=review, -3=low_quality, -2=inappropriate, -1=repost, 1=active)",
+    Legacy INAPPROPRIATE(-2)/LOW_QUALITY(-3)/REVIEW(-4) are no longer settable here:
+    inappropriate/low-quality/spam all become DEACTIVATED + a reason_category, and
+    escalation to review is a separate endpoint.
+    """
+
+    new_status: int = Field(..., description="0=Deactivated, -1=Repost, 1=Active, 2=Spoiler")
+    replacement_id: int | None = Field(None, description="Required when new_status=-1 (repost)")
+    reason_category: int | None = Field(
+        None, description="Required when new_status=0: 1=Inappropriate,2=Low Quality,3=Spam,4=Other"
     )
+    reason: str | None = Field(None, max_length=1000, description="Required when new_status=0")
+
+    @field_validator("new_status")
+    @classmethod
+    def validate_status(cls, v: int) -> int:
+        from app.config import ImageStatus
+
+        settable = {
+            ImageStatus.DEACTIVATED,
+            ImageStatus.REPOST,
+            ImageStatus.ACTIVE,
+            ImageStatus.SPOILER,
+        }
+        if v not in settable:
+            raise ValueError(
+                "new_status must be one of: 0=Deactivated, -1=Repost, 1=Active, 2=Spoiler"
+            )
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def strip_reason(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return v.strip() or None
+
+    @model_validator(mode="after")
+    def validate_combination(self) -> ReportActionRequest:
+        from app.config import DeactivationReason, ImageStatus
+
+        if self.new_status == ImageStatus.DEACTIVATED:
+            if self.reason_category not in DeactivationReason.VALID:
+                raise ValueError("reason_category is required and must be valid when deactivating")
+            if not self.reason:
+                raise ValueError("reason is required when deactivating")
+        elif self.reason_category is not None:
+            raise ValueError("reason_category is only valid when deactivating")
+        return self
 
 
 class ReportEscalateRequest(BaseModel):

@@ -1620,25 +1620,25 @@ async def action_report(
 
     previous_status = image.status
 
-    # Update image status
-    image.status = action_data.new_status
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
+    # All mutation + audit logging goes through the unified service: writes the
+    # public history row, enforces replacement_id for repost, stamps report_id on
+    # the REPORT_ACTION audit row (the report's resolution is derived from it).
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=action_data.new_status,
+        reason_category=action_data.reason_category,
+        reason=action_data.reason,
+        replacement_id=action_data.replacement_id,
+        action_type=AdminActionType.REPORT_ACTION,
+        report_id=report_id,
+    )
 
     # Update report
     report.status = ReportStatus.REVIEWED
     report.reviewed_by = current_user.user_id
     report.reviewed_at = datetime.now(UTC)
-
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
-        action_type=AdminActionType.REPORT_ACTION,
-        report_id=report_id,
-        image_id=report.image_id,
-        details={"previous_status": previous_status, "new_status": action_data.new_status},
-    )
-    db.add(action)
 
     await db.commit()
 
@@ -1647,6 +1647,8 @@ async def action_report(
         old_status=previous_status,
         new_status=action_data.new_status,
     )
+    if action_data.new_status == ImageStatus.REPOST and action_data.replacement_id:
+        await schedule_rating_recalculation(action_data.replacement_id)
 
     return MessageResponse(message="Report processed and image status updated")
 

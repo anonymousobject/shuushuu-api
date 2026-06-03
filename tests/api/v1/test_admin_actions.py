@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
     AdminActionType,
+    DeactivationReason,
     ImageStatus,
     ReportStatus,
     ReviewOutcome,
@@ -194,7 +195,11 @@ class TestReportActionAuditLog:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/action",
-            json={"new_status": ImageStatus.INAPPROPRIATE},
+            json={
+                "new_status": ImageStatus.DEACTIVATED,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "inappropriate content",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
@@ -212,7 +217,7 @@ class TestReportActionAuditLog:
         assert action.report_id == report.report_id
         assert action.image_id == image.image_id
         assert action.details is not None
-        assert action.details.get("new_status") == ImageStatus.INAPPROPRIATE
+        assert action.details.get("new_status") == ImageStatus.DEACTIVATED
         assert "previous_status" in action.details
 
 
