@@ -529,8 +529,8 @@ class TestGetImageStatusHistory:
             (ImageStatus.REVIEW, ImageStatus.LOW_QUALITY, "review", "low_quality"),
             (ImageStatus.LOW_QUALITY, ImageStatus.INAPPROPRIATE, "low_quality", "inappropriate"),
             (ImageStatus.INAPPROPRIATE, ImageStatus.REPOST, "inappropriate", "repost"),
-            (ImageStatus.REPOST, ImageStatus.OTHER, "repost", "other"),
-            (ImageStatus.OTHER, ImageStatus.ACTIVE, "other", "active"),
+            (ImageStatus.REPOST, ImageStatus.OTHER, "repost", "deactivated"),
+            (ImageStatus.OTHER, ImageStatus.ACTIVE, "deactivated", "active"),
             (ImageStatus.ACTIVE, ImageStatus.SPOILER, "active", "spoiler"),
         ]
 
