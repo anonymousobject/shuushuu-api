@@ -7,8 +7,19 @@ a public→protected transition leaves the image reachable via CDN until the
 edge TTL expires.
 """
 
-from app.config import settings
+from datetime import UTC, datetime
+
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import AdminActionType, ImageStatus, settings
 from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2
+from app.models.admin_action import AdminActions
+from app.models.image import Images
+from app.models.image_status_history import ImageStatusHistory
+from app.models.user import Users
+from app.services.repost import migrate_repost_data
 from app.tasks.queue import enqueue_job
 
 
@@ -37,3 +48,97 @@ async def enqueue_r2_sync_on_status_change(
         old_status=old_status,
         new_status=new_status,
     )
+
+
+async def change_image_status(
+    db: AsyncSession,
+    image: Images,
+    actor: Users,
+    *,
+    new_status: int | None = None,
+    reason_category: int | None = None,
+    reason: str | None = None,
+    replacement_id: int | None = None,
+    locked: bool | None = None,
+) -> dict[str, int]:
+    """Apply a moderation status and/or lock change to an image.
+
+    Writes the public status-history row (when the status actually changes) and
+    the internal admin-action audit row. Does NOT commit — the caller owns the
+    transaction and any post-commit side effects (R2 sync enqueue, rating
+    recalculation). Raises HTTPException on invalid transitions.
+
+    Returns the repost migration_result dict (empty unless a repost was processed).
+    """
+    previous_status = image.status
+    previous_locked = image.locked
+    migration_result: dict[str, int] = {}
+
+    if new_status is not None:
+        if new_status == ImageStatus.REPOST:
+            if replacement_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="replacement_id is required when marking as repost",
+                )
+            if replacement_id == image.image_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="An image cannot be a repost of itself",
+                )
+            original = (
+                await db.execute(select(Images).where(Images.image_id == replacement_id))
+            ).scalar_one_or_none()
+            if not original:
+                raise HTTPException(status_code=404, detail="Original image not found")
+            image.replacement_id = replacement_id
+            migration_result = await migrate_repost_data(image.image_id, replacement_id, db)
+        else:
+            # Clear replacement_id when not a repost
+            image.replacement_id = None
+
+        # reason_category only applies to DEACTIVATED; reason may accompany any status
+        if new_status == ImageStatus.DEACTIVATED:
+            image.reason_category = reason_category
+        else:
+            image.reason_category = None
+        image.status_reason = reason
+
+        image.status = new_status
+        image.status_user_id = actor.user_id
+        image.status_updated = datetime.now(UTC)
+
+    if locked is not None:
+        image.locked = 1 if locked else 0
+
+    # Public status-history row only when the status actually changed
+    if new_status is not None and new_status != previous_status:
+        db.add(
+            ImageStatusHistory(
+                image_id=image.image_id,
+                old_status=previous_status,
+                new_status=new_status,
+                user_id=actor.user_id,
+                reason_category=image.reason_category,
+                reason=image.status_reason,
+            )
+        )
+
+    db.add(
+        AdminActions(
+            user_id=actor.user_id,
+            action_type=AdminActionType.IMAGE_STATUS_CHANGE,
+            image_id=image.image_id,
+            details={
+                "previous_status": previous_status,
+                "new_status": image.status,
+                "previous_locked": previous_locked,
+                "new_locked": image.locked,
+                "replacement_id": image.replacement_id,
+                "reason_category": image.reason_category,
+                **migration_result,
+            },
+        )
+    )
+
+    return migration_result
