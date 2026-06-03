@@ -11,11 +11,14 @@ User visibility rules:
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import ImageStatus
+from app.config import DeactivationReason, ImageStatus
+from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.image_status_history import ImageStatusHistory
+from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.user import Users
 
 
@@ -562,3 +565,99 @@ class TestGetImageStatusHistory:
             assert item is not None, f"Missing entry for {old_status} -> {new_status}"
             assert item["old_status_label"] == old_label
             assert item["new_status_label"] == new_label
+
+
+async def _make_user(db_session, username, password="TestPassword123!"):
+    user = Users(username=username, password=get_password_hash(password),
+                 password_type="bcrypt", salt="", email=f"{username}@example.com", active=1)
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+async def _grant_image_edit(db_session, user_id):
+    perm = (await db_session.execute(select(Perms).where(Perms.title == "image_edit"))).scalar_one_or_none()
+    if not perm:
+        perm = Perms(title="image_edit", desc="edit images")
+        db_session.add(perm)
+        await db_session.flush()
+    group = Groups(title=f"hist_mod_{user_id}", desc="hist mod group")
+    db_session.add(group)
+    await db_session.flush()
+    db_session.add(GroupPerms(group_id=group.group_id, perm_id=perm.perm_id, permvalue=1))
+    db_session.add(UserGroups(user_id=user_id, group_id=group.group_id))
+    await db_session.commit()
+
+
+async def _login(client, username, password="TestPassword123!"):
+    r = await client.post("/api/v1/auth/login", json={"username": username, "password": password})
+    assert r.status_code == 200
+    return r.json()["access_token"]
+
+
+async def _seed_deactivation(db_session, owner):
+    image = Images(filename="histvis", ext="jpg", md5_hash="a" * 32,
+                   user_id=owner.user_id, width=100, height=100, filesize=1000,
+                   status=ImageStatus.DEACTIVATED,
+                   reason_category=DeactivationReason.LOW_QUALITY,
+                   status_reason="blurry and low res")
+    db_session.add(image)
+    await db_session.commit()
+    await db_session.refresh(image)
+    db_session.add(ImageStatusHistory(
+        image_id=image.image_id, old_status=ImageStatus.ACTIVE,
+        new_status=ImageStatus.DEACTIVATED, user_id=owner.user_id,
+        reason_category=DeactivationReason.LOW_QUALITY, reason="blurry and low res"))
+    await db_session.commit()
+    return image
+
+
+@pytest.mark.api
+class TestStatusHistoryReasonVisibility:
+    """reason_category is public; free-text reason is owner/mod-only for hidden-status transitions."""
+
+    async def test_reason_hidden_from_anonymous_for_deactivation(self, client, db_session):
+        owner = await _make_user(db_session, "histowner1")
+        image = await _seed_deactivation(db_session, owner)
+
+        r = await client.get(f"/api/v1/images/{image.image_id}/status-history")
+        assert r.status_code == 200
+        row = r.json()["items"][0]
+        assert row["reason_category"] == DeactivationReason.LOW_QUALITY  # category always shown
+        assert row["reason"] is None  # free-text hidden from anonymous on a hidden-status transition
+
+    async def test_reason_visible_to_owner_and_mod(self, client, db_session):
+        owner = await _make_user(db_session, "histowner2")
+        image = await _seed_deactivation(db_session, owner)
+
+        owner_token = await _login(client, owner.username)
+        r = await client.get(f"/api/v1/images/{image.image_id}/status-history",
+                             headers={"Authorization": f"Bearer {owner_token}"})
+        assert r.json()["items"][0]["reason"] == "blurry and low res"
+
+        mod = await _make_user(db_session, "histmod2")
+        await _grant_image_edit(db_session, mod.user_id)
+        mod_token = await _login(client, mod.username)
+        r = await client.get(f"/api/v1/images/{image.image_id}/status-history",
+                             headers={"Authorization": f"Bearer {mod_token}"})
+        assert r.json()["items"][0]["reason"] == "blurry and low res"
+
+    async def test_reason_public_for_spoiler_transition(self, client, db_session):
+        owner = await _make_user(db_session, "histowner3")
+        image = Images(filename="histspoil", ext="jpg", md5_hash="b" * 32,
+                       user_id=owner.user_id, width=100, height=100, filesize=1000,
+                       status=ImageStatus.SPOILER, status_reason="mild nudity")
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        db_session.add(ImageStatusHistory(
+            image_id=image.image_id, old_status=ImageStatus.ACTIVE,
+            new_status=ImageStatus.SPOILER, user_id=owner.user_id, reason="mild nudity"))
+        await db_session.commit()
+
+        r = await client.get(f"/api/v1/images/{image.image_id}/status-history")
+        assert r.status_code == 200
+        row = r.json()["items"][0]
+        assert row["reason"] == "mild nudity"  # public: destination status is publicly visible
+        assert row["reason_category"] is None
