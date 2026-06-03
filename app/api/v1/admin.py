@@ -103,9 +103,13 @@ from app.schemas.report import (
     UnifiedReportListResponse,
     VoteResponse,
 )
-from app.services.image_status import enqueue_r2_sync_on_status_change
+from app.services.image_status import (
+    change_image_status as apply_image_status_change,
+)
+from app.services.image_status import (
+    enqueue_r2_sync_on_status_change,
+)
 from app.services.rating import schedule_rating_recalculation
-from app.services.repost import migrate_repost_data
 from app.services.review_jobs import check_early_close
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 
@@ -738,75 +742,20 @@ async def change_image_status(
         raise HTTPException(status_code=404, detail="Image not found")
 
     previous_status = image.status
-    previous_locked = image.locked
 
-    migration_result: dict[str, int] = {}
-
-    # Handle status change if provided
-    if status_data.status is not None:
-        # Handle repost status
-        if status_data.status == ImageStatus.REPOST:
-            if status_data.replacement_id is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="replacement_id is required when marking as repost",
-                )
-            if status_data.replacement_id == image_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="An image cannot be a repost of itself",
-                )
-            # Verify original image exists
-            original_result = await db.execute(
-                select(Images).where(Images.image_id == status_data.replacement_id)  # type: ignore[arg-type]
-            )
-            if not original_result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=404,
-                    detail="Original image not found",
-                )
-            image.replacement_id = status_data.replacement_id
-
-            # Migrate favorites, ratings, and tags to the original image
-            migration_result = await migrate_repost_data(image_id, status_data.replacement_id, db)
-        else:
-            # Clear replacement_id when not a repost
-            image.replacement_id = None
-
-        # Update image status
-        image.status = status_data.status
-        image.status_user_id = current_user.user_id
-        image.status_updated = datetime.now(UTC)
-
-    # Handle locked change if provided
-    if status_data.locked is not None:
-        image.locked = 1 if status_data.locked else 0
-
-    # Log to public status history (only if status actually changed)
-    if status_data.status is not None and status_data.status != previous_status:
-        status_history = ImageStatusHistory(
-            image_id=image_id,
-            old_status=previous_status,
-            new_status=image.status,
-            user_id=current_user.user_id,
-        )
-        db.add(status_history)
-
-    # Log admin action
-    action = AdminActions(
-        user_id=current_user.user_id,
-        action_type=AdminActionType.IMAGE_STATUS_CHANGE,
-        image_id=image_id,
-        details={
-            "previous_status": previous_status,
-            "new_status": image.status,
-            "previous_locked": previous_locked,
-            "new_locked": image.locked,
-            "replacement_id": image.replacement_id,
-            **migration_result,
-        },
+    # All mutation + audit logging goes through the unified service so this
+    # endpoint and the report-triage path stay consistent. (Imported under an
+    # alias because this route handler shares the service's name.)
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=status_data.status,
+        reason_category=status_data.reason_category,
+        reason=status_data.reason,
+        replacement_id=status_data.replacement_id,
+        locked=status_data.locked,
     )
-    db.add(action)
 
     await db.commit()
     await db.refresh(image)

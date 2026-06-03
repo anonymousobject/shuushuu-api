@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import AdminActionType, ImageStatus, ReportStatus, TagType
+from app.config import AdminActionType, DeactivationReason, ImageStatus, ReportStatus, TagType
 from app.core.security import get_password_hash
 from app.models.admin_action import AdminActions
 from app.models.favorite import Favorites
@@ -835,3 +835,57 @@ class TestApplyTagSuggestionsUpdatesTagTypeFlags:
         # Fresh read to bypass stale ORM identity-map state
         await db_session.refresh(image)
         assert image.has_artist is False
+
+
+@pytest.mark.api
+class TestDeactivateImage:
+    """Tests for the DEACTIVATED status contract on PATCH /api/v1/admin/images/{id}."""
+
+    async def test_deactivate_requires_category_and_reason(self, client, db_session):
+        admin, pw = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, pw)
+
+        # Missing category + reason -> 422 (schema validation)
+        r = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.DEACTIVATED},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422
+
+    async def test_deactivate_success(self, client, db_session):
+        admin, pw = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, pw)
+
+        r = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={
+                "status": ImageStatus.DEACTIVATED,
+                "reason_category": DeactivationReason.LOW_QUALITY,
+                "reason": "blurry",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == ImageStatus.DEACTIVATED
+        assert data["reason_category"] == DeactivationReason.LOW_QUALITY
+        assert data["status_reason"] == "blurry"
+
+    async def test_legacy_statuses_no_longer_settable(self, client, db_session):
+        admin, pw = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, pw)
+        # -2/-3 are legacy (history-only) and must be rejected. 0 is now DEACTIVATED (settable).
+        for legacy in (ImageStatus.INAPPROPRIATE, ImageStatus.LOW_QUALITY):
+            r = await client.patch(
+                f"/api/v1/admin/images/{image.image_id}",
+                json={"status": legacy, "reason": "x"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 422, f"status {legacy} should be rejected"

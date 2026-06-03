@@ -251,11 +251,23 @@ class ImageStatusUpdate(BaseModel):
 
     status: int | None = Field(
         None,
-        description="New status: -4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler",
+        description="New status: 0=Deactivated, -4=Review, -1=Repost, 1=Active, 2=Spoiler",
     )
     replacement_id: int | None = Field(
         None,
         description="Original image ID when marking as repost (required when status=-1)",
+    )
+    reason_category: int | None = Field(
+        None,
+        description=(
+            "Deactivation reason (required when status=0): "
+            "1=Inappropriate, 2=Low Quality, 3=Spam, 4=Other"
+        ),
+    )
+    reason: str | None = Field(
+        None,
+        max_length=1000,
+        description="Free-text reason (required when status=0)",
     )
     locked: bool | None = Field(
         None,
@@ -265,32 +277,52 @@ class ImageStatusUpdate(BaseModel):
     @field_validator("status")
     @classmethod
     def validate_status(cls, v: int | None) -> int | None:
-        """Validate status is one of the allowed ImageStatus constants."""
+        """Validate status is one of the settable ImageStatus constants.
+
+        Legacy INAPPROPRIATE(-2)/LOW_QUALITY(-3) are no longer settable — they
+        collapse into DEACTIVATED(0) + a reason_category.
+        """
         if v is None:
             return v
 
         from app.config import ImageStatus
 
-        valid_statuses = {
+        settable = {
+            ImageStatus.DEACTIVATED,
             ImageStatus.REVIEW,
-            ImageStatus.INAPPROPRIATE,
             ImageStatus.REPOST,
-            ImageStatus.OTHER,
             ImageStatus.ACTIVE,
             ImageStatus.SPOILER,
         }
-        if v not in valid_statuses:
+        if v not in settable:
             raise ValueError(
                 f"Invalid status: {v}. Must be one of: "
-                "-4=Review, -2=Inappropriate, -1=Repost, 0=Other, 1=Active, 2=Spoiler"
+                "0=Deactivated, -4=Review, -1=Repost, 1=Active, 2=Spoiler"
             )
         return v
 
+    @field_validator("reason")
+    @classmethod
+    def strip_reason(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return v.strip() or None
+
     @model_validator(mode="after")
-    def require_at_least_one_field(self) -> ImageStatusUpdate:
-        """Require at least one of status or locked to be provided."""
+    def validate_combination(self) -> ImageStatusUpdate:
+        """Require status or locked; require category+reason for deactivation."""
+        from app.config import DeactivationReason, ImageStatus
+
         if self.status is None and self.locked is None:
             raise ValueError("At least one of 'status' or 'locked' must be provided")
+
+        if self.status == ImageStatus.DEACTIVATED:
+            if self.reason_category not in DeactivationReason.VALID:
+                raise ValueError("reason_category is required and must be valid when deactivating")
+            if not self.reason:
+                raise ValueError("reason is required when deactivating")
+        elif self.reason_category is not None:
+            raise ValueError("reason_category is only valid when status is Deactivated")
         return self
 
 
@@ -301,6 +333,8 @@ class ImageStatusResponse(BaseModel):
     status: int
     locked: int
     replacement_id: int | None
+    reason_category: int | None = None
+    status_reason: str | None = None
     status_user_id: int | None
     status_updated: UTCDatetimeOptional = None
 
