@@ -70,6 +70,7 @@ async def change_image_status(
 
     Returns the repost migration_result dict (empty unless a repost was processed).
     """
+    assert image.image_id is not None  # caller passes a persisted image
     previous_status = image.status
     previous_locked = image.locked
     migration_result: dict[str, int] = {}
@@ -87,7 +88,9 @@ async def change_image_status(
                     detail="An image cannot be a repost of itself",
                 )
             original = (
-                await db.execute(select(Images).where(Images.image_id == replacement_id))
+                await db.execute(
+                    select(Images).where(Images.image_id == replacement_id)  # type: ignore[arg-type]
+                )
             ).scalar_one_or_none()
             if not original:
                 raise HTTPException(status_code=404, detail="Original image not found")
@@ -136,6 +139,7 @@ async def change_image_status(
                 "new_locked": image.locked,
                 "replacement_id": image.replacement_id,
                 "reason_category": image.reason_category,
+                "reason": image.status_reason,
                 **migration_result,
             },
         )

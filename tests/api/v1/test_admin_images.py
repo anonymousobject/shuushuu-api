@@ -889,3 +889,16 @@ class TestDeactivateImage:
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert r.status_code == 422, f"status {legacy} should be rejected"
+
+    async def test_reason_without_status_change_rejected(self, client, db_session):
+        admin, pw = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, pw)
+        # lock-only update must not silently accept (and drop) a free-text reason
+        r = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"locked": True, "reason": "should be rejected"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422

@@ -67,6 +67,12 @@ def upgrade() -> None:
           AND JSON_EXTRACT(aa.details, '$.previous_status') IS NOT NULL
           AND CAST(JSON_EXTRACT(aa.details, '$.previous_status') AS SIGNED)
               <> CAST(JSON_EXTRACT(aa.details, '$.new_status') AS SIGNED)
+          AND NOT EXISTS (
+              SELECT 1 FROM image_status_history ish
+              WHERE ish.image_id = aa.image_id
+                AND ish.created_at = aa.created_at
+                AND ish.user_id = aa.user_id
+          )
         """
     )
 

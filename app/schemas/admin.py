@@ -321,8 +321,11 @@ class ImageStatusUpdate(BaseModel):
                 raise ValueError("reason_category is required and must be valid when deactivating")
             if not self.reason:
                 raise ValueError("reason is required when deactivating")
-        elif self.reason_category is not None:
-            raise ValueError("reason_category is only valid when status is Deactivated")
+        else:
+            if self.reason_category is not None:
+                raise ValueError("reason_category is only valid when status is Deactivated")
+            if self.status is None and self.reason is not None:
+                raise ValueError("reason requires a status change")
         return self
 
 

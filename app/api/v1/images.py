@@ -1235,7 +1235,7 @@ async def get_image_status_history(
     owner_id = image.user_id
 
     is_privileged_viewer = False
-    if current_user is not None:
+    if current_user is not None and current_user.user_id is not None:
         is_privileged_viewer = current_user.user_id == owner_id or await has_any_permission(
             db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
         )

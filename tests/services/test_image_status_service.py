@@ -52,6 +52,7 @@ async def test_deactivate_sets_fields_history_and_audit(db_session: AsyncSession
     )).scalar_one()
     assert action.action_type == AdminActionType.IMAGE_STATUS_CHANGE
     assert action.details["new_status"] == ImageStatus.DEACTIVATED
+    assert action.details["reason"] == "advertising"  # free-text reason in the audit row itself
 
 
 async def test_repost_requires_replacement(db_session: AsyncSession):
