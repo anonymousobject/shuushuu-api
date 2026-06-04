@@ -661,3 +661,39 @@ class TestStatusHistoryReasonVisibility:
         row = r.json()["items"][0]
         assert row["reason"] == "mild nudity"  # public: destination status is publicly visible
         assert row["reason_category"] is None
+
+    async def test_restore_reason_hidden_from_anonymous(self, client, db_session):
+        """Un-hiding from a hidden state carries moderation rationale -> owner/mod only."""
+        owner = await _make_user(db_session, "histowner4")
+        image = Images(filename="histrestore", ext="jpg", md5_hash="d" * 32,
+                       user_id=owner.user_id, width=100, height=100, filesize=1000,
+                       status=ImageStatus.ACTIVE, status_reason="appeal granted")
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        db_session.add(ImageStatusHistory(
+            image_id=image.image_id, old_status=ImageStatus.DEACTIVATED,
+            new_status=ImageStatus.ACTIVE, user_id=owner.user_id, reason="appeal granted"))
+        await db_session.commit()
+
+        r = await client.get(f"/api/v1/images/{image.image_id}/status-history")
+        assert r.status_code == 200
+        assert r.json()["items"][0]["reason"] is None  # source was hidden -> reason hidden
+
+    async def test_unspoiler_reason_public(self, client, db_session):
+        """SPOILER -> ACTIVE is visible -> visible: the reason stays public."""
+        owner = await _make_user(db_session, "histowner5")
+        image = Images(filename="histunspoil", ext="jpg", md5_hash="e" * 32,
+                       user_id=owner.user_id, width=100, height=100, filesize=1000,
+                       status=ImageStatus.ACTIVE, status_reason="not actually a spoiler")
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        db_session.add(ImageStatusHistory(
+            image_id=image.image_id, old_status=ImageStatus.SPOILER,
+            new_status=ImageStatus.ACTIVE, user_id=owner.user_id, reason="not actually a spoiler"))
+        await db_session.commit()
+
+        r = await client.get(f"/api/v1/images/{image.image_id}/status-history")
+        assert r.status_code == 200
+        assert r.json()["items"][0]["reason"] == "not actually a spoiler"

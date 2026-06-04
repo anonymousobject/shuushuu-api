@@ -1289,10 +1289,14 @@ async def get_image_status_history(
                 groups=user.groups if user else [],
             )
 
-        # The free-text reason describes the *destination* state, so it is public
-        # only when the new status is publicly visible; otherwise owner/mods only.
-        # reason_category is always exposed.
-        reason_is_public = history.new_status in ImageStatus.VISIBLE_USER_STATUSES
+        # The free-text reason is public only when BOTH endpoints are publicly
+        # visible. Any transition touching a hidden state (deactivated/review) —
+        # including un-hiding it — carries moderation rationale and stays
+        # owner/mods-only. reason_category is always exposed.
+        reason_is_public = (
+            history.old_status in ImageStatus.VISIBLE_USER_STATUSES
+            and history.new_status in ImageStatus.VISIBLE_USER_STATUSES
+        )
         can_see_reason = reason_is_public or is_privileged_viewer
 
         items.append(
