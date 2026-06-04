@@ -156,6 +156,43 @@ class TestImageStatusChange:
         assert data["status"] == ImageStatus.SPOILER
         assert data["status_user_id"] == admin.user_id
 
+    async def test_restore_hidden_requires_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Restoring a deactivated image to active without a reason is rejected."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        image.status = ImageStatus.DEACTIVATED
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.ACTIVE},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 400
+
+    async def test_restore_hidden_with_reason_ok(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Restoring a deactivated image to active with a reason succeeds."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        image.status = ImageStatus.DEACTIVATED
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.ACTIVE, "reason": "appeal granted"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == ImageStatus.ACTIVE
+
     async def test_mark_image_as_repost_with_original(
         self, client: AsyncClient, db_session: AsyncSession
     ):

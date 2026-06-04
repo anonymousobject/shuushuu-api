@@ -114,3 +114,45 @@ async def test_report_id_stamped_on_audit_row(db_session: AsyncSession):
     )).scalar_one()
     assert action.action_type == AdminActionType.REPORT_ACTION
     assert action.details["reason"] == "ad"
+
+
+async def test_unhide_requires_reason(db_session: AsyncSession):
+    """Un-hiding (hidden -> visible) via a manual mod action must carry a reason."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id, status=ImageStatus.DEACTIVATED)
+    with pytest.raises(HTTPException) as exc:
+        await change_image_status(db_session, img, actor, new_status=ImageStatus.ACTIVE)
+    assert exc.value.status_code == 400
+
+
+async def test_unhide_with_reason_ok(db_session: AsyncSession):
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id, status=ImageStatus.DEACTIVATED)
+    await change_image_status(
+        db_session, img, actor, new_status=ImageStatus.ACTIVE, reason="false positive"
+    )
+    await db_session.commit()
+    await db_session.refresh(img)
+    assert img.status == ImageStatus.ACTIVE
+
+
+async def test_unspoiler_needs_no_reason(db_session: AsyncSession):
+    """SPOILER -> ACTIVE is visible -> visible (un-annotate); no reason required."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id, status=ImageStatus.SPOILER)
+    await change_image_status(db_session, img, actor, new_status=ImageStatus.ACTIVE)
+    await db_session.commit()
+    await db_session.refresh(img)
+    assert img.status == ImageStatus.ACTIVE
+
+
+async def test_triage_unhide_requires_reason(db_session: AsyncSession):
+    """The rule also closes the triage bypass: hidden -> spoiler needs a reason."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id, status=ImageStatus.DEACTIVATED)
+    with pytest.raises(HTTPException) as exc:
+        await change_image_status(
+            db_session, img, actor, new_status=ImageStatus.SPOILER,
+            action_type=AdminActionType.REPORT_ACTION,
+        )
+    assert exc.value.status_code == 400

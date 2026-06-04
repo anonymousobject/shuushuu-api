@@ -81,6 +81,21 @@ async def change_image_status(
     migration_result: dict[str, int] = {}
 
     if new_status is not None:
+        # Un-hiding an image (hidden -> visible) is a deliberate moderation action
+        # and must carry a reason. Enforced only for manual mod paths; review/system
+        # closes reactivate on a KEEP outcome with no free-text reason and are exempt.
+        _manual_actions = {AdminActionType.IMAGE_STATUS_CHANGE, AdminActionType.REPORT_ACTION}
+        if (
+            action_type in _manual_actions
+            and previous_status not in ImageStatus.VISIBLE_USER_STATUSES
+            and new_status in ImageStatus.VISIBLE_USER_STATUSES
+            and not reason
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="A reason is required when restoring a hidden image to a visible status.",
+            )
+
         if new_status == ImageStatus.REPOST:
             if replacement_id is None:
                 raise HTTPException(
