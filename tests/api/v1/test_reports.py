@@ -1101,7 +1101,11 @@ class TestAdminReportEscalate:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/escalate",
-            json={"deadline_days": 7},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -1137,7 +1141,11 @@ class TestAdminReportEscalate:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/escalate",
-            json={"deadline_days": 7},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
@@ -1180,7 +1188,11 @@ class TestAdminReportEscalate:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/escalate",
-            json={"deadline_days": 7},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
@@ -1226,12 +1238,79 @@ class TestAdminReportEscalate:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/escalate",
-            json={},
+            json={
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 409
         assert "already has an open review" in response.json()["detail"]
+
+    async def test_escalate_requires_reason_and_category(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Escalating without reason/category is rejected with 422."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=2,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/escalate",
+            json={"deadline_days": 7},  # no reason/category
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_escalate_stores_category_and_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Escalating stores the mod-set reason_category and reason on the review."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=2,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/escalate",
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.SPAM,
+                "reason": "advertising spam",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["reason_category"] == DeactivationReason.SPAM
+        assert data["reason_category_label"] == "Spam"
+        assert data["reason"] == "advertising spam"
 
 
 @pytest.mark.api
@@ -1317,7 +1396,11 @@ class TestReportPermissionDenials:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/escalate",
-            json={"deadline_days": 7},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -1344,7 +1427,11 @@ class TestReportPermissionDenials:
 
         response = await client.post(
             f"/api/v1/admin/reports/{report.report_id}/escalate",
-            json={"deadline_days": 7},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 

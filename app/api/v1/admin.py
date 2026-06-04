@@ -24,7 +24,6 @@ from sqlalchemy.orm import selectinload
 
 from app.config import (
     AdminActionType,
-    DeactivationReason,
     ImageStatus,
     ReportCategory,
     ReportStatus,
@@ -46,7 +45,6 @@ from app.models.image import Images
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
-from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
@@ -1764,46 +1762,34 @@ async def escalate_report(
     report.reviewed_by = current_user.user_id
     report.reviewed_at = datetime.now(UTC)
 
-    # Set image to review status
     previous_status = image.status
-    image.status = ImageStatus.REVIEW
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
 
     # Create review
     review = ImageReviews(
         image_id=report.image_id,
         source_report_id=report_id,
         initiated_by=current_user.user_id,
-        reason_category=DeactivationReason.INAPPROPRIATE,
+        reason_category=escalate_data.reason_category,
         deadline=deadline,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,
+        reason=escalate_data.reason,
     )
     db.add(review)
     await db.flush()  # Get review_id
 
-    # Log to public status history (skip if image was already in REVIEW
-    # without an open review — orphaned state should not record a no-op transition)
-    if previous_status != ImageStatus.REVIEW:
-        status_history = ImageStatusHistory(
-            image_id=report.image_id,
-            old_status=previous_status,
-            new_status=ImageStatus.REVIEW,
-            user_id=current_user.user_id,
-        )
-        db.add(status_history)
-
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
+    # Set image to review status through the service (writes history + audit)
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=ImageStatus.REVIEW,
+        reason=escalate_data.reason,
         action_type=AdminActionType.REVIEW_START,
-        report_id=report_id,
         review_id=review.review_id,
-        image_id=report.image_id,
-        details={"previous_status": previous_status, "deadline_days": deadline_days},
+        report_id=report_id,
+        extra_details={"deadline_days": deadline_days},
     )
-    db.add(action)
 
     await db.commit()
     await db.refresh(review)
@@ -2026,49 +2012,32 @@ async def create_review(
     deadline_days = review_data.deadline_days or settings.REVIEW_DEADLINE_DAYS
     deadline = datetime.now(UTC) + timedelta(days=deadline_days)
 
-    # Set image to review status
     previous_status = image.status
-    image.status = ImageStatus.REVIEW
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
 
     # Create review
     review = ImageReviews(
         image_id=image_id,
         initiated_by=current_user.user_id,
-        reason_category=DeactivationReason.INAPPROPRIATE,
+        reason_category=review_data.reason_category,
         deadline=deadline,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,
         reason=review_data.reason,
     )
     db.add(review)
-    await db.flush()
+    await db.flush()  # Get review_id
 
-    # Log to public status history (skip if image was already in REVIEW
-    # without an open review — orphaned state should not record a no-op transition)
-    if previous_status != ImageStatus.REVIEW:
-        status_history = ImageStatusHistory(
-            image_id=image_id,
-            old_status=previous_status,
-            new_status=ImageStatus.REVIEW,
-            user_id=current_user.user_id,
-        )
-        db.add(status_history)
-
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
+    # Set image to review status through the service (writes history + audit)
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=ImageStatus.REVIEW,
+        reason=review_data.reason,
         action_type=AdminActionType.REVIEW_START,
         review_id=review.review_id,
-        image_id=image_id,
-        details={
-            "previous_status": previous_status,
-            "deadline_days": deadline_days,
-            "reason": review_data.reason,
-        },
+        extra_details={"deadline_days": deadline_days},
     )
-    db.add(action)
 
     await db.commit()
     await db.refresh(review)

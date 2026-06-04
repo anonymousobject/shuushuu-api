@@ -157,15 +157,33 @@ class TestSchemaValidation:
 
     def test_review_create_schema(self):
         """Verify ReviewCreate schema validation."""
+        import pytest
+        from pydantic import ValidationError
+
         from app.schemas.report import ReviewCreate
 
-        # Default deadline
-        review = ReviewCreate()
+        # reason_category + reason are required
+        with pytest.raises(ValidationError):
+            ReviewCreate()
+
+        # Default deadline with required fields
+        review = ReviewCreate(reason_category=DeactivationReason.INAPPROPRIATE, reason="needs review")
         assert review.deadline_days is None
+        assert review.reason_category == DeactivationReason.INAPPROPRIATE
+        assert review.reason == "needs review"
 
         # Custom deadline
-        review = ReviewCreate(deadline_days=14)
+        review = ReviewCreate(
+            deadline_days=14,
+            reason_category=DeactivationReason.LOW_QUALITY,
+            reason="blurry",
+        )
         assert review.deadline_days == 14
+        assert review.reason_category == DeactivationReason.LOW_QUALITY
+
+        # Invalid reason_category is rejected
+        with pytest.raises(ValidationError):
+            ReviewCreate(reason_category=99, reason="bad category")
 
     def test_report_response_labels(self):
         """Verify ReportResponse computes correct labels."""

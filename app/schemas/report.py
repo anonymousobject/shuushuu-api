@@ -203,6 +203,23 @@ class ReportEscalateRequest(BaseModel):
     deadline_days: int | None = Field(
         None, ge=1, le=30, description="Days until voting deadline (default: 7)"
     )
+    reason_category: int = Field(..., description="1=Inappropriate, 2=Low Quality, 3=Spam, 4=Other")
+    reason: str = Field(..., min_length=1, max_length=1000, description="Reason for the review")
+
+    @field_validator("reason_category")
+    @classmethod
+    def validate_reason_category(cls, v: int) -> int:
+        if v not in DeactivationReason.VALID:
+            raise ValueError("reason_category must be one of: 1, 2, 3, 4")
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def sanitize_reason(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("reason must not be empty")
+        return stripped
 
 
 # ===== Review Schemas =====
@@ -214,17 +231,26 @@ class ReviewCreate(BaseModel):
     deadline_days: int | None = Field(
         None, ge=1, le=30, description="Days until voting deadline (default: 7)"
     )
-    reason: str | None = Field(
-        None, max_length=1000, description="Optional reason for starting the review"
+    reason_category: int = Field(..., description="1=Inappropriate, 2=Low Quality, 3=Spam, 4=Other")
+    reason: str = Field(
+        ..., min_length=1, max_length=1000, description="Reason for starting the review"
     )
+
+    @field_validator("reason_category")
+    @classmethod
+    def validate_reason_category(cls, v: int) -> int:
+        if v not in DeactivationReason.VALID:
+            raise ValueError("reason_category must be one of: 1, 2, 3, 4")
+        return v
 
     @field_validator("reason")
     @classmethod
-    def sanitize_reason(cls, v: str | None) -> str | None:
+    def sanitize_reason(cls, v: str) -> str:
         """Sanitize review reason."""
-        if v is None:
-            return v
-        return v.strip() or None
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("reason must not be empty")
+        return stripped
 
 
 class ReviewVoteRequest(BaseModel):
