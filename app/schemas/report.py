@@ -161,7 +161,15 @@ class ReportActionRequest(BaseModel):
     reason_category: int | None = Field(
         None, description="Required when new_status=0: 1=Inappropriate,2=Low Quality,3=Spam,4=Other"
     )
-    reason: str | None = Field(None, max_length=1000, description="Required when new_status=0")
+    reason: str | None = Field(
+        None,
+        max_length=1000,
+        description=(
+            "Required when new_status=0 (deactivate). Also required when the action "
+            "restores a currently-hidden image to a visible status (active/spoiler/"
+            "repost) — enforced server-side by change_image_status."
+        ),
+    )
 
     @field_validator("new_status")
     @classmethod
