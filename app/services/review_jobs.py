@@ -332,7 +332,10 @@ async def prune_admin_actions(
     stmt = (
         delete(AdminActions)
         .where(
-            AdminActions.created_at < cutoff_date  # type: ignore[arg-type, operator]
+            AdminActions.created_at < cutoff_date,  # type: ignore[arg-type, operator]
+            # Keep report-linked rows: report resolutions are derived from them
+            # (_populate_report_resolutions), so pruning would erase that data.
+            AdminActions.report_id.is_(None),  # type: ignore[union-attr]
         )
         .execution_options(synchronize_session=False)
     )
