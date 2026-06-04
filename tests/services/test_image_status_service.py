@@ -165,3 +165,24 @@ async def test_noop_call_rejected(db_session: AsyncSession):
     img = await _mk_image(db_session, actor.user_id)
     with pytest.raises(ValueError):
         await change_image_status(db_session, img, actor)
+
+
+async def test_status_history_row_records_report_id(db_session: AsyncSession):
+    """The originating report_id is persisted on the public status-history row."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id)
+    report = ImageReports(image_id=img.image_id, user_id=actor.user_id, category=2, status=0)
+    db_session.add(report)
+    await db_session.commit()
+    await db_session.refresh(report)
+    await change_image_status(
+        db_session, img, actor, new_status=ImageStatus.DEACTIVATED,
+        reason_category=DeactivationReason.INAPPROPRIATE, reason="x",
+        action_type=AdminActionType.REPORT_ACTION, report_id=report.report_id,
+    )
+    await db_session.commit()
+    hist = (await db_session.execute(
+        select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
+    )).scalars().all()
+    assert hist[0].report_id == report.report_id
+    assert hist[0].review_id is None
