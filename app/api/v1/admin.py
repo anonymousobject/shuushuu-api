@@ -1065,10 +1065,15 @@ async def _populate_report_resolutions(
         details = act.details or {}
         if act.action_type == AdminActionType.REPORT_ACTION:
             ns = details.get("new_status")
-            resp.resolution_kind = "action"
-            resp.resolution_status = ns
-            resp.resolution_status_label = ImageStatus.get_label(ns) if ns is not None else None
-            resp.resolution_reason = details.get("reason")
+            if ns is None:
+                # A REPORT_ACTION with no resulting status is a non-status action,
+                # e.g. applying tag suggestions — not a status change.
+                resp.resolution_kind = "tags"
+            else:
+                resp.resolution_kind = "action"
+                resp.resolution_status = ns
+                resp.resolution_status_label = ImageStatus.get_label(ns)
+                resp.resolution_reason = details.get("reason")
         elif act.action_type == AdminActionType.REVIEW_START:
             resp.resolution_kind = "escalated"
         elif act.action_type == AdminActionType.REPORT_DISMISS:

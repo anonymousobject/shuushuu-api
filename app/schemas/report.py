@@ -103,8 +103,10 @@ class ReportResponse(BaseModel):
     admin_notes: str | None = None
     suggested_tags: list[TagSuggestion] | None = None
     skipped_tags: SkippedTagsInfo | None = None  # Only in create response
-    # Resolution, derived from the audit log for reviewed/dismissed reports
-    resolution_kind: Literal["action", "escalated", "dismissed"] | None = None
+    # Resolution, derived from the audit log for reviewed/dismissed reports.
+    # "action" = image status changed; "tags" = tag suggestions applied (no status
+    # change); "escalated" = sent to review; "dismissed" = no action.
+    resolution_kind: Literal["action", "tags", "escalated", "dismissed"] | None = None
     resolution_status: int | None = None
     resolution_status_label: str | None = None
     resolution_reason: str | None = None

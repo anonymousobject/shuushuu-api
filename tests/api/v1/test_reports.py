@@ -12,8 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
 
-from app.config import DeactivationReason, ImageStatus, ReportStatus, ReviewStatus
+from app.config import (
+    AdminActionType,
+    DeactivationReason,
+    ImageStatus,
+    ReportStatus,
+    ReviewStatus,
+)
 from app.core.security import get_password_hash
+from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
@@ -1073,6 +1080,37 @@ class TestAdminReportAction:
         assert data["resolution_kind"] == "action"
         assert data["resolution_status"] == ImageStatus.DEACTIVATED  # action taken
         assert data["resolution_reason"] == "not AI, low quality"  # mod's reason, distinct
+
+    async def test_tag_suggestion_resolution_kind_is_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A report resolved by applying tag suggestions (no status change) surfaces as
+        resolution_kind='tags', not 'action' (which would imply a status change)."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_view")
+        token = await login_user(client, admin.username, password)
+        image = await create_test_image(db_session, admin.user_id)
+        report = ImageReports(
+            image_id=image.image_id, user_id=admin.user_id, category=4,
+            status=ReportStatus.REVIEWED,
+        )
+        db_session.add(report)
+        await db_session.commit()
+        await db_session.refresh(report)
+        # The audit row apply_tag_suggestions writes: REPORT_ACTION, no new_status.
+        db_session.add(AdminActions(
+            user_id=admin.user_id, action_type=AdminActionType.REPORT_ACTION,
+            report_id=report.report_id, image_id=image.image_id,
+            details={"action": "apply_tag_suggestions"}))
+        await db_session.commit()
+
+        r = await client.get(
+            f"/api/v1/admin/reports/{report.report_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        data = r.json()
+        assert data["resolution_kind"] == "tags"
+        assert data["resolution_status"] is None
 
 
 @pytest.mark.api
