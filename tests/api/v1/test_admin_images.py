@@ -193,6 +193,24 @@ class TestImageStatusChange:
         assert response.status_code == 200
         assert response.json()["status"] == ImageStatus.ACTIVE
 
+    async def test_cannot_patch_status_to_review(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """REVIEW must be set via the review flow (which creates the ImageReviews row),
+        not a direct PATCH — that would leave the image hidden-as-REVIEW with no
+        voting record and no way to resolve it."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.REVIEW},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
+
     async def test_mark_image_as_repost_with_original(
         self, client: AsyncClient, db_session: AsyncSession
     ):

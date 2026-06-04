@@ -287,9 +287,12 @@ class ImageStatusUpdate(BaseModel):
 
         from app.config import ImageStatus
 
+        # REVIEW is intentionally NOT settable here: a review must be created via
+        # the review flow (POST /admin/images/{id}/review or /reports/{id}/escalate),
+        # which writes the ImageReviews row. A direct PATCH to REVIEW would orphan the
+        # image (hidden-as-REVIEW with no voting record, unresolvable).
         settable = {
             ImageStatus.DEACTIVATED,
-            ImageStatus.REVIEW,
             ImageStatus.REPOST,
             ImageStatus.ACTIVE,
             ImageStatus.SPOILER,
@@ -297,7 +300,7 @@ class ImageStatusUpdate(BaseModel):
         if v not in settable:
             raise ValueError(
                 f"Invalid status: {v}. Must be one of: "
-                "0=Deactivated, -4=Review, -1=Repost, 1=Active, 2=Spoiler"
+                "0=Deactivated, -1=Repost, 1=Active, 2=Spoiler"
             )
         return v
 
