@@ -162,6 +162,7 @@ class ImageDetailedResponse(ImageResponse):
     user_rating: int | None = None  # The rating given by the current user (if any)
     prev_image_id: int | None = None  # ID of the previous image (chronological)
     next_image_id: int | None = None  # ID of the next image (chronological)
+    has_open_report: bool = False  # Mod-only (REPORT_VIEW): a pending report exists
 
     model_config = {"from_attributes": True}
 
@@ -173,6 +174,7 @@ class ImageDetailedResponse(ImageResponse):
         user_rating: int | None = None,
         prev_image_id: int | None = None,
         next_image_id: int | None = None,
+        has_open_report: bool = False,
     ) -> ImageDetailedResponse:
         """Create response from database model with relationships"""
         data = ImageResponse.model_validate(image).model_dump()
@@ -196,6 +198,7 @@ class ImageDetailedResponse(ImageResponse):
         data["user_rating"] = user_rating
         data["prev_image_id"] = prev_image_id
         data["next_image_id"] = next_image_id
+        data["has_open_report"] = has_open_report
 
         return cls(**data)
 

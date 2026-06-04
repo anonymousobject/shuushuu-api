@@ -245,6 +245,30 @@ async def check_similar_by_upload(
             logger.warning("check_similar_cleanup_failed", temp_dir=temp_dir)
 
 
+async def _open_report_image_ids(
+    db: AsyncSession, image_ids: list[int | None], viewer: Users | None
+) -> set[int]:
+    """Subset of `image_ids` that have a PENDING report — only for REPORT_VIEW viewers.
+
+    One query for the whole page (not N+1). Returns an empty set for non-mods so the
+    has_open_report flag never leaks to regular users.
+    """
+    ids = [i for i in image_ids if i is not None]
+    if not ids or viewer is None or viewer.user_id is None:
+        return set()
+    if not await has_any_permission(db, viewer.user_id, [Permission.REPORT_VIEW]):
+        return set()
+    rows = await db.execute(
+        select(ImageReports.image_id)  # type: ignore[call-overload]
+        .where(
+            ImageReports.image_id.in_(ids),  # type: ignore[attr-defined]
+            ImageReports.status == ReportStatus.PENDING,
+        )
+        .distinct()
+    )
+    return {r[0] for r in rows.all()}
+
+
 @router.get("/", response_model=ImageDetailedListResponse, include_in_schema=False)
 @router.get("", response_model=ImageDetailedListResponse)
 async def list_images(
@@ -662,6 +686,11 @@ async def list_images(
         )
         favorited_ids = set(fav_result.scalars().all())
 
+    # Mod-only open-report indicator (single query for the page).
+    open_report_ids = await _open_report_image_ids(
+        db, [img.image_id for img in images], current_user
+    )
+
     return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
@@ -670,6 +699,7 @@ async def list_images(
             ImageDetailedResponse.from_db_model(
                 img,
                 is_favorited=img.image_id in favorited_ids,
+                has_open_report=img.image_id in open_report_ids,
             )
             for img in images
         ],
@@ -807,12 +837,14 @@ async def get_image(
     )
     next_image_id = next_id_result.scalar_one_or_none()
 
+    open_report_ids = await _open_report_image_ids(db, [image_id], current_user)
     return ImageDetailedResponse.from_db_model(
         image,
         is_favorited=is_favorited,
         user_rating=user_rating,
         prev_image_id=prev_image_id,
         next_image_id=next_image_id,
+        has_open_report=image_id in open_report_ids,
     )
 
 
