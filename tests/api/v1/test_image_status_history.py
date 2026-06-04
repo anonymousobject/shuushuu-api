@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import ImageStatus, ReviewOutcome, ReviewStatus
+from app.config import DeactivationReason, ImageStatus, ReviewOutcome, ReviewStatus
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.image_review import ImageReviews
@@ -274,7 +274,7 @@ class TestImageStatusHistoryOnReviewClose:
             extension_used=0,
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             created_at=datetime.now(UTC),
         )
         db_session.add(review)
@@ -354,7 +354,7 @@ class TestImageStatusHistoryOnReviewClose:
             extension_used=0,
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             created_at=datetime.now(UTC),
         )
         db_session.add(review)
@@ -381,7 +381,7 @@ class TestImageStatusHistoryOnReviewClose:
         result = await db_session.execute(
             select(ImageStatusHistory).where(
                 ImageStatusHistory.image_id == image_id,
-                ImageStatusHistory.new_status == ImageStatus.INAPPROPRIATE,
+                ImageStatusHistory.new_status == ImageStatus.DEACTIVATED,
             )
         )
         history = result.scalar_one_or_none()

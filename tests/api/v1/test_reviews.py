@@ -12,7 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import ImageStatus, ReviewOutcome, ReviewStatus
+from app.config import DeactivationReason, ImageStatus, ReviewOutcome, ReviewStatus
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.image_review import ImageReviews
@@ -206,7 +206,11 @@ class TestCreateReview:
 
         response = await client.post(
             f"/api/v1/admin/images/{image.image_id}/review",
-            json={"deadline_days": 10},
+            json={
+                "deadline_days": 10,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -233,7 +237,11 @@ class TestCreateReview:
 
         response = await client.post(
             f"/api/v1/admin/images/{image.image_id}/review",
-            json={"deadline_days": 7, "reason": "Borderline content needs community input"},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "Borderline content needs community input",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -244,7 +252,7 @@ class TestCreateReview:
     async def test_create_review_without_reason(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test creating a review without reason returns null."""
+        """Test creating a review without a reason is rejected (reason is required)."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_start")
         token = await login_user(client, admin.username, password)
@@ -253,13 +261,11 @@ class TestCreateReview:
 
         response = await client.post(
             f"/api/v1/admin/images/{image.image_id}/review",
-            json={"deadline_days": 7},
+            json={"deadline_days": 7, "reason_category": DeactivationReason.INAPPROPRIATE},
             headers={"Authorization": f"Bearer {token}"},
         )
 
-        assert response.status_code == 201
-        data = response.json()
-        assert data["reason"] is None
+        assert response.status_code == 422
 
     async def test_create_review_writes_status_history(
         self, client: AsyncClient, db_session: AsyncSession
@@ -273,7 +279,11 @@ class TestCreateReview:
 
         response = await client.post(
             f"/api/v1/admin/images/{image.image_id}/review",
-            json={"deadline_days": 7},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 201
@@ -305,7 +315,11 @@ class TestCreateReview:
 
         response = await client.post(
             f"/api/v1/admin/images/{image.image_id}/review",
-            json={"deadline_days": 7},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 201
@@ -339,12 +353,58 @@ class TestCreateReview:
 
         response = await client.post(
             f"/api/v1/admin/images/{image.image_id}/review",
-            json={},
+            json={
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 409
         assert "already has an open review" in response.json()["detail"]
+
+    async def test_create_review_requires_reason_and_category(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Creating a review without reason/category is rejected with 422."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        response = await client.post(
+            f"/api/v1/admin/images/{image.image_id}/review",
+            json={"deadline_days": 10},  # no reason/category
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_create_review_stores_category_and_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Creating a review stores the mod-set reason_category and reason."""
+        admin, password = await create_auth_user(db_session, username="admin", admin=True)
+        await grant_permission(db_session, admin.user_id, "review_start")
+        token = await login_user(client, admin.username, password)
+
+        image = await create_test_image(db_session, admin.user_id)
+
+        response = await client.post(
+            f"/api/v1/admin/images/{image.image_id}/review",
+            json={
+                "reason_category": DeactivationReason.LOW_QUALITY,
+                "reason": "borderline quality",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["reason_category"] == DeactivationReason.LOW_QUALITY
+        assert data["reason_category_label"] == "Low Quality"
+        assert data["reason"] == "borderline quality"
 
 
 @pytest.mark.api
@@ -594,7 +654,8 @@ class TestReviewVote:
         await db_session.refresh(image)
         assert review.status == ReviewStatus.CLOSED
         assert review.outcome == ReviewOutcome.REMOVE
-        assert image.status == ImageStatus.INAPPROPRIATE
+        assert image.status == ImageStatus.DEACTIVATED
+        assert image.reason_category == DeactivationReason.INAPPROPRIATE
 
     async def test_vote_no_early_close_when_margin_not_met(
         self, client: AsyncClient, db_session: AsyncSession
@@ -742,9 +803,10 @@ class TestReviewClose:
         data = response.json()
         assert data["outcome"] == ReviewOutcome.REMOVE
 
-        # Verify image status changed to INAPPROPRIATE
+        # Verify image status changed to DEACTIVATED with the review's category
         await db_session.refresh(image)
-        assert image.status == ImageStatus.INAPPROPRIATE
+        assert image.status == ImageStatus.DEACTIVATED
+        assert image.reason_category == DeactivationReason.INAPPROPRIATE
 
     async def test_close_review_automatic_has_null_closed_by(
         self, client: AsyncClient, db_session: AsyncSession
@@ -1048,7 +1110,11 @@ class TestReviewPermissionDenials:
 
         response = await client.post(
             f"/api/v1/admin/images/{image.image_id}/review",
-            json={"deadline_days": 7},
+            json={
+                "deadline_days": 7,
+                "reason_category": DeactivationReason.INAPPROPRIATE,
+                "reason": "needs review",
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
 

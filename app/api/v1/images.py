@@ -39,12 +39,12 @@ from app.api.dependencies import (
 from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import (
     AdminActionType,
+    DeactivationReason,
     ImageStatus,
     ReportCategory,
     ReportStatus,
     ReviewOutcome,
     ReviewStatus,
-    ReviewType,
     settings,
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
@@ -1318,14 +1318,6 @@ async def get_image_status_history(
     )
 
 
-def get_review_type_label(review_type: int) -> str:
-    """Get human-readable label for review type."""
-    review_type_labels = {
-        ReviewType.APPROPRIATENESS: "appropriateness",
-    }
-    return review_type_labels.get(review_type, "unknown")
-
-
 def get_review_outcome_label(outcome: int) -> str:
     """Get human-readable label for review outcome."""
     outcome_labels = {
@@ -1381,8 +1373,8 @@ async def get_image_reviews(
     items = [
         ImageReviewPublicResponse(
             review_id=review.review_id or 0,
-            review_type=review.review_type,
-            review_type_label=get_review_type_label(review.review_type),
+            reason_category=review.reason_category,
+            reason_category_label=DeactivationReason.get_label(review.reason_category),
             outcome=review.outcome,
             outcome_label=get_review_outcome_label(review.outcome),
             created_at=review.created_at,  # type: ignore[arg-type]  # server_default ensures non-null

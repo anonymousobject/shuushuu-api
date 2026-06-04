@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import AdminActionType, DeactivationReason, ImageStatus
 from app.models.admin_action import AdminActions
 from app.models.image import Images
+from app.models.image_report import ImageReports
 from app.models.image_status_history import ImageStatusHistory
 from app.models.user import Users
 from app.services.image_status import change_image_status
@@ -73,3 +74,43 @@ async def test_no_history_row_when_status_unchanged(db_session: AsyncSession):
     )).scalars().all()
     assert hist == []
     assert img.locked == 1
+
+
+async def test_system_actor_writes_null_user(db_session: AsyncSession):
+    img = await _mk_image(db_session, 1, status=ImageStatus.REVIEW)
+    await change_image_status(
+        db_session, img, None, new_status=ImageStatus.ACTIVE,
+        action_type=AdminActionType.REVIEW_CLOSE, extra_details={"automatic": True},
+    )
+    await db_session.commit()
+    hist = (await db_session.execute(
+        select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
+    )).scalars().all()
+    assert hist and hist[0].user_id is None  # system action
+    action = (await db_session.execute(
+        select(AdminActions).where(AdminActions.image_id == img.image_id)
+    )).scalar_one()
+    assert action.action_type == AdminActionType.REVIEW_CLOSE
+    assert action.user_id is None
+    assert action.details["automatic"] is True
+
+
+async def test_report_id_stamped_on_audit_row(db_session: AsyncSession):
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id)
+    report = ImageReports(image_id=img.image_id, user_id=actor.user_id, category=2, status=0)
+    db_session.add(report)
+    await db_session.commit()
+    await db_session.refresh(report)
+
+    await change_image_status(
+        db_session, img, actor, new_status=ImageStatus.DEACTIVATED,
+        reason_category=DeactivationReason.SPAM, reason="ad",
+        action_type=AdminActionType.REPORT_ACTION, report_id=report.report_id,
+    )
+    await db_session.commit()
+    action = (await db_session.execute(
+        select(AdminActions).where(AdminActions.report_id == report.report_id)
+    )).scalar_one()
+    assert action.action_type == AdminActionType.REPORT_ACTION
+    assert action.details["reason"] == "ad"

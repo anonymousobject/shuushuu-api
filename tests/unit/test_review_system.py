@@ -8,11 +8,11 @@ from datetime import datetime
 
 from app.config import (
     AdminActionType,
+    DeactivationReason,
     ImageStatus,
     ReportStatus,
     ReviewOutcome,
     ReviewStatus,
-    ReviewType,
 )
 
 
@@ -41,9 +41,12 @@ class TestStatusConstants:
         assert ReviewOutcome.KEEP == 1
         assert ReviewOutcome.REMOVE == 2
 
-    def test_review_type_values(self):
-        """Verify ReviewType has expected values."""
-        assert ReviewType.APPROPRIATENESS == 1
+    def test_deactivation_reason_values(self):
+        """Verify DeactivationReason has expected values."""
+        assert DeactivationReason.INAPPROPRIATE == 1
+        assert DeactivationReason.LOW_QUALITY == 2
+        assert DeactivationReason.SPAM == 3
+        assert DeactivationReason.OTHER == 4
 
     def test_admin_action_type_values(self):
         """Verify AdminActionType has expected values."""
@@ -76,7 +79,7 @@ class TestModelDefaults:
         assert review.status == ReviewStatus.OPEN
         assert review.outcome == ReviewOutcome.PENDING
         assert review.extension_used == 0
-        assert review.review_type == ReviewType.APPROPRIATENESS
+        assert review.reason_category == DeactivationReason.INAPPROPRIATE
         assert review.source_report_id is None
 
     def test_review_vote_defaults(self):
@@ -154,15 +157,33 @@ class TestSchemaValidation:
 
     def test_review_create_schema(self):
         """Verify ReviewCreate schema validation."""
+        import pytest
+        from pydantic import ValidationError
+
         from app.schemas.report import ReviewCreate
 
-        # Default deadline
-        review = ReviewCreate()
+        # reason_category + reason are required
+        with pytest.raises(ValidationError):
+            ReviewCreate()
+
+        # Default deadline with required fields
+        review = ReviewCreate(reason_category=DeactivationReason.INAPPROPRIATE, reason="needs review")
         assert review.deadline_days is None
+        assert review.reason_category == DeactivationReason.INAPPROPRIATE
+        assert review.reason == "needs review"
 
         # Custom deadline
-        review = ReviewCreate(deadline_days=14)
+        review = ReviewCreate(
+            deadline_days=14,
+            reason_category=DeactivationReason.LOW_QUALITY,
+            reason="blurry",
+        )
         assert review.deadline_days == 14
+        assert review.reason_category == DeactivationReason.LOW_QUALITY
+
+        # Invalid reason_category is rejected
+        with pytest.raises(ValidationError):
+            ReviewCreate(reason_category=99, reason="bad category")
 
     def test_report_response_labels(self):
         """Verify ReportResponse computes correct labels."""
@@ -191,7 +212,7 @@ class TestSchemaValidation:
             image_id=1,
             source_report_id=None,
             initiated_by=1,
-            review_type=1,  # Appropriateness
+            reason_category=1,  # Inappropriate
             deadline=datetime(2026, 1, 8, 0, 0, 0),
             extension_used=0,
             status=0,  # Open
@@ -199,7 +220,7 @@ class TestSchemaValidation:
             created_at=datetime(2026, 1, 1, 0, 0, 0),
             closed_at=None,
         )
-        assert response.review_type_label == "Appropriateness"
+        assert response.reason_category_label == "Inappropriate"
         assert response.status_label == "Open"
         assert response.outcome_label == "Pending"
 

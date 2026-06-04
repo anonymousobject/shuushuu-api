@@ -8,9 +8,11 @@ These schemas handle:
 - Admin actions audit log
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.config import ReportCategory
+from app.config import DeactivationReason, ReportCategory
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.comment_report import CommentReportListItem
 from app.schemas.common import UserSummary
@@ -101,6 +103,11 @@ class ReportResponse(BaseModel):
     admin_notes: str | None = None
     suggested_tags: list[TagSuggestion] | None = None
     skipped_tags: SkippedTagsInfo | None = None  # Only in create response
+    # Resolution, derived from the audit log for reviewed/dismissed reports
+    resolution_kind: Literal["action", "escalated", "dismissed"] | None = None
+    resolution_status: int | None = None
+    resolution_status_label: str | None = None
+    resolution_reason: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -140,12 +147,56 @@ class ReportDismissRequest(BaseModel):
 
 
 class ReportActionRequest(BaseModel):
-    """Schema for taking action on a report (changing image status)."""
+    """Schema for taking action on a report — mirrors the deactivate contract.
 
-    new_status: int = Field(
-        ...,
-        description="New image status (-4=review, -3=low_quality, -2=inappropriate, -1=repost, 1=active)",
+    Legacy INAPPROPRIATE(-2)/LOW_QUALITY(-3)/REVIEW(-4) are no longer settable here:
+    inappropriate/low-quality/spam all become DEACTIVATED + a reason_category, and
+    escalation to review is a separate endpoint.
+    """
+
+    new_status: int = Field(..., description="0=Deactivated, -1=Repost, 1=Active, 2=Spoiler")
+    replacement_id: int | None = Field(None, description="Required when new_status=-1 (repost)")
+    reason_category: int | None = Field(
+        None, description="Required when new_status=0: 1=Inappropriate,2=Low Quality,3=Spam,4=Other"
     )
+    reason: str | None = Field(None, max_length=1000, description="Required when new_status=0")
+
+    @field_validator("new_status")
+    @classmethod
+    def validate_status(cls, v: int) -> int:
+        from app.config import ImageStatus
+
+        settable = {
+            ImageStatus.DEACTIVATED,
+            ImageStatus.REPOST,
+            ImageStatus.ACTIVE,
+            ImageStatus.SPOILER,
+        }
+        if v not in settable:
+            raise ValueError(
+                "new_status must be one of: 0=Deactivated, -1=Repost, 1=Active, 2=Spoiler"
+            )
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def strip_reason(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return v.strip() or None
+
+    @model_validator(mode="after")
+    def validate_combination(self) -> ReportActionRequest:
+        from app.config import DeactivationReason, ImageStatus
+
+        if self.new_status == ImageStatus.DEACTIVATED:
+            if self.reason_category not in DeactivationReason.VALID:
+                raise ValueError("reason_category is required and must be valid when deactivating")
+            if not self.reason:
+                raise ValueError("reason is required when deactivating")
+        elif self.reason_category is not None:
+            raise ValueError("reason_category is only valid when deactivating")
+        return self
 
 
 class ReportEscalateRequest(BaseModel):
@@ -154,6 +205,23 @@ class ReportEscalateRequest(BaseModel):
     deadline_days: int | None = Field(
         None, ge=1, le=30, description="Days until voting deadline (default: 7)"
     )
+    reason_category: int = Field(..., description="1=Inappropriate, 2=Low Quality, 3=Spam, 4=Other")
+    reason: str = Field(..., min_length=1, max_length=1000, description="Reason for the review")
+
+    @field_validator("reason_category")
+    @classmethod
+    def validate_reason_category(cls, v: int) -> int:
+        if v not in DeactivationReason.VALID:
+            raise ValueError("reason_category must be one of: 1, 2, 3, 4")
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def sanitize_reason(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("reason must not be empty")
+        return stripped
 
 
 # ===== Review Schemas =====
@@ -165,17 +233,26 @@ class ReviewCreate(BaseModel):
     deadline_days: int | None = Field(
         None, ge=1, le=30, description="Days until voting deadline (default: 7)"
     )
-    reason: str | None = Field(
-        None, max_length=1000, description="Optional reason for starting the review"
+    reason_category: int = Field(..., description="1=Inappropriate, 2=Low Quality, 3=Spam, 4=Other")
+    reason: str = Field(
+        ..., min_length=1, max_length=1000, description="Reason for starting the review"
     )
+
+    @field_validator("reason_category")
+    @classmethod
+    def validate_reason_category(cls, v: int) -> int:
+        if v not in DeactivationReason.VALID:
+            raise ValueError("reason_category must be one of: 1, 2, 3, 4")
+        return v
 
     @field_validator("reason")
     @classmethod
-    def sanitize_reason(cls, v: str | None) -> str | None:
+    def sanitize_reason(cls, v: str) -> str:
         """Sanitize review reason."""
-        if v is None:
-            return v
-        return v.strip() or None
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("reason must not be empty")
+        return stripped
 
 
 class ReviewVoteRequest(BaseModel):
@@ -241,8 +318,8 @@ class ReviewResponse(BaseModel):
     reason: str | None = None
     initiated_by_user: UserSummary | None = None
     closed_by_user: UserSummary | None = None
-    review_type: int
-    review_type_label: str | None = None
+    reason_category: int
+    reason_category_label: str | None = None
     deadline: UTCDatetime
     extension_used: int
     status: int
@@ -260,9 +337,8 @@ class ReviewResponse(BaseModel):
 
     def model_post_init(self, __context: object) -> None:
         """Set computed label fields."""
-        # Review type
-        type_labels = {1: "Appropriateness"}
-        self.review_type_label = type_labels.get(self.review_type, "Unknown")
+        # Reason category
+        self.reason_category_label = DeactivationReason.get_label(self.reason_category)
         # Status
         status_labels = {0: "Open", 1: "Closed"}
         self.status_label = status_labels.get(self.status, "Unknown")

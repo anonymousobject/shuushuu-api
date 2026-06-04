@@ -4,7 +4,7 @@ Tests for GET /images/{image_id}/reviews endpoint.
 Tests that completed image reviews (closed review sessions) can be retrieved
 with proper pagination and labels, while hiding internal fields.
 
-Fields shown: review_id, review_type, review_type_label, outcome, outcome_label, created_at, closed_at
+Fields shown: review_id, reason_category, reason_category_label, outcome, outcome_label, created_at, closed_at
 Fields hidden: initiated_by, deadline, status (always CLOSED), votes
 """
 
@@ -12,7 +12,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import ReviewOutcome, ReviewStatus, ReviewType
+from app.config import DeactivationReason, ReviewOutcome, ReviewStatus
 from app.models.image import Images
 from app.models.image_review import ImageReviews
 from app.models.user import Users
@@ -57,7 +57,7 @@ class TestGetImageReviews:
         # Create a closed review
         review = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.KEEP,
             initiated_by=user.user_id,
@@ -81,7 +81,7 @@ class TestGetImageReviews:
         # Verify item contains expected fields
         item = data["items"][0]
         assert item["review_id"] == review.review_id
-        assert item["review_type"] == ReviewType.APPROPRIATENESS
+        assert item["reason_category"] == DeactivationReason.INAPPROPRIATE
         assert item["outcome"] == ReviewOutcome.KEEP
         assert "created_at" in item
 
@@ -120,7 +120,7 @@ class TestGetImageReviews:
         # Create an OPEN review (should be excluded)
         open_review = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
             initiated_by=user.user_id,
@@ -128,7 +128,7 @@ class TestGetImageReviews:
         # Create a CLOSED review (should be included)
         closed_review = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.REMOVE,
             initiated_by=user.user_id,
@@ -193,7 +193,7 @@ class TestGetImageReviews:
     async def test_includes_correct_labels(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """Should include human-readable labels for review_type and outcome."""
+        """Should include human-readable labels for reason_category and outcome."""
         # Create a user
         user = Users(
             username="labeluser",
@@ -225,14 +225,14 @@ class TestGetImageReviews:
         # Create reviews with different outcomes
         review_keep = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.KEEP,
             initiated_by=user.user_id,
         )
         review_remove = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.REMOVE,
             initiated_by=user.user_id,
@@ -250,9 +250,9 @@ class TestGetImageReviews:
         # Build map by outcome for verification
         items_by_outcome = {item["outcome"]: item for item in data["items"]}
 
-        # Check review_type_label
-        assert items_by_outcome[ReviewOutcome.KEEP]["review_type_label"] == "appropriateness"
-        assert items_by_outcome[ReviewOutcome.REMOVE]["review_type_label"] == "appropriateness"
+        # Check reason_category_label
+        assert items_by_outcome[ReviewOutcome.KEEP]["reason_category_label"] == "Inappropriate"
+        assert items_by_outcome[ReviewOutcome.REMOVE]["reason_category_label"] == "Inappropriate"
 
         # Check outcome_label
         assert items_by_outcome[ReviewOutcome.KEEP]["outcome_label"] == "keep"
@@ -293,7 +293,7 @@ class TestGetImageReviews:
         # Create a closed review with initiated_by set
         review = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.KEEP,
             initiated_by=user.user_id,  # This should be hidden
@@ -317,8 +317,8 @@ class TestGetImageReviews:
 
         # These fields SHOULD be present
         assert "review_id" in item
-        assert "review_type" in item
-        assert "review_type_label" in item
+        assert "reason_category" in item
+        assert "reason_category_label" in item
         assert "outcome" in item
         assert "outcome_label" in item
         assert "created_at" in item
@@ -357,10 +357,10 @@ class TestGetImageReviews:
         await db_session.refresh(image)
 
         # Create 5 closed reviews
-        for i in range(5):
+        for _i in range(5):
             review = ImageReviews(
                 image_id=image.image_id,
-                review_type=ReviewType.APPROPRIATENESS,
+                reason_category=DeactivationReason.INAPPROPRIATE,
                 status=ReviewStatus.CLOSED,
                 outcome=ReviewOutcome.KEEP,
                 initiated_by=user.user_id,
@@ -433,7 +433,7 @@ class TestGetImageReviews:
         # review_id is auto-increment, so higher ID = more recent
         review1 = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.KEEP,
             initiated_by=user.user_id,
@@ -444,7 +444,7 @@ class TestGetImageReviews:
 
         review2 = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.REMOVE,
             initiated_by=user.user_id,
@@ -455,7 +455,7 @@ class TestGetImageReviews:
 
         review3 = ImageReviews(
             image_id=image.image_id,
-            review_type=ReviewType.APPROPRIATENESS,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.KEEP,
             initiated_by=user.user_id,

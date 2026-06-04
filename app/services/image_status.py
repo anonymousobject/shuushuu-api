@@ -53,13 +53,17 @@ async def enqueue_r2_sync_on_status_change(
 async def change_image_status(
     db: AsyncSession,
     image: Images,
-    actor: Users,
+    actor: Users | None,
     *,
     new_status: int | None = None,
     reason_category: int | None = None,
     reason: str | None = None,
     replacement_id: int | None = None,
     locked: bool | None = None,
+    action_type: int = AdminActionType.IMAGE_STATUS_CHANGE,
+    report_id: int | None = None,
+    review_id: int | None = None,
+    extra_details: dict[str, object] | None = None,
 ) -> dict[str, int]:
     """Apply a moderation status and/or lock change to an image.
 
@@ -71,6 +75,7 @@ async def change_image_status(
     Returns the repost migration_result dict (empty unless a repost was processed).
     """
     assert image.image_id is not None  # caller passes a persisted image
+    actor_id = actor.user_id if actor is not None else None  # None for system actions
     previous_status = image.status
     previous_locked = image.locked
     migration_result: dict[str, int] = {}
@@ -108,7 +113,7 @@ async def change_image_status(
         image.status_reason = reason
 
         image.status = new_status
-        image.status_user_id = actor.user_id
+        image.status_user_id = actor_id
         image.status_updated = datetime.now(UTC)
 
     if locked is not None:
@@ -121,7 +126,7 @@ async def change_image_status(
                 image_id=image.image_id,
                 old_status=previous_status,
                 new_status=new_status,
-                user_id=actor.user_id,
+                user_id=actor_id,
                 reason_category=image.reason_category,
                 reason=image.status_reason,
             )
@@ -129,10 +134,14 @@ async def change_image_status(
 
     db.add(
         AdminActions(
-            user_id=actor.user_id,
-            action_type=AdminActionType.IMAGE_STATUS_CHANGE,
+            user_id=actor_id,
+            action_type=action_type,
+            report_id=report_id,
+            review_id=review_id,
             image_id=image.image_id,
             details={
+                # extra_details first so the canonical base keys below always win
+                **(extra_details or {}),
                 "previous_status": previous_status,
                 "new_status": image.status,
                 "previous_locked": previous_locked,

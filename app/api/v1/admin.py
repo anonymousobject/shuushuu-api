@@ -29,7 +29,6 @@ from app.config import (
     ReportStatus,
     ReviewOutcome,
     ReviewStatus,
-    ReviewType,
     SuspensionAction,
     settings,
 )
@@ -46,7 +45,6 @@ from app.models.image import Images
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
-from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups, UserPerms
 from app.models.refresh_token import RefreshTokens
 from app.models.review_vote import ReviewVotes
@@ -941,6 +939,8 @@ async def list_reports(
                 response.suggested_tags = suggestions_by_report[report.report_id]
             image_reports.append(response)
 
+        await _populate_report_resolutions(db, list(zip(image_reports, reports, strict=True)))
+
     # Fetch comment reports if requested
     if report_type in ("comment", "all"):
         # Build filtered query for CommentReports
@@ -1023,6 +1023,56 @@ async def list_reports(
         page=page,
         per_page=per_page,
     )
+
+
+async def _populate_report_resolutions(
+    db: AsyncSession, pairs: list[tuple[ReportResponse, ImageReports]]
+) -> None:
+    """Derive each resolved report's outcome from its AdminActions row (no stored duplicate).
+
+    REPORT_ACTION -> action + resulting status + mod reason; REVIEW_START -> escalated;
+    REPORT_DISMISS -> dismissed. Newest matching action wins.
+    """
+    resolved = {rep.report_id: resp for resp, rep in pairs if rep.status != ReportStatus.PENDING}
+    if not resolved:
+        return
+    rows = (
+        (
+            await db.execute(
+                select(AdminActions)
+                .where(AdminActions.report_id.in_(list(resolved.keys())))  # type: ignore[union-attr]
+                .where(
+                    AdminActions.action_type.in_(  # type: ignore[attr-defined]
+                        [
+                            AdminActionType.REPORT_ACTION,
+                            AdminActionType.REVIEW_START,
+                            AdminActionType.REPORT_DISMISS,
+                        ]
+                    )
+                )
+                .order_by(desc(AdminActions.created_at))  # type: ignore[arg-type]
+            )
+        )
+        .scalars()
+        .all()
+    )
+    seen: set[int] = set()
+    for act in rows:
+        if act.report_id is None or act.report_id in seen:
+            continue
+        seen.add(act.report_id)
+        resp = resolved[act.report_id]
+        details = act.details or {}
+        if act.action_type == AdminActionType.REPORT_ACTION:
+            ns = details.get("new_status")
+            resp.resolution_kind = "action"
+            resp.resolution_status = ns
+            resp.resolution_status_label = ImageStatus.get_label(ns) if ns is not None else None
+            resp.resolution_reason = details.get("reason")
+        elif act.action_type == AdminActionType.REVIEW_START:
+            resp.resolution_kind = "escalated"
+        elif act.action_type == AdminActionType.REPORT_DISMISS:
+            resp.resolution_kind = "dismissed"
 
 
 @router.get("/reports/{report_id}", response_model=ReportResponse)
@@ -1111,6 +1161,8 @@ async def get_report(
             )
             for suggestion, tag in suggestions
         ]
+
+    await _populate_report_resolutions(db, [(response, report)])
 
     return response
 
@@ -1620,25 +1672,25 @@ async def action_report(
 
     previous_status = image.status
 
-    # Update image status
-    image.status = action_data.new_status
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
+    # All mutation + audit logging goes through the unified service: writes the
+    # public history row, enforces replacement_id for repost, stamps report_id on
+    # the REPORT_ACTION audit row (the report's resolution is derived from it).
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=action_data.new_status,
+        reason_category=action_data.reason_category,
+        reason=action_data.reason,
+        replacement_id=action_data.replacement_id,
+        action_type=AdminActionType.REPORT_ACTION,
+        report_id=report_id,
+    )
 
     # Update report
     report.status = ReportStatus.REVIEWED
     report.reviewed_by = current_user.user_id
     report.reviewed_at = datetime.now(UTC)
-
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
-        action_type=AdminActionType.REPORT_ACTION,
-        report_id=report_id,
-        image_id=report.image_id,
-        details={"previous_status": previous_status, "new_status": action_data.new_status},
-    )
-    db.add(action)
 
     await db.commit()
 
@@ -1647,6 +1699,8 @@ async def action_report(
         old_status=previous_status,
         new_status=action_data.new_status,
     )
+    if action_data.new_status == ImageStatus.REPOST and action_data.replacement_id:
+        await schedule_rating_recalculation(action_data.replacement_id)
 
     return MessageResponse(message="Report processed and image status updated")
 
@@ -1708,46 +1762,34 @@ async def escalate_report(
     report.reviewed_by = current_user.user_id
     report.reviewed_at = datetime.now(UTC)
 
-    # Set image to review status
     previous_status = image.status
-    image.status = ImageStatus.REVIEW
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
 
     # Create review
     review = ImageReviews(
         image_id=report.image_id,
         source_report_id=report_id,
         initiated_by=current_user.user_id,
-        review_type=ReviewType.APPROPRIATENESS,
+        reason_category=escalate_data.reason_category,
         deadline=deadline,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,
+        reason=escalate_data.reason,
     )
     db.add(review)
     await db.flush()  # Get review_id
 
-    # Log to public status history (skip if image was already in REVIEW
-    # without an open review — orphaned state should not record a no-op transition)
-    if previous_status != ImageStatus.REVIEW:
-        status_history = ImageStatusHistory(
-            image_id=report.image_id,
-            old_status=previous_status,
-            new_status=ImageStatus.REVIEW,
-            user_id=current_user.user_id,
-        )
-        db.add(status_history)
-
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
+    # Set image to review status through the service (writes history + audit)
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=ImageStatus.REVIEW,
+        reason=escalate_data.reason,
         action_type=AdminActionType.REVIEW_START,
-        report_id=report_id,
         review_id=review.review_id,
-        image_id=report.image_id,
-        details={"previous_status": previous_status, "deadline_days": deadline_days},
+        report_id=report_id,
+        extra_details={"deadline_days": deadline_days},
     )
-    db.add(action)
 
     await db.commit()
     await db.refresh(review)
@@ -1970,49 +2012,32 @@ async def create_review(
     deadline_days = review_data.deadline_days or settings.REVIEW_DEADLINE_DAYS
     deadline = datetime.now(UTC) + timedelta(days=deadline_days)
 
-    # Set image to review status
     previous_status = image.status
-    image.status = ImageStatus.REVIEW
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
 
     # Create review
     review = ImageReviews(
         image_id=image_id,
         initiated_by=current_user.user_id,
-        review_type=ReviewType.APPROPRIATENESS,
+        reason_category=review_data.reason_category,
         deadline=deadline,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,
         reason=review_data.reason,
     )
     db.add(review)
-    await db.flush()
+    await db.flush()  # Get review_id
 
-    # Log to public status history (skip if image was already in REVIEW
-    # without an open review — orphaned state should not record a no-op transition)
-    if previous_status != ImageStatus.REVIEW:
-        status_history = ImageStatusHistory(
-            image_id=image_id,
-            old_status=previous_status,
-            new_status=ImageStatus.REVIEW,
-            user_id=current_user.user_id,
-        )
-        db.add(status_history)
-
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
+    # Set image to review status through the service (writes history + audit)
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=ImageStatus.REVIEW,
+        reason=review_data.reason,
         action_type=AdminActionType.REVIEW_START,
         review_id=review.review_id,
-        image_id=image_id,
-        details={
-            "previous_status": previous_status,
-            "deadline_days": deadline_days,
-            "reason": review_data.reason,
-        },
+        extra_details={"deadline_days": deadline_days},
     )
-    db.add(action)
 
     await db.commit()
     await db.refresh(review)
@@ -2164,22 +2189,24 @@ async def close_review(
     review.closed_at = datetime.now(UTC)
     review.closed_by = current_user.user_id
 
-    # Apply outcome to image
+    # Apply outcome to image through the service (writes history + audit row)
     previous_image_status = image.status
     if close_data.outcome == ReviewOutcome.KEEP:
-        image.status = ImageStatus.ACTIVE
+        new_status, cat, why = ImageStatus.ACTIVE, None, None
     else:
-        image.status = ImageStatus.INAPPROPRIATE
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
-
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
+        new_status = ImageStatus.DEACTIVATED
+        cat = review.reason_category
+        why = review.reason or "Removed by community review"
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=new_status,
+        reason_category=cat,
+        reason=why,
         action_type=AdminActionType.REVIEW_CLOSE,
         review_id=review_id,
-        image_id=review.image_id,
-        details={
+        extra_details={
             "outcome": close_data.outcome,
             "vote_count": vote_count,
             "keep_votes": keep_votes,
@@ -2187,7 +2214,6 @@ async def close_review(
             "early_close": True,
         },
     )
-    db.add(action)
 
     await db.commit()
     await db.refresh(review)
@@ -2195,7 +2221,7 @@ async def close_review(
     await enqueue_r2_sync_on_status_change(
         image_id=review.image_id,
         old_status=previous_image_status,
-        new_status=image.status,
+        new_status=new_status,
     )
 
     close_user_ids: set[int] = {current_user.id}
