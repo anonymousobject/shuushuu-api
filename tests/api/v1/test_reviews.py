@@ -654,7 +654,8 @@ class TestReviewVote:
         await db_session.refresh(image)
         assert review.status == ReviewStatus.CLOSED
         assert review.outcome == ReviewOutcome.REMOVE
-        assert image.status == ImageStatus.INAPPROPRIATE
+        assert image.status == ImageStatus.DEACTIVATED
+        assert image.reason_category == DeactivationReason.INAPPROPRIATE
 
     async def test_vote_no_early_close_when_margin_not_met(
         self, client: AsyncClient, db_session: AsyncSession
@@ -802,9 +803,10 @@ class TestReviewClose:
         data = response.json()
         assert data["outcome"] == ReviewOutcome.REMOVE
 
-        # Verify image status changed to INAPPROPRIATE
+        # Verify image status changed to DEACTIVATED with the review's category
         await db_session.refresh(image)
-        assert image.status == ImageStatus.INAPPROPRIATE
+        assert image.status == ImageStatus.DEACTIVATED
+        assert image.reason_category == DeactivationReason.INAPPROPRIATE
 
     async def test_close_review_automatic_has_null_closed_by(
         self, client: AsyncClient, db_session: AsyncSession

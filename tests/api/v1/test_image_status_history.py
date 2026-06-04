@@ -381,7 +381,7 @@ class TestImageStatusHistoryOnReviewClose:
         result = await db_session.execute(
             select(ImageStatusHistory).where(
                 ImageStatusHistory.image_id == image_id,
-                ImageStatusHistory.new_status == ImageStatus.INAPPROPRIATE,
+                ImageStatusHistory.new_status == ImageStatus.DEACTIVATED,
             )
         )
         history = result.scalar_one_or_none()

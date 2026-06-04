@@ -21,7 +21,9 @@ from app.models.image import Images
 from app.models.image_review import ImageReviews
 from app.models.review_vote import ReviewVotes
 from app.models.user import Users
+from app.models.image_status_history import ImageStatusHistory
 from app.services.review_jobs import (
+    _close_review,
     _get_vote_counts,
     check_early_close,
     check_review_deadlines,
@@ -167,7 +169,7 @@ class TestQuorumAndMajority:
         assert image.status == ImageStatus.ACTIVE
 
     async def test_unanimous_remove(self, db_session: AsyncSession):
-        """0 keep, 3 remove -> close with outcome=REMOVE, image status=INAPPROPRIATE."""
+        """0 keep, 3 remove -> close with outcome=REMOVE, image status=DEACTIVATED."""
         image = await create_test_image(db_session)
         review = await create_test_review(db_session, image.image_id)
         await add_votes(db_session, review.review_id, keep_count=0, remove_count=3)  # type: ignore[arg-type]
@@ -180,7 +182,8 @@ class TestQuorumAndMajority:
         assert result["closed"] == 1
         assert review.status == ReviewStatus.CLOSED
         assert review.outcome == ReviewOutcome.REMOVE
-        assert image.status == ImageStatus.INAPPROPRIATE
+        assert image.status == ImageStatus.DEACTIVATED
+        assert image.reason_category == DeactivationReason.INAPPROPRIATE
 
     async def test_majority_keep(self, db_session: AsyncSession):
         """2 keep, 1 remove -> close with outcome=KEEP (majority)."""
@@ -210,7 +213,64 @@ class TestQuorumAndMajority:
 
         assert result["closed"] == 1
         assert review.outcome == ReviewOutcome.REMOVE
-        assert image.status == ImageStatus.INAPPROPRIATE
+        assert image.status == ImageStatus.DEACTIVATED
+        assert image.reason_category == DeactivationReason.INAPPROPRIATE
+
+
+@pytest.mark.asyncio
+class TestRemoveDeactivates:
+    """A REMOVE outcome deactivates with the review's category + reason."""
+
+    async def test_review_remove_deactivates_with_category(self, db_session: AsyncSession):
+        """REMOVE -> DEACTIVATED + review's reason_category/reason + history + close_reason."""
+        from sqlalchemy import select
+
+        image = await create_test_image(db_session, status=ImageStatus.REVIEW)
+        review = await create_test_review(db_session, image.image_id)
+        review.reason_category = DeactivationReason.LOW_QUALITY
+        review.reason = "borderline"
+        await db_session.commit()
+        await db_session.refresh(review)
+
+        transition = await _close_review(
+            db_session, review, ReviewOutcome.REMOVE, "quorum_reached"
+        )
+        await db_session.commit()
+
+        await db_session.refresh(image)
+        assert transition == (image.image_id, ImageStatus.REVIEW, ImageStatus.DEACTIVATED)
+        assert image.status == ImageStatus.DEACTIVATED
+        assert image.reason_category == DeactivationReason.LOW_QUALITY
+        assert image.status_reason == "borderline"
+
+        # Public status history row carries the category + reason
+        hist = (
+            await db_session.execute(
+                select(ImageStatusHistory).where(
+                    ImageStatusHistory.image_id == image.image_id  # type: ignore[arg-type]
+                )
+            )
+        ).scalars().all()
+        assert any(
+            h.new_status == ImageStatus.DEACTIVATED
+            and h.reason_category == DeactivationReason.LOW_QUALITY
+            and h.reason == "borderline"
+            for h in hist
+        )
+
+        # Audit row keeps the close-CODE under close_reason
+        action = (
+            await db_session.execute(
+                select(AdminActions).where(
+                    AdminActions.review_id == review.review_id,
+                    AdminActions.action_type == AdminActionType.REVIEW_CLOSE,
+                )
+            )
+        ).scalar_one()
+        assert action.user_id is None  # system actor
+        assert action.details["close_reason"] == "quorum_reached"
+        assert action.details["outcome_label"] == "remove"
+        assert action.details["automatic"] is True
 
 
 @pytest.mark.asyncio
@@ -383,7 +443,7 @@ class TestAuditLogging:
         assert action is not None
         assert action.user_id is None  # System action
         assert action.details["automatic"] is True
-        assert action.details["reason"] == "quorum_reached"
+        assert action.details["close_reason"] == "quorum_reached"
 
     async def test_extend_creates_audit_log(self, db_session: AsyncSession):
         """Extending a review creates an admin_action entry."""
@@ -530,7 +590,8 @@ class TestEarlyClose:
         assert closed is not None
         assert review.status == ReviewStatus.CLOSED
         assert review.outcome == ReviewOutcome.REMOVE
-        assert image.status == ImageStatus.INAPPROPRIATE
+        assert image.status == ImageStatus.DEACTIVATED
+        assert image.reason_category == DeactivationReason.INAPPROPRIATE
 
     async def test_early_close_margin_not_met(self, db_session: AsyncSession):
         """2 keep, 1 remove (margin=1, needs 3) -> stays open."""
@@ -601,7 +662,7 @@ class TestEarlyClose:
         action = result.scalar_one_or_none()
 
         assert action is not None
-        assert action.details["reason"] == "early_close_margin"
+        assert action.details["close_reason"] == "early_close_margin"
         assert action.details["automatic"] is True
 
     async def test_early_close_no_votes(self, db_session: AsyncSession):

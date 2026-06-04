@@ -2189,22 +2189,24 @@ async def close_review(
     review.closed_at = datetime.now(UTC)
     review.closed_by = current_user.user_id
 
-    # Apply outcome to image
+    # Apply outcome to image through the service (writes history + audit row)
     previous_image_status = image.status
     if close_data.outcome == ReviewOutcome.KEEP:
-        image.status = ImageStatus.ACTIVE
+        new_status, cat, why = ImageStatus.ACTIVE, None, None
     else:
-        image.status = ImageStatus.INAPPROPRIATE
-    image.status_user_id = current_user.user_id
-    image.status_updated = datetime.now(UTC)
-
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
+        new_status = ImageStatus.DEACTIVATED
+        cat = review.reason_category
+        why = review.reason or "Removed by community review"
+    await apply_image_status_change(
+        db,
+        image,
+        current_user,
+        new_status=new_status,
+        reason_category=cat,
+        reason=why,
         action_type=AdminActionType.REVIEW_CLOSE,
         review_id=review_id,
-        image_id=review.image_id,
-        details={
+        extra_details={
             "outcome": close_data.outcome,
             "vote_count": vote_count,
             "keep_votes": keep_votes,
@@ -2212,7 +2214,6 @@ async def close_review(
             "early_close": True,
         },
     )
-    db.add(action)
 
     await db.commit()
     await db.refresh(review)
@@ -2220,7 +2221,7 @@ async def close_review(
     await enqueue_r2_sync_on_status_change(
         image_id=review.image_id,
         old_status=previous_image_status,
-        new_status=image.status,
+        new_status=new_status,
     )
 
     close_user_ids: set[int] = {current_user.id}
