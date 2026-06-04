@@ -8,6 +8,8 @@ These schemas handle:
 - Admin actions audit log
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.config import DeactivationReason, ReportCategory
@@ -102,7 +104,7 @@ class ReportResponse(BaseModel):
     suggested_tags: list[TagSuggestion] | None = None
     skipped_tags: SkippedTagsInfo | None = None  # Only in create response
     # Resolution, derived from the audit log for reviewed/dismissed reports
-    resolution_kind: str | None = None  # "action" | "escalated" | "dismissed"
+    resolution_kind: Literal["action", "escalated", "dismissed"] | None = None
     resolution_status: int | None = None
     resolution_status_label: str | None = None
     resolution_reason: str | None = None

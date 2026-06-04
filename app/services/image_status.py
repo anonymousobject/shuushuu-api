@@ -140,6 +140,8 @@ async def change_image_status(
             review_id=review_id,
             image_id=image.image_id,
             details={
+                # extra_details first so the canonical base keys below always win
+                **(extra_details or {}),
                 "previous_status": previous_status,
                 "new_status": image.status,
                 "previous_locked": previous_locked,
@@ -147,7 +149,6 @@ async def change_image_status(
                 "replacement_id": image.replacement_id,
                 "reason_category": image.reason_category,
                 "reason": image.status_reason,
-                **(extra_details or {}),
                 **migration_result,
             },
         )
