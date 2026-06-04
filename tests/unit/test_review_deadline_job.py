@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
     AdminActionType,
+    DeactivationReason,
     ImageStatus,
     ReviewOutcome,
     ReviewStatus,
@@ -68,7 +69,7 @@ async def create_test_review(
         extension_used=extension_used,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,
-        review_type=1,
+        reason_category=DeactivationReason.INAPPROPRIATE,
         created_at=datetime.now(UTC),
     )
     db_session.add(review)

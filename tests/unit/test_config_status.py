@@ -56,3 +56,11 @@ def test_status_history_has_reason_fields():
     h2 = ImageStatusHistory(image_id=1, old_status=1, new_status=2)
     assert h2.reason_category is None
     assert h2.reason is None
+
+
+def test_review_uses_reason_category():
+    from app.models.image_review import ImageReviews
+
+    r = ImageReviews(image_id=1, reason_category=DeactivationReason.LOW_QUALITY)
+    assert r.reason_category == DeactivationReason.LOW_QUALITY
+    assert not hasattr(r, "review_type")

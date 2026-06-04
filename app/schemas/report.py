@@ -10,7 +10,7 @@ These schemas handle:
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.config import ReportCategory
+from app.config import DeactivationReason, ReportCategory
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.comment_report import CommentReportListItem
 from app.schemas.common import UserSummary
@@ -290,8 +290,8 @@ class ReviewResponse(BaseModel):
     reason: str | None = None
     initiated_by_user: UserSummary | None = None
     closed_by_user: UserSummary | None = None
-    review_type: int
-    review_type_label: str | None = None
+    reason_category: int
+    reason_category_label: str | None = None
     deadline: UTCDatetime
     extension_used: int
     status: int
@@ -309,9 +309,8 @@ class ReviewResponse(BaseModel):
 
     def model_post_init(self, __context: object) -> None:
         """Set computed label fields."""
-        # Review type
-        type_labels = {1: "Appropriateness"}
-        self.review_type_label = type_labels.get(self.review_type, "Unknown")
+        # Reason category
+        self.reason_category_label = DeactivationReason.get_label(self.reason_category)
         # Status
         status_labels = {0: "Open", 1: "Closed"}
         self.status_label = status_labels.get(self.status, "Unknown")

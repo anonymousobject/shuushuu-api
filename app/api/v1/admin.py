@@ -24,12 +24,12 @@ from sqlalchemy.orm import selectinload
 
 from app.config import (
     AdminActionType,
+    DeactivationReason,
     ImageStatus,
     ReportCategory,
     ReportStatus,
     ReviewOutcome,
     ReviewStatus,
-    ReviewType,
     SuspensionAction,
     settings,
 )
@@ -1775,7 +1775,7 @@ async def escalate_report(
         image_id=report.image_id,
         source_report_id=report_id,
         initiated_by=current_user.user_id,
-        review_type=ReviewType.APPROPRIATENESS,
+        reason_category=DeactivationReason.INAPPROPRIATE,
         deadline=deadline,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,
@@ -2036,7 +2036,7 @@ async def create_review(
     review = ImageReviews(
         image_id=image_id,
         initiated_by=current_user.user_id,
-        review_type=ReviewType.APPROPRIATENESS,
+        reason_category=DeactivationReason.INAPPROPRIATE,
         deadline=deadline,
         status=ReviewStatus.OPEN,
         outcome=ReviewOutcome.PENDING,

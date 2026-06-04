@@ -182,8 +182,8 @@ class ImageReviewPublicResponse(BaseModel):
     """Schema for public review outcome (hides votes and initiator)."""
 
     review_id: int
-    review_type: int
-    review_type_label: str
+    reason_category: int
+    reason_category_label: str
     outcome: int
     outcome_label: str
     created_at: UTCDatetime

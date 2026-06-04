@@ -320,7 +320,7 @@ class TestReviewVoteAuditLog:
             deadline=datetime.now(UTC) + timedelta(days=7),
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review)
         await db_session.commit()
@@ -370,7 +370,7 @@ class TestReviewCloseAuditLog:
             deadline=datetime.now(UTC) + timedelta(days=7),
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review)
         await db_session.commit()
@@ -421,7 +421,7 @@ class TestReviewExtendAuditLog:
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
             extension_used=0,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review)
         await db_session.commit()

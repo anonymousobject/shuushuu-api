@@ -347,12 +347,6 @@ class ReviewOutcome:
     REMOVE = 2
 
 
-class ReviewType:
-    """Review type constants"""
-
-    APPROPRIATENESS = 1
-
-
 class AdminActionType:
     """Admin action type constants for audit logging"""
 
