@@ -267,7 +267,12 @@ class ImageStatusUpdate(BaseModel):
     reason: str | None = Field(
         None,
         max_length=1000,
-        description="Free-text reason (required when status=0)",
+        description=(
+            "Free-text reason. Required when status=0 (deactivate). Also required "
+            "when restoring a currently-hidden image to any visible status "
+            "(active/spoiler/repost) — enforced server-side since the schema can't "
+            "see the image's current status."
+        ),
     )
     locked: bool | None = Field(
         None,

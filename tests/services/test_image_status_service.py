@@ -156,3 +156,12 @@ async def test_triage_unhide_requires_reason(db_session: AsyncSession):
             action_type=AdminActionType.REPORT_ACTION,
         )
     assert exc.value.status_code == 400
+
+
+async def test_noop_call_rejected(db_session: AsyncSession):
+    """A call with neither new_status nor locked is a no-op and must be rejected
+    (it would otherwise write a phantom audit row with no actual change)."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id)
+    with pytest.raises(ValueError):
+        await change_image_status(db_session, img, actor)

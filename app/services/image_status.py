@@ -74,7 +74,11 @@ async def change_image_status(
 
     Returns the repost migration_result dict (empty unless a repost was processed).
     """
-    assert image.image_id is not None  # caller passes a persisted image
+    # Explicit guards (not asserts — those are stripped under `python -O`).
+    if image.image_id is None:
+        raise ValueError("change_image_status requires a persisted image (image_id is None)")
+    if new_status is None and locked is None:
+        raise ValueError("change_image_status requires at least new_status or locked")
     actor_id = actor.user_id if actor is not None else None  # None for system actions
     previous_status = image.status
     previous_locked = image.locked
