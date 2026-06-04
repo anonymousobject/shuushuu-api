@@ -1235,9 +1235,15 @@ async def get_image_status_history(
     owner_id = image.user_id
 
     is_privileged_viewer = False
+    can_see_report_links = False
     if current_user is not None and current_user.user_id is not None:
         is_privileged_viewer = current_user.user_id == owner_id or await has_any_permission(
             db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
+        )
+        # The originating report/review link is moderation context — REPORT_VIEW only
+        # (independent of the reason gate, which follows the owner/visible-status rule).
+        can_see_report_links = await has_any_permission(
+            db, current_user.user_id, [Permission.REPORT_VIEW]
         )
 
     # Query status history with user info
@@ -1309,6 +1315,8 @@ async def get_image_status_history(
                 new_status_label=ImageStatus.get_label(history.new_status),
                 reason_category=history.reason_category,
                 reason=history.reason if can_see_reason else None,
+                report_id=history.report_id if can_see_report_links else None,
+                review_id=history.review_id if can_see_report_links else None,
                 user=user_summary,
                 created_at=history.created_at,
             )

@@ -155,6 +155,11 @@ class ImageStatusHistoryResponse(BaseModel):
     reason_category: int | None = None
     reason: str | None = None
 
+    # Originating report/review for this transition — exposed to REPORT_VIEW
+    # mods only (gated by the endpoint); NULL for everyone else.
+    report_id: int | None = None
+    review_id: int | None = None
+
     # Who made the change (may be null for hidden statuses)
     user: UserSummary | None = None
 
