@@ -246,17 +246,21 @@ async def check_similar_by_upload(
 
 
 async def _open_report_image_ids(
-    db: AsyncSession, image_ids: list[int | None], viewer: Users | None
+    db: AsyncSession,
+    image_ids: list[int | None],
+    viewer: Users | None,
+    redis_client: redis.Redis | None = None,  # type: ignore[type-arg]
 ) -> set[int]:
     """Subset of `image_ids` that have a PENDING report — only for REPORT_VIEW viewers.
 
     One query for the whole page (not N+1). Returns an empty set for non-mods so the
-    has_open_report flag never leaks to regular users.
+    has_open_report flag never leaks to regular users. `redis_client` routes the
+    permission check through the TTL cache (this runs on the hot image-list path).
     """
     ids = [i for i in image_ids if i is not None]
     if not ids or viewer is None or viewer.user_id is None:
         return set()
-    if not await has_any_permission(db, viewer.user_id, [Permission.REPORT_VIEW]):
+    if not await has_any_permission(db, viewer.user_id, [Permission.REPORT_VIEW], redis_client):
         return set()
     rows = await db.execute(
         select(ImageReports.image_id)  # type: ignore[call-overload]
@@ -352,6 +356,7 @@ async def list_images(
     ] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Users | None = Depends(get_optional_current_user),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ImageDetailedListResponse:
     """
     Search and list images with comprehensive filtering.
@@ -688,16 +693,16 @@ async def list_images(
 
     # Mod-only open-report indicator (single query for the page).
     open_report_ids = await _open_report_image_ids(
-        db, [img.image_id for img in images], current_user
+        db, [img.image_id for img in images], current_user, redis_client
     )
 
     # Moderation reason visibility: mods (IMAGE_EDIT/REVIEW_VIEW) see every reason;
-    # owners see their own. The permission check is one query; ownership is per-image.
+    # owners see their own. The permission check is cache-backed (hot path).
     viewer_can_moderate = (
         current_user is not None
         and current_user.user_id is not None
         and await has_any_permission(
-            db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
+            db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW], redis_client
         )
     )
 
@@ -770,6 +775,7 @@ async def get_image(
     image_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: Users | None = Depends(get_optional_current_user),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ImageDetailedResponse:
     """
     Get a single image by ID.
@@ -849,7 +855,7 @@ async def get_image(
     )
     next_image_id = next_id_result.scalar_one_or_none()
 
-    open_report_ids = await _open_report_image_ids(db, [image_id], current_user)
+    open_report_ids = await _open_report_image_ids(db, [image_id], current_user, redis_client)
     # Moderation reason is owner + mods only (same rule as the status-history reason).
     can_see_reason = (
         current_user is not None
@@ -857,7 +863,10 @@ async def get_image(
         and (
             current_user.user_id == image.user_id
             or await has_any_permission(
-                db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
+                db,
+                current_user.user_id,
+                [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW],
+                redis_client,
             )
         )
     )
@@ -1281,6 +1290,7 @@ async def get_image_status_history(
     pagination: Annotated[PaginationParams, Depends()],
     current_user: Annotated[Users | None, Depends(get_optional_current_user)],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ImageStatusHistoryListResponse:
     """
     Get status history for an image.
@@ -1301,12 +1311,12 @@ async def get_image_status_history(
     can_see_report_links = False
     if current_user is not None and current_user.user_id is not None:
         is_privileged_viewer = current_user.user_id == owner_id or await has_any_permission(
-            db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
+            db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW], redis_client
         )
         # The originating report/review link is moderation context — REPORT_VIEW only
         # (independent of the reason gate, which follows the owner/visible-status rule).
         can_see_report_links = await has_any_permission(
-            db, current_user.user_id, [Permission.REPORT_VIEW]
+            db, current_user.user_id, [Permission.REPORT_VIEW], redis_client
         )
 
     # Query status history with user info
@@ -1470,7 +1480,6 @@ async def get_image_reviews(
 async def get_image_reports(
     image_id: Annotated[int, Path(description="Image ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_VIEW))],
     db: AsyncSession = Depends(get_db),
 ) -> ReportListResponse:
