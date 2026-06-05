@@ -12,7 +12,6 @@ Visibility rules:
 from datetime import datetime
 
 from sqlalchemy import Column, ForeignKeyConstraint, Index, text
-from sqlalchemy.dialects.mysql import INTEGER as MySQLInteger
 from sqlmodel import Field, SQLModel
 
 from app.models.types import UtcDateTime
@@ -86,14 +85,14 @@ class ImageStatusHistory(ImageStatusHistoryBase, table=True):
 
     # Originating report/review for this transition (set on the triage/review-close
     # paths; NULL for direct mod changes and legacy rows). Exposed mods-only in the API.
-    # Unsigned to match the image_reports/image_reviews PK types (and the migration),
-    # so an ORM-created schema matches a migration-created one.
-    report_id: int | None = Field(
-        default=None, sa_column=Column(MySQLInteger(unsigned=True), nullable=True)
-    )
-    review_id: int | None = Field(
-        default=None, sa_column=Column(MySQLInteger(unsigned=True), nullable=True)
-    )
+    #
+    # NOTE: the migration (1cdaf1ec0250) creates these as INT UNSIGNED to match the
+    # legacy-unsigned image_reports/image_reviews PKs. Those PKs are still declared
+    # *signed* in their models, so we keep these annotations signed too — otherwise
+    # create_all can't form the FK (signed PK <- unsigned FK). Unsigning the whole
+    # report_id/review_id family to match the DB is a separate schema-sync cleanup.
+    report_id: int | None = Field(default=None)
+    review_id: int | None = Field(default=None)
 
     # Timestamp
     created_at: datetime | None = Field(
