@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import ImageStatus, settings
+from app.config import DeactivationReason, ImageStatus, settings
 from app.core.security import create_access_token, get_password_hash
 from app.models.image import Images
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
@@ -98,7 +98,11 @@ class TestStatusChangeEnqueuesSync:
         ) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/admin/images/{image.image_id}",
-                json={"status": ImageStatus.REVIEW},
+                json={
+                    "status": ImageStatus.DEACTIVATED,
+                    "reason_category": DeactivationReason.INAPPROPRIATE,
+                    "reason": "r2 sync test",
+                },
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert response.status_code == 200
@@ -110,7 +114,7 @@ class TestStatusChangeEnqueuesSync:
         assert len(sync_calls) == 1
         assert sync_calls[0].kwargs["image_id"] == image.image_id
         assert sync_calls[0].kwargs["old_status"] == ImageStatus.ACTIVE
-        assert sync_calls[0].kwargs["new_status"] == ImageStatus.REVIEW
+        assert sync_calls[0].kwargs["new_status"] == ImageStatus.DEACTIVATED
 
     async def test_no_enqueue_when_status_unchanged(
         self, client: AsyncClient, db_session: AsyncSession, monkeypatch
@@ -171,7 +175,11 @@ class TestStatusChangeEnqueuesSync:
         ) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/admin/images/{image.image_id}",
-                json={"status": ImageStatus.REVIEW},
+                json={
+                    "status": ImageStatus.DEACTIVATED,
+                    "reason_category": DeactivationReason.INAPPROPRIATE,
+                    "reason": "r2 sync test",
+                },
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert response.status_code == 200

@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import AdminActionType, ImageStatus, ReportStatus, TagType
+from app.config import AdminActionType, DeactivationReason, ImageStatus, ReportStatus, TagType
 from app.core.security import get_password_hash
 from app.models.admin_action import AdminActions
 from app.models.favorite import Favorites
@@ -155,6 +155,61 @@ class TestImageStatusChange:
         data = response.json()
         assert data["status"] == ImageStatus.SPOILER
         assert data["status_user_id"] == admin.user_id
+
+    async def test_restore_hidden_requires_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Restoring a deactivated image to active without a reason is rejected."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        image.status = ImageStatus.DEACTIVATED
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.ACTIVE},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 400
+
+    async def test_restore_hidden_with_reason_ok(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Restoring a deactivated image to active with a reason succeeds."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        image.status = ImageStatus.DEACTIVATED
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.ACTIVE, "reason": "appeal granted"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == ImageStatus.ACTIVE
+
+    async def test_cannot_patch_status_to_review(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """REVIEW must be set via the review flow (which creates the ImageReviews row),
+        not a direct PATCH — that would leave the image hidden-as-REVIEW with no
+        voting record and no way to resolve it."""
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, admin_password)
+
+        response = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.REVIEW},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422
 
     async def test_mark_image_as_repost_with_original(
         self, client: AsyncClient, db_session: AsyncSession
@@ -835,3 +890,70 @@ class TestApplyTagSuggestionsUpdatesTagTypeFlags:
         # Fresh read to bypass stale ORM identity-map state
         await db_session.refresh(image)
         assert image.has_artist is False
+
+
+@pytest.mark.api
+class TestDeactivateImage:
+    """Tests for the DEACTIVATED status contract on PATCH /api/v1/admin/images/{id}."""
+
+    async def test_deactivate_requires_category_and_reason(self, client, db_session):
+        admin, pw = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, pw)
+
+        # Missing category + reason -> 422 (schema validation)
+        r = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"status": ImageStatus.DEACTIVATED},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422
+
+    async def test_deactivate_success(self, client, db_session):
+        admin, pw = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, pw)
+
+        r = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={
+                "status": ImageStatus.DEACTIVATED,
+                "reason_category": DeactivationReason.LOW_QUALITY,
+                "reason": "blurry",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == ImageStatus.DEACTIVATED
+        assert data["reason_category"] == DeactivationReason.LOW_QUALITY
+        assert data["status_reason"] == "blurry"
+
+    async def test_legacy_statuses_no_longer_settable(self, client, db_session):
+        admin, pw = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, pw)
+        # -2/-3 are legacy (history-only) and must be rejected. 0 is now DEACTIVATED (settable).
+        for legacy in (ImageStatus.INAPPROPRIATE, ImageStatus.LOW_QUALITY):
+            r = await client.patch(
+                f"/api/v1/admin/images/{image.image_id}",
+                json={"status": legacy, "reason": "x"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 422, f"status {legacy} should be rejected"
+
+    async def test_reason_without_status_change_rejected(self, client, db_session):
+        admin, pw = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        image = await create_test_image(db_session, admin.user_id)
+        token = await login_user(client, admin.username, pw)
+        # lock-only update must not silently accept (and drop) a free-text reason
+        r = await client.patch(
+            f"/api/v1/admin/images/{image.image_id}",
+            json={"locked": True, "reason": "should be rejected"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422

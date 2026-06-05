@@ -23,7 +23,7 @@ from datetime import datetime
 from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
-from app.config import ReviewOutcome, ReviewStatus, ReviewType
+from app.config import DeactivationReason, ReviewOutcome, ReviewStatus
 from app.models.types import UtcDateTime
 
 
@@ -37,8 +37,9 @@ class ImageReviewBase(SQLModel):
     - API request schemas (ImageReviewCreate)
     """
 
-    # Review type (extensible for future types)
-    review_type: int = Field(default=ReviewType.APPROPRIATENESS)
+    # What the review is about, using the DeactivationReason taxonomy. Mod-set at
+    # creation/escalation; drives the deactivation reason_category if the outcome is REMOVE.
+    reason_category: int = Field(default=DeactivationReason.INAPPROPRIATE)
 
     # Status: 0=open, 1=closed
     status: int = Field(default=ReviewStatus.OPEN)

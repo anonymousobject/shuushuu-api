@@ -265,24 +265,25 @@ class ImageStatus:
     """Image status constants"""
 
     REVIEW = -4
-    LOW_QUALITY = -3
-    INAPPROPRIATE = -2
+    LOW_QUALITY = -3  # legacy: no longer settable; kept for historical rows
+    INAPPROPRIATE = -2  # legacy: no longer settable; kept for historical rows
     REPOST = -1
-    OTHER = 0
+    DEACTIVATED = 0  # reuses the historical generic "disable" bucket (was OTHER)
+    OTHER = 0  # DEPRECATED alias of DEACTIVATED; remove once test refs migrate
     ACTIVE = 1
     SPOILER = 2
 
     # Status values where we show the user who made the change in public audit
     # Show for: REPOST (-1), SPOILER (2), ACTIVE (1)
-    # Hide for: REVIEW (-4), LOW_QUALITY (-3), INAPPROPRIATE (-2), OTHER (0)
+    # Hide for: REVIEW (-4), LOW_QUALITY (-3), INAPPROPRIATE (-2), DEACTIVATED (0)
     VISIBLE_USER_STATUSES: set[int] = {REPOST, SPOILER, ACTIVE}
 
     LABELS: dict[int, str] = {
         REVIEW: "review",
-        LOW_QUALITY: "low_quality",
-        INAPPROPRIATE: "inappropriate",
+        LOW_QUALITY: "low_quality",  # legacy label for historical rows
+        INAPPROPRIATE: "inappropriate",  # legacy label for historical rows
         REPOST: "repost",
-        OTHER: "other",
+        DEACTIVATED: "deactivated",  # key 0 — replaces the old "other" label
         ACTIVE: "active",
         SPOILER: "spoiler",
     }
@@ -291,6 +292,30 @@ class ImageStatus:
     def get_label(cls, status: int) -> str:
         """Get human-readable label for image status."""
         return cls.LABELS.get(status, "unknown")
+
+
+class DeactivationReason:
+    """Reason categories for a DEACTIVATED image. Shown publicly."""
+
+    INAPPROPRIATE = 1
+    LOW_QUALITY = 2
+    SPAM = 3
+    OTHER = 4
+
+    LABELS: dict[int, str] = {
+        INAPPROPRIATE: "Inappropriate",
+        LOW_QUALITY: "Low Quality",
+        SPAM: "Spam",
+        OTHER: "Other",
+    }
+
+    VALID: set[int] = {INAPPROPRIATE, LOW_QUALITY, SPAM, OTHER}
+
+    @classmethod
+    def get_label(cls, value: int | None) -> str:
+        if value is None:
+            return ""
+        return cls.LABELS.get(value, "unknown")
 
 
 class ReportStatus:
@@ -320,12 +345,6 @@ class ReviewOutcome:
     PENDING = 0
     KEEP = 1
     REMOVE = 2
-
-
-class ReviewType:
-    """Review type constants"""
-
-    APPROPRIATENESS = 1
 
 
 class AdminActionType:

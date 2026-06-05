@@ -21,8 +21,8 @@ from app.config import (
 from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_review import ImageReviews
-from app.models.image_status_history import ImageStatusHistory
 from app.models.review_vote import ReviewVotes
+from app.services.image_status import change_image_status
 
 logger = logging.getLogger(__name__)
 
@@ -200,41 +200,34 @@ async def _close_review(
     review.outcome = outcome
     review.closed_at = now
 
-    # Update image status
+    # Update image status through the service (writes history + audit row)
     image = await db.get(Images, review.image_id)
     transition: tuple[int, int, int] | None = None
     if image:
         old_status = image.status
         if outcome == ReviewOutcome.KEEP:
-            image.status = ImageStatus.ACTIVE
+            new_status, cat, why = ImageStatus.ACTIVE, None, None
         else:  # REMOVE
-            image.status = ImageStatus.INAPPROPRIATE
-
-        # Log to public status history
-        status_history = ImageStatusHistory(
-            image_id=review.image_id,
-            old_status=ImageStatus.REVIEW,  # Was under review
-            new_status=image.status,
-            user_id=None,  # System action
+            new_status = ImageStatus.DEACTIVATED
+            cat = review.reason_category
+            why = review.reason or "Removed by community review"
+        await change_image_status(
+            db,
+            image,
+            None,  # system actor
+            new_status=new_status,
+            reason_category=cat,
+            reason=why,
+            action_type=AdminActionType.REVIEW_CLOSE,
+            review_id=review.review_id,
+            extra_details={
+                "outcome": outcome,
+                "outcome_label": "keep" if outcome == ReviewOutcome.KEEP else "remove",
+                "close_reason": reason,  # the close-CODE (was details["reason"])
+                "automatic": True,
+            },
         )
-        db.add(status_history)
-        transition = (review.image_id, old_status, image.status)
-
-    # Create audit log entry
-    action = AdminActions(
-        user_id=None,  # System action
-        action_type=AdminActionType.REVIEW_CLOSE,
-        review_id=review.review_id,
-        image_id=review.image_id,
-        details={
-            "outcome": outcome,
-            "outcome_label": "keep" if outcome == ReviewOutcome.KEEP else "remove",
-            "reason": reason,
-            "automatic": True,
-        },
-        created_at=now,
-    )
-    db.add(action)
+        transition = (review.image_id, old_status, new_status)
 
     logger.info(
         f"Closed review {review.review_id} with outcome "
@@ -339,7 +332,10 @@ async def prune_admin_actions(
     stmt = (
         delete(AdminActions)
         .where(
-            AdminActions.created_at < cutoff_date  # type: ignore[arg-type, operator]
+            AdminActions.created_at < cutoff_date,  # type: ignore[arg-type, operator]
+            # Keep report-linked rows: report resolutions are derived from them
+            # (_populate_report_resolutions), so pruning would erase that data.
+            AdminActions.report_id.is_(None),  # type: ignore[union-attr]
         )
         .execution_options(synchronize_session=False)
     )

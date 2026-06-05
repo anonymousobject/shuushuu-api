@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import ImageStatus, ReportStatus, ReviewOutcome, ReviewStatus
+from app.config import DeactivationReason, ImageStatus, ReportStatus, ReviewOutcome, ReviewStatus
 from app.models.image import Images
 from app.models.image_report import ImageReports
 from app.models.image_review import ImageReviews
@@ -192,7 +192,7 @@ class TestReviewConstraints:
             deadline=datetime.now(UTC) - timedelta(days=1),
             status=ReviewStatus.CLOSED,
             outcome=ReviewOutcome.KEEP,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
             closed_at=datetime.now(UTC),
         )
         db_session.add(review1)
@@ -205,7 +205,7 @@ class TestReviewConstraints:
             deadline=datetime.now(UTC) + timedelta(days=7),
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review2)
         await db_session.commit()
@@ -251,7 +251,7 @@ class TestVoteConstraints:
             deadline=datetime.now(UTC) + timedelta(days=7),
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review)
         await db_session.commit()
@@ -298,7 +298,7 @@ class TestVoteConstraints:
             deadline=datetime.now(UTC) + timedelta(days=7),
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review1)
 
@@ -308,7 +308,7 @@ class TestVoteConstraints:
             deadline=datetime.now(UTC) + timedelta(days=7),
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review2)
         await db_session.commit()
@@ -380,7 +380,7 @@ class TestForeignKeyCascades:
             deadline=datetime.now(UTC) + timedelta(days=7),
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review)
         await db_session.commit()
@@ -407,7 +407,7 @@ class TestForeignKeyCascades:
             deadline=datetime.now(UTC) + timedelta(days=7),
             status=ReviewStatus.OPEN,
             outcome=ReviewOutcome.PENDING,
-            review_type=1,
+            reason_category=DeactivationReason.INAPPROPRIATE,
         )
         db_session.add(review)
         await db_session.commit()

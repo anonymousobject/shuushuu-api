@@ -150,6 +150,16 @@ class ImageStatusHistoryResponse(BaseModel):
     new_status: int
     new_status_label: str
 
+    # Deactivation reason category (shown to everyone); free-text reason is
+    # owner/mod-only for hidden-status transitions (gated by the endpoint).
+    reason_category: int | None = None
+    reason: str | None = None
+
+    # Originating report/review for this transition — exposed to REPORT_VIEW
+    # mods only (gated by the endpoint); NULL for everyone else.
+    report_id: int | None = None
+    review_id: int | None = None
+
     # Who made the change (may be null for hidden statuses)
     user: UserSummary | None = None
 
@@ -177,8 +187,8 @@ class ImageReviewPublicResponse(BaseModel):
     """Schema for public review outcome (hides votes and initiator)."""
 
     review_id: int
-    review_type: int
-    review_type_label: str
+    reason_category: int
+    reason_category_label: str
     outcome: int
     outcome_label: str
     created_at: UTCDatetime
