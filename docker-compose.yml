@@ -16,7 +16,10 @@ services:
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
       --max_connections=400
-      --innodb_buffer_pool_size=512M
+      # 2G keeps the ~1GB images table fully cached so the / feed's pagination
+      # COUNT (a full scan of ~99% visible rows) runs from RAM, not disk. The
+      # mem limit below is raised to fit the pool + per-connection overhead.
+      --innodb_buffer_pool_size=2G
       --innodb_write_io_threads=8
       --innodb_read_io_threads=8
     ports:
@@ -34,7 +37,7 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 2G
+          memory: 3G # must exceed innodb_buffer_pool_size (2G) + overhead
         reservations:
           cpus: '2'
           memory: 1G
