@@ -12,6 +12,7 @@ Visibility rules:
 from datetime import datetime
 
 from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy.dialects.mysql import INTEGER as MySQLInteger
 from sqlmodel import Field, SQLModel
 
 from app.models.types import UtcDateTime
@@ -51,9 +52,25 @@ class ImageStatusHistory(ImageStatusHistoryBase, table=True):
             onupdate="CASCADE",
             name="fk_image_status_history_user_id",
         ),
+        ForeignKeyConstraint(
+            ["report_id"],
+            ["image_reports.report_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_image_status_history_report_id",
+        ),
+        ForeignKeyConstraint(
+            ["review_id"],
+            ["image_reviews.review_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_image_status_history_review_id",
+        ),
         Index("idx_image_status_history_image_id", "image_id"),
         Index("idx_image_status_history_user_id", "user_id"),
         Index("idx_image_status_history_created_at", "created_at"),
+        Index("idx_image_status_history_report_id", "report_id"),
+        Index("idx_image_status_history_review_id", "review_id"),
     )
 
     # Primary key
@@ -66,6 +83,17 @@ class ImageStatusHistory(ImageStatusHistoryBase, table=True):
     # at the time of the change). Nullable: legacy rows and non-deactivation transitions.
     reason_category: int | None = Field(default=None)
     reason: str | None = Field(default=None, max_length=1000)
+
+    # Originating report/review for this transition (set on the triage/review-close
+    # paths; NULL for direct mod changes and legacy rows). Exposed mods-only in the API.
+    # Unsigned to match the image_reports/image_reviews PK types (and the migration),
+    # so an ORM-created schema matches a migration-created one.
+    report_id: int | None = Field(
+        default=None, sa_column=Column(MySQLInteger(unsigned=True), nullable=True)
+    )
+    review_id: int | None = Field(
+        default=None, sa_column=Column(MySQLInteger(unsigned=True), nullable=True)
+    )
 
     # Timestamp
     created_at: datetime | None = Field(

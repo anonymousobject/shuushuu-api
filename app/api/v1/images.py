@@ -50,6 +50,7 @@ from app.config import (
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.logging import get_logger
+from app.core.permission_deps import require_permission
 from app.core.permissions import Permission, has_any_permission, has_permission
 from app.core.r2_constants import R2Location
 from app.core.redis import get_redis
@@ -96,7 +97,13 @@ from app.schemas.image import (
     SimilarImagesResponse,
     SimilarImagesUploadResponse,
 )
-from app.schemas.report import ReportCreate, ReportResponse, SkippedTagsInfo, TagSuggestion
+from app.schemas.report import (
+    ReportCreate,
+    ReportListResponse,
+    ReportResponse,
+    SkippedTagsInfo,
+    TagSuggestion,
+)
 from app.schemas.tag import LinkedTag
 from app.schemas.user import (
     ImageRatingsListResponse,
@@ -236,6 +243,30 @@ async def check_similar_by_upload(
             shutil.rmtree(temp_dir)
         except OSError:
             logger.warning("check_similar_cleanup_failed", temp_dir=temp_dir)
+
+
+async def _open_report_image_ids(
+    db: AsyncSession, image_ids: list[int | None], viewer: Users | None
+) -> set[int]:
+    """Subset of `image_ids` that have a PENDING report — only for REPORT_VIEW viewers.
+
+    One query for the whole page (not N+1). Returns an empty set for non-mods so the
+    has_open_report flag never leaks to regular users.
+    """
+    ids = [i for i in image_ids if i is not None]
+    if not ids or viewer is None or viewer.user_id is None:
+        return set()
+    if not await has_any_permission(db, viewer.user_id, [Permission.REPORT_VIEW]):
+        return set()
+    rows = await db.execute(
+        select(ImageReports.image_id)  # type: ignore[call-overload]
+        .where(
+            ImageReports.image_id.in_(ids),  # type: ignore[attr-defined]
+            ImageReports.status == ReportStatus.PENDING,
+        )
+        .distinct()
+    )
+    return {r[0] for r in rows.all()}
 
 
 @router.get("/", response_model=ImageDetailedListResponse, include_in_schema=False)
@@ -655,6 +686,11 @@ async def list_images(
         )
         favorited_ids = set(fav_result.scalars().all())
 
+    # Mod-only open-report indicator (single query for the page).
+    open_report_ids = await _open_report_image_ids(
+        db, [img.image_id for img in images], current_user
+    )
+
     return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
@@ -663,6 +699,7 @@ async def list_images(
             ImageDetailedResponse.from_db_model(
                 img,
                 is_favorited=img.image_id in favorited_ids,
+                has_open_report=img.image_id in open_report_ids,
             )
             for img in images
         ],
@@ -800,12 +837,14 @@ async def get_image(
     )
     next_image_id = next_id_result.scalar_one_or_none()
 
+    open_report_ids = await _open_report_image_ids(db, [image_id], current_user)
     return ImageDetailedResponse.from_db_model(
         image,
         is_favorited=is_favorited,
         user_rating=user_rating,
         prev_image_id=prev_image_id,
         next_image_id=next_image_id,
+        has_open_report=image_id in open_report_ids,
     )
 
 
@@ -1235,9 +1274,15 @@ async def get_image_status_history(
     owner_id = image.user_id
 
     is_privileged_viewer = False
+    can_see_report_links = False
     if current_user is not None and current_user.user_id is not None:
         is_privileged_viewer = current_user.user_id == owner_id or await has_any_permission(
             db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
+        )
+        # The originating report/review link is moderation context — REPORT_VIEW only
+        # (independent of the reason gate, which follows the owner/visible-status rule).
+        can_see_report_links = await has_any_permission(
+            db, current_user.user_id, [Permission.REPORT_VIEW]
         )
 
     # Query status history with user info
@@ -1309,6 +1354,8 @@ async def get_image_status_history(
                 new_status_label=ImageStatus.get_label(history.new_status),
                 reason_category=history.reason_category,
                 reason=history.reason if can_see_reason else None,
+                report_id=history.report_id if can_see_report_links else None,
+                review_id=history.review_id if can_see_report_links else None,
                 user=user_summary,
                 created_at=history.created_at,
             )
@@ -1388,6 +1435,77 @@ async def get_image_reviews(
     ]
 
     return ImageReviewListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
+    )
+
+
+@router.get("/{image_id}/reports", response_model=ReportListResponse)
+async def get_image_reports(
+    image_id: Annotated[int, Path(description="Image ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.REPORT_VIEW))],
+    db: AsyncSession = Depends(get_db),
+) -> ReportListResponse:
+    """
+    Get the reports filed against an image (pending + resolved), newest first.
+
+    Mod-only (REPORT_VIEW) — powers the moderation activity timeline. Returns the
+    reporter, category, reason, and status for each report. Resolution/tag-suggestion
+    detail is intentionally omitted (the timeline shows the resulting status-change
+    event alongside).
+    """
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    base_query = select(ImageReports).where(ImageReports.image_id == image_id)  # type: ignore[arg-type]
+    total = (
+        await db.execute(select(func.count()).select_from(base_query.subquery()))
+    ).scalar() or 0
+
+    query = (
+        select(ImageReports, Users)
+        .outerjoin(Users, ImageReports.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))  # type: ignore[arg-type]
+        .where(ImageReports.image_id == image_id)  # type: ignore[arg-type]
+        .order_by(
+            desc(ImageReports.created_at),  # type: ignore[arg-type]
+            desc(ImageReports.report_id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+
+    items = []
+    for report, user in (await db.execute(query)).all():
+        reporter = None
+        if user:
+            reporter = UserSummary(
+                user_id=user.user_id,
+                username=user.username,
+                avatar=user.avatar,
+                avatar_in_r2=user.avatar_in_r2,
+                user_title=user.user_title,
+                groups=user.groups,
+            )
+        items.append(
+            ReportResponse(
+                report_id=report.report_id,
+                image_id=report.image_id,
+                user=reporter,
+                category=report.category,
+                reason_text=report.reason_text,
+                status=report.status,
+                created_at=report.created_at,
+                reviewed_at=report.reviewed_at,
+            )
+        )
+
+    return ReportListResponse(
         total=total,
         page=pagination.page,
         per_page=pagination.per_page,

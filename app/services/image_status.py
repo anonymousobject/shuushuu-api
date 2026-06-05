@@ -148,6 +148,8 @@ async def change_image_status(
                 user_id=actor_id,
                 reason_category=image.reason_category,
                 reason=image.status_reason,
+                report_id=report_id,
+                review_id=review_id,
             )
         )
 
