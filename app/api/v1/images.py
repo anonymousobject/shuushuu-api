@@ -111,6 +111,7 @@ from app.schemas.user import (
     UserResponse,
     UserWithRatingResponse,
 )
+from app.services.feed_count_cache import get_feed_counts
 from app.services.image_processing import (
     create_thumbnail,
     get_image_dimensions,
@@ -271,6 +272,52 @@ async def _open_report_image_ids(
         .distinct()
     )
     return {r[0] for r in rows.all()}
+
+
+async def _default_feed_total(
+    db: AsyncSession,
+    current_user: Users | None,
+    redis_client: redis.Redis | None = None,  # type: ignore[type-arg]
+) -> int:
+    """Fast pagination total for the *bare* default feed (visibility filter only).
+
+    The naive count is ``count(visible OR mine)``, where ``visible`` is ~99% of the
+    table — no index can serve the OR, so it's a full clustered-index scan (seconds on
+    a 1M-row table). Instead, count from the small *hidden* complement::
+
+        total = count(all) - count(hidden AND not-mine)
+              = count(visible) + count(viewer's own hidden images)
+
+    The two global counts come from a short-TTL cache (they lag a mutation by at most the
+    TTL); the per-viewer ``own hidden`` slice is tiny and queried live. Branches mirror
+    the visibility filter in list_images exactly:
+    show_all_images=1 => no filter; anonymous => public only; otherwise public + own.
+    """
+    total_all, hidden_count = await get_feed_counts(db, redis_client)
+
+    # show_all_images=1: no visibility filter at all — every image counts.
+    if current_user is not None and current_user.show_all_images == 1:
+        return total_all
+
+    visible_count = total_all - hidden_count
+
+    # Logged-in + show_all=0: also count the viewer's own (hidden) images. Equality on
+    # user_id (not `!= me`) keeps NULL-owner rows correct.
+    if current_user is not None and current_user.user_id is not None:
+        my_hidden_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(Images)
+                .where(
+                    Images.status.notin_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                    Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+                )
+            )
+        ).scalar() or 0
+        return visible_count + my_hidden_count
+
+    # Anonymous: public statuses only.
+    return visible_count
 
 
 @router.get("/", response_model=ImageDetailedListResponse, include_in_schema=False)
@@ -605,10 +652,36 @@ async def list_images(
         # Filter to images WITHOUT comments using posts counter
         query = query.where(Images.posts == 0)  # type: ignore[arg-type]
 
-    # Count total results
-    count_query = select(func.count()).select_from(query.subquery())
-    total_result = await db.execute(count_query)
-    total = total_result.scalar()
+    # Count total results. For the *bare* default feed (no content filter — only the
+    # implicit visibility filter), count(visible OR mine) is a full-table scan; use the
+    # fast hidden-complement count instead. ANY explicit filter falls back to the exact
+    # subquery count. IMPORTANT: keep this in sync with the filters applied above — a
+    # missing check here would return a wrong total for that filtered query.
+    is_bare_default_feed = (
+        image_status is None
+        and user_id is None
+        and favorited_by_user_id is None
+        and not tags
+        and not exclude_tags
+        and not missing_tag_types
+        and date_from is None
+        and date_to is None
+        and min_width is None
+        and max_width is None
+        and min_height is None
+        and max_height is None
+        and min_rating is None
+        and min_favorites is None
+        and min_num_ratings is None
+        and commenter is None
+        and commentsearch is None
+        and hascomments is None
+    )
+    if is_bare_default_feed:
+        total = await _default_feed_total(db, current_user, redis_client)
+    else:
+        count_query = select(func.count()).select_from(query.subquery())
+        total = (await db.execute(count_query)).scalar() or 0
 
     # Performance optimization: Two-stage query for fast filtering and sorting
     #
