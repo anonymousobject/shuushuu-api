@@ -12,13 +12,13 @@ services:
       MARIADB_USER: ${MARIADB_USER:-shuushuu}
       MARIADB_PASSWORD: ${MARIADB_PASSWORD:-dev_password}
       # MARIADB_AUTO_UPGRADE: "1"
+    # innodb_buffer_pool_size=2G keeps the ~1GB images table cached so the / feed's
+    # pagination COUNT (a full scan of ~99% visible rows) runs from RAM, not disk.
+    # The deploy mem limit below is raised to fit the 2G pool + per-connection overhead.
     command: >
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
       --max_connections=400
-      # 2G keeps the ~1GB images table fully cached so the / feed's pagination
-      # COUNT (a full scan of ~99% visible rows) runs from RAM, not disk. The
-      # mem limit below is raised to fit the pool + per-connection overhead.
       --innodb_buffer_pool_size=2G
       --innodb_write_io_threads=8
       --innodb_read_io_threads=8
