@@ -691,6 +691,16 @@ async def list_images(
         db, [img.image_id for img in images], current_user
     )
 
+    # Moderation reason visibility: mods (IMAGE_EDIT/REVIEW_VIEW) see every reason;
+    # owners see their own. The permission check is one query; ownership is per-image.
+    viewer_can_moderate = (
+        current_user is not None
+        and current_user.user_id is not None
+        and await has_any_permission(
+            db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
+        )
+    )
+
     return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
@@ -700,6 +710,8 @@ async def list_images(
                 img,
                 is_favorited=img.image_id in favorited_ids,
                 has_open_report=img.image_id in open_report_ids,
+                can_see_reason=viewer_can_moderate
+                or (current_user is not None and img.user_id == current_user.user_id),
             )
             for img in images
         ],
@@ -838,6 +850,17 @@ async def get_image(
     next_image_id = next_id_result.scalar_one_or_none()
 
     open_report_ids = await _open_report_image_ids(db, [image_id], current_user)
+    # Moderation reason is owner + mods only (same rule as the status-history reason).
+    can_see_reason = (
+        current_user is not None
+        and current_user.user_id is not None
+        and (
+            current_user.user_id == image.user_id
+            or await has_any_permission(
+                db, current_user.user_id, [Permission.IMAGE_EDIT, Permission.REVIEW_VIEW]
+            )
+        )
+    )
     return ImageDetailedResponse.from_db_model(
         image,
         is_favorited=is_favorited,
@@ -845,6 +868,7 @@ async def get_image(
         prev_image_id=prev_image_id,
         next_image_id=next_image_id,
         has_open_report=image_id in open_report_ids,
+        can_see_reason=can_see_reason,
     )
 
 

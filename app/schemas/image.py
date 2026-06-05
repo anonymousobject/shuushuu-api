@@ -163,6 +163,10 @@ class ImageDetailedResponse(ImageResponse):
     prev_image_id: int | None = None  # ID of the previous image (chronological)
     next_image_id: int | None = None  # ID of the next image (chronological)
     has_open_report: bool = False  # Mod-only (REPORT_VIEW): a pending report exists
+    # Moderation reason for the current (hidden) status — owner + mods only, so the
+    # red status band can explain why an image was taken down without a comment.
+    reason_category: int | None = None
+    status_reason: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -175,8 +179,13 @@ class ImageDetailedResponse(ImageResponse):
         prev_image_id: int | None = None,
         next_image_id: int | None = None,
         has_open_report: bool = False,
+        can_see_reason: bool = False,
     ) -> ImageDetailedResponse:
-        """Create response from database model with relationships"""
+        """Create response from database model with relationships.
+
+        ``can_see_reason`` gates the moderation reason (owner + mods); when False the
+        reason fields stay null so a normal viewer never sees why an image is hidden.
+        """
         data = ImageResponse.model_validate(image).model_dump()
 
         # Add user if loaded (groups come from User.groups property via eager-loaded user_groups)
@@ -199,6 +208,10 @@ class ImageDetailedResponse(ImageResponse):
         data["prev_image_id"] = prev_image_id
         data["next_image_id"] = next_image_id
         data["has_open_report"] = has_open_report
+
+        if can_see_reason:
+            data["reason_category"] = getattr(image, "reason_category", None)
+            data["status_reason"] = getattr(image, "status_reason", None)
 
         return cls(**data)
 
