@@ -54,6 +54,9 @@ def main() -> None:
             "logged-in show_all=0": (naive_mine, [all_count, hidden, hidden_mine]),
             "logged-in show_all=1": (all_count, [all_count]),
         }
+        # "after" is the cache-MISS path (the raw DB cost of the hidden-complement
+        # counts). In production these globals are TTL-cached (feed_count_cache), so a
+        # warm hit is a couple of single-digit-ms Redis reads — faster still.
         print(f"{'scenario':24}  {'before':>10}  {'after':>10}  {'speedup':>8}")
         print("-" * 60)
         for name, (naive, fast_parts) in scenarios.items():

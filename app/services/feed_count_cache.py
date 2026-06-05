@@ -15,8 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.image import Images
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 
-# Safety-net TTL. Explicit invalidation keeps the value exact; the TTL just bounds
-# staleness if a mutation path ever fails to invalidate.
+# TTL-only — no per-mutation invalidation. The count can lag a create/delete/status
+# change by at most FEED_COUNT_TTL seconds; acceptable for a pagination counter.
 FEED_COUNT_TTL = 60
 
 _KEY_TOTAL = "feed:count:total"

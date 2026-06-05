@@ -15,8 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.user import Users
+from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 
-VISIBLE = [-1, 1, 2]  # REPOST, ACTIVE, SPOILER (PUBLIC_IMAGE_STATUSES)
+# Import the source of truth rather than re-listing the statuses, so this test
+# can't silently diverge if the public-status set ever changes.
+VISIBLE = sorted(PUBLIC_IMAGE_STATUSES)
 
 
 async def _user(db, username, show_all=0):
