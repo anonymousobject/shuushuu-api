@@ -12,6 +12,7 @@ Visibility rules:
 from datetime import datetime
 
 from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy.dialects.mysql import INTEGER as MySQLInteger
 from sqlmodel import Field, SQLModel
 
 from app.models.types import UtcDateTime
@@ -85,8 +86,14 @@ class ImageStatusHistory(ImageStatusHistoryBase, table=True):
 
     # Originating report/review for this transition (set on the triage/review-close
     # paths; NULL for direct mod changes and legacy rows). Exposed mods-only in the API.
-    report_id: int | None = Field(default=None)
-    review_id: int | None = Field(default=None)
+    # Unsigned to match the image_reports/image_reviews PK types (and the migration),
+    # so an ORM-created schema matches a migration-created one.
+    report_id: int | None = Field(
+        default=None, sa_column=Column(MySQLInteger(unsigned=True), nullable=True)
+    )
+    review_id: int | None = Field(
+        default=None, sa_column=Column(MySQLInteger(unsigned=True), nullable=True)
+    )
 
     # Timestamp
     created_at: datetime | None = Field(
