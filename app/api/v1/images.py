@@ -1924,19 +1924,21 @@ async def get_bookmark_page(
 
     # Build the same filter as list_images uses
     show_all = current_user.show_all_images == 1
+    hide_reposts = current_user.hide_reposts == 1
     images_per_page = current_user.images_per_page or 15
 
-    # Check if bookmark is visible under user's settings
-    # If not visible, return page: null (bookmark exists but won't appear in list)
-    if not show_all:
-        is_public = bookmark_image.status in PUBLIC_IMAGE_STATUSES
-        is_own_image = bookmark_image.user_id == current_user.user_id
-        if not is_public and not is_own_image:
-            return BookmarkPageResponse(
-                page=None,
-                image_id=bookmark_id,
-                images_per_page=images_per_page,
-            )
+    # Bookmark not visible under the user's settings -> page: null
+    is_public = bookmark_image.status in PUBLIC_IMAGE_STATUSES
+    is_own_image = bookmark_image.user_id == current_user.user_id
+    is_repost = bookmark_image.status == ImageStatus.REPOST
+    hidden_by_visibility = (not show_all) and (not is_public) and (not is_own_image)
+    hidden_by_repost_pref = hide_reposts and is_repost
+    if hidden_by_visibility or hidden_by_repost_pref:
+        return BookmarkPageResponse(
+            page=None,
+            image_id=bookmark_id,
+            images_per_page=images_per_page,
+        )
 
     # Get sort column and direction from user preferences
     sort_field = current_user.sorting_pref or "image_id"
@@ -2002,6 +2004,9 @@ async def get_bookmark_page(
                 Images.user_id == current_user.user_id,  # type: ignore[arg-type]
             )
         )
+
+    if hide_reposts:
+        count_query = count_query.where(Images.status != ImageStatus.REPOST)
 
     result = await db.execute(count_query)
     position = result.scalar() or 0

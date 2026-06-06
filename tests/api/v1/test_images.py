@@ -4205,3 +4205,60 @@ class TestHideReposts:
         resp = await client.get("/api/v1/images/random?per_page=1",
                                 headers=self._hdr(viewer), follow_redirects=False)
         assert resp.status_code == 302
+
+    async def test_repost_bookmark_returns_null_page(self, client, db_session):
+        from app.config import ImageStatus
+        viewer = await self._user(db_session, "hr_bm", show_all=0, hide_reposts=1)
+        rep = Images(filename="bm_rep", ext="jpg", md5_hash="bm" + "0" * 30,
+                     user_id=viewer.user_id, width=10, height=10, filesize=100,
+                     status=ImageStatus.REPOST)
+        db_session.add(rep)
+        await db_session.commit()
+        await db_session.refresh(rep)
+        viewer.bookmark = rep.image_id
+        await db_session.commit()
+        data = (await client.get("/api/v1/images/bookmark/page", headers=self._hdr(viewer))).json()
+        assert data["page"] is None
+
+    async def test_bookmark_position_excludes_reposts_when_hiding(self, client, db_session):
+        from app.config import ImageStatus
+        owner = await self._user(db_session, "hr_bm_pos_owner")
+        viewer = await self._user(db_session, "hr_bm_pos", show_all=0, hide_reposts=1)
+        viewer.images_per_page = 2
+        bm = Images(filename="bm_active", ext="jpg", md5_hash="bp" + "0" * 30,
+                    user_id=owner.user_id, width=10, height=10, filesize=100,
+                    status=ImageStatus.ACTIVE)
+        db_session.add(bm)
+        await db_session.commit()
+        await db_session.refresh(bm)
+        # 3 reposts created AFTER bm -> higher image_ids -> sort BEFORE bm in DESC order.
+        for i in range(3):
+            db_session.add(Images(filename=f"bp_rep{i}", ext="jpg", md5_hash=f"bq{i:030d}",
+                                  user_id=owner.user_id, width=10, height=10, filesize=100,
+                                  status=ImageStatus.REPOST))
+        viewer.bookmark = bm.image_id
+        await db_session.commit()
+        # hide_reposts: the 3 reposts before bm aren't counted -> position 0 -> page 1.
+        data = (await client.get("/api/v1/images/bookmark/page", headers=self._hdr(viewer))).json()
+        assert data["page"] == 1
+
+    async def test_bookmark_position_counts_reposts_when_not_hiding(self, client, db_session):
+        from app.config import ImageStatus
+        owner = await self._user(db_session, "hr_bm_pos_owner2")
+        viewer = await self._user(db_session, "hr_bm_pos2", show_all=0, hide_reposts=0)
+        viewer.images_per_page = 2
+        bm = Images(filename="bm_active2", ext="jpg", md5_hash="bp2" + "0" * 29,
+                    user_id=owner.user_id, width=10, height=10, filesize=100,
+                    status=ImageStatus.ACTIVE)
+        db_session.add(bm)
+        await db_session.commit()
+        await db_session.refresh(bm)
+        for i in range(3):
+            db_session.add(Images(filename=f"bp2_rep{i}", ext="jpg", md5_hash=f"bz{i:030d}",
+                                  user_id=owner.user_id, width=10, height=10, filesize=100,
+                                  status=ImageStatus.REPOST))
+        viewer.bookmark = bm.image_id
+        await db_session.commit()
+        # Control: reposts counted -> 3 before bm -> position 3 -> page ceil(4/2)=2.
+        data = (await client.get("/api/v1/images/bookmark/page", headers=self._hdr(viewer))).json()
+        assert data["page"] == 2
