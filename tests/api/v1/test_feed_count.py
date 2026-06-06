@@ -232,10 +232,15 @@ class TestFeedCountCache:
 class TestFeedFilters:
     """Unit guards for _FeedFilters, the bare-default-feed detector behind the fast count."""
 
-    def test_empty_is_the_bare_sentinel(self):
+    def test_bare_sentinel_has_every_field_empty(self):
+        """`_FeedFilters()` is the bare sentinel only if every field defaults to None — a
+        non-None default would make the fast-count check treat a real filter as "empty"."""
+        from dataclasses import fields
+
         from app.api.v1.images import _FeedFilters
 
-        assert _FeedFilters() == _FeedFilters()
+        bare = _FeedFilters()
+        assert all(getattr(bare, f.name) is None for f in fields(_FeedFilters))
 
     def test_any_single_filter_is_not_bare(self):
         from app.api.v1.images import _FeedFilters

@@ -275,7 +275,7 @@ async def _open_report_image_ids(
     return {r[0] for r in rows.all()}
 
 
-@dataclass
+@dataclass(frozen=True)
 class _FeedFilters:
     """The content filters ``list_images`` can apply.
 
