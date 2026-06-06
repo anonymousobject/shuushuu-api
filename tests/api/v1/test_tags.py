@@ -1595,6 +1595,101 @@ class TestGetTag:
         # 2 public (ACTIVE + SPOILER) + 1 own non-public = 3
         assert data["total_image_count"] == 3
 
+    async def test_total_image_count_hide_reposts_excludes_reposts(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """hide_reposts=1 (show_all=0) excludes REPOST images from total_image_count."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="hidereposts_user",
+            email="hidereposts@test.com",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            show_all_images=0,
+            hide_reposts=1,
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        tag = Tags(title="Hide Reposts Count Tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.flush()
+
+        statuses = [ImageStatus.ACTIVE, ImageStatus.ACTIVE, ImageStatus.SPOILER, ImageStatus.REPOST]
+        for i, status_val in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": f"hidereposts-{i}",
+                "md5_hash": f"hidereposts{i:015d}",
+                "status": status_val,
+            })
+            img = Images(**img_data)
+            db_session.add(img)
+            await db_session.flush()
+            db_session.add(TagLinks(tag_id=tag.tag_id, image_id=img.image_id))
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        response = await client.get(
+            f"/api/v1/tags/{tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        # 2 ACTIVE + 1 SPOILER; the REPOST is excluded by hide_reposts.
+        assert response.json()["total_image_count"] == 3
+
+    async def test_total_image_count_show_all_with_hide_reposts(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """show_all_images=1 + hide_reposts=1: sees all statuses EXCEPT repost. Exercises the
+        join-added-by-hide_reposts path (show_all skips its own join)."""
+        from app.config import ImageStatus
+        from app.core.security import create_access_token
+
+        user = Users(
+            username="showall_hide_user",
+            email="showall_hide@test.com",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            show_all_images=1,
+            hide_reposts=1,
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        tag = Tags(title="Show All Hide Reposts Tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.flush()
+
+        statuses = [ImageStatus.ACTIVE, ImageStatus.OTHER, ImageStatus.REPOST]
+        for i, status_val in enumerate(statuses):
+            img_data = sample_image_data.copy()
+            img_data.update({
+                "filename": f"showallhide-{i}",
+                "md5_hash": f"showallhide{i:015d}",
+                "status": status_val,
+            })
+            img = Images(**img_data)
+            db_session.add(img)
+            await db_session.flush()
+            db_session.add(TagLinks(tag_id=tag.tag_id, image_id=img.image_id))
+        await db_session.commit()
+
+        token = create_access_token(user.user_id)
+        response = await client.get(
+            f"/api/v1/tags/{tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        # ACTIVE + OTHER visible (show_all), REPOST excluded by hide_reposts = 2
+        assert response.json()["total_image_count"] == 2
+
 
 @pytest.mark.api
 class TestGetImagesByTag:

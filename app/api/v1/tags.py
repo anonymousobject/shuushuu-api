@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
-from app.config import TagAuditActionType, TagType
+from app.config import ImageStatus, TagAuditActionType, TagType
 from app.core.auth import get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
@@ -889,16 +889,19 @@ async def get_tag(
     tag_hierarchy = await get_tag_hierarchy(db, resolved_tag_id)
 
     # Count images tagged with any tag in the hierarchy
-    # Respect user's show_all_images setting (matches image search behavior)
+    # Respect user's show_all_images and hide_reposts settings (matches image search behavior)
     show_all = current_user is not None and current_user.show_all_images == 1
+    hide_reposts = current_user is not None and current_user.hide_reposts == 1
     count_query = select(func.count(TagLinks.image_id.distinct())).where(  # type: ignore[attr-defined]
         TagLinks.tag_id.in_(tag_hierarchy)  # type: ignore[attr-defined]
     )
+    joined = False
     if not show_all:
         count_query = count_query.join(
             Images,
             TagLinks.image_id == Images.image_id,  # type: ignore[arg-type]
         )
+        joined = True
         if current_user is not None:
             # Logged in: public statuses OR user's own images (any status)
             count_query = count_query.where(
@@ -912,6 +915,13 @@ async def get_tag(
             count_query = count_query.where(
                 Images.status.in_(PUBLIC_IMAGE_STATUSES)  # type: ignore[attr-defined]
             )
+    if hide_reposts:
+        if not joined:
+            count_query = count_query.join(
+                Images,
+                TagLinks.image_id == Images.image_id,  # type: ignore[arg-type]
+            )
+        count_query = count_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
     count_result = await db.execute(count_query)
     total_image_count = count_result.scalar()
 

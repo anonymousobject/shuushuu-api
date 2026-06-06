@@ -4092,3 +4092,173 @@ class TestImageUserListsIncludeGroups:
         entry = next(u for u in response.json()["users"] if u["username"] == "rate_grp_user")
         assert "groups" in entry
         assert "Admins" in entry["groups"]
+
+
+@pytest.mark.api
+class TestHideReposts:
+    """hide_reposts removes status=-1 from listings; explicit status overrides."""
+
+    async def _seed(self, db, owner_id=None):
+        # owner defaults to a separate user so ownership rules don't explain the
+        # results — matrix tests must exercise the PUBLIC-status path, not own-image.
+        from app.config import ImageStatus
+        from app.core.security import get_password_hash
+        if owner_id is None:
+            owner = Users(username="hr_seed_owner", password=get_password_hash("TestPassword123!"),
+                          password_type="bcrypt", salt="", email="hr_seed_owner@test.com", active=1)
+            db.add(owner)
+            await db.commit()
+            await db.refresh(owner)
+            owner_id = owner.user_id
+        rows = [
+            (ImageStatus.ACTIVE, "active_img"),
+            (ImageStatus.SPOILER, "spoiler_img"),
+            (ImageStatus.REPOST, "repost_img"),
+            (ImageStatus.REVIEW, "review_img"),
+            (ImageStatus.DEACTIVATED, "deact_img"),
+        ]
+        for i, (st, fn) in enumerate(rows):
+            db.add(Images(filename=fn, ext="jpg", md5_hash=f"hr{i:030d}",
+                          user_id=owner_id, width=10, height=10, filesize=100, status=st))
+        await db.commit()
+
+    async def _user(self, db, name, show_all=0, hide_reposts=0):
+        from app.core.security import get_password_hash
+        u = Users(username=name, password=get_password_hash("TestPassword123!"),
+                  password_type="bcrypt", salt="", email=f"{name}@test.com",
+                  active=1, show_all_images=show_all, hide_reposts=hide_reposts)
+        db.add(u)
+        await db.commit()
+        await db.refresh(u)
+        return u
+
+    def _hdr(self, user):
+        from app.core.security import create_access_token
+        return {"Authorization": f"Bearer {create_access_token(user.user_id)}"}
+
+    async def test_show_all_0_hide_0_shows_repost(self, client, db_session):
+        await self._seed(db_session)  # images owned by a separate user (not the viewer)
+        viewer = await self._user(db_session, "hr_a_view", show_all=0, hide_reposts=0)
+        data = (await client.get("/api/v1/images", headers=self._hdr(viewer))).json()
+        fns = {i["filename"] for i in data["images"]}
+        assert {"active_img", "spoiler_img", "repost_img"} <= fns
+
+    async def test_show_all_0_hide_1_hides_repost(self, client, db_session):
+        await self._seed(db_session)
+        viewer = await self._user(db_session, "hr_b_view", show_all=0, hide_reposts=1)
+        data = (await client.get("/api/v1/images", headers=self._hdr(viewer))).json()
+        fns = {i["filename"] for i in data["images"]}
+        assert "repost_img" not in fns
+        assert {"active_img", "spoiler_img"} <= fns
+
+    async def test_show_all_1_hide_1_hides_only_repost(self, client, db_session):
+        await self._seed(db_session)
+        viewer = await self._user(db_session, "hr_c_view", show_all=1, hide_reposts=1)
+        data = (await client.get("/api/v1/images", headers=self._hdr(viewer))).json()
+        fns = {i["filename"] for i in data["images"]}
+        assert "repost_img" not in fns
+        assert {"active_img", "spoiler_img", "review_img", "deact_img"} <= fns
+
+    async def test_show_all_1_hide_0_shows_everything(self, client, db_session):
+        await self._seed(db_session)
+        viewer = await self._user(db_session, "hr_d_view", show_all=1, hide_reposts=0)
+        data = (await client.get("/api/v1/images", headers=self._hdr(viewer))).json()
+        fns = {i["filename"] for i in data["images"]}
+        assert {"active_img", "spoiler_img", "repost_img", "review_img", "deact_img"} <= fns
+
+    async def test_own_repost_is_hidden(self, client, db_session):
+        viewer = await self._user(db_session, "hr_own", show_all=0, hide_reposts=1)
+        await self._seed(db_session, viewer.user_id)  # reposts owned by the viewer
+        data = (await client.get("/api/v1/images", headers=self._hdr(viewer))).json()
+        assert "repost_img" not in {i["filename"] for i in data["images"]}
+
+    async def test_explicit_status_repost_overrides_hide(self, client, db_session):
+        await self._seed(db_session)
+        viewer = await self._user(db_session, "hr_exp", show_all=0, hide_reposts=1)
+        data = (await client.get("/api/v1/images?status=-1", headers=self._hdr(viewer))).json()
+        assert {i["filename"] for i in data["images"]} == {"repost_img"}
+
+    async def test_random_excludes_reposts_when_hiding(self, client, db_session):
+        from app.config import ImageStatus
+        owner = await self._user(db_session, "hr_rand_owner")
+        viewer = await self._user(db_session, "hr_rand", show_all=0, hide_reposts=1)
+        for i in range(3):
+            db_session.add(Images(filename=f"r_rep{i}", ext="jpg", md5_hash=f"rr{i:030d}",
+                                  user_id=owner.user_id, width=10, height=10, filesize=100,
+                                  status=ImageStatus.REPOST))
+        await db_session.commit()
+        # Only reposts exist; with hide_reposts the visible count is 0 -> /random 404s.
+        resp = await client.get("/api/v1/images/random?per_page=1",
+                                headers=self._hdr(viewer), follow_redirects=False)
+        assert resp.status_code == 404
+
+    async def test_random_counts_reposts_when_not_hiding(self, client, db_session):
+        from app.config import ImageStatus
+        owner = await self._user(db_session, "hr_rand_owner2")
+        viewer = await self._user(db_session, "hr_rand2", show_all=0, hide_reposts=0)
+        for i in range(3):
+            db_session.add(Images(filename=f"r2_rep{i}", ext="jpg", md5_hash=f"rs{i:030d}",
+                                  user_id=owner.user_id, width=10, height=10, filesize=100,
+                                  status=ImageStatus.REPOST))
+        await db_session.commit()
+        # Control: reposts are public, so without hiding they ARE counted -> a page exists.
+        resp = await client.get("/api/v1/images/random?per_page=1",
+                                headers=self._hdr(viewer), follow_redirects=False)
+        assert resp.status_code == 302
+
+    async def test_repost_bookmark_returns_null_page(self, client, db_session):
+        from app.config import ImageStatus
+        viewer = await self._user(db_session, "hr_bm", show_all=0, hide_reposts=1)
+        rep = Images(filename="bm_rep", ext="jpg", md5_hash="bm" + "0" * 30,
+                     user_id=viewer.user_id, width=10, height=10, filesize=100,
+                     status=ImageStatus.REPOST)
+        db_session.add(rep)
+        await db_session.commit()
+        await db_session.refresh(rep)
+        viewer.bookmark = rep.image_id
+        await db_session.commit()
+        data = (await client.get("/api/v1/images/bookmark/page", headers=self._hdr(viewer))).json()
+        assert data["page"] is None
+
+    async def test_bookmark_position_excludes_reposts_when_hiding(self, client, db_session):
+        from app.config import ImageStatus
+        owner = await self._user(db_session, "hr_bm_pos_owner")
+        viewer = await self._user(db_session, "hr_bm_pos", show_all=0, hide_reposts=1)
+        viewer.images_per_page = 2
+        bm = Images(filename="bm_active", ext="jpg", md5_hash="bp" + "0" * 30,
+                    user_id=owner.user_id, width=10, height=10, filesize=100,
+                    status=ImageStatus.ACTIVE)
+        db_session.add(bm)
+        await db_session.commit()
+        await db_session.refresh(bm)
+        # 3 reposts created AFTER bm -> higher image_ids -> sort BEFORE bm in DESC order.
+        for i in range(3):
+            db_session.add(Images(filename=f"bp_rep{i}", ext="jpg", md5_hash=f"bq{i:030d}",
+                                  user_id=owner.user_id, width=10, height=10, filesize=100,
+                                  status=ImageStatus.REPOST))
+        viewer.bookmark = bm.image_id
+        await db_session.commit()
+        # hide_reposts: the 3 reposts before bm aren't counted -> position 0 -> page 1.
+        data = (await client.get("/api/v1/images/bookmark/page", headers=self._hdr(viewer))).json()
+        assert data["page"] == 1
+
+    async def test_bookmark_position_counts_reposts_when_not_hiding(self, client, db_session):
+        from app.config import ImageStatus
+        owner = await self._user(db_session, "hr_bm_pos_owner2")
+        viewer = await self._user(db_session, "hr_bm_pos2", show_all=0, hide_reposts=0)
+        viewer.images_per_page = 2
+        bm = Images(filename="bm_active2", ext="jpg", md5_hash="bp2" + "0" * 29,
+                    user_id=owner.user_id, width=10, height=10, filesize=100,
+                    status=ImageStatus.ACTIVE)
+        db_session.add(bm)
+        await db_session.commit()
+        await db_session.refresh(bm)
+        for i in range(3):
+            db_session.add(Images(filename=f"bp2_rep{i}", ext="jpg", md5_hash=f"bz{i:030d}",
+                                  user_id=owner.user_id, width=10, height=10, filesize=100,
+                                  status=ImageStatus.REPOST))
+        viewer.bookmark = bm.image_id
+        await db_session.commit()
+        # Control: reposts counted -> 3 before bm -> position 3 -> page ceil(4/2)=2.
+        data = (await client.get("/api/v1/images/bookmark/page", headers=self._hdr(viewer))).json()
+        assert data["page"] == 2

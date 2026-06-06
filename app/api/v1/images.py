@@ -293,13 +293,20 @@ async def _default_feed_total(
     the visibility filter in list_images exactly:
     show_all_images=1 => no filter; anonymous => public only; otherwise public + own.
     """
-    total_all, hidden_count = await get_feed_counts(db, redis_client)
+    total_all, hidden_count, repost_count = await get_feed_counts(db, redis_client)
+    hide_reposts = current_user is not None and current_user.hide_reposts == 1
 
-    # show_all_images=1: no visibility filter at all — every image counts.
+    # show_all_images=1: every image counts (minus reposts if the viewer hides them).
+    # max(0, ...): the three cached counts are separate queries, so a concurrent mutation
+    # between them could momentarily make repost_count exceed the base — clamp so the
+    # pagination total never goes negative.
     if current_user is not None and current_user.show_all_images == 1:
-        return total_all
+        return max(0, total_all - (repost_count if hide_reposts else 0))
 
-    visible_count = total_all - hidden_count
+    visible_count = total_all - hidden_count  # count(PUBLIC) = active + spoiler + repost
+    if hide_reposts:
+        # All reposts are public/global, so this also removes the viewer's own reposts.
+        visible_count = max(0, visible_count - repost_count)
 
     # Logged-in + show_all=0: also count the viewer's own (hidden) images. Equality on
     # user_id (not `!= me`) keeps NULL-owner rows correct.
@@ -316,7 +323,7 @@ async def _default_feed_total(
         ).scalar() or 0
         return visible_count + my_hidden_count
 
-    # Anonymous: public statuses only.
+    # Anonymous: public statuses only (anonymous users have no hide_reposts).
     return visible_count
 
 
@@ -469,6 +476,13 @@ async def list_images(
             else:
                 # Anonymous: only public statuses
                 query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
+
+        # hide_reposts preference — applied in the no-explicit-status branch, outside the
+        # show_all sub-block so it covers both show_all=0 and show_all=1. This is a global
+        # exclusion (not ownership-aware), so the viewer's own reposts are dropped too.
+        # An explicit ?status= takes the other branch and overrides this.
+        if current_user is not None and current_user.hide_reposts == 1:
+            query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
 
     # Tag filtering
     tag_ids: list[int] = []
@@ -827,6 +841,9 @@ async def random_images_page(
         count_query = count_query.where(
             Images.status.in_(PUBLIC_IMAGE_STATUSES)  # type: ignore[attr-defined]
         )
+
+    if current_user is not None and current_user.hide_reposts == 1:
+        count_query = count_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
 
     result = await db.execute(count_query)
     total = result.scalar() or 0
@@ -1914,19 +1931,21 @@ async def get_bookmark_page(
 
     # Build the same filter as list_images uses
     show_all = current_user.show_all_images == 1
+    hide_reposts = current_user.hide_reposts == 1
     images_per_page = current_user.images_per_page or 15
 
-    # Check if bookmark is visible under user's settings
-    # If not visible, return page: null (bookmark exists but won't appear in list)
-    if not show_all:
-        is_public = bookmark_image.status in PUBLIC_IMAGE_STATUSES
-        is_own_image = bookmark_image.user_id == current_user.user_id
-        if not is_public and not is_own_image:
-            return BookmarkPageResponse(
-                page=None,
-                image_id=bookmark_id,
-                images_per_page=images_per_page,
-            )
+    # Bookmark not visible under the user's settings -> page: null
+    is_public = bookmark_image.status in PUBLIC_IMAGE_STATUSES
+    is_own_image = bookmark_image.user_id == current_user.user_id
+    is_repost = bookmark_image.status == ImageStatus.REPOST
+    hidden_by_visibility = (not show_all) and (not is_public) and (not is_own_image)
+    hidden_by_repost_pref = hide_reposts and is_repost
+    if hidden_by_visibility or hidden_by_repost_pref:
+        return BookmarkPageResponse(
+            page=None,
+            image_id=bookmark_id,
+            images_per_page=images_per_page,
+        )
 
     # Get sort column and direction from user preferences
     sort_field = current_user.sorting_pref or "image_id"
@@ -1992,6 +2011,9 @@ async def get_bookmark_page(
                 Images.user_id == current_user.user_id,  # type: ignore[arg-type]
             )
         )
+
+    if hide_reposts:
+        count_query = count_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
 
     result = await db.execute(count_query)
     position = result.scalar() or 0

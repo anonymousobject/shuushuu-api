@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
-from app.config import SuspensionAction, settings
+from app.config import ImageStatus, SuspensionAction, settings
 from app.core.auth import (
     get_client_ip,
     get_current_user,
@@ -690,6 +690,9 @@ async def get_user_images(
     else:
         query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
+    if current_user is not None and current_user.hide_reposts == 1:
+        query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
+
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -805,6 +808,9 @@ async def get_user_favorites(
         )
     else:
         query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
+
+    if current_user is not None and current_user.hide_reposts == 1:
+        query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
