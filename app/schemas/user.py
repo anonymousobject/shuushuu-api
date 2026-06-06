@@ -50,6 +50,7 @@ class UserUpdate(BaseModel):
 
     # User settings
     show_all_images: int | None = None
+    hide_reposts: int | None = None
     spoiler_warning_pref: int | None = None
 
     # Display preferences
@@ -90,7 +91,9 @@ class UserUpdate(BaseModel):
             raise ValueError("Gender must be 50 characters or less")
         return v
 
-    @field_validator("email_pm_pref", "show_all_images", "spoiler_warning_pref", "thumb_layout")
+    @field_validator(
+        "email_pm_pref", "show_all_images", "hide_reposts", "spoiler_warning_pref", "thumb_layout"
+    )
     @classmethod
     def validate_boolean_prefs(cls, v: int | None) -> int | None:
         """Validate boolean preference fields are 0 or 1"""
@@ -220,6 +223,7 @@ class UserPrivateResponse(UserResponse):
 
     # User settings
     show_all_images: int  # Show disabled/pending images (0=no, 1=yes)
+    hide_reposts: int  # Hide reposts from listings (0=no, 1=yes)
     spoiler_warning_pref: int  # Show spoiler warnings (0=disabled, 1=enabled)
 
     # Display preferences

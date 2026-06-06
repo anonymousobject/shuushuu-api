@@ -17,7 +17,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_password_hash
+from app.core.security import create_access_token, get_password_hash
 from app.models.favorite import Favorites
 from app.models.image import Images
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
@@ -2894,3 +2894,48 @@ class TestUserGroups:
         # Verify groups is empty list, not missing
         assert "groups" in data
         assert data["groups"] == []
+
+
+@pytest.mark.api
+class TestHideRepostsSetting:
+    """Tests for hide_reposts preference field."""
+
+    async def test_patch_persists_hide_reposts(self, client: AsyncClient, db_session: AsyncSession):
+        user = Users(
+            username="hr_persist", password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt", salt="", email="hr_persist@test.com", active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+        token = create_access_token(user.user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        me = await client.get("/api/v1/users/me", headers=headers)
+        assert me.json()["hide_reposts"] == 0
+
+        resp = await client.patch("/api/v1/users/me", json={"hide_reposts": 1}, headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["hide_reposts"] == 1
+
+        me2 = await client.get("/api/v1/users/me", headers=headers)
+        assert me2.json()["hide_reposts"] == 1
+
+        await db_session.refresh(user)
+        assert user.hide_reposts == 1
+
+    async def test_hide_reposts_rejects_non_boolean(self, client: AsyncClient, db_session: AsyncSession):
+        user = Users(
+            username="hr_valid", password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt", salt="", email="hr_valid@test.com", active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+        token = create_access_token(user.user_id)
+
+        resp = await client.patch(
+            "/api/v1/users/me", json={"hide_reposts": 2},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422
