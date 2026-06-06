@@ -921,7 +921,7 @@ async def get_tag(
                 Images,
                 TagLinks.image_id == Images.image_id,  # type: ignore[arg-type]
             )
-        count_query = count_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[attr-defined]
+        count_query = count_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
     count_result = await db.execute(count_query)
     total_image_count = count_result.scalar()
 

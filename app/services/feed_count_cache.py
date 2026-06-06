@@ -56,7 +56,7 @@ async def get_feed_counts(
     ).scalar() or 0
     repost = (
         await db.execute(
-            select(func.count()).select_from(Images).where(Images.status == ImageStatus.REPOST)  # type: ignore[attr-defined]
+            select(func.count()).select_from(Images).where(Images.status == ImageStatus.REPOST)  # type: ignore[arg-type]
         )
     ).scalar() or 0
 

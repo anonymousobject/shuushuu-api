@@ -297,13 +297,16 @@ async def _default_feed_total(
     hide_reposts = current_user is not None and current_user.hide_reposts == 1
 
     # show_all_images=1: every image counts (minus reposts if the viewer hides them).
+    # max(0, ...): the three cached counts are separate queries, so a concurrent mutation
+    # between them could momentarily make repost_count exceed the base — clamp so the
+    # pagination total never goes negative.
     if current_user is not None and current_user.show_all_images == 1:
-        return total_all - (repost_count if hide_reposts else 0)
+        return max(0, total_all - (repost_count if hide_reposts else 0))
 
     visible_count = total_all - hidden_count  # count(PUBLIC) = active + spoiler + repost
     if hide_reposts:
         # All reposts are public/global, so this also removes the viewer's own reposts.
-        visible_count -= repost_count
+        visible_count = max(0, visible_count - repost_count)
 
     # Logged-in + show_all=0: also count the viewer's own (hidden) images. Equality on
     # user_id (not `!= me`) keeps NULL-owner rows correct.
@@ -840,7 +843,7 @@ async def random_images_page(
         )
 
     if current_user is not None and current_user.hide_reposts == 1:
-        count_query = count_query.where(Images.status != ImageStatus.REPOST)
+        count_query = count_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
 
     result = await db.execute(count_query)
     total = result.scalar() or 0
@@ -2010,7 +2013,7 @@ async def get_bookmark_page(
         )
 
     if hide_reposts:
-        count_query = count_query.where(Images.status != ImageStatus.REPOST)
+        count_query = count_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
 
     result = await db.execute(count_query)
     position = result.scalar() or 0

@@ -691,7 +691,7 @@ async def get_user_images(
         query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
     if current_user is not None and current_user.hide_reposts == 1:
-        query = query.where(Images.status != ImageStatus.REPOST)
+        query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -810,7 +810,7 @@ async def get_user_favorites(
         query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
     if current_user is not None and current_user.hide_reposts == 1:
-        query = query.where(Images.status != ImageStatus.REPOST)
+        query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
