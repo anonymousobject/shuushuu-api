@@ -470,6 +470,13 @@ async def list_images(
                 # Anonymous: only public statuses
                 query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
+        # hide_reposts preference — applied in the no-explicit-status branch, outside the
+        # show_all sub-block so it covers both show_all=0 and show_all=1. This is a global
+        # exclusion (not ownership-aware), so the viewer's own reposts are dropped too.
+        # An explicit ?status= takes the other branch and overrides this.
+        if current_user is not None and current_user.hide_reposts == 1:
+            query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
+
     # Tag filtering
     tag_ids: list[int] = []
     if tags:
