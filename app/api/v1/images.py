@@ -6,6 +6,7 @@ import math
 import random
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path as FilePath
@@ -272,6 +273,41 @@ async def _open_report_image_ids(
         .distinct()
     )
     return {r[0] for r in rows.all()}
+
+
+@dataclass
+class _FeedFilters:
+    """The content filters ``list_images`` can apply.
+
+    The *bare* default feed is "every one of these empty" — the only shape the fast
+    hidden-complement count is valid for. Adding a new content filter to ``list_images``
+    means adding a field here and passing it in at the count site; this dataclass is the
+    single source the fast-path consults, so the ``== _FeedFilters()`` check covers any
+    new field automatically (unlike the old hand-listed per-field AND, where a forgotten
+    line silently returned a wrong total).
+
+    Mode/depth params (``tags_mode``, ``tag_depth``, ``*_mode``) are intentionally absent:
+    they only refine an already-set filter and never narrow the bare feed on their own.
+    """
+
+    image_status: list[int] | None = None
+    user_id: int | None = None
+    favorited_by_user_id: int | None = None
+    tags: str | None = None
+    exclude_tags: str | None = None
+    missing_tag_types: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+    min_width: int | None = None
+    max_width: int | None = None
+    min_height: int | None = None
+    max_height: int | None = None
+    min_rating: float | None = None
+    min_favorites: int | None = None
+    min_num_ratings: int | None = None
+    commenter: int | None = None
+    commentsearch: str | None = None
+    hascomments: bool | None = None
 
 
 async def _default_feed_total(
@@ -669,28 +705,31 @@ async def list_images(
     # Count total results. For the *bare* default feed (no content filter — only the
     # implicit visibility filter), count(visible OR mine) is a full-table scan; use the
     # fast hidden-complement count instead. ANY explicit filter falls back to the exact
-    # subquery count. IMPORTANT: keep this in sync with the filters applied above — a
-    # missing check here would return a wrong total for that filtered query.
-    is_bare_default_feed = (
-        image_status is None
-        and user_id is None
-        and favorited_by_user_id is None
-        and not tags
-        and not exclude_tags
-        and not missing_tag_types
-        and date_from is None
-        and date_to is None
-        and min_width is None
-        and max_width is None
-        and min_height is None
-        and max_height is None
-        and min_rating is None
-        and min_favorites is None
-        and min_num_ratings is None
-        and commenter is None
-        and commentsearch is None
-        and hascomments is None
+    # subquery count.
+    active_filters = _FeedFilters(
+        image_status=image_status,
+        user_id=user_id,
+        favorited_by_user_id=favorited_by_user_id,
+        tags=tags or None,
+        exclude_tags=exclude_tags or None,
+        missing_tag_types=missing_tag_types or None,
+        date_from=date_from,
+        date_to=date_to,
+        min_width=min_width,
+        max_width=max_width,
+        min_height=min_height,
+        max_height=max_height,
+        min_rating=min_rating,
+        min_favorites=min_favorites,
+        min_num_ratings=min_num_ratings,
+        commenter=commenter,
+        commentsearch=commentsearch,
+        hascomments=hascomments,
     )
+    # Bare feed = every content filter empty. One comparison, so a field added to
+    # _FeedFilters is covered automatically. Falsy strings (e.g. tags="") normalize to
+    # None so an empty filter param still reads as "no filter", matching the old `not x`.
+    is_bare_default_feed = active_filters == _FeedFilters()
     if is_bare_default_feed:
         total = await _default_feed_total(db, current_user, redis_client)
     else:

@@ -226,3 +226,67 @@ class TestFeedCountCache:
             assert isinstance(repost, int) and repost >= 1
         finally:
             await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
+
+
+@pytest.mark.unit
+class TestFeedFilters:
+    """Unit guards for _FeedFilters, the bare-default-feed detector behind the fast count."""
+
+    def test_empty_is_the_bare_sentinel(self):
+        from app.api.v1.images import _FeedFilters
+
+        assert _FeedFilters() == _FeedFilters()
+
+    def test_any_single_filter_is_not_bare(self):
+        from app.api.v1.images import _FeedFilters
+
+        non_bare = [
+            {"image_status": [1]},
+            {"user_id": 5},
+            {"favorited_by_user_id": 5},
+            {"tags": "1"},
+            {"exclude_tags": "1"},
+            {"missing_tag_types": "1"},
+            {"date_from": "2026-01-01"},
+            {"date_to": "2026-01-01"},
+            {"min_width": 1},
+            {"max_width": 1},
+            {"min_height": 1},
+            {"max_height": 1},
+            {"min_rating": 1.0},
+            {"min_favorites": 1},
+            {"min_num_ratings": 1},
+            {"commenter": 5},
+            {"commentsearch": "x"},
+            {"hascomments": False},
+        ]
+        for kwargs in non_bare:
+            assert _FeedFilters(**kwargs) != _FeedFilters(), kwargs
+
+    def test_field_set_is_the_documented_filter_set(self):
+        """Guards against drift: a new list_images content filter must be added here to be
+        covered by the `== _FeedFilters()` fast-count check."""
+        from dataclasses import fields
+
+        from app.api.v1.images import _FeedFilters
+
+        assert {f.name for f in fields(_FeedFilters)} == {
+            "image_status",
+            "user_id",
+            "favorited_by_user_id",
+            "tags",
+            "exclude_tags",
+            "missing_tag_types",
+            "date_from",
+            "date_to",
+            "min_width",
+            "max_width",
+            "min_height",
+            "max_height",
+            "min_rating",
+            "min_favorites",
+            "min_num_ratings",
+            "commenter",
+            "commentsearch",
+            "hascomments",
+        }
