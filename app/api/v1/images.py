@@ -835,6 +835,9 @@ async def random_images_page(
             Images.status.in_(PUBLIC_IMAGE_STATUSES)  # type: ignore[attr-defined]
         )
 
+    if current_user is not None and current_user.hide_reposts == 1:
+        count_query = count_query.where(Images.status != ImageStatus.REPOST)
+
     result = await db.execute(count_query)
     total = result.scalar() or 0
 

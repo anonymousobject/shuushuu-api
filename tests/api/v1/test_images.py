@@ -4177,3 +4177,31 @@ class TestHideReposts:
         viewer = await self._user(db_session, "hr_exp", show_all=0, hide_reposts=1)
         data = (await client.get("/api/v1/images?status=-1", headers=self._hdr(viewer))).json()
         assert {i["filename"] for i in data["images"]} == {"repost_img"}
+
+    async def test_random_excludes_reposts_when_hiding(self, client, db_session):
+        from app.config import ImageStatus
+        owner = await self._user(db_session, "hr_rand_owner")
+        viewer = await self._user(db_session, "hr_rand", show_all=0, hide_reposts=1)
+        for i in range(3):
+            db_session.add(Images(filename=f"r_rep{i}", ext="jpg", md5_hash=f"rr{i:030d}",
+                                  user_id=owner.user_id, width=10, height=10, filesize=100,
+                                  status=ImageStatus.REPOST))
+        await db_session.commit()
+        # Only reposts exist; with hide_reposts the visible count is 0 -> /random 404s.
+        resp = await client.get("/api/v1/images/random?per_page=1",
+                                headers=self._hdr(viewer), follow_redirects=False)
+        assert resp.status_code == 404
+
+    async def test_random_counts_reposts_when_not_hiding(self, client, db_session):
+        from app.config import ImageStatus
+        owner = await self._user(db_session, "hr_rand_owner2")
+        viewer = await self._user(db_session, "hr_rand2", show_all=0, hide_reposts=0)
+        for i in range(3):
+            db_session.add(Images(filename=f"r2_rep{i}", ext="jpg", md5_hash=f"rs{i:030d}",
+                                  user_id=owner.user_id, width=10, height=10, filesize=100,
+                                  status=ImageStatus.REPOST))
+        await db_session.commit()
+        # Control: reposts are public, so without hiding they ARE counted -> a page exists.
+        resp = await client.get("/api/v1/images/random?per_page=1",
+                                headers=self._hdr(viewer), follow_redirects=False)
+        assert resp.status_code == 302
