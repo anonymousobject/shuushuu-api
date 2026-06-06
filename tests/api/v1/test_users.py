@@ -1198,6 +1198,71 @@ class TestGetUserImages:
         data = response.json()
         assert data["total"] == 2
 
+    async def test_user_images_excludes_reposts_for_hide_reposts_viewer(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A hide_reposts viewer doesn't see another user's reposts in their gallery."""
+        from app.core.security import create_access_token
+
+        subject = Users(username="hrg_subject", password=get_password_hash("TestPassword123!"),
+                        password_type="bcrypt", salt="", email="hrg_subject@test.com", active=1)
+        viewer = Users(username="hrg_viewer", password=get_password_hash("TestPassword123!"),
+                       password_type="bcrypt", salt="", email="hrg_viewer@test.com", active=1,
+                       hide_reposts=1)
+        db_session.add(subject)
+        db_session.add(viewer)
+        await db_session.commit()
+        await db_session.refresh(subject)
+        await db_session.refresh(viewer)
+
+        for name, status_val in [("active", 1), ("repost", -1), ("spoiler", 2)]:
+            data = sample_image_data.copy()
+            data["filename"] = f"hrg-{name}"
+            data["md5_hash"] = f"hrgi{name:0<20s}"
+            data["user_id"] = subject.user_id
+            data["status"] = status_val
+            db_session.add(Images(**data))
+        await db_session.commit()
+
+        token = create_access_token(viewer.user_id)
+        response = await client.get(f"/api/v1/users/{subject.user_id}/images",
+                                    headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        assert {img["status"] for img in data["images"]} == {1, 2}  # active + spoiler, no repost
+
+    async def test_user_images_hides_own_reposts(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """hide_reposts hides the viewer's OWN reposts but keeps own non-repost non-public images."""
+        from app.core.security import create_access_token
+
+        viewer = Users(username="hrg_own", password=get_password_hash("TestPassword123!"),
+                       password_type="bcrypt", salt="", email="hrg_own@test.com", active=1,
+                       hide_reposts=1)
+        db_session.add(viewer)
+        await db_session.commit()
+        await db_session.refresh(viewer)
+
+        for name, status_val in [("active", 1), ("repost", -1), ("review", -4)]:
+            data = sample_image_data.copy()
+            data["filename"] = f"hrgo-{name}"
+            data["md5_hash"] = f"hrgo{name:0<20s}"
+            data["user_id"] = viewer.user_id
+            data["status"] = status_val
+            db_session.add(Images(**data))
+        await db_session.commit()
+
+        token = create_access_token(viewer.user_id)
+        response = await client.get(f"/api/v1/users/{viewer.user_id}/images",
+                                    headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        data = response.json()
+        # own active (public) + own review (own non-public) visible; own repost hidden.
+        assert data["total"] == 2
+        assert {img["status"] for img in data["images"]} == {1, -4}
+
 
 @pytest.mark.api
 class TestGetUserFavorites:
@@ -1286,6 +1351,49 @@ class TestGetUserFavorites:
         data = response.json()
         assert data["total"] == 1
         assert data["images"][0]["status"] == 1
+
+    async def test_user_favorites_excludes_reposts_for_hide_reposts_viewer(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A hide_reposts viewer doesn't see reposts in another user's favorites."""
+        from app.core.security import create_access_token
+
+        subject = Users(username="hrf_subject", password=get_password_hash("TestPassword123!"),
+                        password_type="bcrypt", salt="", email="hrf_subject@test.com", active=1)
+        viewer = Users(username="hrf_viewer", password=get_password_hash("TestPassword123!"),
+                       password_type="bcrypt", salt="", email="hrf_viewer@test.com", active=1,
+                       hide_reposts=1)
+        db_session.add(subject)
+        db_session.add(viewer)
+        await db_session.commit()
+        await db_session.refresh(subject)
+        await db_session.refresh(viewer)
+
+        active_data = sample_image_data.copy()
+        active_data.update({"filename": "hrf-active", "md5_hash": "hrfactive" + "0" * 15,
+                            "status": 1, "user_id": subject.user_id})
+        active_img = Images(**active_data)
+        repost_data = sample_image_data.copy()
+        repost_data.update({"filename": "hrf-repost", "md5_hash": "hrfrepost" + "0" * 15,
+                            "status": -1, "user_id": subject.user_id})
+        repost_img = Images(**repost_data)
+        db_session.add(active_img)
+        db_session.add(repost_img)
+        await db_session.commit()
+        await db_session.refresh(active_img)
+        await db_session.refresh(repost_img)
+
+        db_session.add(Favorites(user_id=subject.user_id, image_id=active_img.image_id))
+        db_session.add(Favorites(user_id=subject.user_id, image_id=repost_img.image_id))
+        await db_session.commit()
+
+        token = create_access_token(viewer.user_id)
+        response = await client.get(f"/api/v1/users/{subject.user_id}/favorites",
+                                    headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["status"] == 1  # active, repost excluded
 
 
 @pytest.mark.api
