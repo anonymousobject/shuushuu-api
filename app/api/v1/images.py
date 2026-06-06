@@ -293,13 +293,17 @@ async def _default_feed_total(
     the visibility filter in list_images exactly:
     show_all_images=1 => no filter; anonymous => public only; otherwise public + own.
     """
-    total_all, hidden_count = await get_feed_counts(db, redis_client)
+    total_all, hidden_count, repost_count = await get_feed_counts(db, redis_client)
+    hide_reposts = current_user is not None and current_user.hide_reposts == 1
 
-    # show_all_images=1: no visibility filter at all — every image counts.
+    # show_all_images=1: every image counts (minus reposts if the viewer hides them).
     if current_user is not None and current_user.show_all_images == 1:
-        return total_all
+        return total_all - (repost_count if hide_reposts else 0)
 
-    visible_count = total_all - hidden_count
+    visible_count = total_all - hidden_count  # count(PUBLIC) = active + spoiler + repost
+    if hide_reposts:
+        # All reposts are public/global, so this also removes the viewer's own reposts.
+        visible_count -= repost_count
 
     # Logged-in + show_all=0: also count the viewer's own (hidden) images. Equality on
     # user_id (not `!= me`) keeps NULL-owner rows correct.
@@ -316,7 +320,7 @@ async def _default_feed_total(
         ).scalar() or 0
         return visible_count + my_hidden_count
 
-    # Anonymous: public statuses only.
+    # Anonymous: public statuses only (anonymous users have no hide_reposts).
     return visible_count
 
 

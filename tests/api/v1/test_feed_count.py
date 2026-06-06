@@ -9,9 +9,10 @@ applied). Correctness here is data-independent, so it holds on the small test DB
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import ImageStatus
 from app.core.security import get_password_hash
 from app.models.image import Images
 from app.models.user import Users
@@ -22,7 +23,7 @@ from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 VISIBLE = sorted(PUBLIC_IMAGE_STATUSES)
 
 
-async def _user(db, username, show_all=0):
+async def _user(db, username, show_all=0, hide_reposts=0):
     u = Users(
         username=username,
         password=get_password_hash("TestPassword123!"),
@@ -31,6 +32,7 @@ async def _user(db, username, show_all=0):
         email=f"{username}@example.com",
         active=1,
         show_all_images=show_all,
+        hide_reposts=hide_reposts,
     )
     db.add(u)
     await db.commit()
@@ -139,30 +141,88 @@ class TestFastFeedCount:
         assert r.json()["total"] == expected_b
 
 
+    async def test_bare_feed_total_excludes_reposts_for_hide_reposts_viewer(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        a = await _user(db_session, "fcHRa", show_all=0)
+        b = await _user(db_session, "fcHRb", show_all=0)
+        await _seed(db_session, a, b)  # b owns exactly 1 repost (status -1)
+        viewer = await _user(db_session, "fcHRview", show_all=0, hide_reposts=1)
+
+        expected = await _ground_truth(
+            db_session,
+            and_(
+                or_(Images.status.in_(VISIBLE), Images.user_id == viewer.user_id),
+                Images.status != ImageStatus.REPOST,
+            ),
+        )
+        token = await _login(client, viewer.username)
+        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        assert r.json()["total"] == expected
+
+        # Sanity: hiding reposts strictly reduces the total (the seed has a repost).
+        expected_no_hide = await _ground_truth(
+            db_session, or_(Images.status.in_(VISIBLE), Images.user_id == viewer.user_id)
+        )
+        assert expected < expected_no_hide
+
+    async def test_own_repost_not_double_counted_for_hide_reposts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await _user(db_session, "fcOwnRep", show_all=0, hide_reposts=1)
+        await _img(db_session, owner, "or0" + "0" * 29, 1)   # own active (visible)
+        await _img(db_session, owner, "or1" + "1" * 29, -1)  # own repost (public, hidden by pref)
+        await _img(db_session, owner, "or2" + "2" * 29, 0)   # own deactivated (hidden, but own -> visible)
+
+        expected = await _ground_truth(
+            db_session,
+            and_(
+                or_(Images.status.in_(VISIBLE), Images.user_id == owner.user_id),
+                Images.status != ImageStatus.REPOST,
+            ),
+        )
+        token = await _login(client, owner.username)
+        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        assert r.json()["total"] == expected
+
+
 @pytest.mark.api
 class TestFeedCountCache:
     async def test_global_counts_cached_within_ttl(self, db_session: AsyncSession, redis_client):
-        """The two global counts are TTL-cached (no per-mutation invalidation): a new
+        """The three global counts are TTL-cached (no per-mutation invalidation): a new
         image isn't reflected until the entry expires or is cleared. Also guards the
         str<->int round-trip through Redis."""
-        from app.services.feed_count_cache import _KEY_HIDDEN, _KEY_TOTAL, get_feed_counts
+        from app.services.feed_count_cache import _KEY_HIDDEN, _KEY_REPOST, _KEY_TOTAL, get_feed_counts
 
-        await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN)
+        await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
         try:
             a = await _user(db_session, "fcCache", show_all=0)
             await _img(db_session, a, "c" * 32, 1)
             await _img(db_session, a, "c1" + "0" * 30, 0)
 
-            total1, hidden1 = await get_feed_counts(db_session, redis_client)
-            assert isinstance(total1, int) and isinstance(hidden1, int)  # parsed back from str
+            total1, hidden1, repost1 = await get_feed_counts(db_session, redis_client)
+            assert isinstance(total1, int) and isinstance(hidden1, int) and isinstance(repost1, int)  # parsed back from str
 
             # New image is NOT reflected while the cache is warm (TTL, no invalidation).
             await _img(db_session, a, "c2" + "0" * 30, 1)
-            assert await get_feed_counts(db_session, redis_client) == (total1, hidden1)
+            assert await get_feed_counts(db_session, redis_client) == (total1, hidden1, repost1)
 
             # Once the entry is gone, a recompute picks the new image up.
-            await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN)
-            total3, _h = await get_feed_counts(db_session, redis_client)
+            await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
+            total3, _h, _r = await get_feed_counts(db_session, redis_client)
             assert total3 == total1 + 1
         finally:
-            await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN)
+            await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
+
+    async def test_feed_counts_include_repost_count(self, db_session: AsyncSession, redis_client):
+        from app.services.feed_count_cache import _KEY_HIDDEN, _KEY_REPOST, _KEY_TOTAL, get_feed_counts
+
+        await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
+        try:
+            u = await _user(db_session, "fcRepost", show_all=0)
+            await _img(db_session, u, "fr0" + "0" * 29, 1)   # active
+            await _img(db_session, u, "fr1" + "1" * 29, -1)  # repost
+            total, hidden, repost = await get_feed_counts(db_session, redis_client)
+            assert isinstance(repost, int) and repost >= 1
+        finally:
+            await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
