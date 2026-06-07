@@ -102,3 +102,67 @@ class TestHasOpenReportFlag:
         items = r.json()["images"]
         match = [i for i in items if i["image_id"] == reported.image_id]
         assert match and match[0]["has_open_report"] is True
+
+
+@pytest.mark.api
+class TestReportedFilter:
+    """`?reported=true` restricts list_images to pending-reported images — mods only."""
+
+    async def test_mod_filters_to_reported_images(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await _make_user(db_session, "repfowner")
+        reported = await _image(db_session, owner, "d" * 32)
+        clean = await _image(db_session, owner, "e" * 32)
+        db_session.add(
+            ImageReports(
+                image_id=reported.image_id,
+                user_id=owner.user_id,
+                category=2,
+                status=ReportStatus.PENDING,
+            )
+        )
+        await db_session.commit()
+
+        mod = await _make_user(db_session, "repfmod")
+        await _grant(db_session, mod.user_id, "report_view")
+        token = await _login(client, mod.username)
+
+        r = await client.get(
+            "/api/v1/images/?reported=true&per_page=100",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        ids = {i["image_id"] for i in r.json()["images"]}
+        assert reported.image_id in ids
+        assert clean.image_id not in ids
+
+    async def test_non_mod_reported_param_is_a_noop(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await _make_user(db_session, "repfplainowner")
+        reported = await _image(db_session, owner, "f" * 32)
+        clean = await _image(db_session, owner, "a1" + "0" * 30)
+        db_session.add(
+            ImageReports(
+                image_id=reported.image_id,
+                user_id=owner.user_id,
+                category=2,
+                status=ReportStatus.PENDING,
+            )
+        )
+        await db_session.commit()
+
+        plain = await _make_user(db_session, "repfplain")
+        token = await _login(client, plain.username)
+
+        # No report_view -> the filter is silently ignored (never leaks the queue),
+        # so both public images come back.
+        r = await client.get(
+            "/api/v1/images/?reported=true&per_page=100",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        ids = {i["image_id"] for i in r.json()["images"]}
+        assert reported.image_id in ids
+        assert clean.image_id in ids

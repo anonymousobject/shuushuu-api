@@ -294,4 +294,5 @@ class TestFeedFilters:
             "commenter",
             "commentsearch",
             "hascomments",
+            "reported",
         }

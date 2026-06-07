@@ -308,6 +308,7 @@ class _FeedFilters:
     commenter: int | None = None
     commentsearch: str | None = None
     hascomments: bool | None = None
+    reported: bool | None = None
 
 
 async def _default_feed_total(
@@ -443,6 +444,13 @@ async def list_images(
     hascomments: Annotated[
         bool | None,
         Query(description="Filter to images that have comments (true) or no comments (false)"),
+    ] = None,
+    reported: Annotated[
+        bool | None,
+        Query(
+            description="Filter to images with a pending report. Requires report_view; "
+            "ignored for other viewers."
+        ),
     ] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Users | None = Depends(get_optional_current_user),
@@ -702,6 +710,25 @@ async def list_images(
         # Filter to images WITHOUT comments using posts counter
         query = query.where(Images.posts == 0)  # type: ignore[arg-type]
 
+    # Reported filtering: restrict to images that have a PENDING report. Mods only
+    # (REPORT_VIEW) so it never leaks the triage queue — silently a no-op for everyone else.
+    apply_reported = (
+        bool(reported)
+        and current_user is not None
+        and current_user.user_id is not None
+        and await has_any_permission(
+            db, current_user.user_id, [Permission.REPORT_VIEW], redis_client
+        )
+    )
+    if apply_reported:
+        query = query.where(
+            Images.image_id.in_(  # type: ignore[union-attr]
+                select(ImageReports.image_id).where(  # type: ignore[call-overload]
+                    ImageReports.status == ReportStatus.PENDING
+                )
+            )
+        )
+
     # Count total results. For the *bare* default feed (no content filter — only the
     # implicit visibility filter), count(visible OR mine) is a full-table scan; use the
     # fast hidden-complement count instead. ANY explicit filter falls back to the exact
@@ -725,6 +752,7 @@ async def list_images(
         commenter=commenter,
         commentsearch=commentsearch,
         hascomments=hascomments,
+        reported=apply_reported or None,
     )
     # Bare feed = every content filter empty. One comparison, so a field added to
     # _FeedFilters is covered automatically. Falsy strings (e.g. tags="") normalize to
