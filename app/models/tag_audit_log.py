@@ -4,6 +4,7 @@ SQLModel-based TagAuditLog model for tracking tag metadata changes.
 This module tracks all changes to tag metadata including:
 - Renames (title changes)
 - Type changes
+- Description changes
 - Alias changes (setting/removing alias_of)
 - Inheritance changes (setting/removing parent)
 - Character-source link changes

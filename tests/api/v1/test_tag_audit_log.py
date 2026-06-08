@@ -140,7 +140,9 @@ class TestTagAuditLogRename:
         )
         access_token = login_response.json()["access_token"]
 
-        # Update tag without changing name (only description)
+        # Update tag without changing name (only the description). The description
+        # change now emits its own DESCRIPTION_CHANGE entry; this test deliberately
+        # asserts only that no RENAME entry is created.
         update_data = {
             "title": "unchanged name",
             "desc": "new description",
@@ -315,6 +317,67 @@ class TestTagAuditLogDescriptionChange:
         assert len(items) == 1
         assert items[0]["old_desc"] == "old description"
         assert items[0]["new_desc"] == "new description"
+
+    async def test_adding_description_from_none_logs_old_desc_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Setting a description on a tag that had none logs old_desc=None → new."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="descadmin3",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="descadmin3@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Tag created with no description.
+        tag = Tags(title="no desc tag", desc=None, type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "descadmin3", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        update_data = {
+            "title": "no desc tag",
+            "desc": "now it has one",
+            "type": TagType.THEME,
+        }
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json=update_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == tag.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.DESCRIPTION_CHANGE,
+            )
+        )
+        entries = audit_result.scalars().all()
+        assert len(entries) == 1
+        assert entries[0].old_desc is None
+        assert entries[0].new_desc == "now it has one"
 
 
 @pytest.mark.api

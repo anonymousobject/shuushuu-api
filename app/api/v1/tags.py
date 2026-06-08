@@ -1038,7 +1038,7 @@ async def get_tag_history(
     Get tag metadata change history.
 
     Returns paginated list of all metadata changes (renames, type changes,
-    alias changes, inheritance changes, character-source links).
+    description changes, alias changes, inheritance changes, character-source links).
     """
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
