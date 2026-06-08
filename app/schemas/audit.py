@@ -42,6 +42,10 @@ class TagAuditLogResponse(BaseModel):
     old_type: int | None = None
     new_type: int | None = None
 
+    # Description change fields
+    old_desc: str | None = None
+    new_desc: str | None = None
+
     # Alias change fields
     old_alias_of: int | None = None
     new_alias_of: int | None = None
@@ -219,8 +223,9 @@ class UserHistoryItem(BaseModel):
     The exact fields present depend on the `type` field:
 
     - tag_metadata: action_type, tag, old_title/new_title (for rename),
-      old_type/new_type (for type_change), alias_tag/parent_tag/source_tag/
-      character_tag (for the corresponding link/unlink actions), created_at
+      old_type/new_type (for type_change), old_desc/new_desc (for
+      description_change), alias_tag/parent_tag/source_tag/character_tag
+      (for the corresponding link/unlink actions), created_at
     - tag_usage: action, tag, image_id, date
     - status_change: image_id, old_status, new_status, new_status_label, created_at
     """
@@ -253,6 +258,10 @@ class UserHistoryItem(BaseModel):
     # For tag_metadata: type_change action
     old_type: int | None = None
     new_type: int | None = None
+
+    # For tag_metadata: description_change action
+    old_desc: str | None = None
+    new_desc: str | None = None
 
     # For tag_metadata: the *other* tag involved in the action. Populated per
     # action_type — alias_set/alias_removed → alias_tag, parent_set/parent_removed

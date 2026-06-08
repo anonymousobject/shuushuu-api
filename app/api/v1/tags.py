@@ -1038,7 +1038,7 @@ async def get_tag_history(
     Get tag metadata change history.
 
     Returns paginated list of all metadata changes (renames, type changes,
-    alias changes, inheritance changes, character-source links).
+    description changes, alias changes, inheritance changes, character-source links).
     """
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -1126,6 +1126,8 @@ async def get_tag_history(
             new_title=audit.new_title,
             old_type=audit.old_type,
             new_type=audit.new_type,
+            old_desc=audit.old_desc,
+            new_desc=audit.new_desc,
             old_alias_of=audit.old_alias_of,
             new_alias_of=audit.new_alias_of,
             old_parent_id=audit.old_parent_id,
@@ -1320,6 +1322,7 @@ async def update_tag(
     # Store original values for audit logging
     original_title = tag.title
     original_type = tag.type
+    original_desc = tag.desc
     original_alias_of = tag.alias_of
     original_inheritedfrom_id = tag.inheritedfrom_id
 
@@ -1363,6 +1366,17 @@ async def update_tag(
             action_type=TagAuditActionType.RENAME,
             old_title=original_title,
             new_title=tag.title,
+            user_id=current_user.user_id,
+        )
+        db.add(audit_entry)
+
+    # Check for description change
+    if tag.desc != original_desc:
+        audit_entry = TagAuditLog(
+            tag_id=tag_id,
+            action_type=TagAuditActionType.DESCRIPTION_CHANGE,
+            old_desc=original_desc,
+            new_desc=tag.desc,
             user_id=current_user.user_id,
         )
         db.add(audit_entry)

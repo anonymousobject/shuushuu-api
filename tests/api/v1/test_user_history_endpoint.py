@@ -87,6 +87,51 @@ class TestGetUserHistory:
         assert item["new_title"] == "Cirno"
         assert item["created_at"] is not None
 
+    async def test_returns_description_change_items_correctly(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Should return description_change items with old_desc/new_desc (parity)."""
+        user = Users(
+            username="histdescuser",
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email="histdesc@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        tag = Tags(title="Cirno", type=TagType.CHARACTER)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        audit_log = TagAuditLog(
+            tag_id=tag.tag_id,
+            user_id=user.user_id,
+            action_type=TagAuditActionType.DESCRIPTION_CHANGE,
+            old_desc="the strongest",
+            new_desc="the strongest ice fairy",
+        )
+        db_session.add(audit_log)
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+        assert response.status_code == 200
+
+        items = [
+            item
+            for item in response.json()["items"]
+            if item["type"] == "tag_metadata" and item["action_type"] == "description_change"
+        ]
+        assert len(items) == 1
+        item = items[0]
+        assert item["old_desc"] == "the strongest"
+        assert item["new_desc"] == "the strongest ice fairy"
+        assert item["tag"]["tag_id"] == tag.tag_id
+
     async def test_returns_tag_usage_items_correctly(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
