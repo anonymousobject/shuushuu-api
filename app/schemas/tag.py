@@ -73,7 +73,9 @@ class TagCreate(TagBase):
 
     inheritedfrom_id: int | None = None
     alias_of: int | None = None
-    desc: str | None = None
+    # max_length mirrors Tags.desc (VARCHAR(200)); without it an over-long value
+    # passes validation and fails at the DB layer with a 500 instead of a 422.
+    desc: str | None = Field(default=None, max_length=200)
 
     @field_validator("title")
     @classmethod
@@ -81,18 +83,18 @@ class TagCreate(TagBase):
         """Validate and normalize tag title."""
         return validate_tag_name(v)
 
-    @field_validator("desc")
+    @field_validator("desc", mode="before")
     @classmethod
-    def sanitize_desc(cls, v: str | None) -> str | None:
+    def sanitize_desc(cls, v: object) -> object:
         """
-        Sanitize description.
-
-        Just trims whitespace - HTML escaping is handled by Svelte's
-        safe template interpolation on the frontend.
+        Trim the description *before* the max_length constraint runs, so the limit
+        applies to what actually lands in the DB — a value that fits after trimming
+        isn't rejected just for trailing whitespace. HTML escaping is handled by
+        Svelte's safe template interpolation on the frontend.
         """
-        if v is None:
-            return v
-        return v.strip()
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
 
 class TagUpdate(BaseModel):
