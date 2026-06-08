@@ -366,6 +366,7 @@ class TagAuditActionType:
 
     RENAME = "rename"
     TYPE_CHANGE = "type_change"
+    DESCRIPTION_CHANGE = "description_change"
     ALIAS_SET = "alias_set"
     ALIAS_REMOVED = "alias_removed"
     PARENT_SET = "parent_set"

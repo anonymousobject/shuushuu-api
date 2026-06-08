@@ -42,6 +42,10 @@ class TagAuditLogResponse(BaseModel):
     old_type: int | None = None
     new_type: int | None = None
 
+    # Description change fields
+    old_desc: str | None = None
+    new_desc: str | None = None
+
     # Alias change fields
     old_alias_of: int | None = None
     new_alias_of: int | None = None
@@ -253,6 +257,10 @@ class UserHistoryItem(BaseModel):
     # For tag_metadata: type_change action
     old_type: int | None = None
     new_type: int | None = None
+
+    # For tag_metadata: description_change action
+    old_desc: str | None = None
+    new_desc: str | None = None
 
     # For tag_metadata: the *other* tag involved in the action. Populated per
     # action_type — alias_set/alias_removed → alias_tag, parent_set/parent_removed

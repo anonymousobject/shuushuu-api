@@ -37,6 +37,10 @@ class TagAuditLogBase(SQLModel):
     old_type: int | None = Field(default=None)
     new_type: int | None = Field(default=None)
 
+    # Description change fields (max_length mirrors Tags.desc)
+    old_desc: str | None = Field(default=None, max_length=200)
+    new_desc: str | None = Field(default=None, max_length=200)
+
     # Alias change fields (FK to tags.tag_id)
     old_alias_of: int | None = Field(default=None)
     new_alias_of: int | None = Field(default=None)

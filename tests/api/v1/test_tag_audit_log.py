@@ -165,6 +165,159 @@ class TestTagAuditLogRename:
 
 
 @pytest.mark.api
+class TestTagAuditLogDescriptionChange:
+    """Tests for tag description-change audit logging."""
+
+    async def test_description_change_creates_audit_log_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Editing a tag's description creates a DESCRIPTION_CHANGE entry with old/new."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="descadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="descadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="stable name", desc="old description", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "descadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        update_data = {
+            "title": "stable name",
+            "desc": "new description",
+            "type": TagType.THEME,
+        }
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json=update_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == tag.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.DESCRIPTION_CHANGE,
+            )
+        )
+        audit_entries = audit_result.scalars().all()
+
+        assert len(audit_entries) == 1
+        entry = audit_entries[0]
+        assert entry.old_desc == "old description"
+        assert entry.new_desc == "new description"
+        assert entry.user_id == admin.user_id
+
+    async def test_same_description_creates_no_audit_log(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Updating a tag without changing its description logs no DESCRIPTION_CHANGE."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="descadmin2",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="descadmin2@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="old name", desc="same description", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "descadmin2", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change only the title; the description stays the same.
+        update_data = {
+            "title": "new name",
+            "desc": "same description",
+            "type": TagType.THEME,
+        }
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json=update_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == tag.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.DESCRIPTION_CHANGE,
+            )
+        )
+        audit_entries = audit_result.scalars().all()
+        assert len(audit_entries) == 0
+
+    async def test_history_endpoint_returns_description_change(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """GET /tags/{id}/history surfaces a description_change with old_desc/new_desc."""
+        tag = Tags(title="some tag", desc="new description", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        audit = TagAuditLog(
+            tag_id=tag.tag_id,
+            action_type=TagAuditActionType.DESCRIPTION_CHANGE,
+            old_desc="old description",
+            new_desc="new description",
+        )
+        db_session.add(audit)
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/history")
+        assert response.status_code == 200
+
+        items = [i for i in response.json()["items"] if i["action_type"] == "description_change"]
+        assert len(items) == 1
+        assert items[0]["old_desc"] == "old description"
+        assert items[0]["new_desc"] == "new description"
+
+
+@pytest.mark.api
 class TestTagAuditLogTypeChange:
     """Tests for tag type change audit logging."""
 
