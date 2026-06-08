@@ -73,7 +73,9 @@ class TagCreate(TagBase):
 
     inheritedfrom_id: int | None = None
     alias_of: int | None = None
-    desc: str | None = None
+    # max_length mirrors Tags.desc (VARCHAR(200)); without it an over-long value
+    # passes validation and fails at the DB layer with a 500 instead of a 422.
+    desc: str | None = Field(default=None, max_length=200)
 
     @field_validator("title")
     @classmethod

@@ -2336,6 +2336,54 @@ class TestUpdateTag:
         assert data["title"] == "new title"
         assert data["type"] == TagType.CHARACTER
 
+    async def test_update_tag_with_overlong_description_returns_422(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A description past the 200-char column limit is rejected with 422, not 500."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="adminlongdesc",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminlongdesc@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+
+        tag = Tags(title="tag with desc", desc="short", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminlongdesc", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        update_data = {
+            "title": "tag with desc",
+            "desc": "x" * 201,  # one over the VARCHAR(200) limit
+            "type": TagType.THEME,
+        }
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json=update_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
     async def test_update_tag_as_non_admin(
         self, client: AsyncClient, db_session: AsyncSession
     ):
