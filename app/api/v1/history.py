@@ -142,6 +142,8 @@ async def get_user_history(
             new_title=audit_log.new_title,
             old_type=audit_log.old_type,
             new_type=audit_log.new_type,
+            old_desc=audit_log.old_desc,
+            new_desc=audit_log.new_desc,
             created_at=timestamp,
             alias_tag=linked_tags_map.get(alias_target_id) if alias_target_id else None,
             parent_tag=linked_tags_map.get(parent_target_id) if parent_target_id else None,
