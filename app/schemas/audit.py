@@ -126,6 +126,9 @@ class ImageTagHistoryResponse(TagHistoryResponse):
     # for every current tag, including those set at upload that were never written
     # to tag_history). Those synthesized events have no tag_history row, so the id
     # is nullable here (deliberately widening the base's non-null int).
+    # TODO: make TagHistoryResponse.tag_history_id `int | None` at the base and
+    # narrow it back in the callers that require it (tags + user-history endpoints),
+    # so this override can drop the type-ignore.
     tag_history_id: int | None = None  # type: ignore[assignment]
     tag: LinkedTag | None = None
 
