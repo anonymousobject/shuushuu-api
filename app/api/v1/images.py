@@ -1371,67 +1371,100 @@ async def get_image_tag_history(
     """
     Get tag history for an image.
 
-    Returns paginated list of tags that were added or removed from this image.
+    Returns a paginated, most-recent-first list of tag add/remove events. "Added"
+    events are derived from the image's current tag_links — they carry who/when for
+    every tag still on the image, including tags set at upload that were never
+    written to tag_history. tag_history supplies removals and the adds of tags that
+    are no longer linked, so removed tags keep their full story.
     """
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
     if not image_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Query tag history with joined tag and user info
-    # Eager load user groups for UserSummary
-    query = (
+    group_load = selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+
+    def to_summary(user: Users | None) -> UserSummary | None:
+        if user is None or user.user_id is None:
+            return None
+        return UserSummary(
+            user_id=user.user_id,
+            username=user.username,
+            avatar=user.avatar,
+            avatar_in_r2=user.avatar_in_r2,
+            user_title=user.user_title,
+            groups=user.groups,
+        )
+
+    # Current tag_links → "added" events. Authoritative for every tag still present.
+    links_result = await db.execute(
+        select(TagLinks, Tags, Users)
+        .join(Tags, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+        .outerjoin(Users, TagLinks.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(group_load)
+        .where(TagLinks.image_id == image_id)  # type: ignore[arg-type]
+    )
+    link_rows = links_result.all()
+    linked_tag_ids = {link.tag_id for link, _, _ in link_rows}
+
+    # tag_history → removals, plus the adds of tags that are no longer linked. Adds
+    # of currently-linked tags are skipped: tag_links already represents them.
+    hist_result = await db.execute(
         select(TagHistory, Tags, Users)
         .join(Tags, TagHistory.tag_id == Tags.tag_id)  # type: ignore[arg-type]
         .outerjoin(Users, TagHistory.user_id == Users.user_id)  # type: ignore[arg-type]
-        .options(
-            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
+        .options(group_load)
         .where(TagHistory.image_id == image_id)  # type: ignore[arg-type]
     )
+    hist_rows = hist_result.all()
 
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await db.execute(count_query)).scalar() or 0
+    # Merge in memory (event count is bounded by an image's tag count) and sort by
+    # date desc, then a stable tiebreak. Both date columns default to
+    # current_timestamp; the aware sentinel keeps the sort total if one is null.
+    epoch = datetime(1, 1, 1, tzinfo=UTC)
+    events: list[tuple[datetime, int, ImageTagHistoryResponse]] = []
 
-    # Paginate and order by most recent first
-    # Secondary sort by tag_history_id for stable ordering when timestamps match
-    query = (
-        query.order_by(
-            desc(TagHistory.date),  # type: ignore[arg-type]
-            desc(TagHistory.tag_history_id),  # type: ignore[arg-type]
-        )
-        .offset(pagination.offset)
-        .limit(pagination.per_page)
-    )
-
-    result = await db.execute(query)
-    rows = result.all()
-
-    items = []
-    for history, tag, user in rows:
-        user_summary = None
-        if user:
-            user_summary = UserSummary(
-                user_id=user.user_id,
-                username=user.username,
-                avatar=user.avatar,
-                avatar_in_r2=user.avatar_in_r2,
-                user_title=user.user_title,
-                groups=user.groups if user else [],
-            )
-
-        items.append(
-            ImageTagHistoryResponse(
-                tag_history_id=history.tag_history_id,
-                image_id=history.image_id,
-                tag_id=history.tag_id,
-                action="added" if history.action == "a" else "removed",
-                user=user_summary,
-                date=history.date,
-                tag=LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type) if tag else None,
+    for link, tag, user in link_rows:
+        events.append(
+            (
+                link.date_linked or epoch,
+                link.tag_id or 0,
+                ImageTagHistoryResponse(
+                    tag_history_id=None,
+                    image_id=image_id,
+                    tag_id=link.tag_id,
+                    action="added",
+                    user=to_summary(user),
+                    date=link.date_linked,
+                    tag=LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type),
+                ),
             )
         )
+
+    for history, tag, user in hist_rows:
+        if history.action == "a" and history.tag_id in linked_tag_ids:
+            continue  # already represented by its tag_link above
+        events.append(
+            (
+                history.date or epoch,
+                history.tag_history_id or 0,
+                ImageTagHistoryResponse(
+                    tag_history_id=history.tag_history_id,
+                    image_id=history.image_id,
+                    tag_id=history.tag_id,
+                    action="added" if history.action == "a" else "removed",
+                    user=to_summary(user),
+                    date=history.date,
+                    tag=LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type),
+                ),
+            )
+        )
+
+    events.sort(key=lambda e: (e[0], e[1]), reverse=True)
+
+    total = len(events)
+    start = pagination.offset
+    items = [event[2] for event in events[start : start + pagination.per_page]]
 
     return ImageTagHistoryListResponse(
         total=total,

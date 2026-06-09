@@ -122,6 +122,11 @@ class ImageTagHistoryResponse(TagHistoryResponse):
     Used when viewing an image's tag history where tag details are needed.
     """
 
+    # "Added" events for an image are derived from tag_links (which carry who/when
+    # for every current tag, including those set at upload that were never written
+    # to tag_history). Those synthesized events have no tag_history row, so the id
+    # is nullable here (deliberately widening the base's non-null int).
+    tag_history_id: int | None = None  # type: ignore[assignment]
     tag: LinkedTag | None = None
 
 
