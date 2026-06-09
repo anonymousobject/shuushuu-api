@@ -4899,6 +4899,79 @@ class TestTagLinkOrdering:
         )
         assert resp.status_code == 403
 
+    async def test_new_wiki_link_floats_to_top(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A newly added shuu-wiki link goes to the very top, above an existing wiki link."""
+        token = await self._admin_token(client, db_session, "wikitop")
+
+        tag = Tags(title="wiki top tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Existing links: an OLDER shuu-wiki link and a non-wiki link.
+        old_wiki = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://e-shuushuu.net/wiki/index.php?title=Old",
+            date_added=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        other = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://pixiv.net/users/1",
+            date_added=datetime(2019, 1, 1, tzinfo=UTC),
+        )
+        db_session.add_all([old_wiki, other])
+        await db_session.commit()
+
+        # Add a NEW shuu-wiki link via the API.
+        resp = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://e-shuushuu.net/wiki/index.php?title=New"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 201
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        urls = [link["url"] for link in response.json()["links"]]
+        # New wiki floats to the top, above the older wiki, then the non-wiki link.
+        assert urls == [
+            "https://e-shuushuu.net/wiki/index.php?title=New",
+            "https://e-shuushuu.net/wiki/index.php?title=Old",
+            "https://pixiv.net/users/1",
+        ]
+
+    async def test_new_non_wiki_link_appends(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A newly added non-wiki link appends (does not jump above existing links)."""
+        token = await self._admin_token(client, db_session, "nonwiki")
+
+        tag = Tags(title="non wiki append tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        wiki = TagExternalLinks(
+            tag_id=tag.tag_id, url="https://e-shuushuu.net/wiki/index.php?title=W"
+        )
+        db_session.add(wiki)
+        await db_session.commit()
+
+        resp = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://pixiv.net/users/2"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 201
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        urls = [link["url"] for link in response.json()["links"]]
+        assert urls == [
+            "https://e-shuushuu.net/wiki/index.php?title=W",
+            "https://pixiv.net/users/2",
+        ]
+
 
 @pytest.mark.api
 class TestUpdateTagExternalLink:

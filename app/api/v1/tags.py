@@ -60,10 +60,16 @@ SUGGESTION_STATS_MIN_THRESHOLD = 5
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
-# SQL LIKE pattern that matches the site's own MediaWiki links
-# (https://e-shuushuu.net/wiki/...). The leading "//" anchors it to the host so it
-# won't match e.g. en.wikipedia.org. Used to sort shuu-wiki links first by default.
-_SHUU_WIKI_URL_LIKE = "%//e-shuushuu.net/wiki/%"
+# Matches the site's own MediaWiki links (https://e-shuushuu.net/wiki/...). The
+# leading "//" anchors it to the host so it won't match e.g. en.wikipedia.org. Used
+# to sort shuu-wiki links first by default and to float newly added ones to the top.
+_SHUU_WIKI_URL_MARKER = "//e-shuushuu.net/wiki/"
+_SHUU_WIKI_URL_LIKE = f"%{_SHUU_WIKI_URL_MARKER}%"
+
+
+def _is_shuu_wiki_url(url: str) -> bool:
+    """Whether a URL points at the site's own MediaWiki."""
+    return _SHUU_WIKI_URL_MARKER in url
 
 
 async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalLinks]:
@@ -1691,8 +1697,19 @@ async def add_tag_link(
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Create new link
+    # Create new link. A new shuu-wiki link floats to the very top (position just
+    # below the current minimum, so it sits above any existing wiki links too); other
+    # links keep NULL position and fall to the end via the default ordering.
     new_link = TagExternalLinks(tag_id=tag_id, url=link_data.url)
+    if _is_shuu_wiki_url(link_data.url):
+        min_pos = (
+            await db.execute(
+                select(func.min(TagExternalLinks.position)).where(
+                    TagExternalLinks.tag_id == tag_id  # type: ignore[arg-type]
+                )
+            )
+        ).scalar()
+        new_link.position = (min_pos if min_pos is not None else 0) - 1
     db.add(new_link)
 
     try:
