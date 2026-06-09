@@ -79,6 +79,11 @@ class TagExternalLinks(TagExternalLinkBase, table=True):
     dead_at: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
     archive_url: str | None = Field(default=None, max_length=2000)
 
+    # Custom per-tag display order. NULL = not custom-ordered; the read query then
+    # falls back to a computed default (shuu-wiki links first, then by date_added).
+    # A drag-to-reorder writes explicit positions.
+    position: int | None = Field(default=None)
+
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
     # - Circular import issues

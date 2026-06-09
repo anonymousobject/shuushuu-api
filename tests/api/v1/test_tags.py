@@ -10,6 +10,8 @@ These tests cover the /api/v1/tags endpoints including:
 - Get images by tag
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -4696,6 +4698,206 @@ class TestGetTagWithLinks:
         data = response.json()
         assert "links" in data
         assert data["links"] == []
+
+
+@pytest.mark.api
+class TestTagLinkOrdering:
+    """Default ordering (shuu-wiki first) and custom drag-reordering of links."""
+
+    async def _admin_token(self, client: AsyncClient, db_session: AsyncSession, suffix: str) -> str:
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username=f"linkorder{suffix}",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email=f"linkorder{suffix}@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        db_session.add(UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1))
+        await db_session.commit()
+
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": f"linkorder{suffix}", "password": "AdminPassword123!"},
+        )
+        return login.json()["access_token"]
+
+    async def test_links_default_to_shuu_wiki_first(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """With no custom order, a shuu-wiki link sorts before an OLDER non-wiki link."""
+        tag = Tags(title="ordering tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Non-wiki link is older; shuu-wiki link is newer. Default order must still
+        # put the wiki link first (it overrides date_added).
+        non_wiki = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://pixiv.net/users/1",
+            date_added=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        wiki = TagExternalLinks(
+            tag_id=tag.tag_id,
+            url="https://e-shuushuu.net/wiki/index.php?title=Foo",
+            date_added=datetime(2021, 1, 1, tzinfo=UTC),
+        )
+        db_session.add_all([non_wiki, wiki])
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        assert response.status_code == 200
+        urls = [link["url"] for link in response.json()["links"]]
+        assert urls == [
+            "https://e-shuushuu.net/wiki/index.php?title=Foo",
+            "https://pixiv.net/users/1",
+        ]
+
+    async def test_reorder_links_overrides_default(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A custom order set via the reorder endpoint overrides the default."""
+        token = await self._admin_token(client, db_session, "reorder")
+
+        tag = Tags(title="reorder tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        a = TagExternalLinks(tag_id=tag.tag_id, url="https://a.example/1")
+        b = TagExternalLinks(tag_id=tag.tag_id, url="https://b.example/2")
+        c = TagExternalLinks(tag_id=tag.tag_id, url="https://c.example/3")
+        db_session.add_all([a, b, c])
+        await db_session.commit()
+        await db_session.refresh(a)
+        await db_session.refresh(b)
+        await db_session.refresh(c)
+
+        resp = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/reorder",
+            json={"link_ids": [c.link_id, a.link_id, b.link_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        urls = [link["url"] for link in response.json()["links"]]
+        assert urls == ["https://c.example/3", "https://a.example/1", "https://b.example/2"]
+
+    async def test_new_link_appends_after_custom_order(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A link added after a custom order (no position) appends at the end."""
+        token = await self._admin_token(client, db_session, "append")
+
+        tag = Tags(title="append tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        a = TagExternalLinks(tag_id=tag.tag_id, url="https://a.example/1")
+        b = TagExternalLinks(tag_id=tag.tag_id, url="https://b.example/2")
+        db_session.add_all([a, b])
+        await db_session.commit()
+        await db_session.refresh(a)
+        await db_session.refresh(b)
+
+        # Custom order: B, A.
+        await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/reorder",
+            json={"link_ids": [b.link_id, a.link_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        # New link with no position must come after the custom-ordered ones.
+        new = TagExternalLinks(tag_id=tag.tag_id, url="https://new.example/3")
+        db_session.add(new)
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        urls = [link["url"] for link in response.json()["links"]]
+        assert urls == [
+            "https://b.example/2",
+            "https://a.example/1",
+            "https://new.example/3",
+        ]
+
+    async def test_reorder_rejects_link_from_another_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Reorder fails if a link_id doesn't belong to the target tag."""
+        token = await self._admin_token(client, db_session, "foreign")
+
+        tag1 = Tags(title="tag one", type=TagType.ARTIST)
+        tag2 = Tags(title="tag two", type=TagType.ARTIST)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+
+        own = TagExternalLinks(tag_id=tag1.tag_id, url="https://own.example/1")
+        foreign = TagExternalLinks(tag_id=tag2.tag_id, url="https://foreign.example/2")
+        db_session.add_all([own, foreign])
+        await db_session.commit()
+        await db_session.refresh(own)
+        await db_session.refresh(foreign)
+
+        resp = await client.patch(
+            f"/api/v1/tags/{tag1.tag_id}/links/reorder",
+            json={"link_ids": [own.link_id, foreign.link_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 400
+
+    async def test_reorder_requires_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A user without tag_update cannot reorder links."""
+        user = Users(
+            username="noreorderuser",
+            password=get_password_hash("Password123!"),
+            password_type="bcrypt",
+            salt="",
+            email="noreorder@example.com",
+            active=1,
+            admin=0,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        tag = Tags(title="perm tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link = TagExternalLinks(tag_id=tag.tag_id, url="https://x.example/1")
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "noreorderuser", "password": "Password123!"},
+        )
+        token = login.json()["access_token"]
+
+        resp = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/reorder",
+            json={"link_ids": [link.link_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
 
 
 @pytest.mark.api

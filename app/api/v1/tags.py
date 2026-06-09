@@ -44,6 +44,7 @@ from app.schemas.tag import (
     LinkedTag,
     TagCreate,
     TagExternalLinkCreate,
+    TagExternalLinkReorder,
     TagExternalLinkResponse,
     TagExternalLinkUpdate,
     TagListResponse,
@@ -58,6 +59,34 @@ from app.services.tag_type_flags import refresh_images_tag_type_flags
 SUGGESTION_STATS_MIN_THRESHOLD = 5
 
 router = APIRouter(prefix="/tags", tags=["tags"])
+
+# SQL LIKE pattern that matches the site's own MediaWiki links
+# (https://e-shuushuu.net/wiki/...). The leading "//" anchors it to the host so it
+# won't match e.g. en.wikipedia.org. Used to sort shuu-wiki links first by default.
+_SHUU_WIKI_URL_LIKE = "%//e-shuushuu.net/wiki/%"
+
+
+async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalLinks]:
+    """A tag's external links in display order.
+
+    Custom-positioned links come first (by `position`); the rest fall back to the
+    default — shuu-wiki links first, then by `date_added`. `position IS NULL` sorts
+    last (MySQL puts NULLs first in ASC, so order by the null-ness flag to push the
+    un-positioned links after the positioned ones).
+    """
+    result = await db.execute(
+        select(TagExternalLinks)
+        .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
+        .order_by(
+            TagExternalLinks.position.is_(None),  # type: ignore[union-attr]
+            TagExternalLinks.position,  # type: ignore[arg-type]
+            TagExternalLinks.url.like(_SHUU_WIKI_URL_LIKE).desc(),  # type: ignore[attr-defined]
+            TagExternalLinks.date_added,  # type: ignore[arg-type]
+            TagExternalLinks.link_id,  # type: ignore[arg-type]
+        )
+    )
+    return list(result.scalars().all())
+
 
 # Separate router for character-source-links (mounted at /api/v1/character-source-links)
 character_source_links_router = APIRouter(
@@ -950,13 +979,11 @@ async def get_tag(
             groups=user.groups,  # Uses the eager-loaded groups property
         )
 
-    # Fetch external links for this tag
-    links_result = await db.execute(
-        select(TagExternalLinks)
-        .where(TagExternalLinks.tag_id == tag_id)  # type: ignore[arg-type]
-        .order_by(TagExternalLinks.date_added)  # type: ignore[arg-type]
-    )
-    links = [TagExternalLinkResponse.model_validate(link) for link in links_result.scalars().all()]
+    # External links, default-ordered (shuu-wiki first) unless custom-positioned.
+    links = [
+        TagExternalLinkResponse.model_validate(link)
+        for link in await _ordered_tag_links(tag_id, db)
+    ]
 
     # Fetch tags that are aliases of this tag (use resolved_tag_id for consistency
     # with total_image_count/child_count - when viewing an alias, show all sibling aliases)
@@ -1681,6 +1708,46 @@ async def add_tag_link(
     await db.refresh(tag)
     await sync_tag_to_search(tag, db=db)
     return TagExternalLinkResponse.model_validate(new_link)
+
+
+# NOTE: declared BEFORE /{tag_id}/links/{link_id} so the literal "reorder" path is
+# matched ahead of the {link_id} parameter route (else "reorder" parses as a link id).
+@router.patch("/{tag_id}/links/reorder", response_model=list[TagExternalLinkResponse])
+async def reorder_tag_links(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    body: TagExternalLinkReorder,
+    _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
+    db: AsyncSession = Depends(get_db),
+) -> list[TagExternalLinkResponse]:
+    """
+    Set a custom display order for a tag's external links.
+
+    `link_ids` lists the links in the desired order; each is assigned position 0..n-1,
+    overriding the default shuu-wiki-first order. Requires TAG_UPDATE. Returns 404 if
+    the tag doesn't exist, 400 if any link_id doesn't belong to the tag.
+    """
+    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+    if not tag_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    links_by_id = {link.link_id: link for link in await _ordered_tag_links(tag_id, db)}
+
+    for link_id in body.link_ids:
+        if link_id not in links_by_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Link {link_id} does not belong to tag {tag_id}",
+            )
+
+    for position, link_id in enumerate(body.link_ids):
+        links_by_id[link_id].position = position
+
+    await db.commit()
+
+    return [
+        TagExternalLinkResponse.model_validate(link)
+        for link in await _ordered_tag_links(tag_id, db)
+    ]
 
 
 @router.delete("/{tag_id}/links/{link_id}", status_code=204)
