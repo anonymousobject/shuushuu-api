@@ -4859,6 +4859,50 @@ class TestTagLinkOrdering:
         )
         assert resp.status_code == 400
 
+    async def test_reorder_rejects_duplicate_link_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Reorder fails on duplicate link_ids (would silently overwrite a position)."""
+        token = await self._admin_token(client, db_session, "dupe")
+        tag = Tags(title="dupe reorder tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        a = TagExternalLinks(tag_id=tag.tag_id, url="https://a.example/1")
+        b = TagExternalLinks(tag_id=tag.tag_id, url="https://b.example/2")
+        db_session.add_all([a, b])
+        await db_session.commit()
+        await db_session.refresh(a)
+
+        resp = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/reorder",
+            json={"link_ids": [a.link_id, a.link_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 400
+
+    async def test_reorder_rejects_incomplete_link_ids(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Reorder fails if link_ids omits one of the tag's links (no partial reorders)."""
+        token = await self._admin_token(client, db_session, "incomplete")
+        tag = Tags(title="incomplete reorder tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        a = TagExternalLinks(tag_id=tag.tag_id, url="https://a.example/1")
+        b = TagExternalLinks(tag_id=tag.tag_id, url="https://b.example/2")
+        db_session.add_all([a, b])
+        await db_session.commit()
+        await db_session.refresh(a)
+
+        resp = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/reorder",
+            json={"link_ids": [a.link_id]},  # missing b
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 400
+
     async def test_reorder_requires_permission(
         self, client: AsyncClient, db_session: AsyncSession
     ):

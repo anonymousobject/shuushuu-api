@@ -1745,9 +1745,11 @@ async def reorder_tag_links(
     """
     Set a custom display order for a tag's external links.
 
-    `link_ids` lists the links in the desired order; each is assigned position 0..n-1,
-    overriding the default shuu-wiki-first order. Requires TAG_UPDATE. Returns 404 if
-    the tag doesn't exist, 400 if any link_id doesn't belong to the tag.
+    `link_ids` must be exactly the tag's current link IDs, in the desired order; each
+    is assigned position 0..n-1, overriding the default shuu-wiki-first order. Requires
+    TAG_UPDATE. Returns 404 if the tag doesn't exist, 400 if `link_ids` has duplicates
+    or doesn't match the tag's links exactly (a partial list would leave omitted links
+    at a stale position).
     """
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
     if not tag_result.scalar_one_or_none():
@@ -1755,12 +1757,13 @@ async def reorder_tag_links(
 
     links_by_id = {link.link_id: link for link in await _ordered_tag_links(tag_id, db)}
 
-    for link_id in body.link_ids:
-        if link_id not in links_by_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Link {link_id} does not belong to tag {tag_id}",
-            )
+    if len(body.link_ids) != len(set(body.link_ids)):
+        raise HTTPException(status_code=400, detail="link_ids must not contain duplicates")
+    if set(body.link_ids) != set(links_by_id.keys()):
+        raise HTTPException(
+            status_code=400,
+            detail="link_ids must contain exactly the tag's current link IDs",
+        )
 
     for position, link_id in enumerate(body.link_ids):
         links_by_id[link_id].position = position
