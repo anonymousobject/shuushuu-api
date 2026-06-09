@@ -624,6 +624,7 @@ class TestExcludeTags:
         # Default (exact): only the parent-tagged image is excluded.
         resp = await client.get(f"/api/v1/images?exclude_tags={parent.tag_id}")
         assert resp.status_code == 200
+        assert resp.json()["total"] == 2
         assert {img["image_id"] for img in resp.json()["images"]} == {
             image2.image_id,
             image3.image_id,
@@ -634,6 +635,7 @@ class TestExcludeTags:
             f"/api/v1/images?exclude_tags={parent.tag_id}&exclude_descendants=true"
         )
         assert resp.status_code == 200
+        assert resp.json()["total"] == 1
         assert {img["image_id"] for img in resp.json()["images"]} == {image3.image_id}
 
     async def test_exclude_tags_resolves_aliases(
