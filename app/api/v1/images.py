@@ -1362,6 +1362,13 @@ async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> I
     )
 
 
+# Safety ceiling on tag_history rows loaded for a single image's history. The merge
+# pages in memory, and per-image churn is tiny in practice (well under this), so this
+# only guards a pathological image from loading an unbounded change log. If ever hit,
+# the oldest history events beyond the cap are dropped (most-recent-first).
+_IMAGE_TAG_HISTORY_CAP = 5000
+
+
 @router.get("/{image_id}/tag-history", response_model=ImageTagHistoryListResponse)
 async def get_image_tag_history(
     image_id: Annotated[int, Path(description="Image ID")],
@@ -1371,67 +1378,120 @@ async def get_image_tag_history(
     """
     Get tag history for an image.
 
-    Returns paginated list of tags that were added or removed from this image.
+    Returns a paginated, most-recent-first list of tag add/remove events. "Added"
+    events are derived from the image's current tag_links — they carry who/when for
+    every tag still on the image, including tags set at upload that were never
+    written to tag_history. tag_history supplies removals and the adds of tags that
+    are no longer linked, so removed tags keep their full story.
     """
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
     if not image_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Query tag history with joined tag and user info
-    # Eager load user groups for UserSummary
-    query = (
+    group_load = selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+
+    def to_summary(user: Users | None) -> UserSummary | None:
+        if user is None or user.user_id is None:
+            return None
+        return UserSummary(
+            user_id=user.user_id,
+            username=user.username,
+            avatar=user.avatar,
+            avatar_in_r2=user.avatar_in_r2,
+            user_title=user.user_title,
+            groups=user.groups,
+        )
+
+    # Current tag_links → "added" events. Authoritative for every tag still present.
+    links_result = await db.execute(
+        select(TagLinks, Tags, Users)
+        .join(Tags, TagLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+        .outerjoin(Users, TagLinks.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(group_load)
+        .where(TagLinks.image_id == image_id)  # type: ignore[arg-type]
+    )
+    link_rows = links_result.all()
+    linked_tag_ids = {link.tag_id for link, _, _ in link_rows}
+
+    # tag_history → removals, plus the adds of tags that are no longer linked. Adds
+    # of currently-linked tags are skipped: tag_links already represents them.
+    # Capped to the most-recent rows as a safety ceiling (see _IMAGE_TAG_HISTORY_CAP).
+    hist_result = await db.execute(
         select(TagHistory, Tags, Users)
         .join(Tags, TagHistory.tag_id == Tags.tag_id)  # type: ignore[arg-type]
         .outerjoin(Users, TagHistory.user_id == Users.user_id)  # type: ignore[arg-type]
-        .options(
-            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
+        .options(group_load)
         .where(TagHistory.image_id == image_id)  # type: ignore[arg-type]
-    )
-
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await db.execute(count_query)).scalar() or 0
-
-    # Paginate and order by most recent first
-    # Secondary sort by tag_history_id for stable ordering when timestamps match
-    query = (
-        query.order_by(
+        .order_by(
             desc(TagHistory.date),  # type: ignore[arg-type]
             desc(TagHistory.tag_history_id),  # type: ignore[arg-type]
         )
-        .offset(pagination.offset)
-        .limit(pagination.per_page)
+        .limit(_IMAGE_TAG_HISTORY_CAP)
     )
+    hist_rows = hist_result.all()
 
-    result = await db.execute(query)
-    rows = result.all()
+    # Merge in memory and sort by date desc, then a deterministic tiebreak. The
+    # row count loaded here is bounded by the image's own tag activity (its current
+    # tag_links plus its tag_history rows), which is small in practice — the same
+    # load-all-then-sort approach the user-history endpoint uses. The tiebreak is
+    # (source, id): tag_id for link events vs tag_history_id for history events live
+    # in separate ordinal lanes (0/1) so identical timestamps still order the same
+    # way across requests (the two id spaces are unrelated and could collide).
+    # Both date columns default to current_timestamp; the aware sentinel keeps the
+    # sort total if one is ever null.
+    epoch = datetime(1, 1, 1, tzinfo=UTC)
+    events: list[tuple[datetime, int, int, ImageTagHistoryResponse]] = []
 
-    items = []
-    for history, tag, user in rows:
-        user_summary = None
-        if user:
-            user_summary = UserSummary(
-                user_id=user.user_id,
-                username=user.username,
-                avatar=user.avatar,
-                avatar_in_r2=user.avatar_in_r2,
-                user_title=user.user_title,
-                groups=user.groups if user else [],
-            )
-
-        items.append(
-            ImageTagHistoryResponse(
-                tag_history_id=history.tag_history_id,
-                image_id=history.image_id,
-                tag_id=history.tag_id,
-                action="added" if history.action == "a" else "removed",
-                user=user_summary,
-                date=history.date,
-                tag=LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type) if tag else None,
+    for link, tag, user in link_rows:
+        events.append(
+            (
+                link.date_linked or epoch,
+                0,  # source lane: link events
+                link.tag_id or 0,
+                ImageTagHistoryResponse(
+                    tag_history_id=None,
+                    image_id=image_id,
+                    tag_id=link.tag_id,
+                    action="added",
+                    user=to_summary(user),
+                    date=link.date_linked,
+                    tag=LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type),
+                ),
             )
         )
+
+    for history, tag, user in hist_rows:
+        # Skip add-history for a tag that's currently linked — the tag_link above
+        # already represents it. Edge case: for an add → remove → re-add tag (now
+        # linked again), this drops the ORIGINAL add too, so the timeline shows the
+        # current link's add + the removal but not the first add. Accepted as rare;
+        # do not "fix" by removing this skip without also de-duping vs tag_links, or
+        # currently-linked tags double-count.
+        if history.action == "a" and history.tag_id in linked_tag_ids:
+            continue
+        events.append(
+            (
+                history.date or epoch,
+                1,  # source lane: history events
+                history.tag_history_id or 0,
+                ImageTagHistoryResponse(
+                    tag_history_id=history.tag_history_id,
+                    image_id=history.image_id,
+                    tag_id=history.tag_id,
+                    action="added" if history.action == "a" else "removed",
+                    user=to_summary(user),
+                    date=history.date,
+                    tag=LinkedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type),
+                ),
+            )
+        )
+
+    events.sort(key=lambda e: (e[0], e[1], e[2]), reverse=True)
+
+    total = len(events)
+    start = pagination.offset
+    items = [event[3] for event in events[start : start + pagination.per_page]]
 
     return ImageTagHistoryListResponse(
         total=total,

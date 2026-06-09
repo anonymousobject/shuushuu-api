@@ -13,6 +13,7 @@ from app.config import TagType, settings
 from app.models.image import Images
 from app.models.tag import Tags
 from app.models.tag_history import TagHistory
+from app.models.tag_link import TagLinks
 from app.models.user import Users
 
 
@@ -102,6 +103,175 @@ class TestGetImageTagHistory:
             assert "date" in item
             assert item["image_id"] == image.image_id
             assert item["action"] in ["added", "removed"]
+
+    async def test_upload_tags_appear_as_added_events(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Tags linked at upload (tag_links, no tag_history) show as 'added' events.
+
+        This is the core fix: an image tagged only at upload has no tag_history rows,
+        but its tag_links carry who/when, so the history must derive 'added' events
+        from them instead of showing blank.
+        """
+        user = Users(
+            username="uploadtaguser",
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email="uploadtag@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        image = Images(
+            filename="uploadtaghist",
+            ext="jpg",
+            md5_hash="uploadtaghistmd5000000000000000",
+            user_id=user.user_id,
+            width=100,
+            height=100,
+            filesize=1000,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag1 = Tags(title="upload tag a", type=TagType.THEME)
+        tag2 = Tags(title="upload tag b", type=TagType.ARTIST)
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+        await db_session.refresh(tag1)
+        await db_session.refresh(tag2)
+
+        # Only tag_links, exactly as link_tags_to_image does on upload — no history.
+        db_session.add_all(
+            [
+                TagLinks(tag_id=tag1.tag_id, image_id=image.image_id, user_id=user.user_id),
+                TagLinks(tag_id=tag2.tag_id, image_id=image.image_id, user_id=user.user_id),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/tag-history")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 2
+        assert {item["action"] for item in data["items"]} == {"added"}
+        assert {item["tag_id"] for item in data["items"]} == {tag1.tag_id, tag2.tag_id}
+        for item in data["items"]:
+            assert item["user"]["user_id"] == user.user_id
+            assert item["date"] is not None
+            # Synthesized from a tag_link, so there is no tag_history row id.
+            assert item["tag_history_id"] is None
+            assert item["tag"]["tag_id"] in {tag1.tag_id, tag2.tag_id}
+
+    async def test_present_tag_not_duplicated_when_also_in_history(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A still-present tag with both a tag_link and a tag_history 'a' row appears once."""
+        user = Users(
+            username="dupetaguser",
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email="dupetag@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        image = Images(
+            filename="dupetaghist",
+            ext="jpg",
+            md5_hash="dupetaghistmd500000000000000000",
+            user_id=user.user_id,
+            width=100,
+            height=100,
+            filesize=1000,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="dupe tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Added later via add_tag_to_image: both a tag_link AND a tag_history 'a' exist.
+        db_session.add(TagLinks(tag_id=tag.tag_id, image_id=image.image_id, user_id=user.user_id))
+        db_session.add(
+            TagHistory(
+                image_id=image.image_id, tag_id=tag.tag_id, action="a", user_id=user.user_id
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/tag-history")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 1
+        assert data["items"][0]["tag_id"] == tag.tag_id
+        assert data["items"][0]["action"] == "added"
+
+    async def test_removed_tag_shows_add_and_remove(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A tag added then removed (no longer linked) keeps both events."""
+        user = Users(
+            username="removedtaguser",
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email="removedtag@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        image = Images(
+            filename="removedtaghist",
+            ext="jpg",
+            md5_hash="removedtaghistmd50000000000000",
+            user_id=user.user_id,
+            width=100,
+            height=100,
+            filesize=1000,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="removed tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # No tag_link (it was removed); tag_history carries the add then the remove.
+        db_session.add_all(
+            [
+                TagHistory(
+                    image_id=image.image_id, tag_id=tag.tag_id, action="a", user_id=user.user_id
+                ),
+                TagHistory(
+                    image_id=image.image_id, tag_id=tag.tag_id, action="r", user_id=user.user_id
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/tag-history")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 2
+        assert sorted(item["action"] for item in data["items"]) == ["added", "removed"]
 
     async def test_includes_tag_info(
         self, client: AsyncClient, db_session: AsyncSession
