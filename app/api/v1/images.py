@@ -401,6 +401,13 @@ async def list_images(
     exclude_tags: Annotated[
         str | None, Query(description="Comma-separated tag IDs to exclude (e.g., '4,5,6')")
     ] = None,
+    exclude_descendants: Annotated[
+        bool,
+        Query(
+            description="When true, each excluded tag also excludes its child tags "
+            "(its full hierarchy). Default false (exact-match exclusion)."
+        ),
+    ] = False,
     missing_tag_types: Annotated[
         str | None,
         Query(
@@ -573,7 +580,8 @@ async def list_images(
                     )
                 )
 
-    # Exclude tag filtering (always exact match, no hierarchy expansion)
+    # Exclude tag filtering. Exact match by default; with exclude_descendants the
+    # excluded tag's whole subtree is removed too (mirrors the include-side hierarchy).
     if exclude_tags:
         # isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
         exclude_tag_ids = [
@@ -588,11 +596,14 @@ async def list_images(
                     detail=f"You can only search for up to {settings.MAX_SEARCH_TAGS} tags at a time.",
                 )
 
-            # Resolve aliases (no hierarchy expansion)
+            # Resolve aliases, then optionally expand each to its full subtree.
             resolved_exclude_ids: set[int] = set()
             for etid in exclude_tag_ids:
                 _, resolved_etid = await resolve_tag_alias(db, etid)
-                resolved_exclude_ids.add(resolved_etid)
+                if exclude_descendants:
+                    resolved_exclude_ids.update(await get_tag_hierarchy(db, resolved_etid))
+                else:
+                    resolved_exclude_ids.add(resolved_etid)
 
             # Apply NOT IN subquery
             query = query.where(
