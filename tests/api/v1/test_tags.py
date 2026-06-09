@@ -4941,6 +4941,33 @@ class TestTagLinkOrdering:
             "https://pixiv.net/users/1",
         ]
 
+    async def test_subdomain_wiki_link_floats_to_top(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The newer wiki.e-shuushuu.net subdomain form also counts as a shuu-wiki link."""
+        token = await self._admin_token(client, db_session, "subwiki")
+
+        tag = Tags(title="subdomain wiki tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Existing non-wiki link (mirrors the reported tag: an x.com link first).
+        existing = TagExternalLinks(tag_id=tag.tag_id, url="https://x.com/someone")
+        db_session.add(existing)
+        await db_session.commit()
+
+        resp = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://wiki.e-shuushuu.net/artists/iromi"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 201
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}")
+        urls = [link["url"] for link in response.json()["links"]]
+        assert urls[0] == "https://wiki.e-shuushuu.net/artists/iromi"
+
     async def test_new_non_wiki_link_appends(
         self, client: AsyncClient, db_session: AsyncSession
     ):

@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import asc, case, delete, desc, func, or_, select, text, update
+from sqlalchemy import ColumnElement, asc, case, delete, desc, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
@@ -60,16 +60,22 @@ SUGGESTION_STATS_MIN_THRESHOLD = 5
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
-# Matches the site's own MediaWiki links (https://e-shuushuu.net/wiki/...). The
-# leading "//" anchors it to the host so it won't match e.g. en.wikipedia.org. Used
-# to sort shuu-wiki links first by default and to float newly added ones to the top.
-_SHUU_WIKI_URL_MARKER = "//e-shuushuu.net/wiki/"
-_SHUU_WIKI_URL_LIKE = f"%{_SHUU_WIKI_URL_MARKER}%"
+# The site's own wiki appears in two URL shapes: the legacy MediaWiki path form
+# (https://e-shuushuu.net/wiki/...) and the subdomain form
+# (https://wiki.e-shuushuu.net/...). Match both. The leading "//" anchors each to the
+# host so it won't match e.g. en.wikipedia.org. Used to sort shuu-wiki links first by
+# default and to float newly added ones to the top.
+_SHUU_WIKI_URL_MARKERS = ("//e-shuushuu.net/wiki/", "//wiki.e-shuushuu.net/")
 
 
 def _is_shuu_wiki_url(url: str) -> bool:
-    """Whether a URL points at the site's own MediaWiki."""
-    return _SHUU_WIKI_URL_MARKER in url
+    """Whether a URL points at the site's own wiki (either URL shape)."""
+    return any(marker in url for marker in _SHUU_WIKI_URL_MARKERS)
+
+
+def _shuu_wiki_sql_flag() -> ColumnElement[bool]:
+    """SQL boolean that's true for a shuu-wiki URL (either shape) — for ORDER BY."""
+    return or_(*(TagExternalLinks.url.like(f"%{m}%") for m in _SHUU_WIKI_URL_MARKERS))  # type: ignore[attr-defined]
 
 
 async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalLinks]:
@@ -86,7 +92,7 @@ async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalL
         .order_by(
             TagExternalLinks.position.is_(None),  # type: ignore[union-attr]
             TagExternalLinks.position,  # type: ignore[arg-type]
-            TagExternalLinks.url.like(_SHUU_WIKI_URL_LIKE).desc(),  # type: ignore[attr-defined]
+            _shuu_wiki_sql_flag().desc(),
             TagExternalLinks.date_added,  # type: ignore[arg-type]
             TagExternalLinks.link_id,  # type: ignore[arg-type]
         )
