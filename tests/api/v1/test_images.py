@@ -597,6 +597,47 @@ class TestExcludeTags:
         assert data["total"] == 1
         assert data["images"][0]["image_id"] == image2.image_id
 
+    async def test_exclude_tags_with_descendants(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """exclude_descendants=true also excludes images tagged with child tags."""
+        image1 = Images(**{**sample_image_data, "filename": "exdesc1", "md5_hash": "1" * 32})
+        image2 = Images(**{**sample_image_data, "filename": "exdesc2", "md5_hash": "2" * 32})
+        image3 = Images(**{**sample_image_data, "filename": "exdesc3", "md5_hash": "3" * 32})
+        db_session.add_all([image1, image2, image3])
+        await db_session.flush()
+
+        parent = Tags(title="swimsuit", desc="Swimsuit", type=1)
+        db_session.add(parent)
+        await db_session.flush()
+        child = Tags(title="bikini", desc="Bikini", type=1, inheritedfrom_id=parent.tag_id)
+        other = Tags(title="blonde hair", desc="Blonde", type=1)
+        db_session.add_all([child, other])
+        await db_session.flush()
+
+        # image1: swimsuit (parent), image2: bikini (child), image3: blonde hair
+        db_session.add(TagLinks(image_id=image1.image_id, tag_id=parent.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=image2.image_id, tag_id=child.tag_id, user_id=1))
+        db_session.add(TagLinks(image_id=image3.image_id, tag_id=other.tag_id, user_id=1))
+        await db_session.commit()
+
+        # Default (exact): only the parent-tagged image is excluded.
+        resp = await client.get(f"/api/v1/images?exclude_tags={parent.tag_id}")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 2
+        assert {img["image_id"] for img in resp.json()["images"]} == {
+            image2.image_id,
+            image3.image_id,
+        }
+
+        # With descendants: the child-tagged image is excluded too.
+        resp = await client.get(
+            f"/api/v1/images?exclude_tags={parent.tag_id}&exclude_descendants=true"
+        )
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
+        assert {img["image_id"] for img in resp.json()["images"]} == {image3.image_id}
+
     async def test_exclude_tags_resolves_aliases(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
