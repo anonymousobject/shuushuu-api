@@ -1362,6 +1362,13 @@ async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> I
     )
 
 
+# Safety ceiling on tag_history rows loaded for a single image's history. The merge
+# pages in memory, and per-image churn is tiny in practice (well under this), so this
+# only guards a pathological image from loading an unbounded change log. If ever hit,
+# the oldest history events beyond the cap are dropped (most-recent-first).
+_IMAGE_TAG_HISTORY_CAP = 5000
+
+
 @router.get("/{image_id}/tag-history", response_model=ImageTagHistoryListResponse)
 async def get_image_tag_history(
     image_id: Annotated[int, Path(description="Image ID")],
@@ -1409,12 +1416,18 @@ async def get_image_tag_history(
 
     # tag_history → removals, plus the adds of tags that are no longer linked. Adds
     # of currently-linked tags are skipped: tag_links already represents them.
+    # Capped to the most-recent rows as a safety ceiling (see _IMAGE_TAG_HISTORY_CAP).
     hist_result = await db.execute(
         select(TagHistory, Tags, Users)
         .join(Tags, TagHistory.tag_id == Tags.tag_id)  # type: ignore[arg-type]
         .outerjoin(Users, TagHistory.user_id == Users.user_id)  # type: ignore[arg-type]
         .options(group_load)
         .where(TagHistory.image_id == image_id)  # type: ignore[arg-type]
+        .order_by(
+            desc(TagHistory.date),  # type: ignore[arg-type]
+            desc(TagHistory.tag_history_id),  # type: ignore[arg-type]
+        )
+        .limit(_IMAGE_TAG_HISTORY_CAP)
     )
     hist_rows = hist_result.all()
 
@@ -1449,8 +1462,14 @@ async def get_image_tag_history(
         )
 
     for history, tag, user in hist_rows:
+        # Skip add-history for a tag that's currently linked — the tag_link above
+        # already represents it. Edge case: for an add → remove → re-add tag (now
+        # linked again), this drops the ORIGINAL add too, so the timeline shows the
+        # current link's add + the removal but not the first add. Accepted as rare;
+        # do not "fix" by removing this skip without also de-duping vs tag_links, or
+        # currently-linked tags double-count.
         if history.action == "a" and history.tag_id in linked_tag_ids:
-            continue  # already represented by its tag_link above
+            continue
         events.append(
             (
                 history.date or epoch,
