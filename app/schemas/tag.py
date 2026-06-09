@@ -198,8 +198,15 @@ class TagExternalLinkResponse(BaseModel):
     date_added: UTCDatetime
     dead_at: UTCDatetimeOptional = None
     archive_url: str | None = None
+    position: int | None = None
 
     model_config = {"from_attributes": True}
+
+
+class TagExternalLinkReorder(BaseModel):
+    """Schema for reordering a tag's external links: the desired link_id order."""
+
+    link_ids: list[int]
 
 
 class TagExternalLinkUpdate(BaseModel):
