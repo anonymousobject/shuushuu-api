@@ -36,12 +36,11 @@ from app.core.auth import (
 )
 from app.core.database import get_db
 from app.core.logging import get_logger
-from app.core.permission_cache import get_cached_user_permissions
 from app.core.permissions import Permission, has_permission
 from app.core.r2_client import get_r2_storage
 from app.core.redis import get_redis
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
-from app.models import Favorites, Images, Privmsgs, TagLinks, Users
+from app.models import Favorites, Images, TagLinks, Users
 from app.models.permissions import UserGroups
 from app.models.user_suspension import UserSuspensions
 from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
@@ -66,7 +65,6 @@ from app.services.avatar import (
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.rate_limit import check_registration_rate_limit
 from app.services.turnstile import verify_turnstile_token
-from app.services.upload import get_uploads_today
 from app.services.user import build_user_private_response
 from app.tasks.queue import enqueue_job
 
