@@ -52,6 +52,15 @@ class TestLogin:
         assert data["token_type"] == "bearer"
         assert "expires_in" in data
 
+        # The login response embeds the authenticated user so SSR clients can
+        # skip a follow-up /users/me round trip. Asserting the shape here
+        # guards against a regression where `build_user_private_response`
+        # silently returns None.
+        assert data.get("user") is not None
+        assert data["user"]["username"] == "loginuser"
+        assert data["user"]["user_id"] == user.user_id
+        assert "permissions" in data["user"]
+
         # Check that refresh token cookie is set
         assert "refresh_token" in response.cookies
 
@@ -344,6 +353,15 @@ class TestRefresh:
         data = refresh_response.json()
         assert "access_token" in data
         assert data["token_type"] == "bearer"
+
+        # The refresh response embeds the authenticated user so SSR clients can
+        # skip a follow-up /users/me round trip. Asserting the shape here
+        # guards against a regression where `build_user_private_response`
+        # silently returns None.
+        assert data.get("user") is not None
+        assert data["user"]["username"] == "refreshuser"
+        assert data["user"]["user_id"] == user.user_id
+        assert "permissions" in data["user"]
 
         # Security: refresh token must NOT be in response body (HTTPOnly cookie only)
         assert "refresh_token" not in data

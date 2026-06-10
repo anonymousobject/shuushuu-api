@@ -10,6 +10,7 @@ This module defines Pydantic models for authentication-related API operations:
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.core.security import validate_password_strength
+from app.schemas.user import UserPrivateResponse
 
 
 class LoginRequest(BaseModel):
@@ -25,6 +26,13 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int = Field(..., description="Access token expiration time in seconds from now")
+    user: UserPrivateResponse | None = Field(
+        default=None,
+        description=(
+            "Authenticated user profile. Populated on login/refresh so SSR clients "
+            "can skip a follow-up /users/me round trip."
+        ),
+    )
 
 
 class RefreshRequest(BaseModel):
