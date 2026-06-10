@@ -699,6 +699,14 @@ class TestUpdateUserProfile:
         assert response.status_code == 403
         assert "change-password" in response.json()["detail"]
 
+        # Also blocked via the parameterised route (same shared helper)
+        response2 = await client.patch(
+            f"/api/v1/users/{user.user_id}",
+            json={"password": "NewPassword456!"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response2.status_code == 403
+
         # Password must be unchanged: old credentials still log in
         relogin = await client.post(
             "/api/v1/auth/login",
