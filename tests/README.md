@@ -43,6 +43,20 @@ uv run pytest tests/api/v1/test_images.py
 uv run pytest tests/unit/test_schemas.py
 ```
 
+### Run in parallel (pytest-xdist)
+```bash
+uv run pytest -n 4 --dist loadgroup
+```
+Each worker gets its own database (`shuushuu_pytest_gw0`, ...) and Redis DB,
+created automatically. `--dist loadgroup` keeps the schema-sync tests (which
+rebuild fixed-name databases) on a single worker. 4 workers is the sweet spot
+locally; more just contend on MariaDB. CI runs with `-n auto --dist loadgroup`.
+
+If root DB access is unavailable, worker databases require a one-time grant:
+```sql
+GRANT ALL PRIVILEGES ON `shuushuu\_pytest\_%`.* TO `shuushuu`@`%`;
+```
+
 ### Run with coverage
 ```bash
 # Enable coverage in pyproject.toml first, then:

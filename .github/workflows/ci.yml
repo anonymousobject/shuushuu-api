@@ -60,6 +60,7 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
+          --tmpfs /var/lib/mysql:rw
 
       redis:
         image: redis:7-alpine
@@ -129,7 +130,7 @@ jobs:
           DEBUG: "True"
           REDIS_URL: redis://localhost:6379/0
         run: |
-          uv run pytest tests/ -v --tb=short --maxfail=5 --schema-sync
+          uv run pytest tests/ -v --tb=short --maxfail=5 --schema-sync -n auto --dist loadgroup
 
       - name: Upload test results
         if: always()

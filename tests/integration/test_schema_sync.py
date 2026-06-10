@@ -55,6 +55,9 @@ def normalize_fk_action(action: str | None) -> str | None:
 
 @pytest.mark.integration
 @pytest.mark.schema_sync
+# These tests rebuild fixed-name databases (shuushuu_schema_models/_migrations),
+# so under xdist they must all run on the same worker (--dist loadgroup).
+@pytest.mark.xdist_group("schema_sync")
 class TestSchemaSync:
     """Tests to verify models match migrations.
 
