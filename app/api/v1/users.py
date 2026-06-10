@@ -67,6 +67,7 @@ from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.rate_limit import check_registration_rate_limit
 from app.services.turnstile import verify_turnstile_token
 from app.services.upload import get_uploads_today
+from app.services.user import build_user_private_response
 from app.tasks.queue import enqueue_job
 
 logger = get_logger(__name__)
@@ -160,41 +161,9 @@ async def get_current_user_profile(
     This includes private settings like email, email_verified, email_pm_pref,
     and the user's permissions (cached for performance).
     """
-    user_result = await db.execute(
-        select(Users)
-        .options(
-            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
-        .where(Users.user_id == current_user_id)  # type: ignore[arg-type]
-    )
-    user = user_result.scalar_one_or_none()
-
-    if not user:
+    response = await build_user_private_response(current_user_id, db, redis_client)
+    if response is None:
         raise HTTPException(status_code=404, detail="User not found")
-
-    # Fetch user permissions (cached)
-    permissions = await get_cached_user_permissions(db, redis_client, current_user_id)
-
-    # Count unread PMs
-    unread_result = await db.execute(
-        select(func.count())
-        .select_from(Privmsgs)
-        .where(
-            Privmsgs.to_user_id == current_user_id,  # type: ignore[arg-type]
-            Privmsgs.viewed == 0,  # type: ignore[arg-type]
-            Privmsgs.to_del == 0,  # type: ignore[arg-type]
-        )
-    )
-    unread_pm_count = unread_result.scalar() or 0
-
-    # Count today's uploads for remaining calculation
-    uploads_today = await get_uploads_today(current_user_id, db)
-
-    # Convert to response model and add computed fields
-    response = UserPrivateResponse.model_validate(user)
-    response.permissions = sorted(permissions)
-    response.unread_pm_count = unread_pm_count
-    response.uploads_remaining_today = max(0, user.maximgperday - uploads_today)
     return response
 
 

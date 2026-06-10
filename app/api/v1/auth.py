@@ -14,6 +14,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,7 @@ from app.core.auth import (
 )
 from app.core.database import get_db
 from app.core.logging import get_logger
+from app.core.redis import get_redis
 from app.core.security import (
     RedactedStr,
     create_access_token,
@@ -44,6 +46,7 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     TokenResponse,
 )
+from app.services.user import build_user_private_response
 from app.tasks.queue import enqueue_job
 
 logger = get_logger(__name__)
@@ -158,14 +161,18 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,  # seconds
     )
 
-    # Set access token as HTTPOnly cookie (for SSR and Swagger UI)
+    # Set access token as HTTPOnly cookie (for SSR and Swagger UI).
+    # Cookie Max-Age matches the refresh token, not the JWT expiry: the JWT's own
+    # `exp` claim is what's enforced server-side, and pinning the cookie to a
+    # 10-minute lifetime just creates a "cookie disappeared" branch in SSR auth
+    # that costs an extra round trip every page render after expiry.
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,  # Prevent JavaScript access (XSS protection)
         secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
         samesite="strict",  # CSRF protection
-        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Match JWT expiration
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
     )
 
 
@@ -250,6 +257,7 @@ async def login(
     request: Request,
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
 ) -> TokenResponse:
     """
     Authenticate user and return JWT access token + refresh token.
@@ -405,10 +413,13 @@ async def login(
         migrated_to_bcrypt=migrate_to_bcrypt,
     )
 
+    user_response = await build_user_private_response(user.user_id, db, redis_client)
+
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=user_response,
     )
 
 
@@ -418,6 +429,7 @@ async def refresh_token(
     response: Response,
     refresh_token: Annotated[str, Depends(get_refresh_token_from_cookie)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
 ) -> TokenResponse:
     """
     Refresh access token using refresh token.
@@ -560,10 +572,13 @@ async def refresh_token(
     # Set authentication cookies
     _set_auth_cookies(response, access_token, new_refresh_token)
 
+    user_response = await build_user_private_response(user.user_id, db, redis_client)
+
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=user_response,
     )
 
 
