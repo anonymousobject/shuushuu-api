@@ -94,16 +94,22 @@ class TestSchemaSync:
         try:
             # Create fresh databases
             with admin_engine.connect() as conn:
-                conn.execute(text(f"DROP DATABASE IF EXISTS {db_models}"))
-                conn.execute(text(f"DROP DATABASE IF EXISTS {db_migrations}"))
+                conn.execute(text(f"DROP DATABASE IF EXISTS `{db_models}`"))
+                conn.execute(text(f"DROP DATABASE IF EXISTS `{db_migrations}`"))
                 conn.execute(
-                    text(f"CREATE DATABASE {db_models} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                    text(f"CREATE DATABASE `{db_models}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
                 )
                 conn.execute(
-                    text(f"CREATE DATABASE {db_migrations} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                    text(f"CREATE DATABASE `{db_migrations}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
                 )
-                conn.execute(text(f"GRANT ALL PRIVILEGES ON {db_models}.* TO '{db_user}'@'%'"))
-                conn.execute(text(f"GRANT ALL PRIVILEGES ON {db_migrations}.* TO '{db_user}'@'%'"))
+                conn.execute(
+                    text(f"GRANT ALL PRIVILEGES ON `{db_models}`.* TO :db_user@'%'"),
+                    {"db_user": db_user},
+                )
+                conn.execute(
+                    text(f"GRANT ALL PRIVILEGES ON `{db_migrations}`.* TO :db_user@'%'"),
+                    {"db_user": db_user},
+                )
                 conn.execute(text("FLUSH PRIVILEGES"))
 
             # Create schema from models
@@ -176,6 +182,6 @@ class TestSchemaSync:
         finally:
             # Cleanup
             with admin_engine.connect() as conn:
-                conn.execute(text(f"DROP DATABASE IF EXISTS {db_models}"))
-                conn.execute(text(f"DROP DATABASE IF EXISTS {db_migrations}"))
+                conn.execute(text(f"DROP DATABASE IF EXISTS `{db_models}`"))
+                conn.execute(text(f"DROP DATABASE IF EXISTS `{db_migrations}`"))
             admin_engine.dispose()
