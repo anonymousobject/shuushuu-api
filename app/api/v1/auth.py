@@ -18,6 +18,7 @@ import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import SuspensionAction, settings
 from app.core.auth import (
@@ -36,6 +37,7 @@ from app.core.security import (
     get_password_hash,
     verify_password,
 )
+from app.models.permissions import UserGroups
 from app.models.refresh_token import RefreshTokens
 from app.models.user import Users
 from app.schemas.auth import (
@@ -279,8 +281,15 @@ async def login(
     - Locks account after 5 failed attempts for 15 minutes
     - Resets lockout after successful login
     """
-    # Find user by username
-    result = await db.execute(select(Users).where(Users.username == credentials.username))  # type: ignore[arg-type]
+    # Find user by username. Eager-load groups so build_user_private_response
+    # below can reuse this row instead of issuing a second SELECT.
+    result = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.username == credentials.username)  # type: ignore[arg-type]
+    )
     user = result.scalar_one_or_none()
 
     if not user:
@@ -413,11 +422,10 @@ async def login(
         migrated_to_bcrypt=migrate_to_bcrypt,
     )
 
-    # user.user_id is guaranteed non-None at this point (set on insert, and
-    # _create_tokens_for_user already validated it). The narrowing assert keeps
-    # mypy happy without adding a real-world failure mode.
-    assert user.user_id is not None
-    user_response = await build_user_private_response(user.user_id, db, redis_client)
+    # The just-authenticated `user` object already has user_groups eager-loaded
+    # (see the SELECT at the top of this function), so the helper skips its
+    # internal DB round trip and the None branch can't fire here.
+    user_response = await build_user_private_response(db, redis_client, user=user)
 
     return TokenResponse(
         access_token=access_token,
@@ -527,8 +535,15 @@ async def refresh_token(
                 detail="Refresh token reuse detected. All sessions revoked for security.",
             )
 
-    # Load user
-    result_user = await db.execute(select(Users).where(Users.user_id == db_token.user_id))  # type: ignore[arg-type]
+    # Load user. Eager-load groups so build_user_private_response below can
+    # reuse this row instead of issuing a second SELECT.
+    result_user = await db.execute(
+        select(Users)
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(Users.user_id == db_token.user_id)  # type: ignore[arg-type]
+    )
     user = result_user.scalar_one_or_none()
 
     if not user:
@@ -576,7 +591,10 @@ async def refresh_token(
     # Set authentication cookies
     _set_auth_cookies(response, access_token, new_refresh_token)
 
-    user_response = await build_user_private_response(user.user_id, db, redis_client)
+    # `user` already has user_groups eager-loaded (see the SELECT earlier), so
+    # the helper skips its internal DB round trip and the None branch can't
+    # fire here.
+    user_response = await build_user_private_response(db, redis_client, user=user)
 
     return TokenResponse(
         access_token=access_token,

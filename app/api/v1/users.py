@@ -159,7 +159,7 @@ async def get_current_user_profile(
     This includes private settings like email, email_verified, email_pm_pref,
     and the user's permissions (cached for performance).
     """
-    response = await build_user_private_response(current_user_id, db, redis_client)
+    response = await build_user_private_response(db, redis_client, user_id=current_user_id)
     if response is None:
         raise HTTPException(status_code=404, detail="User not found")
     return response
