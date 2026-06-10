@@ -192,7 +192,7 @@ def setup_test_database():
         with admin_engine.connect() as conn:
             conn.execute(
                 text(
-                    f"CREATE DATABASE IF NOT EXISTS {test_db_name} "
+                    f"CREATE DATABASE IF NOT EXISTS `{test_db_name}` "
                     "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                 )
             )
@@ -201,7 +201,7 @@ def setup_test_database():
                 {"username": test_user, "password": test_password},
             )
             conn.execute(
-                text(f"GRANT ALL PRIVILEGES ON {test_db_name}.* TO :username@'%'"),
+                text(f"GRANT ALL PRIVILEGES ON `{test_db_name}`.* TO :username@'%'"),
                 {"username": test_user},
             )
             conn.execute(text("FLUSH PRIVILEGES"))
@@ -223,7 +223,7 @@ def setup_test_database():
             with server_engine.connect() as conn:
                 conn.execute(
                     text(
-                        f"CREATE DATABASE IF NOT EXISTS {test_db_name} "
+                        f"CREATE DATABASE IF NOT EXISTS `{test_db_name}` "
                         "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                     )
                 )
@@ -253,7 +253,6 @@ def setup_test_database():
     alembic_cfg.set_main_option("script_location", "alembic")
     head_revision = ScriptDirectory.from_config(alembic_cfg).get_current_head()
 
-    db_name = make_url(TEST_DATABASE_URL_SYNC).database
     with sync_engine.begin() as conn:
         tables = [
             tbl
@@ -262,7 +261,7 @@ def setup_test_database():
                     "SELECT table_name FROM information_schema.tables "
                     "WHERE table_schema = :db_name AND table_type = 'BASE TABLE'"
                 ),
-                {"db_name": db_name},
+                {"db_name": test_db_name},
             )
         ]
         current_revision = None
@@ -525,6 +524,8 @@ def _test_redis_db() -> int:
     base = int(os.getenv("TEST_REDIS_DB", "15"))
     if not _XDIST_WORKER:
         return base
+    # With base=15 and DBs 0-1 reserved, this supports up to 13 workers
+    # (gw0..gw12); gw13+ raises below.
     db = base - 1 - int(_XDIST_WORKER.removeprefix("gw"))
     if db < 2:
         raise RuntimeError(

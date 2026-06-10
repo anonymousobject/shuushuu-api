@@ -50,7 +50,8 @@ uv run pytest -n 4 --dist loadgroup
 Each worker gets its own database (`shuushuu_pytest_gw0`, ...) and Redis DB,
 created automatically. `--dist loadgroup` keeps the schema-sync tests (which
 rebuild fixed-name databases) on a single worker. 4 workers is the sweet spot
-locally; more just contend on MariaDB. CI runs with `-n auto --dist loadgroup`.
+locally; more just contend on MariaDB, and Redis DB numbering caps runs at
+13 workers. CI runs with `-n auto --dist loadgroup`.
 
 If root DB access is unavailable, worker databases require a one-time grant:
 ```sql
