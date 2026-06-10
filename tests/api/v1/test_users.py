@@ -668,6 +668,44 @@ class TestUpdateUserProfile:
         data = response.json()
         # assert data["email"] == "newemail@example.com"  # Email may not be returned in response
 
+    async def test_self_password_change_via_patch_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """PATCH must not change a user's own password — that bypasses the
+        current-password check enforced by POST /auth/change-password."""
+        user = Users(
+            username="patchpwuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="patchpw@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "patchpwuser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"password": "NewPassword456!"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+        assert "change-password" in response.json()["detail"]
+
+        # Password must be unchanged: old credentials still log in
+        relogin = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "patchpwuser", "password": "TestPassword123!"},
+        )
+        assert relogin.status_code == 200
+
     async def test_update_email_pm_pref_via_me(self, client: AsyncClient, db_session: AsyncSession):
         """Test that PATCH /api/v1/users/me accepts and returns email_pm_pref."""
         # Create user

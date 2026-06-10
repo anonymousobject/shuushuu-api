@@ -575,8 +575,16 @@ async def _update_user_profile(
             detail="Only moderators can update user upload limits",
         )
 
-    # Handle password separately with validation and hashing
+    # Handle password separately with validation and hashing.
+    # Self-service password changes must go through POST /auth/change-password,
+    # which verifies the current password and revokes existing sessions; PATCH
+    # would silently bypass both. Moderators may still set passwords here.
     if "password" in update_data:
+        if not has_edit_permission:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Use /api/v1/auth/change-password to change your own password",
+            )
         password = update_data.pop("password")
         is_valid, error_message = validate_password_strength(password)
         if not is_valid:
