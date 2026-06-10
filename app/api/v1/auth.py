@@ -413,6 +413,10 @@ async def login(
         migrated_to_bcrypt=migrate_to_bcrypt,
     )
 
+    # user.user_id is guaranteed non-None at this point (set on insert, and
+    # _create_tokens_for_user already validated it). The narrowing assert keeps
+    # mypy happy without adding a real-world failure mode.
+    assert user.user_id is not None
     user_response = await build_user_private_response(user.user_id, db, redis_client)
 
     return TokenResponse(
