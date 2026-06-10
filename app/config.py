@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    # bcrypt cost factor; tests override to 4 for speed (see tests/conftest.py)
+    BCRYPT_ROUNDS: int = 12
 
     # CORS
     # Allow str because it can be a comma-separated string in .env

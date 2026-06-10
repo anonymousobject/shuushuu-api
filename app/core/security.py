@@ -124,7 +124,7 @@ def get_password_hash(password: str) -> str:
     """
     prepared_password = _prepare_password_for_bcrypt(password)
     # Generate salt and hash password
-    salt = bcrypt.gensalt(rounds=12)
+    salt = bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS)
     hashed = bcrypt.hashpw(prepared_password.encode("utf-8"), salt)
     return hashed.decode("utf-8")
 

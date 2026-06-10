@@ -12,6 +12,11 @@ import os
 # this before any app imports ensures test cookies work over plain http://test.
 os.environ.setdefault("ENVIRONMENT", "development")
 
+# Use the bcrypt minimum cost factor in tests. Hashing at the production
+# 12 rounds takes ~200ms per call and dominated suite runtime (tests hash
+# and verify passwords constantly via fixtures and login flows).
+os.environ.setdefault("BCRYPT_ROUNDS", "4")
+
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
