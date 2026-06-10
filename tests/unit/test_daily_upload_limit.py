@@ -165,9 +165,11 @@ class TestGetUploadsToday:
 
 
 def _make_image(user_id: int, suffix: str) -> Images:
-    """Create an Images instance with today's date but far enough back to avoid rate limit."""
-    # Use start of today + 1 minute (UTC) so it's always "today" and always in the past
-    start_of_today = datetime.now(UTC).replace(hour=0, minute=1, second=0, microsecond=0)
+    """Create an Images instance dated start-of-today UTC (never in the future)."""
+    # Right after midnight UTC no timestamp is both "today" and older than the
+    # per-upload delay, so tests using this helper must disable the delay check
+    # (see _disable_upload_delay).
+    start_of_today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return Images(
         filename=f"limit-{suffix}",
         ext="jpg",
@@ -186,6 +188,13 @@ def _make_image(user_id: int, suffix: str) -> Images:
 @pytest.mark.unit
 class TestDailyLimitEnforcement:
     """Tests for daily limit enforcement in check_upload_rate_limit."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_upload_delay(self, monkeypatch):
+        """These tests cover the daily limit, not the per-upload delay."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "UPLOAD_DELAY_SECONDS", 0)
 
     async def test_allows_upload_under_limit(self, db_session: AsyncSession):
         """Should not raise when uploads are under the daily limit."""
@@ -206,6 +215,42 @@ class TestDailyLimitEnforcement:
         for i in range(2):
             db_session.add(_make_image(user.user_id, f"under-{i}"))
         await db_session.commit()
+
+        # Should not raise
+        await check_upload_rate_limit(user.user_id, db_session, maximgperday=5)
+
+    async def test_allows_upload_under_limit_just_after_midnight_utc(
+        self, db_session: AsyncSession, monkeypatch
+    ):
+        """Regression: just after midnight UTC, _make_image timestamps were in the
+        future, so the per-upload delay check raised an unexpected 429."""
+        user = Users(
+            username="midnightlimit",
+            password="hashed",
+            password_type="bcrypt",
+            salt="saltsalt12345678",
+            email="midnightlimit@example.com",
+            active=1,
+            maximgperday=5,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        for i in range(2):
+            db_session.add(_make_image(user.user_id, f"midnight-{i}"))
+        await db_session.commit()
+
+        just_after_midnight = datetime.now(UTC).replace(
+            hour=0, minute=0, second=15, microsecond=0
+        )
+
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return just_after_midnight
+
+        monkeypatch.setattr("app.services.upload.datetime", FrozenDatetime)
 
         # Should not raise
         await check_upload_rate_limit(user.user_id, db_session, maximgperday=5)
