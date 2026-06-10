@@ -18,8 +18,10 @@ from app.services.search import SearchService, configure_tags_index
 MEILISEARCH_URL = os.getenv("MEILISEARCH_URL", "http://localhost:7700")
 MEILISEARCH_KEY = os.getenv("MEILISEARCH_API_KEY") or os.getenv("MEILI_MASTER_KEY", "dev_master_key")
 
-# Use a test-specific index prefix to avoid colliding with dev data
-TEST_INDEX_NAME = "tags_test"
+# Use a test-specific index prefix to avoid colliding with dev data.
+# Suffix with the xdist worker id so parallel workers don't share an index.
+_WORKER = os.getenv("PYTEST_XDIST_WORKER", "")
+TEST_INDEX_NAME = f"tags_test_{_WORKER}" if _WORKER else "tags_test"
 
 
 @pytest.fixture

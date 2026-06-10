@@ -1157,8 +1157,12 @@ class TestFuzzyTagSearch:
         # Create test tags with different types
         tag1 = Tags(title="kinomoto sakura", type=TagType.CHARACTER)
         tag2 = Tags(title="sakura kinomoto", type=TagType.THEME)
-        tag3 = Tags(title="sakura leaf", type=TagType.CHARACTER, alias_of=1)
-        db_session.add_all([tag1, tag2, tag3])
+        db_session.add_all([tag1, tag2])
+        await db_session.commit()
+        # alias_of must use tag1's real id; auto-increment doesn't reliably
+        # start at 1 (e.g. under pytest-xdist test distribution)
+        tag3 = Tags(title="sakura leaf", type=TagType.CHARACTER, alias_of=tag1.tag_id)
+        db_session.add(tag3)
         await db_session.commit()
 
         # Search for "sakura" with type filter (CHARACTER only)

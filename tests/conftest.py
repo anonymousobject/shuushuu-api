@@ -47,6 +47,11 @@ DEFAULT_TEST_DB_PORT = "3306"
 DEFAULT_TEST_DB_NAME = "shuushuu_pytest"  # Separate from staging environment (shuushuu_test in .env.test)
 DEFAULT_ROOT_PASSWORD = "root_password"
 
+# Under pytest-xdist each worker process gets its own database (and Redis DB)
+# so workers can't deadlock on each other's fixture rows or truncate each
+# other's tables. Empty string = not running under xdist.
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+
 
 # Load .env file if present (optional - defaults work without it)
 env_path = Path(__file__).parent.parent / ".env"
@@ -123,7 +128,19 @@ def _get_test_database_url() -> tuple[str, str]:
     # Allow sync URL to be derived from async URL if not explicitly set
     test_url_sync = os.getenv("TEST_DATABASE_URL_SYNC", test_url.replace("+aiomysql", "+pymysql"))
 
+    if _XDIST_WORKER:
+        test_url = _with_worker_suffix(test_url)
+        test_url_sync = _with_worker_suffix(test_url_sync)
+
     return test_url, test_url_sync
+
+
+def _with_worker_suffix(url: str) -> str:
+    """Append the xdist worker id to the database name (e.g. shuushuu_pytest_gw0)."""
+    parsed = make_url(url)
+    return parsed.set(database=f"{parsed.database}_{_XDIST_WORKER}").render_as_string(
+        hide_password=False
+    )
 
 
 # Get test database URLs (uses defaults if env vars not set)
@@ -139,16 +156,15 @@ def anyio_backend():
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
     """
-    Recreate test database and run migrations before ALL tests.
+    Reset the test database and ensure schema is at head before ALL tests.
 
-    This runs once per test session (autouse=True) and ensures:
-    1. Test database is dropped and recreated (clean slate)
-    2. Latest Alembic migrations are applied
+    This runs once per test session (autouse=True; per worker under xdist)
+    and ensures:
+    1. Test database exists (created via root when available, else test user)
+    2. Schema is at the latest Alembic head (truncate when already current,
+       full drop + migrate otherwise)
     3. Schema matches production exactly
-    4. Test user is created with proper permissions
-
-    Note: Uses root credentials to create database and user, then runs migrations
-    with the test user credentials.
+    4. Test user is created with proper permissions (root path only)
     """
     import os
 
@@ -162,20 +178,22 @@ def setup_test_database():
     test_host = os.getenv("TEST_DB_HOST", DEFAULT_TEST_DB_HOST)
     test_port = os.getenv("TEST_DB_PORT", DEFAULT_TEST_DB_PORT)
 
-    # When root credentials are available (local dev / CI), drop and recreate the database
-    # for a completely clean slate. On servers where root is unavailable, this is skipped
-    # and drop_all/create_all below handles schema reset instead.
-    test_db_name = os.getenv("TEST_DB_NAME", DEFAULT_TEST_DB_NAME)
+    # When root credentials are available (local dev / CI), make sure the database
+    # and test user exist. On servers where root is unavailable, this is skipped
+    # and the test user creates the database itself below.
+    # Use the URL's database (not TEST_DB_NAME) so xdist worker suffixes are included.
+    test_db_name = make_url(TEST_DATABASE_URL_SYNC).database
+    root_available = True
     try:
         admin_engine = create_engine(
             f"mysql+pymysql://root:{root_password}@{test_host}:{test_port}/mysql",
             isolation_level="AUTOCOMMIT",
         )
         with admin_engine.connect() as conn:
-            conn.execute(text(f"DROP DATABASE IF EXISTS {test_db_name}"))
             conn.execute(
                 text(
-                    f"CREATE DATABASE {test_db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                    f"CREATE DATABASE IF NOT EXISTS `{test_db_name}` "
+                    "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                 )
             )
             conn.execute(
@@ -183,7 +201,7 @@ def setup_test_database():
                 {"username": test_user, "password": test_password},
             )
             conn.execute(
-                text(f"GRANT ALL PRIVILEGES ON {test_db_name}.* TO :username@'%'"),
+                text(f"GRANT ALL PRIVILEGES ON `{test_db_name}`.* TO :username@'%'"),
                 {"username": test_user},
             )
             conn.execute(text("FLUSH PRIVILEGES"))
@@ -191,52 +209,100 @@ def setup_test_database():
     except OperationalError as e:
         # Root access not available on this server (access denied or connection refused).
         # The table-by-table drop below handles schema reset instead.
+        root_available = False
         print(f"\n[conftest] Root DB setup skipped (root not available): {e}")
+
+    if not root_available:
+        # Without root the database may not exist yet (xdist worker databases like
+        # shuushuu_pytest_gw0 are created on demand). Create it as the test user;
+        # this needs a one-time wildcard grant:
+        #   GRANT ALL PRIVILEGES ON `shuushuu\_pytest\_%`.* TO `shuushuu`@`%`;
+        server_url = make_url(TEST_DATABASE_URL_SYNC).set(database=None)
+        server_engine = create_engine(server_url, isolation_level="AUTOCOMMIT")
+        try:
+            with server_engine.connect() as conn:
+                conn.execute(
+                    text(
+                        f"CREATE DATABASE IF NOT EXISTS `{test_db_name}` "
+                        "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                    )
+                )
+        except OperationalError as e:
+            raise RuntimeError(
+                f"Cannot create test database {test_db_name} as the test user and "
+                "root is unavailable. Grant the test user wildcard privileges once:\n"
+                "  GRANT ALL PRIVILEGES ON `shuushuu\\_pytest\\_%`.* TO `shuushuu`@`%`;"
+            ) from e
+        finally:
+            server_engine.dispose()
 
     sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 
-    # When root credentials are available the DROP/CREATE DATABASE above already
-    # left an empty schema; otherwise drop every table here so the migration
-    # chain runs from a clean slate. Either way alembic_version must be gone.
-    db_name = make_url(TEST_DATABASE_URL_SYNC).database
+    # Reuse the schema when it's already at the alembic head: truncating
+    # tables is far cheaper than replaying the migration chain, which matters
+    # under xdist where every worker pays this cost on every run. A freshly
+    # migrated test DB contains no rows besides alembic_version and perms
+    # (the group_perms seed migrations are no-ops on an empty groups table),
+    # and perms is re-synced below, so truncate + sync reproduces the
+    # post-migration state exactly. Any schema change adds a new head
+    # revision, which forces the full rebuild path.
+    from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
+
+    alembic_cfg = AlembicConfig()
+    alembic_cfg.set_main_option("script_location", "alembic")
+    head_revision = ScriptDirectory.from_config(alembic_cfg).get_current_head()
+
     with sync_engine.begin() as conn:
+        tables = [
+            tbl
+            for (tbl,) in conn.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = :db_name AND table_type = 'BASE TABLE'"
+                ),
+                {"db_name": test_db_name},
+            )
+        ]
+        current_revision = None
+        if "alembic_version" in tables:
+            current_revision = conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar()
+
+        schema_current = current_revision == head_revision
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
-        result = conn.execute(
-            text(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = :db_name AND table_type = 'BASE TABLE'"
-            ),
-            {"db_name": db_name},
-        )
-        for (tbl,) in result:
-            conn.execute(text(f"DROP TABLE IF EXISTS `{tbl}`"))
+        for tbl in tables:
+            if schema_current:
+                if tbl != "alembic_version":
+                    conn.execute(text(f"TRUNCATE TABLE `{tbl}`"))
+            else:
+                conn.execute(text(f"DROP TABLE IF EXISTS `{tbl}`"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
 
     sync_engine.dispose()
 
-    # Apply the full migration chain so the test DB matches production schema
-    # exactly -- column widths, FULLTEXT indexes, triggers, everything. This
-    # also catches broken migrations in CI instead of letting create_all paper
-    # over them.
-    #
-    # alembic/env.py picks up ALEMBIC_DB_URL from the environment when no
-    # `-x dbUrl=...` argument is supplied; that's how we steer programmatic
-    # alembic invocations (like this one) at the test DB instead of the
-    # production DATABASE_URL_SYNC fallback.
-    from alembic import command as alembic_command
-    from alembic.config import Config as AlembicConfig
+    if not schema_current:
+        # Apply the full migration chain so the test DB matches production schema
+        # exactly -- column widths, FULLTEXT indexes, triggers, everything. This
+        # also catches broken migrations in CI instead of letting create_all paper
+        # over them.
+        #
+        # alembic/env.py picks up ALEMBIC_DB_URL from the environment when no
+        # `-x dbUrl=...` argument is supplied; that's how we steer programmatic
+        # alembic invocations (like this one) at the test DB instead of the
+        # production DATABASE_URL_SYNC fallback.
+        from alembic import command as alembic_command
 
-    prev_alembic_url = os.environ.get("ALEMBIC_DB_URL")
-    os.environ["ALEMBIC_DB_URL"] = TEST_DATABASE_URL_SYNC
-    try:
-        alembic_cfg = AlembicConfig()
-        alembic_cfg.set_main_option("script_location", "alembic")
-        alembic_command.upgrade(alembic_cfg, "head")
-    finally:
-        if prev_alembic_url is None:
-            del os.environ["ALEMBIC_DB_URL"]
-        else:
-            os.environ["ALEMBIC_DB_URL"] = prev_alembic_url
+        prev_alembic_url = os.environ.get("ALEMBIC_DB_URL")
+        os.environ["ALEMBIC_DB_URL"] = TEST_DATABASE_URL_SYNC
+        try:
+            alembic_command.upgrade(alembic_cfg, "head")
+        finally:
+            if prev_alembic_url is None:
+                del os.environ["ALEMBIC_DB_URL"]
+            else:
+                os.environ["ALEMBIC_DB_URL"] = prev_alembic_url
 
     # Mirror application startup: sync the Permission enum into the perms
     # table. The seed migration uses UPDATE statements that assume a
@@ -447,11 +513,34 @@ async def mock_redis():
     return mock
 
 
+def _test_redis_db() -> int:
+    """Pick the Redis DB for this process.
+
+    Serial runs use TEST_REDIS_DB (default 15). Under xdist each worker counts
+    down from there (gw0 -> 14, gw1 -> 13, ...) because the redis_client
+    fixture flushes its DB after each test. DBs 0 and 1 are reserved for the
+    dev app and arq.
+    """
+    base = int(os.getenv("TEST_REDIS_DB", "15"))
+    if not _XDIST_WORKER:
+        return base
+    # With base=15 and DBs 0-1 reserved, this supports up to 13 workers
+    # (gw0..gw12); gw13+ raises below.
+    db = base - 1 - int(_XDIST_WORKER.removeprefix("gw"))
+    if db < 2:
+        raise RuntimeError(
+            f"xdist worker {_XDIST_WORKER} has no free Redis DB "
+            f"(base {base}, DBs 0-1 reserved); run with fewer workers"
+        )
+    return db
+
+
 @pytest.fixture
 async def redis_client():
     """Real Redis client for tests that require Redis functionality.
 
-    Defaults to localhost:6379 DB 15 (dedicated to tests).
+    Defaults to localhost:6379 DB 15 (dedicated to tests; per-worker under
+    xdist, see _test_redis_db).
 
     Set env vars to customize:
     - TEST_REDIS_HOST (default: localhost)
@@ -462,7 +551,7 @@ async def redis_client():
 
     host = os.getenv("TEST_REDIS_HOST", "localhost")
     port = int(os.getenv("TEST_REDIS_PORT", "6379"))
-    db = int(os.getenv("TEST_REDIS_DB", "15"))
+    db = _test_redis_db()
 
     client = redis.Redis(host=host, port=port, db=db, decode_responses=True)
 

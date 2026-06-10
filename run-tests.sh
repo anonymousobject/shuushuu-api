@@ -1,6 +1,8 @@
 #!/bin/bash
 # Test runner script for shuushuu-api
 # Usage: ./run-tests.sh [pytest args]
+# With no args, runs the full suite in parallel (-n 4 --dist loadgroup).
+# Pass any args (e.g. a test path) for a plain serial pytest run.
 
 set -e
 
@@ -25,5 +27,10 @@ echo "  Test user: $TEST_DB_USER"
 echo "  Test password: ${TEST_DB_PASSWORD:+***set***}"
 echo ""
 
-# Run pytest with all arguments passed through
-uv run pytest "$@"
+# Run pytest with all arguments passed through; default to the parallel
+# sweet spot (see tests/README.md) when none are given
+if [ $# -eq 0 ]; then
+    uv run pytest -n 4 --dist loadgroup
+else
+    uv run pytest "$@"
+fi

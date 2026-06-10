@@ -55,6 +55,9 @@ def normalize_fk_action(action: str | None) -> str | None:
 
 @pytest.mark.integration
 @pytest.mark.schema_sync
+# These tests rebuild fixed-name databases (shuushuu_schema_models/_migrations),
+# so under xdist they must all run on the same worker (--dist loadgroup).
+@pytest.mark.xdist_group("schema_sync")
 class TestSchemaSync:
     """Tests to verify models match migrations.
 
@@ -91,16 +94,22 @@ class TestSchemaSync:
         try:
             # Create fresh databases
             with admin_engine.connect() as conn:
-                conn.execute(text(f"DROP DATABASE IF EXISTS {db_models}"))
-                conn.execute(text(f"DROP DATABASE IF EXISTS {db_migrations}"))
+                conn.execute(text(f"DROP DATABASE IF EXISTS `{db_models}`"))
+                conn.execute(text(f"DROP DATABASE IF EXISTS `{db_migrations}`"))
                 conn.execute(
-                    text(f"CREATE DATABASE {db_models} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                    text(f"CREATE DATABASE `{db_models}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
                 )
                 conn.execute(
-                    text(f"CREATE DATABASE {db_migrations} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                    text(f"CREATE DATABASE `{db_migrations}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
                 )
-                conn.execute(text(f"GRANT ALL PRIVILEGES ON {db_models}.* TO '{db_user}'@'%'"))
-                conn.execute(text(f"GRANT ALL PRIVILEGES ON {db_migrations}.* TO '{db_user}'@'%'"))
+                conn.execute(
+                    text(f"GRANT ALL PRIVILEGES ON `{db_models}`.* TO :db_user@'%'"),
+                    {"db_user": db_user},
+                )
+                conn.execute(
+                    text(f"GRANT ALL PRIVILEGES ON `{db_migrations}`.* TO :db_user@'%'"),
+                    {"db_user": db_user},
+                )
                 conn.execute(text("FLUSH PRIVILEGES"))
 
             # Create schema from models
@@ -173,6 +182,6 @@ class TestSchemaSync:
         finally:
             # Cleanup
             with admin_engine.connect() as conn:
-                conn.execute(text(f"DROP DATABASE IF EXISTS {db_models}"))
-                conn.execute(text(f"DROP DATABASE IF EXISTS {db_migrations}"))
+                conn.execute(text(f"DROP DATABASE IF EXISTS `{db_models}`"))
+                conn.execute(text(f"DROP DATABASE IF EXISTS `{db_migrations}`"))
             admin_engine.dispose()
