@@ -16,7 +16,7 @@ from sqlalchemy import ForeignKeyConstraint, Index, text
 from sqlalchemy.dialects.mysql import JSON
 from sqlmodel import Column, Field, SQLModel
 
-from app.models.types import UtcDateTime
+from app.models.types import UnsignedInt, UtcDateTime
 
 
 class AdminActions(SQLModel, table=True):
@@ -82,8 +82,9 @@ class AdminActions(SQLModel, table=True):
 
     action_type: int = Field(default=0)
 
-    report_id: int | None = Field(default=None)
-    review_id: int | None = Field(default=None)
+    # INT UNSIGNED to match the legacy-unsigned image_reports/image_reviews PKs
+    report_id: int | None = Field(default=None, sa_column=Column(UnsignedInt, nullable=True))
+    review_id: int | None = Field(default=None, sa_column=Column(UnsignedInt, nullable=True))
     image_id: int | None = Field(default=None)
 
     # JSON details with action context
