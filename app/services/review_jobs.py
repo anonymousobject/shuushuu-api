@@ -1,14 +1,14 @@
 """
 Background jobs for the review system.
 
-Provides scheduled tasks for processing review deadlines and pruning old audit logs.
+Provides scheduled tasks for processing review deadlines.
 """
 
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
@@ -309,44 +309,3 @@ async def check_early_close(db: AsyncSession, review: ImageReviews) -> tuple[int
 
     outcome = ReviewOutcome.KEEP if keep_votes > remove_votes else ReviewOutcome.REMOVE
     return await _close_review(db, review, outcome, "early_close_margin")
-
-
-async def prune_admin_actions(
-    db: AsyncSession,
-    retention_years: int = 2,
-) -> int:
-    """
-    Delete admin_actions older than retention period.
-
-    Runs monthly to maintain audit log size.
-
-    Args:
-        db: Database session
-        retention_years: How many years of history to keep (default 2)
-
-    Returns:
-        Number of rows deleted
-    """
-    cutoff_date = datetime.now(UTC) - timedelta(days=retention_years * 365)
-
-    stmt = (
-        delete(AdminActions)
-        .where(
-            AdminActions.created_at < cutoff_date,  # type: ignore[arg-type, operator]
-            # Keep report-linked rows: report resolutions are derived from them
-            # (_populate_report_resolutions), so pruning would erase that data.
-            AdminActions.report_id.is_(None),  # type: ignore[union-attr]
-        )
-        .execution_options(synchronize_session=False)
-    )
-    result = await db.execute(stmt)
-    await db.commit()
-
-    deleted_count = result.rowcount or 0  # type: ignore[attr-defined]
-
-    logger.info(
-        f"Pruned {deleted_count} admin_actions older than "
-        f"{cutoff_date.date()} ({retention_years} years)"
-    )
-
-    return deleted_count

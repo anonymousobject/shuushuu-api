@@ -6,7 +6,10 @@ moderation actions. This provides an audit trail for:
 - Report triage (dismiss, action, escalate)
 - Review management (start, vote, close, extend)
 
-The table is pruned after 2 years to maintain manageable size.
+Rows are retained indefinitely: growth is a few thousand rows a year on this
+site, all read paths are indexed point lookups, and an audit trail loses its
+value if history expires. (A 2-year prune job existed but was never scheduled;
+see git history for `prune_admin_actions`.)
 """
 
 from datetime import datetime
@@ -30,8 +33,9 @@ class AdminActions(SQLModel, table=True):
     - References to related entities (report, review, image)
     - JSON details with context (previous/new status, vote value, etc.)
 
-    Note: This table should be pruned periodically (after 2 years) to
-    maintain reasonable size. See background job `prune_admin_actions`.
+    Rows are retained indefinitely (see module docstring). Report-linked rows
+    in particular must never be deleted: report resolutions are derived from
+    them (_populate_report_resolutions).
     """
 
     __tablename__ = "admin_actions"
@@ -95,7 +99,7 @@ class AdminActions(SQLModel, table=True):
     # - review_close: {"outcome": 1, "vote_count": 5, "keep_votes": 3, "remove_votes": 2}
     details: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
-    # Timestamp (indexed for pruning queries)
+    # Timestamp (indexed for time-ordered lookups)
     created_at: datetime | None = Field(
         default=None,
         sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),

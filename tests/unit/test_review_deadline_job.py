@@ -7,7 +7,6 @@ Tests cover all quorum, majority, tie, and edge case scenarios.
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
@@ -19,17 +18,15 @@ from app.config import (
 )
 from app.models.admin_action import AdminActions
 from app.models.image import Images
-from app.models.image_report import ImageReports
 from app.models.image_review import ImageReviews
+from app.models.image_status_history import ImageStatusHistory
 from app.models.review_vote import ReviewVotes
 from app.models.user import Users
-from app.models.image_status_history import ImageStatusHistory
 from app.services.review_jobs import (
     _close_review,
     _get_vote_counts,
     check_early_close,
     check_review_deadlines,
-    prune_admin_actions,
 )
 
 
@@ -471,86 +468,6 @@ class TestAuditLogging:
         assert action.user_id is None
         assert action.details["automatic"] is True
         assert action.details["reason"] == "deadline_expired_auto_extend"
-
-
-@pytest.mark.asyncio
-class TestPruneAdminActions:
-    """Tests for admin_actions pruning."""
-
-    async def test_prune_old_actions(self, db_session: AsyncSession):
-        """Old admin_actions are deleted."""
-        now = datetime.now(UTC)
-
-        # Create old action (3 years ago)
-        old_action = AdminActions(
-            user_id=1,
-            action_type=AdminActionType.REPORT_DISMISS,
-            created_at=now - timedelta(days=3 * 365),
-        )
-        db_session.add(old_action)
-
-        # Create recent action (1 month ago)
-        recent_action = AdminActions(
-            user_id=1,
-            action_type=AdminActionType.REPORT_DISMISS,
-            created_at=now - timedelta(days=30),
-        )
-        db_session.add(recent_action)
-        await db_session.commit()
-        await db_session.refresh(recent_action)
-
-        deleted = await prune_admin_actions(db_session, retention_years=2)
-
-        assert deleted == 1
-
-        # Verify recent action still exists
-        from sqlalchemy import select
-        stmt = select(AdminActions).where(AdminActions.action_id == recent_action.action_id)
-        result = await db_session.execute(stmt)
-        assert result.scalar_one_or_none() is not None
-
-    async def test_prune_no_old_actions(self, db_session: AsyncSession):
-        """No actions deleted when all are within retention period."""
-        now = datetime.now(UTC)
-        action = AdminActions(
-            user_id=1,
-            action_type=AdminActionType.REPORT_DISMISS,
-            created_at=now - timedelta(days=30),
-        )
-        db_session.add(action)
-        await db_session.commit()
-
-        deleted = await prune_admin_actions(db_session, retention_years=2)
-
-        assert deleted == 0
-
-    async def test_prune_keeps_report_linked_actions(self, db_session: AsyncSession):
-        """Report-linked audit rows survive past retention: report resolutions are
-        derived from them, so pruning would silently erase resolution data."""
-        now = datetime.now(UTC)
-        img = await create_test_image(db_session, status=ImageStatus.DEACTIVATED)
-        report = ImageReports(image_id=img.image_id, user_id=1, category=2, status=1)
-        db_session.add(report)
-        await db_session.commit()
-        await db_session.refresh(report)
-
-        # Old (3y) report-linked action — must be kept.
-        db_session.add(AdminActions(
-            user_id=1, action_type=AdminActionType.REPORT_ACTION,
-            report_id=report.report_id, image_id=img.image_id,
-            created_at=now - timedelta(days=3 * 365)))
-        # Old (3y) non-report action — should be deleted.
-        db_session.add(AdminActions(
-            user_id=1, action_type=AdminActionType.IMAGE_STATUS_CHANGE,
-            created_at=now - timedelta(days=3 * 365)))
-        await db_session.commit()
-
-        deleted = await prune_admin_actions(db_session, retention_years=2)
-
-        assert deleted == 1  # only the non-report row
-        kept = (await db_session.execute(
-            select(AdminActions).where(AdminActions.report_id == report.report_id))).scalars().all()
-        assert len(kept) == 1
 
 
 @pytest.mark.asyncio
