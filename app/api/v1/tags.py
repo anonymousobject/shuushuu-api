@@ -1409,8 +1409,10 @@ async def update_tag(
         )
         db.add(audit_entry)
 
-    # Check for description change
-    if tag.desc != original_desc:
+    # Check for description change. Legacy rows store "no description" as ''
+    # while new writes use NULL; treat the two as the same state so a no-op
+    # edit doesn't log a (empty) → (empty) entry.
+    if (tag.desc or "") != (original_desc or ""):
         audit_entry = TagAuditLog(
             tag_id=tag_id,
             action_type=TagAuditActionType.DESCRIPTION_CHANGE,

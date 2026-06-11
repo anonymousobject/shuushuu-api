@@ -379,6 +379,127 @@ class TestTagAuditLogDescriptionChange:
         assert entries[0].old_desc is None
         assert entries[0].new_desc == "now it has one"
 
+    async def test_empty_string_to_none_creates_no_audit_log(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Legacy tags store desc='' while the edit form sends null; that is not a change."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="descadmin4",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="descadmin4@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Legacy data: description is an empty string, not NULL.
+        tag = Tags(title="legacy empty desc", desc="", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "descadmin4", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Edit something else; the form normalizes an empty description to null.
+        update_data = {
+            "title": "legacy empty desc renamed",
+            "desc": None,
+            "type": TagType.THEME,
+        }
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json=update_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == tag.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.DESCRIPTION_CHANGE,
+            )
+        )
+        audit_entries = audit_result.scalars().all()
+        assert len(audit_entries) == 0
+
+    async def test_clearing_description_stores_null_and_logs_new_desc_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Submitting desc='' clears the description to NULL, never storing ''."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username="descadmin5",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="descadmin5@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        tag = Tags(title="clearable desc", desc="about to be cleared", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "descadmin5", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        update_data = {
+            "title": "clearable desc",
+            "desc": "",
+            "type": TagType.THEME,
+        }
+        response = await client.put(
+            f"/api/v1/tags/{tag.tag_id}",
+            json=update_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["desc"] is None
+
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == tag.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.DESCRIPTION_CHANGE,
+            )
+        )
+        audit_entries = audit_result.scalars().all()
+        assert len(audit_entries) == 1
+        assert audit_entries[0].old_desc == "about to be cleared"
+        assert audit_entries[0].new_desc is None
+
 
 @pytest.mark.api
 class TestTagAuditLogTypeChange:
