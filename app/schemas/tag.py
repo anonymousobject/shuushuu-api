@@ -89,11 +89,12 @@ class TagCreate(TagBase):
         """
         Trim the description *before* the max_length constraint runs, so the limit
         applies to what actually lands in the DB — a value that fits after trimming
-        isn't rejected just for trailing whitespace. HTML escaping is handled by
-        Svelte's safe template interpolation on the frontend.
+        isn't rejected just for trailing whitespace. An empty result becomes None so
+        "no description" has a single representation (NULL, never ''). HTML escaping
+        is handled by Svelte's safe template interpolation on the frontend.
         """
         if isinstance(v, str):
-            return v.strip()
+            return v.strip() or None
         return v
 
 
