@@ -11,7 +11,7 @@ from datetime import datetime
 from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
-from app.models.types import UtcDateTime
+from app.models.types import UnsignedInt, UtcDateTime
 
 
 class ImageReportTagSuggestionBase(SQLModel):
@@ -46,7 +46,7 @@ class ImageReportTagSuggestions(ImageReportTagSuggestionBase, table=True):
 
     report_id: int = Field(
         sa_column=Column(
-            Integer,
+            UnsignedInt,
             ForeignKey("image_reports.report_id", ondelete="CASCADE", onupdate="CASCADE"),
             nullable=False,
         )

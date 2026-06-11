@@ -18,7 +18,7 @@ from datetime import datetime
 from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
-from app.models.types import UtcDateTime
+from app.models.types import UnsignedInt, UtcDateTime
 
 
 class ReviewVoteBase(SQLModel):
@@ -93,7 +93,7 @@ class ReviewVotes(ReviewVoteBase, table=True):
     review_id: int | None = Field(
         default=None,
         sa_column=Column(
-            Integer,
+            UnsignedInt,
             ForeignKey("image_reviews.review_id", ondelete="CASCADE", onupdate="CASCADE"),
             nullable=True,
         ),
