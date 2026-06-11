@@ -4,13 +4,20 @@ UtcDateTime: a DateTime variant that round-trips tz-aware datetimes through
 MariaDB's tz-naive DATETIME. Stores values as UTC (tzinfo stripped); attaches
 tzinfo=UTC on read. Naive datetimes are rejected on bind to avoid ambiguous
 "is this UTC or local?" assumptions.
+
+UnsignedInt: INT UNSIGNED, matching the legacy schema's ID columns. Models must
+declare the same signedness as the migrations, or create_all-built schemas
+(schema-sync tests) fail FK creation with errno 150 (signed PK <- unsigned FK).
 """
 
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import DateTime
+from sqlalchemy.dialects.mysql import INTEGER
 from sqlalchemy.types import TypeDecorator
+
+UnsignedInt = INTEGER(unsigned=True)
 
 
 class UtcDateTime(TypeDecorator[datetime]):
