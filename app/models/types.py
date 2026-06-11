@@ -17,6 +17,7 @@ from sqlalchemy import DateTime
 from sqlalchemy.dialects.mysql import INTEGER
 from sqlalchemy.types import TypeDecorator
 
+# Shared type instance, not a class — use as Column(UnsignedInt, ...); don't call it.
 UnsignedInt = INTEGER(unsigned=True)
 
 
