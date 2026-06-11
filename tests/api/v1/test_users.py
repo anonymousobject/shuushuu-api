@@ -21,6 +21,7 @@ from app.core.security import create_access_token, get_password_hash
 from app.models.favorite import Favorites
 from app.models.image import Images
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
+from app.models.refresh_token import RefreshTokens
 from app.models.user import Users
 
 
@@ -667,6 +668,125 @@ class TestUpdateUserProfile:
         assert response.status_code == 200
         data = response.json()
         # assert data["email"] == "newemail@example.com"  # Email may not be returned in response
+
+    async def test_self_password_change_via_patch_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """PATCH must not change a user's own password — that bypasses the
+        current-password check enforced by POST /auth/change-password."""
+        user = Users(
+            username="patchpwuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="patchpw@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "patchpwuser", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"password": "NewPassword456!"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 403
+        assert "change-password" in response.json()["detail"]
+
+        # Also blocked via the parameterised route (same shared helper)
+        response2 = await client.patch(
+            f"/api/v1/users/{user.user_id}",
+            json={"password": "NewPassword456!"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response2.status_code == 403
+
+        # Password must be unchanged: old credentials still log in
+        relogin = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "patchpwuser", "password": "TestPassword123!"},
+        )
+        assert relogin.status_code == 200
+
+    async def test_moderator_password_set_revokes_target_sessions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A moderator-forced password reset must also revoke the target's
+        sessions — the usual reason for the reset is a compromised account."""
+        moderator = Users(
+            username="pwmod",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pwmod@example.com",
+            active=1,
+        )
+        target = Users(
+            username="pwtarget",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="pwtarget@example.com",
+            active=1,
+        )
+        db_session.add(moderator)
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(moderator)
+        await db_session.refresh(target)
+
+        # Grant USER_EDIT_PROFILE permission to the moderator
+        perm = Perms(title="user_edit_profile", desc="Edit user profiles")
+        db_session.add(perm)
+        await db_session.flush()
+        group = Groups(title="pw_mod_group", desc="Password mod group")
+        db_session.add(group)
+        await db_session.flush()
+        group_perm = GroupPerms(group_id=group.group_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(group_perm)
+        user_group = UserGroups(user_id=moderator.user_id, group_id=group.group_id)
+        db_session.add(user_group)
+        await db_session.commit()
+
+        # Target logs in, establishing a session (refresh token row)
+        target_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "pwtarget", "password": "TestPassword123!"},
+        )
+        assert target_login.status_code == 200
+
+        mod_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "pwmod", "password": "TestPassword123!"},
+        )
+        mod_token = mod_login.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/users/{target.user_id}",
+            json={"password": "ModReset456!"},
+            headers={"Authorization": f"Bearer {mod_token}"},
+        )
+        assert response.status_code == 200
+
+        # Target's sessions are revoked...
+        tokens = await db_session.execute(
+            select(RefreshTokens).where(RefreshTokens.user_id == target.user_id)  # type: ignore[arg-type]
+        )
+        assert tokens.scalars().all() == []
+
+        # ...and the new password works
+        relogin2 = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "pwtarget", "password": "ModReset456!"},
+        )
+        assert relogin2.status_code == 200
 
     async def test_update_email_pm_pref_via_me(self, client: AsyncClient, db_session: AsyncSession):
         """Test that PATCH /api/v1/users/me accepts and returns email_pm_pref."""

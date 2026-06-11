@@ -22,7 +22,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import asc, case, desc, func, or_, select
+from sqlalchemy import asc, case, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -42,6 +42,7 @@ from app.core.redis import get_redis
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
 from app.models import Favorites, Images, TagLinks, Users
 from app.models.permissions import UserGroups
+from app.models.refresh_token import RefreshTokens
 from app.models.user_suspension import UserSuspensions
 from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
 from app.schemas.user import (
@@ -575,14 +576,27 @@ async def _update_user_profile(
             detail="Only moderators can update user upload limits",
         )
 
-    # Handle password separately with validation and hashing
+    # Handle password separately with validation and hashing.
+    # Self-service password changes must go through POST /auth/change-password,
+    # which verifies the current password and revokes existing sessions; PATCH
+    # would silently bypass both. Moderators may still set passwords here.
     if "password" in update_data:
+        if not has_edit_permission:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Use /api/v1/auth/change-password to change your own password",
+            )
         password = update_data.pop("password")
         is_valid, error_message = validate_password_strength(password)
         if not is_valid:
             raise HTTPException(status_code=400, detail=error_message)
         user.password = get_password_hash(password)
         user.password_type = "bcrypt"
+        # A forced reset usually responds to a compromised account: revoke the
+        # target's sessions so holders of the old credentials are logged out.
+        await db.execute(
+            delete(RefreshTokens).where(RefreshTokens.user_id == user.user_id)  # type: ignore[arg-type]
+        )
 
     # Handle email validation
     if "email" in update_data:
