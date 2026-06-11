@@ -99,7 +99,7 @@ class AdminActions(SQLModel, table=True):
     # - review_close: {"outcome": 1, "vote_count": 5, "keep_votes": 3, "remove_votes": 2}
     details: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
-    # Timestamp (indexed for pruning queries)
+    # Timestamp (indexed for time-ordered lookups)
     created_at: datetime | None = Field(
         default=None,
         sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
