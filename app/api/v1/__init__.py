@@ -15,6 +15,7 @@ from app.api.v1 import (
     history,
     images,
     meta,
+    ml_tag_suggestions,
     news,
     permissions,
     privmsgs,
@@ -33,6 +34,7 @@ router.include_router(banners.router)
 router.include_router(donations.router)
 router.include_router(feeds.router)
 router.include_router(images.router)
+router.include_router(ml_tag_suggestions.router)
 router.include_router(tags.router)
 router.include_router(character_source_links_router)
 router.include_router(users.router)
