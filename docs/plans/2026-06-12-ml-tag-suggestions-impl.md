@@ -37,7 +37,7 @@
 - Modify: `app/config.py` (after the Image Processing block, ~line 115)
 - Modify: `.env.example`
 
-- [ ] **Step 1.1: Add dependencies**
+- [x] **Step 1.1: Add dependencies**
 
 In `pyproject.toml` main `dependencies`, after `"aiosmtplib>=5.0.0",`:
 
@@ -48,7 +48,7 @@ In `pyproject.toml` main `dependencies`, after `"aiosmtplib>=5.0.0",`:
 
 Run: `uv lock && uv sync` — expect success (cp314 wheels exist for both).
 
-- [ ] **Step 1.2: Add settings**
+- [x] **Step 1.2: Add settings**
 
 In `app/config.py`, after the Image Processing block:
 
@@ -79,7 +79,7 @@ In `app/config.py`, after the Image Processing block:
     )
 ```
 
-- [ ] **Step 1.3: Document in .env.example**
+- [x] **Step 1.3: Document in .env.example**
 
 Append to `.env.example` (match its existing comment style):
 
@@ -91,9 +91,9 @@ ML_MODEL_NAME=wd-swinv2-tagger-v3
 ML_MIN_CONFIDENCE=0.35
 ```
 
-- [ ] **Step 1.4: Sanity check** — `uv run python -c "from app.config import settings; print(settings.ML_TAG_SUGGESTIONS_ENABLED)"` → `False`
+- [x] **Step 1.4: Sanity check** — `uv run python -c "from app.config import settings; print(settings.ML_TAG_SUGGESTIONS_ENABLED)"` → `False`
 
-- [ ] **Step 1.5: Commit** — `feat(ml-suggestions): add onnxruntime deps and feature-flagged settings`
+- [x] **Step 1.5: Commit** — `feat(ml-suggestions): add onnxruntime deps and feature-flagged settings`
 
 ### Task 2: Models
 
