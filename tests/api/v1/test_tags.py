@@ -559,6 +559,65 @@ class TestTagListSorting:
         titles = [t["title"] for t in data["tags"] if "sort" in t["title"]]
         assert titles == ["unpopular sort", "medium sort", "popular sort"]
 
+    async def test_sort_by_usage_count_uses_effective_count_for_aliases(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Aliases sort by their target's count — the value the UI displays."""
+        target = Tags(title="effective target", type=TagType.CHARACTER, usage_count=100)
+        zero = Tags(title="effective zero", type=TagType.CHARACTER, usage_count=0)
+        mid = Tags(title="effective mid", type=TagType.CHARACTER, usage_count=50)
+        for tag in (target, zero, mid):
+            db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(target)
+
+        # Own count 0, but effective count 100 via the target.
+        alias = Tags(
+            title="effective alias",
+            type=TagType.CHARACTER,
+            usage_count=0,
+            alias_of=target.tag_id,
+        )
+        db_session.add(alias)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags?type=4&sort_by=usage_count&sort_order=ASC")
+        assert response.status_code == 200
+        titles = [t["title"] for t in response.json()["tags"] if "effective" in t["title"]]
+        # Alias ties with its target at 100; tag_id tie-breaker puts the
+        # older target row first when ascending.
+        assert titles == ["effective zero", "effective mid", "effective target", "effective alias"]
+
+        response = await client.get("/api/v1/tags?type=4&sort_by=usage_count&sort_order=DESC")
+        assert response.status_code == 200
+        titles = [t["title"] for t in response.json()["tags"] if "effective" in t["title"]]
+        assert titles == ["effective alias", "effective target", "effective mid", "effective zero"]
+
+    async def test_sort_by_usage_count_ties_break_by_tag_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Equal counts order by tag_id so pagination is stable across pages."""
+        tags = [
+            Tags(title=f"tiebreak {i}", type=TagType.CHARACTER, usage_count=7)
+            for i in range(3)
+        ]
+        for tag in tags:
+            db_session.add(tag)
+        await db_session.commit()
+        for tag in tags:
+            await db_session.refresh(tag)
+        ids_in_creation_order = [t.tag_id for t in tags]
+
+        response = await client.get("/api/v1/tags?type=4&sort_by=usage_count&sort_order=ASC")
+        assert response.status_code == 200
+        ids = [t["tag_id"] for t in response.json()["tags"] if t["title"].startswith("tiebreak")]
+        assert ids == ids_in_creation_order
+
+        response = await client.get("/api/v1/tags?type=4&sort_by=usage_count&sort_order=DESC")
+        assert response.status_code == 200
+        ids = [t["tag_id"] for t in response.json()["tags"] if t["title"].startswith("tiebreak")]
+        assert ids == list(reversed(ids_in_creation_order))
+
     async def test_sort_order_case_insensitive(
         self, client: AsyncClient, db_session: AsyncSession
     ):

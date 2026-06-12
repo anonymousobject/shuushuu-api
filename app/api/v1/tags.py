@@ -648,12 +648,48 @@ async def list_tags(
         "tag_id": Tags.tag_id,
         "type": Tags.type,
     }
+    sort_func = desc if sorting.sort_order == "DESC" else asc
 
-    if sorting.sort_by is not None:
-        # Explicit sort_by: always honor it, even during search
+    # A count sort with aliases visible orders by the *effective* count —
+    # COALESCE(target's count, own count), the value the UI displays — so the
+    # sorted column orders by what the user sees. With exclude_aliases the two
+    # counts are identical (every alias row is filtered out), so the plain
+    # indexed column in the map covers it.
+    sorts_by_count = sorting.sort_by == "usage_count" or (sorting.sort_by is None and not search)
+    deferred_count_sort = sorts_by_count and not exclude_aliases
+
+    if deferred_count_sort:
+        # COALESCE over the self-join can't use the usage_count index, and
+        # ordering the full SELECT materializes 230k+ wide rows (desc TEXT)
+        # into a temp table (~210ms vs 0.3ms indexed). Deferred join: sort
+        # narrow (tag_id, count) tuples, paginate down to one page of ids,
+        # then fetch the wide rows for just those ids (~85ms).
+        effective_count = func.coalesce(AliasedTag.usage_count, Tags.usage_count)
+        page_ids = (
+            query.with_only_columns(Tags.tag_id, effective_count.label("effective_count"))  # type: ignore[call-overload]
+            .order_by(sort_func(effective_count), sort_func(Tags.tag_id))  # type: ignore[arg-type]
+            .offset(pagination.offset)
+            .limit(pagination.per_page)
+            .subquery()
+        )
+        query = (
+            select(
+                Tags,
+                AliasedTag.title.label("alias_of_name"),  # type: ignore[union-attr]
+                AliasedTag.usage_count.label("alias_of_usage_count"),  # type: ignore[attr-defined]
+            )
+            .join(page_ids, Tags.tag_id == page_ids.c.tag_id)
+            .outerjoin(
+                AliasedTag,
+                Tags.alias_of == AliasedTag.tag_id,  # type: ignore[arg-type]
+            )
+            .order_by(sort_func(page_ids.c.effective_count), sort_func(Tags.tag_id))  # type: ignore[arg-type]
+        )
+    elif sorting.sort_by is not None:
+        # Explicit sort_by: always honor it, even during search.
+        # tag_id tie-breaker keeps pagination stable when counts/types tie.
         sort_column = sort_column_map[sorting.sort_by]
-        sort_func = desc if sorting.sort_order == "DESC" else asc
-        query = query.order_by(sort_func(sort_column))
+        query = query.order_by(sort_func(sort_column), sort_func(Tags.tag_id))  # type: ignore[arg-type]
     elif search:
         # No explicit sort_by + search: use relevance ranking
         if len(search) < 3 or not fulltext_query_str:
@@ -681,12 +717,18 @@ async def list_tags(
                 func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
             ).params(search=fulltext_query_str)
     else:
-        # No search, no explicit sort_by: default to usage_count, honoring sort_order
-        sort_func = desc if sorting.sort_order == "DESC" else asc
-        query = query.order_by(sort_func(sort_column_map["usage_count"]))
+        # No search, no explicit sort_by: default to usage_count, honoring
+        # sort_order. Only reachable with exclude_aliases (aliases-visible
+        # count sorts take the deferred branch), so the plain column is the
+        # effective count here.
+        query = query.order_by(
+            sort_func(sort_column_map["usage_count"]),
+            sort_func(Tags.tag_id),  # type: ignore[arg-type]
+        )
 
-    # Paginate
-    query = query.offset(pagination.offset).limit(pagination.per_page)
+    # Paginate (the deferred branch already paginated inside its subquery)
+    if not deferred_count_sort:
+        query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Execute
     result = await db.execute(query)
