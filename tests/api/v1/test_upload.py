@@ -312,6 +312,11 @@ class TestUploadMLTagSuggestions:
             )
 
         assert response.status_code == 201
+        non_ml_calls = [
+            c for c in enqueue_mock.call_args_list
+            if not (c.args and c.args[0] == "generate_ml_tag_suggestions")
+        ]
+        assert non_ml_calls, "other enqueue jobs should still have been called"
 
 
 class TestUploadClientIPHandling:
