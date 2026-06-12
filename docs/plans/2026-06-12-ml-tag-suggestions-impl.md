@@ -105,13 +105,13 @@ ML_MIN_CONFIDENCE=0.35
 
 Reference originals: `git show feature/tag-suggestion-system:app/models/tag_suggestion.py` and `...:app/models/tag_mapping.py`, plus branch tests `tests/models/test_tag_suggestion.py` / `tests/models/test_tag_mapping.py`. Follow main's conventions from `app/models/image_report_tag_suggestion.py` (Base + table classes, explicit `sa_column` FKs, `UtcDateTime`).
 
-- [ ] **Step 2.1: Write failing model tests**
+- [x] **Step 2.1: Write failing model tests**
 
 `tests/models/` does **not** exist on main — create the directory with an empty `tests/models/__init__.py` (every test package has one). Port the branch's two model test files, renamed and adapted: class `MlTagSuggestions` (no `model_source` field — assert `model_version` instead), class `TagMappings` (no `external_source`). Keep the real-DB insert/query/constraint tests; drop any `MLModelVersion` tests. Drop the branch's `@pytest.mark.asyncio` markers (main runs `asyncio_mode = "auto"`). Parent `Images`/`Tags`/`Users` rows come from existing conftest fixtures (`db_session`, `test_user`, `test_tag`, `test_image` — all in `tests/conftest.py`).
 
-- [ ] **Step 2.2: Run to confirm failure** — `uv run pytest tests/models/ -q` → ImportError (module doesn't exist).
+- [x] **Step 2.2: Run to confirm failure** — `uv run pytest tests/models/ -q` → ImportError (module doesn't exist).
 
-- [ ] **Step 2.3: Write `app/models/ml_tag_suggestion.py`**
+- [x] **Step 2.3: Write `app/models/ml_tag_suggestion.py`**
 
 ```python
 """
@@ -193,7 +193,7 @@ class MlTagSuggestions(MlTagSuggestionBase, table=True):
     )
 ```
 
-- [ ] **Step 2.4: Write `app/models/tag_mapping.py`**
+- [x] **Step 2.4: Write `app/models/tag_mapping.py`**
 
 ```python
 """
@@ -242,9 +242,9 @@ class TagMappings(TagMappingBase, table=True):
     )
 ```
 
-- [ ] **Step 2.5: Register in `app/models/__init__.py`** — add imports `from app.models.ml_tag_suggestion import MlTagSuggestions` and `from app.models.tag_mapping import TagMappings` in the alphabetical positions used by the file, plus both names in `__all__`.
+- [x] **Step 2.5: Register in `app/models/__init__.py`** — add imports `from app.models.ml_tag_suggestion import MlTagSuggestions` and `from app.models.tag_mapping import TagMappings` in the alphabetical positions used by the file, plus both names in `__all__`.
 
-- [ ] **Step 2.6: Migration**
+- [x] **Step 2.6: Migration**
 
 Verify head: `uv run alembic heads` → `528091e4fac9`. Create `uv run alembic revision -m "add ml tag suggestion tables"`, then edit (see `docs/creating_alembic_migrations.md`; follow `e66f8043bc60` as the style reference):
 
@@ -329,9 +329,9 @@ def downgrade() -> None:
 
 FK names follow the `fk_<table>_<column>` convention enforced by `tests/integration/test_fk_constraint_names.py` (it inspects the migrated DB, so naming them in the migration is what matters; the model classes use bare `ForeignKey(...)` like the rest of main's models).
 
-- [ ] **Step 2.7: Apply and verify** — model tests pass (`uv run pytest tests/models/ -q`; new head forces the conftest full-rebuild path), FK names pass (`uv run pytest tests/integration/test_fk_constraint_names.py -q`), and schema sync runs clean (`MYSQL_ROOT_PASSWORD=dev_root_password uv run pytest tests/integration/test_schema_sync.py --schema-sync -q`). Note: schema-sync proves `create_all` and alembic both build without FK/type errors (catches signedness mismatches), but its deep column comparisons cover a hardcoded legacy-table list — don't read green as full model↔migration parity; the embedded model/DDL above were cross-checked by review instead.
+- [x] **Step 2.7: Apply and verify** — model tests pass (`uv run pytest tests/models/ -q`; new head forces the conftest full-rebuild path), FK names pass (`uv run pytest tests/integration/test_fk_constraint_names.py -q`), and schema sync runs clean (`MYSQL_ROOT_PASSWORD=dev_root_password uv run pytest tests/integration/test_schema_sync.py --schema-sync -q`). Note: schema-sync proves `create_all` and alembic both build without FK/type errors (catches signedness mismatches), but its deep column comparisons cover a hardcoded legacy-table list — don't read green as full model↔migration parity; the embedded model/DDL above were cross-checked by review instead.
 
-- [ ] **Step 2.8: Commit** — `feat(ml-suggestions): add MlTagSuggestions and TagMappings models with migration`
+- [x] **Step 2.8: Commit** — `feat(ml-suggestions): add MlTagSuggestions and TagMappings models with migration`
 
 ---
 
