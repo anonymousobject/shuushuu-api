@@ -124,11 +124,17 @@ class Settings(BaseSettings):
     )
     ML_MODELS_PATH: str = Field(
         default="ml_models",
-        description="Directory holding ONNX model subdirectories; relative paths resolve against the project root",
+        description=(
+            "Directory holding ONNX model subdirectories; relative paths"
+            " resolve against the project root"
+        ),
     )
     ML_MODEL_NAME: str = Field(
         default="wd-swinv2-tagger-v3",
-        description="Model subdirectory to load: wd-swinv2-tagger-v3 or an animetimm name like swinv2_base_window8_256.dbv4-full",
+        description=(
+            "Model subdirectory to load: wd-swinv2-tagger-v3 or an animetimm"
+            " name like swinv2_base_window8_256.dbv4-full"
+        ),
     )
     ML_MIN_CONFIDENCE: float = Field(
         default=0.35,
