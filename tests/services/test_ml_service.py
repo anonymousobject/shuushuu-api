@@ -7,11 +7,9 @@ They do NOT test MockModel behaviour — MockModel was removed from the service.
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
-import app.services.ml_service as ml_service_module
 from app.services.ml_service import MLTagSuggestionService
 
 
@@ -42,7 +40,6 @@ class FakeTaggingModel:
 class TestMLTagSuggestionServiceLoadModels:
     """Tests for load_models() fail-fast behaviour."""
 
-    @pytest.mark.asyncio
     async def test_load_models_raises_file_not_found_for_wd_tagger(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -56,7 +53,6 @@ class TestMLTagSuggestionServiceLoadModels:
         with pytest.raises(FileNotFoundError, match=str(tmp_path)):
             await service.load_models()
 
-    @pytest.mark.asyncio
     async def test_load_models_raises_file_not_found_for_animetimm(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -71,7 +67,6 @@ class TestMLTagSuggestionServiceLoadModels:
         with pytest.raises(FileNotFoundError, match=str(tmp_path)):
             await service.load_models()
 
-    @pytest.mark.asyncio
     async def test_load_models_raises_value_error_for_unknown_model(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -89,14 +84,12 @@ class TestMLTagSuggestionServiceLoadModels:
 class TestMLTagSuggestionServiceGenerateSuggestions:
     """Tests for generate_suggestions() output shaping and category filtering."""
 
-    @pytest.mark.asyncio
     async def test_generate_suggestions_without_model_raises_runtime_error(self) -> None:
         """Calling generate_suggestions before any model is set raises RuntimeError."""
         service = MLTagSuggestionService()
         with pytest.raises(RuntimeError, match="load_models"):
             await service.generate_suggestions("/some/image.jpg")
 
-    @pytest.mark.asyncio
     async def test_generate_suggestions_passes_only_general_category(self) -> None:
         """v1 themes-only: predict is called with include_categories={GENERAL_CATEGORY}."""
         from app.services.onnx_model import GENERAL_CATEGORY
@@ -110,7 +103,6 @@ class TestMLTagSuggestionServiceGenerateSuggestions:
 
         assert fake.last_include_categories == {GENERAL_CATEGORY}
 
-    @pytest.mark.asyncio
     async def test_generate_suggestions_output_keys(self) -> None:
         """Output dicts must contain external_tag, confidence, model_version — no model_source."""
         service = MLTagSuggestionService()
@@ -127,7 +119,6 @@ class TestMLTagSuggestionServiceGenerateSuggestions:
             assert "model_version" in suggestion
             assert "model_source" not in suggestion
 
-    @pytest.mark.asyncio
     async def test_generate_suggestions_model_version_matches_model_name(self) -> None:
         """model_version in output must equal the loaded model name."""
         service = MLTagSuggestionService()
@@ -140,7 +131,6 @@ class TestMLTagSuggestionServiceGenerateSuggestions:
         for suggestion in results:
             assert suggestion["model_version"] == "wd-swinv2-tagger-v3"
 
-    @pytest.mark.asyncio
     async def test_generate_suggestions_animetimm_passes_animetimm_general_category(self) -> None:
         """For an AnimetimmModel-typed injection, passes ANIMETIMM_GENERAL only."""
         from app.services.animetimm_model import GENERAL_CATEGORY as ANIMETIMM_GENERAL
@@ -150,8 +140,6 @@ class TestMLTagSuggestionServiceGenerateSuggestions:
 
         # Create an unloaded AnimetimmModel instance (no files needed for this test)
         animetimm_fake = AnimetimmModel.__new__(AnimetimmModel)
-        # Wrap in a FakeTaggingModel that records calls but still isinstance-checks as AnimetimmModel
-        # Instead, monkeypatch predict so it records the call
         called_with: list[set[int] | None] = []
 
         async def fake_predict(
