@@ -542,9 +542,9 @@ Binds log context, opens a session, loads the image (error result if absent), pu
 - Modify: `app/api/v1/images.py` (after the R2 finalize enqueue, ~line 2760)
 - Test: extend `tests/api/v1/test_upload.py` (upload tests live here on current main, not `test_images.py` where the branch put them)
 
-- [ ] **Step 8.1: Write failing tests** (adapt the branch's upload-test additions into `test_upload.py`): with flag on, upload enqueues `generate_ml_tag_suggestions` with `_defer_by=30.0`; with flag off, it doesn't; enqueue failure doesn't fail the upload.
+- [x] **Step 8.1: Write failing tests** (adapt the branch's upload-test additions into `test_upload.py`): with flag on, upload enqueues `generate_ml_tag_suggestions` with `_defer_by=30.0`; with flag off, it doesn't; enqueue failure doesn't fail the upload.
 
-- [ ] **Step 8.2: Implement** after the `r2_finalize_upload_job` block:
+- [x] **Step 8.2: Implement** after the `r2_finalize_upload_job` block:
 
 ```python
         if settings.ML_TAG_SUGGESTIONS_ENABLED:
@@ -566,8 +566,8 @@ Binds log context, opens a session, loads the image (error result if absent), pu
                 )
 ```
 
-- [ ] **Step 8.3: Run** — new tests + full `tests/api/v1/test_upload.py` pass.
-- [ ] **Step 8.4: Commit** — `feat(ml-suggestions): enqueue suggestion generation on upload behind flag`
+- [x] **Step 8.3: Run** — new tests + full `tests/api/v1/test_upload.py` pass.
+- [x] **Step 8.4: Commit** — `feat(ml-suggestions): enqueue suggestion generation on upload behind flag`
 
 ### Task 9: Data, scripts, compose, docs, licenses
 
