@@ -3,7 +3,7 @@
 These tests require the real model file at settings.ML_MODELS_PATH.  When the
 model is absent they skip automatically — run with the real models via:
 
-    ML_MODELS_PATH=/home/dtaylor/shuu/ml_models ML_MODEL_NAME=wd-swinv2-tagger-v3 \
+    ML_MODELS_PATH=/home/dtaylor/shuu/ml_models \
         uv run pytest tests/integration/test_wd_tagger_model.py -q
 """
 
@@ -23,7 +23,7 @@ _MODELS_BASE = (
     if Path(settings.ML_MODELS_PATH).is_absolute()
     else _PROJECT_ROOT / settings.ML_MODELS_PATH
 )
-_MODEL_FILE = _MODELS_BASE / settings.ML_MODEL_NAME / "model.onnx"
+_MODEL_FILE = _MODELS_BASE / "wd-swinv2-tagger-v3" / "model.onnx"
 
 # selected_tags.csv: always use the repo-local copy in ml_models/
 _REPO_ML_DIR = _PROJECT_ROOT / "ml_models"
@@ -36,12 +36,12 @@ _MODEL_AVAILABLE = _MODEL_FILE.exists() and _TAGS_FILE.exists()
 @pytest.mark.filterwarnings("ignore::UserWarning:onnxruntime")
 @pytest.mark.skipif(
     not _MODEL_AVAILABLE,
-    reason=f"Real model not found at {_MODEL_FILE} (set ML_MODELS_PATH and ML_MODEL_NAME=wd-swinv2-tagger-v3)",
+    reason=f"Real model not found at {_MODEL_FILE} (set ML_MODELS_PATH to the directory containing wd-swinv2-tagger-v3/)",
 )
 class TestWDTaggerModelReal:
     """Integration tests that run only when the ONNX model file is present."""
 
-    async def test_predict_confidences_in_unit_range(self, tmp_path: pytest.fixture) -> None:
+    async def test_predict_confidences_in_unit_range(self, tmp_path: Path) -> None:
         """Every returned confidence must be in [0, 1] — sanity check on output range."""
         from app.services.onnx_model import WDTaggerModel
 
@@ -58,7 +58,7 @@ class TestWDTaggerModelReal:
             results = await model.predict(
                 str(img_path),
                 min_confidence=0.0,
-                include_categories=None,  # all categories
+                include_categories=None,  # general-only
             )
             for item in results:
                 assert 0.0 <= item["confidence"] <= 1.0, (
@@ -67,7 +67,7 @@ class TestWDTaggerModelReal:
         finally:
             await model.cleanup()
 
-    async def test_double_sigmoid_tripwire(self, tmp_path: pytest.fixture) -> None:
+    async def test_double_sigmoid_tripwire(self, tmp_path: Path) -> None:
         """With min_confidence=0.35, fewer than 2000 tags should pass.
 
         Under the double-sigmoid bug all 10,861 tags pass 0.35 (because
@@ -99,7 +99,7 @@ class TestWDTaggerModelReal:
         finally:
             await model.cleanup()
 
-    async def test_max_confidence_above_threshold(self, tmp_path: pytest.fixture) -> None:
+    async def test_max_confidence_above_threshold(self, tmp_path: Path) -> None:
         """With min_confidence=0.0, at least one tag must exceed 0.3 confidence.
 
         Guards against degenerate all-zeros output from broken preprocessing.
