@@ -3,10 +3,12 @@ Tests for the shared ML suggestion pipeline.
 
 These drive ``generate_and_store_suggestions(db, image, ml_service)`` against
 the real test database. The ML inference boundary is a small fake service
-returning canned predictions; the mapping/resolver stages are either patched
-to canned outputs (for logic-focused tests) or exercised against real
-``TagMappings`` rows (for the mapping/skip tests). No mocked behavior is
-asserted — the assertions are all on real DB rows the pipeline wrote.
+returning canned predictions. ``resolve_external_tags`` is patched to return
+canned tag-ID rows in every test here — mapping has its own real-DB coverage
+in ``test_tag_mapping_service.py``. ``resolve_tag_relationships`` runs for real
+in tests that exercise alias resolution or ancestor-walk logic; it is patched
+to a passthrough elsewhere. No mocked behavior is asserted — the assertions
+are all on real DB rows the pipeline wrote.
 """
 
 from typing import Any
@@ -449,3 +451,74 @@ async def test_skips_missing_tag_id(db_session, tmp_path, monkeypatch):
         select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
     )
     assert result.scalars().all() == []
+
+
+async def test_alias_resolves_to_canonical(db_session, tmp_path, monkeypatch):
+    """Pipeline stores the canonical tag when the predicted tag is an alias.
+
+    resolve_external_tags is patched to return the alias tag_id (as all other
+    tests do); resolve_tag_relationships runs for real against the DB rows and
+    must redirect the suggestion to the canonical tag_id.
+    """
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    canonical = Tags(tag_id=300, title="long hair")
+    alias = Tags(tag_id=301, title="longhair", alias_of=300)
+    db_session.add_all([canonical, alias])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "alias")
+    image = await _make_image(db_session, user, "alias", tmp_path)
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("longhair"))
+    # Mapping stage returns the alias tag_id; real resolver redirects to canonical.
+    mapped = [{"tag_id": 301, "confidence": 0.9, "model_version": "v3"}]
+
+    with patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 1
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    suggestions = result.scalars().all()
+    assert len(suggestions) == 1
+    # The stored suggestion must reference the canonical tag, not the alias.
+    assert suggestions[0].tag_id == 300
+
+
+async def test_filters_redundant_grandparent(db_session, tmp_path, monkeypatch):
+    """A suggestion that is a grandparent of an existing tag is also filtered.
+
+    Exercises the multi-level ancestor walk inside filter_redundant_suggestions
+    (beyond depth 1: child → parent → grandparent).
+    """
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    grandparent = Tags(tag_id=400, title="color")
+    parent = Tags(tag_id=401, title="hair color", inheritedfrom_id=400)
+    child = Tags(tag_id=402, title="blonde hair", inheritedfrom_id=401)
+    db_session.add_all([grandparent, parent, child])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "grandparent")
+    image = await _make_image(db_session, user, "grandparent", tmp_path)
+    await db_session.flush()
+
+    # The child tag is already on the image.
+    db_session.add(TagLinks(image_id=image.image_id, tag_id=402, user_id=user.user_id))
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("color"))
+    # Predict the grandparent directly; passthrough so it arrives at the filter as-is.
+    mapped = [{"tag_id": 400, "confidence": 0.9, "model_version": "v3"}]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    # Grandparent "color" is an ancestor of the existing "blonde hair" → redundant.
+    assert created == 0

@@ -8,9 +8,12 @@ generation logic is not duplicated.
 """
 
 from pathlib import Path as FilePath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
+
+if TYPE_CHECKING:
+    from app.services.ml_service import MLTagSuggestionService
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -138,7 +141,7 @@ async def filter_redundant_suggestions(
 async def generate_and_store_suggestions(
     db: AsyncSession,
     image: Images,
-    ml_service: Any,
+    ml_service: MLTagSuggestionService,
 ) -> int:
     """
     Run ML inference for an image and store pending MlTagSuggestions rows.
