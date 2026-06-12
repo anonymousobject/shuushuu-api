@@ -578,10 +578,10 @@ Binds log context, opens a session, loads the image (error result if absent), pu
 - Create: `docs/ml-tag-suggestions.md`
 - Modify: `docker-compose.yml`
 
-- [ ] **Step 9.1: Port data + scripts.** `import_tag_mappings.py`: adapt to `TagMappings` (no `external_source`). `generate_tag_mappings.py`: port as-is (writes a draft CSV for manual review; only handles category 0 — fine for themes-only v1). Run `uv run python -c "import ast; ast.parse(open('scripts/import_tag_mappings.py').read())"`-level sanity via ruff/mypy in Task 10 (scripts have no test DB seed data to run against here).
-- [ ] **Step 9.2: docker-compose** — add `- ./ml_models:/app/ml_models:ro` to both the `api` and `arq-worker` service volumes (the worker service was renamed since the branch diff).
-- [ ] **Step 9.3: Write `docs/ml-tag-suggestions.md`** — condensed from the branch's `docs/tag-suggestion-workflow.md`, updated: flag-gated setup steps (download model per `ml_models/.../README.md`, set env vars, run `import_tag_mappings.py`), endpoint paths, threshold semantics (true probabilities now; 0.35 default), the themes-only v1 scope and the documented character extension point, separation from report-based human suggestions.
-- [ ] **Step 9.4: Commit** — `feat(ml-suggestions): mapping data, import scripts, compose mounts, docs, licenses`
+- [x] **Step 9.1: Port data + scripts.** `import_tag_mappings.py`: adapt to `TagMappings` (no `external_source`). `generate_tag_mappings.py`: port as-is (writes a draft CSV for manual review; only handles category 0 — fine for themes-only v1). Run `uv run python -c "import ast; ast.parse(open('scripts/import_tag_mappings.py').read())"`-level sanity via ruff/mypy in Task 10 (scripts have no test DB seed data to run against here).
+- [x] **Step 9.2: docker-compose** — add `- ./ml_models:/app/ml_models:ro` to both the `api` and `arq-worker` service volumes (the worker service was renamed since the branch diff).
+- [x] **Step 9.3: Write `docs/ml-tag-suggestions.md`** — condensed from the branch's `docs/tag-suggestion-workflow.md`, updated: flag-gated setup steps (download model per `ml_models/.../README.md`, set env vars, run `import_tag_mappings.py`), endpoint paths, threshold semantics (true probabilities now; 0.35 default), the themes-only v1 scope and the documented character extension point, separation from report-based human suggestions.
+- [x] **Step 9.4: Commit** — `feat(ml-suggestions): mapping data, import scripts, compose mounts, docs, licenses`
 
 ### Task 10: Integration tests + full verification
 
