@@ -4,7 +4,6 @@ ML Tag Suggestions API Endpoints
 Provides endpoints for viewing and managing ML-generated tag suggestions.
 """
 
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -19,7 +18,7 @@ from app.core.permissions import Permission, has_permission
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
-from app.models.tag_link import TagLinks
+from app.models.user import Users
 from app.schemas.ml_tag_suggestion import (
     GenerateSuggestionsResponse,
     MlTagSuggestionResponse,
@@ -29,6 +28,7 @@ from app.schemas.ml_tag_suggestion import (
 )
 from app.schemas.tag import TagResponse
 from app.services.ml_suggestion_pipeline import generate_and_store_suggestions
+from app.services.ml_suggestion_review import review_ml_tag_suggestions as apply_review
 from app.tasks.queue import enqueue_job
 
 if TYPE_CHECKING:
@@ -37,6 +37,36 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/images", tags=["ml-tag-suggestions"])
+
+
+async def _get_image_checking_access(
+    db: AsyncSession,
+    image_id: int,
+    current_user: Users,
+    detail: str,
+) -> Images:
+    """Fetch an image, requiring the caller to be its owner or hold IMAGE_TAG_ADD.
+
+    Raises 404 if the image does not exist and 403 (with ``detail``) if the
+    caller is neither the uploader nor a moderator with the tag-add permission.
+    """
+    image_result = await db.execute(
+        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    )
+    image = image_result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    is_owner = image.user_id == current_user.user_id
+    is_moderator = await has_permission(
+        db,
+        current_user.user_id,  # type: ignore[arg-type]
+        Permission.IMAGE_TAG_ADD,
+    )
+    if not is_owner and not is_moderator:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+    return image
 
 
 @router.get(
@@ -99,27 +129,12 @@ async def get_ml_tag_suggestions(
     Raises:
         HTTPException: 404 if image not found, 403 if permission denied
     """
-    # Check if image exists
-    image_result = await db.execute(
-        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
-    )
-    image = image_result.scalar_one_or_none()
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
-
-    # Check permissions: owner or moderator
-    is_owner = image.user_id == current_user.user_id
-    is_moderator = await has_permission(
+    await _get_image_checking_access(
         db,
-        current_user.user_id,  # type: ignore[arg-type]
-        Permission.IMAGE_TAG_ADD,
+        image_id,
+        current_user,
+        detail="You can only view suggestions for your own images",
     )
-
-    if not is_owner and not is_moderator:
-        raise HTTPException(
-            status_code=403,
-            detail="You can only view suggestions for your own images",
-        )
 
     # Build query for suggestions
     query = select(MlTagSuggestions).where(
@@ -199,7 +214,8 @@ async def review_ml_tag_suggestions(
 
     **Behavior:**
     - **Approve**: Creates TagLink (applies tag to image) and marks suggestion as approved
-    - **Reject**: Marks suggestion as rejected (does not apply tag)
+    - **Reject**: Marks suggestion as rejected (does not apply tag). Rejecting a
+      previously-approved suggestion does NOT remove the TagLink it created.
     - Idempotent: Can re-review already reviewed suggestions
     - Prevents duplicate TagLinks (if tag already applied)
     - Tracks reviewer and review timestamp
@@ -246,92 +262,14 @@ async def review_ml_tag_suggestions(
     Raises:
         HTTPException: 404 if image not found, 403 if permission denied
     """
-    # Check if image exists
-    image_result = await db.execute(
-        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
-    )
-    image = image_result.scalar_one_or_none()
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
-
-    # Check permissions: owner or moderator
-    is_owner = image.user_id == current_user.user_id
-    is_moderator = await has_permission(
+    await _get_image_checking_access(
         db,
-        current_user.user_id,  # type: ignore[arg-type]
-        Permission.IMAGE_TAG_ADD,
+        image_id,
+        current_user,
+        detail="You can only review suggestions for your own images",
     )
 
-    if not is_owner and not is_moderator:
-        raise HTTPException(
-            status_code=403,
-            detail="You can only review suggestions for your own images",
-        )
-
-    # Batch fetch all suggestions in one query to avoid N+1
-    suggestion_ids = [item.suggestion_id for item in request.suggestions]
-    suggestions_result = await db.execute(
-        select(MlTagSuggestions).where(
-            MlTagSuggestions.suggestion_id.in_(suggestion_ids),  # type: ignore[union-attr]
-            MlTagSuggestions.image_id == image_id,  # type: ignore[arg-type]
-        )
-    )
-    suggestions_by_id = {sugg.suggestion_id: sugg for sugg in suggestions_result.scalars().all()}
-
-    # Batch fetch existing TagLinks to avoid creating duplicates
-    tag_ids = [sugg.tag_id for sugg in suggestions_by_id.values()]
-    links_result = await db.execute(
-        select(TagLinks).where(
-            TagLinks.image_id == image_id,  # type: ignore[arg-type]
-            TagLinks.tag_id.in_(tag_ids),  # type: ignore[attr-defined]
-        )
-    )
-    existing_links = {(link.image_id, link.tag_id) for link in links_result.scalars().all()}
-
-    approved_count = 0
-    rejected_count = 0
-    errors: list[str] = []
-
-    review_time = datetime.now(UTC)
-
-    for review_item in request.suggestions:
-        # Check if suggestion exists and belongs to this image
-        suggestion = suggestions_by_id.get(review_item.suggestion_id)
-        if not suggestion:
-            errors.append(f"Suggestion {review_item.suggestion_id} not found")
-            continue
-
-        if review_item.action == "approve":
-            # Create TagLink if it doesn't exist
-            if (image_id, suggestion.tag_id) not in existing_links:
-                tag_link = TagLinks(
-                    image_id=image_id,
-                    tag_id=suggestion.tag_id,
-                    user_id=current_user.user_id,
-                )
-                db.add(tag_link)
-                existing_links.add((image_id, suggestion.tag_id))
-
-            # Update suggestion status
-            suggestion.status = "approved"
-            suggestion.reviewed_at = review_time
-            suggestion.reviewed_by_user_id = current_user.user_id
-            approved_count += 1
-
-        elif review_item.action == "reject":
-            # Update suggestion status only (no TagLink)
-            suggestion.status = "rejected"
-            suggestion.reviewed_at = review_time
-            suggestion.reviewed_by_user_id = current_user.user_id
-            rejected_count += 1
-
-    await db.commit()
-
-    return ReviewSuggestionsResponse(
-        approved=approved_count,
-        rejected=rejected_count,
-        errors=errors,
-    )
+    return await apply_review(image_id, request, current_user.user_id, db)  # type: ignore[arg-type]
 
 
 @router.post(
@@ -399,27 +337,12 @@ async def generate_ml_tag_suggestions(
             detail="ML tag suggestions are disabled",
         )
 
-    # Check if image exists
-    image_result = await db.execute(
-        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
-    )
-    image = image_result.scalar_one_or_none()
-    if not image:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-
-    # Check permissions: owner or moderator with IMAGE_TAG_ADD
-    is_owner = image.user_id == current_user.user_id
-    is_moderator = await has_permission(
+    image = await _get_image_checking_access(
         db,
-        current_user.user_id,  # type: ignore[arg-type]
-        Permission.IMAGE_TAG_ADD,
+        image_id,
+        current_user,
+        detail="You can only generate suggestions for your own images",
     )
-
-    if not is_owner and not is_moderator:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only generate suggestions for your own images",
-        )
 
     if sync:
         # Run synchronously through the shared pipeline (loads the model on the
@@ -430,9 +353,10 @@ async def generate_ml_tag_suggestions(
                 db, image, await _get_ml_service()
             )
         except FileNotFoundError as exc:
+            # The pipeline already logs the absolute path; do not leak it to the client.
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(exc),
+                detail="Image file not found",
             ) from exc
         return GenerateSuggestionsResponse(
             message="Tag suggestions generated",

@@ -20,7 +20,9 @@ from app.config import settings
 from app.core.security import create_access_token
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
+from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
+from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 
@@ -60,6 +62,30 @@ def _resolver_to_tag_ids(rows: list[dict[str, Any]]):
 
 async def _passthrough_resolver(db, suggestions):
     return suggestions
+
+
+async def _create_moderator(
+    db_session: AsyncSession, username: str, email: str, salt: str = "modsalt12345678"
+) -> Users:
+    """Create a user holding the IMAGE_TAG_ADD permission (non-owner moderator)."""
+    user = Users(
+        username=username,
+        email=email,
+        password="hashed",
+        password_type="bcrypt",
+        salt=salt,
+        active=1,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    perm = Perms(title="image_tag_add", desc="Add tags to images")
+    db_session.add(perm)
+    await db_session.flush()
+
+    db_session.add(UserPerms(user_id=user.user_id, perm_id=perm.perm_id, permvalue=1))
+    await db_session.flush()
+    return user
 
 
 @pytest.mark.api
@@ -300,6 +326,76 @@ class TestGetMlTagSuggestions:
         data = response.json()
         assert len(data["suggestions"]) == 1
         assert data["suggestions"][0]["status"] == "approved"
+
+    async def test_get_suggestions_invalid_status_filter_returns_422(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """An unrecognized ?status= value is rejected with 422."""
+        user = Users(
+            username="test_bad_status",
+            email="test_bad_status@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="badstatus123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions?status=bogus",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 422
+
+    async def test_moderator_can_view_others_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A non-owner with IMAGE_TAG_ADD can view suggestions on any image."""
+        owner = Users(
+            username="view_owner",
+            email="view_owner@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="viewsalt1234567",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        moderator = await _create_moderator(db_session, "view_mod", "view_mod@example.com")
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=owner.user_id,
+            md5_hash="modview123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=moderator.user_id)
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
 
 
 @pytest.mark.api
@@ -806,6 +902,450 @@ class TestReviewMlTagSuggestions:
         )
         tag_links = result.scalars().all()
         assert len(tag_links) == 1
+
+    async def test_approve_creates_tag_history(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Approving a suggestion records a TagHistory add row (action='a')."""
+        user = Users(
+            username="test_history",
+            email="test_history@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="history123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag = Tags(title="history tag", type=1, user_id=user.user_id)
+        db_session.add(tag)
+        await db_session.flush()
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.92,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+            json={
+                "suggestions": [{"suggestion_id": suggestion.suggestion_id, "action": "approve"}]
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        result = await db_session.execute(
+            select(TagHistory).where(
+                TagHistory.image_id == image.image_id,
+                TagHistory.tag_id == tag.tag_id,
+                TagHistory.action == "a",
+            )
+        )
+        history_rows = result.scalars().all()
+        assert len(history_rows) == 1
+        assert history_rows[0].user_id == user.user_id
+
+    async def test_approve_does_not_create_history_for_existing_link(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """No TagHistory row is written when the TagLink already exists."""
+        user = Users(
+            username="test_history_dup",
+            email="test_history_dup@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="histdup123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag = Tags(title="existing tag", type=1, user_id=user.user_id)
+        db_session.add(tag)
+        await db_session.flush()
+
+        db_session.add(
+            TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=user.user_id)
+        )
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.92,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+            json={
+                "suggestions": [{"suggestion_id": suggestion.suggestion_id, "action": "approve"}]
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        result = await db_session.execute(
+            select(TagHistory).where(
+                TagHistory.image_id == image.image_id,
+                TagHistory.tag_id == tag.tag_id,
+            )
+        )
+        assert result.scalars().all() == []
+
+    async def test_approve_refreshes_tag_type_flags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Approving a theme-tag suggestion flips the image's has_theme flag."""
+        user = Users(
+            username="test_flags",
+            email="test_flags@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="flags123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag = Tags(title="theme tag", type=1, user_id=user.user_id)
+        db_session.add(tag)
+        await db_session.flush()
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.92,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+            json={
+                "suggestions": [{"suggestion_id": suggestion.suggestion_id, "action": "approve"}]
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Re-query (flags bypass the ORM identity map; do not assert on a stale object).
+        result = await db_session.execute(
+            select(Images.has_theme).where(Images.image_id == image.image_id)
+        )
+        assert result.scalar_one() == 1
+
+    async def test_approve_resolves_alias_to_canonical_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Approving a suggestion whose tag became an alias links the canonical tag."""
+        user = Users(
+            username="test_alias",
+            email="test_alias@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="alias123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        canonical = Tags(title="canonical", type=1, user_id=user.user_id)
+        db_session.add(canonical)
+        await db_session.flush()
+
+        alias = Tags(
+            title="alias", type=1, user_id=user.user_id, alias_of=canonical.tag_id
+        )
+        db_session.add(alias)
+        await db_session.flush()
+
+        # Suggestion still references the now-aliased tag.
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=alias.tag_id,
+            confidence=0.92,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+            json={
+                "suggestions": [{"suggestion_id": suggestion.suggestion_id, "action": "approve"}]
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["approved"] == 1
+
+        # The TagLink targets the canonical tag, not the alias.
+        result = await db_session.execute(
+            select(TagLinks).where(TagLinks.image_id == image.image_id)
+        )
+        links = result.scalars().all()
+        assert len(links) == 1
+        assert links[0].tag_id == canonical.tag_id
+
+        # The suggestion row keeps its original (alias) tag_id.
+        await db_session.refresh(suggestion)
+        assert suggestion.tag_id == alias.tag_id
+        assert suggestion.status == "approved"
+
+    async def test_approve_alias_skips_when_canonical_link_exists(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """No duplicate TagLink when the canonical tag is already linked."""
+        user = Users(
+            username="test_alias_dup",
+            email="test_alias_dup@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="aliasdup123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        canonical = Tags(title="canonical", type=1, user_id=user.user_id)
+        db_session.add(canonical)
+        await db_session.flush()
+
+        alias = Tags(
+            title="alias", type=1, user_id=user.user_id, alias_of=canonical.tag_id
+        )
+        db_session.add(alias)
+        await db_session.flush()
+
+        # Canonical tag already linked.
+        db_session.add(
+            TagLinks(image_id=image.image_id, tag_id=canonical.tag_id, user_id=user.user_id)
+        )
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=alias.tag_id,
+            confidence=0.92,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+            json={
+                "suggestions": [{"suggestion_id": suggestion.suggestion_id, "action": "approve"}]
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        result = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image.image_id, TagLinks.tag_id == canonical.tag_id
+            )
+        )
+        assert len(result.scalars().all()) == 1
+
+        # No history row, since the canonical link already existed.
+        history = await db_session.execute(
+            select(TagHistory).where(TagHistory.image_id == image.image_id)
+        )
+        assert history.scalars().all() == []
+
+    async def test_approve_syncs_affected_tags_to_search(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Approving creates a TagLink and syncs the affected tag to Meilisearch."""
+        user = Users(
+            username="test_search_sync",
+            email="test_search_sync@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="searchsync123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag = Tags(title="searchable", type=1, user_id=user.user_id)
+        db_session.add(tag)
+        await db_session.flush()
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.92,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        with patch(
+            "app.services.ml_suggestion_review.sync_tags_to_search",
+            new_callable=AsyncMock,
+        ) as mock_sync:
+            response = await client.post(
+                f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+                json={
+                    "suggestions": [
+                        {"suggestion_id": suggestion.suggestion_id, "action": "approve"}
+                    ]
+                },
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        assert response.status_code == 200
+
+        mock_sync.assert_awaited_once()
+        synced_tags = mock_sync.await_args.args[0]
+        assert {t.tag_id for t in synced_tags} == {tag.tag_id}
+
+    async def test_moderator_can_review_others_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A non-owner with IMAGE_TAG_ADD can review suggestions on any image."""
+        owner = Users(
+            username="review_owner",
+            email="review_owner@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="ownersalt123456",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        moderator = await _create_moderator(
+            db_session, "review_mod", "review_mod@example.com"
+        )
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=owner.user_id,
+            md5_hash="modreview123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag = Tags(title="mod tag", type=1, user_id=owner.user_id)
+        db_session.add(tag)
+        await db_session.flush()
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.92,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=moderator.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+            json={
+                "suggestions": [{"suggestion_id": suggestion.suggestion_id, "action": "approve"}]
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["approved"] == 1
 
 
 @pytest.mark.api
