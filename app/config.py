@@ -112,6 +112,31 @@ class Settings(BaseSettings):
     THUMBNAIL_QUALITY: int = 75  # WebP quality (75 is sweet spot for thumbnails)
     LARGE_QUALITY: int = 90
 
+    # ML Tag Suggestions
+    ML_TAG_SUGGESTIONS_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "Master switch for ML tag suggestions. When true the arq worker "
+            "loads the ONNX model at startup (and fails to start if model "
+            "files are missing), uploads enqueue generation jobs, and the "
+            "generate endpoint is available."
+        ),
+    )
+    ML_MODELS_PATH: str = Field(
+        default="ml_models",
+        description="Directory holding ONNX model subdirectories; relative paths resolve against the project root",
+    )
+    ML_MODEL_NAME: str = Field(
+        default="wd-swinv2-tagger-v3",
+        description="Model subdirectory to load: wd-swinv2-tagger-v3 or an animetimm name like swinv2_base_window8_256.dbv4-full",
+    )
+    ML_MIN_CONFIDENCE: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="Minimum model probability for a prediction to become a suggestion",
+    )
+
     # Avatar Settings
     AVATAR_STORAGE_PATH: str = ""  # Derived from STORAGE_PATH if not set
     BANNER_STORAGE_PATH: str = ""  # Derived from STORAGE_PATH if not set

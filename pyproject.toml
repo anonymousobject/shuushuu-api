@@ -44,6 +44,8 @@ dependencies = [
     # "slowapi>=0.1.9",  # Rate limiting - for API throttling
     # "python-multipart>=0.0.20",  # Multipart form data - needed for image uploads
     "aiosmtplib>=5.0.0",
+    "onnxruntime>=1.26.0",  # 1.26.0 is the first release with Python 3.14 wheels
+    "numpy>=2.4.1",
 ]
 
 [dependency-groups]
