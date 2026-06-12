@@ -1,5 +1,8 @@
 """Tests for the TagMappings model against a real database."""
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from app.models.tag_mapping import TagMappings
 
 
@@ -32,3 +35,17 @@ async def test_tag_mapping_null_internal_tag(db_session):
     await db_session.refresh(mapping)
 
     assert mapping.internal_tag_id is None
+
+
+@pytest.mark.needs_commit  # failed commit needs real-commit + truncate isolation
+async def test_tag_mapping_unique_constraint(db_session):
+    """The same external tag cannot be mapped twice."""
+    mapping1 = TagMappings(external_tag="1girl")
+    db_session.add(mapping1)
+    await db_session.commit()
+
+    mapping2 = TagMappings(external_tag="1girl")
+    db_session.add(mapping2)
+
+    with pytest.raises(IntegrityError):  # unique_external_tag
+        await db_session.commit()
