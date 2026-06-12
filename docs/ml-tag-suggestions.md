@@ -70,13 +70,15 @@ bug.
 
 ### 4. Import tag mappings
 
-Populate `tag_mappings` from the curated CSV before enabling suggestions:
+Populate `tag_mappings` from the curated CSV before enabling suggestions.
+Run the migration first to create the `tag_mappings` table, then import:
 
 ```bash
+uv run alembic upgrade head
 uv run python scripts/import_tag_mappings.py
 ```
 
-This reads `data/tag_mappings.csv` (298 rows: ~250 `map` entries + ~40 `ignore`
+This reads `data/tag_mappings.csv` (297 entries: 257 `map` + 40 `ignore`
 entries). The script is idempotent — skips rows that already exist.
 
 To regenerate a draft mapping CSV against the live database:

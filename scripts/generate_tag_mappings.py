@@ -45,6 +45,11 @@ def normalize_tag(tag: str) -> str:
 
 def load_wd_tagger_tags() -> dict[str, dict[str, object]]:
     """Load WD-Tagger tags from CSV, return dict by normalized name."""
+    if not WD_TAGGER_TAGS.exists():
+        raise SystemExit(
+            f"Missing model file: {WD_TAGGER_TAGS}\n"
+            "Download the model first — see ml_models/wd-swinv2-tagger-v3/README.md"
+        )
     tags: dict[str, dict[str, object]] = {}
     with open(WD_TAGGER_TAGS) as f:
         reader = csv.DictReader(f)
@@ -104,7 +109,7 @@ def find_matches(
             exact_matches.append({
                 "danbooru_tag": wd_data["original"],
                 "internal_tag_id": internal["tag_id"],
-                "internal_title": internal["title"],
+                "internal_tag_title": internal["title"],
                 "match_type": "exact",
                 "action": "map",
             })
@@ -122,7 +127,7 @@ def find_matches(
                 partial_matches.append({
                     "danbooru_tag": wd_data["original"],
                     "internal_tag_id": int_data["tag_id"],
-                    "internal_title": int_data["title"],
+                    "internal_tag_title": int_data["title"],
                     "match_type": "partial",
                     "action": "review",
                 })
@@ -133,7 +138,7 @@ def find_matches(
             unmatched_wd.append({
                 "danbooru_tag": wd_data["original"],
                 "internal_tag_id": "",
-                "internal_title": "",
+                "internal_tag_title": "",
                 "match_type": "none",
                 "action": "ignore",  # Default to ignore, can be changed
             })
@@ -155,7 +160,7 @@ def write_output(
             fieldnames=[
                 "danbooru_tag",
                 "internal_tag_id",
-                "internal_title",
+                "internal_tag_title",
                 "match_type",
                 "action",
             ],
@@ -215,7 +220,7 @@ async def main() -> None:
 
     print("\nExact matches found:")
     for match in sorted(exact, key=lambda x: str(x["danbooru_tag"]))[:30]:
-        print(f"  {str(match['danbooru_tag']):30} → {match['internal_title']}")
+        print(f"  {str(match['danbooru_tag']):30} → {match['internal_tag_title']}")
     if len(exact) > 30:
         print(f"  ... and {len(exact) - 30} more")
 
