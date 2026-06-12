@@ -18,6 +18,7 @@ class FakeTaggingModel:
 
     def __init__(self, predictions: list[dict[str, Any]] | None = None) -> None:
         self.last_include_categories: set[int] | None = None
+        self.cleanup_called: bool = False
         self._predictions = predictions or [
             {"tag": "smile", "confidence": 0.91, "category": 0},
             {"tag": "blue_hair", "confidence": 0.80, "category": 0},
@@ -33,7 +34,7 @@ class FakeTaggingModel:
         return self._predictions
 
     async def cleanup(self) -> None:
-        pass
+        self.cleanup_called = True
 
 
 @pytest.mark.unit
@@ -157,3 +158,28 @@ class TestMLTagSuggestionServiceGenerateSuggestions:
         await service.generate_suggestions("/fake/image.jpg")
 
         assert called_with == [{ANIMETIMM_GENERAL}]
+
+
+@pytest.mark.unit
+class TestMLTagSuggestionServiceCleanup:
+    """Tests for cleanup() resource teardown."""
+
+    async def test_cleanup_calls_model_cleanup_and_clears_reference(self) -> None:
+        """After cleanup(), the fake's cleanup was awaited and service.model is None."""
+        service = MLTagSuggestionService()
+        fake = FakeTaggingModel()
+        service.model = fake  # type: ignore[assignment]
+
+        await service.cleanup()
+
+        assert fake.cleanup_called is True
+        assert service.model is None
+
+    async def test_cleanup_on_unloaded_service_is_a_noop(self) -> None:
+        """cleanup() on a never-loaded service (model is None) does not raise."""
+        service = MLTagSuggestionService()
+        assert service.model is None
+
+        await service.cleanup()  # must not raise
+
+        assert service.model is None
