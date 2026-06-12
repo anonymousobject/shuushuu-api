@@ -398,7 +398,7 @@ ml_models/**/*.onnx
 - Create: `app/services/ml_service.py` (rewrite of the branch version)
 - Test: `tests/services/test_ml_service.py` (new; do not port the branch one — it tested MockModel behavior)
 
-- [ ] **Step 4.1: Write failing tests.** Define a `FakeTaggingModel` in the test file (satisfies the `TaggingModel` protocol, returns canned predictions, records the `include_categories` it was called with). Inject by assigning `service.model = fake` after construction — that attribute is the service's only seam; don't invent a constructor parameter. Tests:
+- [x] **Step 4.1: Write failing tests.** Define a `FakeTaggingModel` in the test file (satisfies the `TaggingModel` protocol, returns canned predictions, records the `include_categories` it was called with). Inject by assigning `service.model = fake` after construction — that attribute is the service's only seam; don't invent a constructor parameter. Tests:
   1. `load_models` raises `FileNotFoundError` naming the expected path when model files are absent (point `ML_MODELS_PATH` at tmp_path via monkeypatch of settings).
   2. `load_models` raises `ValueError` for an unrecognized `ML_MODEL_NAME`.
   3. `generate_suggestions` with an injected fake model passes `include_categories={GENERAL_CATEGORY}` only (the v1 themes-only decision) and returns dicts with keys `external_tag`, `confidence`, `model_version` (no `model_source`).
@@ -406,18 +406,18 @@ ml_models/**/*.onnx
 
   These exercise real service logic (path resolution, category selection, output shaping) against a protocol fake at the inference boundary — not mocked behavior.
 
-- [ ] **Step 4.2: Run to confirm failure.**
+- [x] **Step 4.2: Run to confirm failure.**
 
-- [ ] **Step 4.3: Implement.** Start from the branch file and apply:
+- [x] **Step 4.3: Implement.** Start from the branch file and apply:
   - Delete `MockModel` and `_using_mock` entirely (this orphans the `asyncio` and `random` imports — remove them too so the commit is ruff-clean).
   - `_load_wd_tagger` / `_load_animetimm`: when files are missing, `raise FileNotFoundError(f"ML model files not found: {model_path} (set ML_MODELS_PATH or download the model — see ml_models/wd-swinv2-tagger-v3/README.md)")`.
   - Unknown `ML_MODEL_NAME`: `raise ValueError(...)` instead of mock fallback.
   - `generate_suggestions`: categories = `{ANIMETIMM_GENERAL}` or `{GENERAL_CATEGORY}` only, with comment: `# v1 suggests theme tags only. To enable character suggestions later, add CHARACTER_CATEGORY here and populate character rows in tag_mappings.` Output dicts: `external_tag`, `confidence`, `model_version` (= `self._model_name`). Drop `model_source`.
   - Keep the `TaggingModel` protocol, project-root path resolution, logging, `cleanup()`.
 
-- [ ] **Step 4.4: Run** — `uv run pytest tests/services/test_ml_service.py -q` → pass.
+- [x] **Step 4.4: Run** — `uv run pytest tests/services/test_ml_service.py -q` → pass.
 
-- [ ] **Step 4.5: Commit** — `feat(ml-suggestions): ML service with fail-fast loading, themes-only inference`
+- [x] **Step 4.5: Commit** — `feat(ml-suggestions): ML service with fail-fast loading, themes-only inference`
 
 ### Task 5: Mapping and resolver services
 
