@@ -446,11 +446,11 @@ ml_models/**/*.onnx
 
 The branch duplicated the generation pipeline between `tag_suggestion_job.py` and the API's `_generate_suggestions_sync`. Extract once; both call it.
 
-- [ ] **Step 6.1: Write failing pipeline tests** (`tests/services/test_ml_suggestion_pipeline.py`). `tests/tasks/` does not exist on main — create it with an empty `tests/tasks/__init__.py`. Port the logic-heavy tests from branch `tests/tasks/test_tag_suggestion_job.py` (redundancy filtering: ancestor chains, substring titles; skip-existing-tag; skip-existing-suggestion; reset-approved-when-tag-removed; threshold filtering), driving `generate_and_store_suggestions(db, image, ml_service)` with a fake `MLTagSuggestionService` (canned `generate_suggestions` return) and real DB rows. Image file existence: pipeline takes the resolved path from the image row — tests create a real temp file and monkeypatch `settings.STORAGE_PATH`.
+- [x] **Step 6.1: Write failing pipeline tests** (`tests/services/test_ml_suggestion_pipeline.py`). `tests/tasks/` does not exist on main — create it with an empty `tests/tasks/__init__.py`. Port the logic-heavy tests from branch `tests/tasks/test_tag_suggestion_job.py` (redundancy filtering: ancestor chains, substring titles; skip-existing-tag; skip-existing-suggestion; reset-approved-when-tag-removed; threshold filtering), driving `generate_and_store_suggestions(db, image, ml_service)` with a fake `MLTagSuggestionService` (canned `generate_suggestions` return) and real DB rows. Image file existence: pipeline takes the resolved path from the image row — tests create a real temp file and monkeypatch `settings.STORAGE_PATH`.
 
-- [ ] **Step 6.2: Run to confirm failure.**
+- [x] **Step 6.2: Run to confirm failure.**
 
-- [ ] **Step 6.3: Implement `app/services/ml_suggestion_pipeline.py`.** Move from the branch job file: `filter_redundant_suggestions` (unchanged except comment cleanup) and the body of steps 3–9 of `generate_tag_suggestions` as:
+- [x] **Step 6.3: Implement `app/services/ml_suggestion_pipeline.py`.** Move from the branch job file: `filter_redundant_suggestions` (unchanged except comment cleanup) and the body of steps 3–9 of `generate_tag_suggestions` as:
 
 ```python
 async def generate_and_store_suggestions(
@@ -473,7 +473,7 @@ async def generate_and_store_suggestions(
 
 Uses `settings.ML_MIN_CONFIDENCE` (not a hardcoded 0.6) when calling `ml_service.generate_suggestions` and when double-checking before insert. Creates `MlTagSuggestions(..., model_version=pred["model_version"], status="pending")`. Commits at the end (same transactional shape as the branch job).
 
-- [ ] **Step 6.4: Implement `app/tasks/ml_tag_suggestion_job.py`** — thin arq wrapper:
+- [x] **Step 6.4: Implement `app/tasks/ml_tag_suggestion_job.py`** — thin arq wrapper:
 
 ```python
 async def generate_ml_tag_suggestions(ctx: dict[str, Any], image_id: int) -> dict[str, str | int]:
@@ -481,7 +481,7 @@ async def generate_ml_tag_suggestions(ctx: dict[str, Any], image_id: int) -> dic
 
 Binds log context, opens a session, loads the image (error result if absent), pulls `ml_service = ctx.get("ml_service")` — if `None`, log error and return `{"status": "error", "error": "ML tag suggestions not initialized (ML_TAG_SUGGESTIONS_ENABLED is off or model failed to load)"}` — calls the pipeline, catches exceptions into an error-result dict exactly like other jobs in `app/tasks/` (don't crash the queue).
 
-- [ ] **Step 6.5: Wire `app/tasks/worker.py`:**
+- [x] **Step 6.5: Wire `app/tasks/worker.py`:**
   - In `startup`, after the meilisearch block:
 
 ```python
@@ -501,11 +501,11 @@ Binds log context, opens a session, loads the image (error result if absent), pu
   - In `shutdown`: `if "ml_service" in ctx: await ctx["ml_service"].cleanup()`.
   - Add `func(generate_ml_tag_suggestions, max_tries=3)` to `functions` + import.
 
-- [ ] **Step 6.6: Job/worker tests.** `tests/tasks/test_ml_tag_suggestion_job.py`: missing-image → error dict; missing ml_service in ctx → error dict mentioning the flag; happy path with fake service → rows created (reuse pipeline fixtures). Main has no `tests/test_worker.py` — port the branch's, adapted: assert `generate_ml_tag_suggestions` is registered; assert startup with flag off does not set `ctx["ml_service"]`; assert startup with flag on and missing files raises `FileNotFoundError`. (Main's startup also initializes meilisearch — the branch's worker tests predate that; make sure ported startup tests tolerate it, e.g. unreachable meilisearch logs a warning and continues.)
+- [x] **Step 6.6: Job/worker tests.** `tests/tasks/test_ml_tag_suggestion_job.py`: missing-image → error dict; missing ml_service in ctx → error dict mentioning the flag; happy path with fake service → rows created (reuse pipeline fixtures). Main has no `tests/test_worker.py` — port the branch's, adapted: assert `generate_ml_tag_suggestions` is registered; assert startup with flag off does not set `ctx["ml_service"]`; assert startup with flag on and missing files raises `FileNotFoundError`. (Main's startup also initializes meilisearch — the branch's worker tests predate that; make sure ported startup tests tolerate it, e.g. unreachable meilisearch logs a warning and continues.)
 
-- [ ] **Step 6.7: Run all new tests + `uv run pytest tests/tasks tests/services -q`** → pass.
+- [x] **Step 6.7: Run all new tests + `uv run pytest tests/tasks tests/services -q`** → pass.
 
-- [ ] **Step 6.8: Commit** — `feat(ml-suggestions): shared generation pipeline, arq job, gated worker startup`
+- [x] **Step 6.8: Commit** — `feat(ml-suggestions): shared generation pipeline, arq job, gated worker startup`
 
 ### Task 7: Schemas + API endpoints
 
