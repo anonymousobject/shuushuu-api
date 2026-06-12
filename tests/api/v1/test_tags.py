@@ -618,6 +618,29 @@ class TestTagListSorting:
         ids = [t["tag_id"] for t in response.json()["tags"] if t["title"].startswith("tiebreak")]
         assert ids == list(reversed(ids_in_creation_order))
 
+        # exclude_aliases routes count sorts down the plain indexed branch
+        # (no deferred join) — the tie-breaker must hold there independently.
+        response = await client.get(
+            "/api/v1/tags?type=4&sort_by=usage_count&sort_order=ASC&exclude_aliases=true"
+        )
+        assert response.status_code == 200
+        ids = [t["tag_id"] for t in response.json()["tags"] if t["title"].startswith("tiebreak")]
+        assert ids == ids_in_creation_order
+
+        response = await client.get(
+            "/api/v1/tags?type=4&sort_by=usage_count&sort_order=DESC&exclude_aliases=true"
+        )
+        assert response.status_code == 200
+        ids = [t["tag_id"] for t in response.json()["tags"] if t["title"].startswith("tiebreak")]
+        assert ids == list(reversed(ids_in_creation_order))
+
+        # No sort_by at all hits the default-listing branch (DESC default),
+        # which is only reachable with exclude_aliases.
+        response = await client.get("/api/v1/tags?type=4&exclude_aliases=true")
+        assert response.status_code == 200
+        ids = [t["tag_id"] for t in response.json()["tags"] if t["title"].startswith("tiebreak")]
+        assert ids == list(reversed(ids_in_creation_order))
+
     async def test_sort_order_case_insensitive(
         self, client: AsyncClient, db_session: AsyncSession
     ):
