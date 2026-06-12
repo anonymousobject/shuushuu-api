@@ -2760,6 +2760,24 @@ async def upload_image(
                 _defer_by=90,
             )
 
+        if settings.ML_TAG_SUGGESTIONS_ENABLED:
+            # Defer so thumbnail/variant processing finishes first; failure
+            # must never fail the upload itself.
+            try:
+                await enqueue_job(
+                    "generate_ml_tag_suggestions",
+                    image_id=image_id,
+                    _defer_by=30.0,
+                )
+                logger.debug("ml_tag_suggestion_job_enqueued", image_id=image_id)
+            except Exception as e:
+                logger.error(
+                    "ml_tag_suggestion_enqueue_failed",
+                    image_id=image_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+
         # Build response
         image_response = ImageResponse(
             image_id=temp_image.image_id or 0,  # image_id is guaranteed to exist after flush
