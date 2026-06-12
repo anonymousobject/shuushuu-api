@@ -124,3 +124,7 @@ CLAUDE.md
 # Not tracked — rendered fresh from vault each apply.
 /mediawiki/
 /secrets/
+
+# ML models (large binary files - download separately)
+ml_models/*.onnx
+ml_models/**/*.onnx
