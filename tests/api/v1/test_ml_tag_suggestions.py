@@ -397,6 +397,52 @@ class TestGetMlTagSuggestions:
         )
         assert response.status_code == 200
 
+    async def test_admin_can_view_others_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """An admin (admin=True, no IMAGE_TAG_ADD perm) can view suggestions on any image."""
+        owner = Users(
+            username="admin_view_owner",
+            email="admin_view_owner@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="admviewsalt1234",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        admin = Users(
+            username="admin_view_user",
+            email="admin_view_user@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="admviewuslt1234",
+            active=1,
+            admin=True,
+        )
+        db_session.add(admin)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=owner.user_id,
+            md5_hash="adminview123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=admin.user_id)
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
 
 @pytest.mark.api
 class TestReviewMlTagSuggestions:
@@ -1347,6 +1393,70 @@ class TestReviewMlTagSuggestions:
         assert response.status_code == 200
         assert response.json()["approved"] == 1
 
+    async def test_admin_can_review_others_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """An admin (admin=True, no IMAGE_TAG_ADD perm) can review suggestions on any image."""
+        owner = Users(
+            username="admin_review_owner",
+            email="admin_review_owner@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="admrevsalt12345",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        admin = Users(
+            username="admin_review_user",
+            email="admin_review_user@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="admrevuslt12345",
+            active=1,
+            admin=True,
+        )
+        db_session.add(admin)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=owner.user_id,
+            md5_hash="adminreview123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag = Tags(title="admin review tag", type=1, user_id=owner.user_id)
+        db_session.add(tag)
+        await db_session.flush()
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.88,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=admin.user_id)
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+            json={
+                "suggestions": [{"suggestion_id": suggestion.suggestion_id, "action": "approve"}]
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["approved"] == 1
+
 
 @pytest.mark.api
 class TestGenerateMlTagSuggestions:
@@ -1642,3 +1752,54 @@ class TestGenerateMlTagSuggestions:
 
         assert response.status_code == 403
         assert "your own images" in response.json()["detail"]
+
+    async def test_admin_can_generate_for_others_image(
+        self, client: AsyncClient, db_session: AsyncSession, monkeypatch
+    ):
+        """An admin (admin=True, no IMAGE_TAG_ADD perm) can trigger generation for any image."""
+        monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+
+        owner = Users(
+            username="admin_gen_owner",
+            email="admin_gen_owner@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="admgenown1234567",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        admin = Users(
+            username="admin_gen_user",
+            email="admin_gen_user@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="admgenusr1234567",
+            active=1,
+            admin=True,
+        )
+        db_session.add(admin)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=owner.user_id,
+            md5_hash="admingenerate123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        # Enqueue-based generate (not sync) — only needs the 202 or 503 for enabled path
+        access_token = create_access_token(user_id=admin.user_id)
+        with patch(f"{ROUTER}.enqueue_job", AsyncMock(return_value=None)):
+            response = await client.post(
+                f"/api/v1/images/{image.image_id}/ml-tag-suggestions/generate",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        assert response.status_code == 202

@@ -58,12 +58,13 @@ async def _get_image_checking_access(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
 
     is_owner = image.user_id == current_user.user_id
+    is_admin = current_user.admin
     is_moderator = await has_permission(
         db,
         current_user.user_id,  # type: ignore[arg-type]
         Permission.IMAGE_TAG_ADD,
     )
-    if not is_owner and not is_moderator:
+    if not is_owner and not is_admin and not is_moderator:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
     return image
