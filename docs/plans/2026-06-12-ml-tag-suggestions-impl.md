@@ -588,9 +588,9 @@ Binds log context, opens a session, loads the image (error result if absent), pu
 **Files:**
 - Create: `tests/integration/test_ml_tag_suggestion_workflow.py` (port from branch `test_tag_suggestion_workflow.py`, adapted)
 
-- [ ] **Step 10.1: Port the end-to-end workflow test** (fake ML service boundary, real DB + API): generate → suggestions stored → review approve/reject → TagLinks created → regenerate resets removed-tag approvals. Adapt names/paths/flag as in earlier tasks.
-- [ ] **Step 10.2: Full suite** — `MYSQL_ROOT_PASSWORD=dev_root_password uv run pytest -n 4 -q` → 0 failures (baseline 1766 + new tests).
-- [ ] **Step 10.3: Schema sync** — `MYSQL_ROOT_PASSWORD=dev_root_password uv run pytest tests/integration/test_schema_sync.py --schema-sync -q` → pass.
-- [ ] **Step 10.4: Types + lint** — `uv run mypy app/` and `uv run ruff check . && uv run ruff format --check .` → clean.
-- [ ] **Step 10.5: Real-model smoke (optional but do it — models exist locally)** — `ML_MODELS_PATH=/home/dtaylor/shuu/ml_models uv run pytest tests/integration/test_wd_tagger_model.py -q -m ""` → pass, not skip.
-- [ ] **Step 10.6: Commit any stragglers** — `test(ml-suggestions): end-to-end workflow coverage`
+- [x] **Step 10.1: Port the end-to-end workflow test** (fake ML service boundary, real DB + API): generate → suggestions stored → review approve/reject → TagLinks created → regenerate resets removed-tag approvals. Adapt names/paths/flag as in earlier tasks.
+- [x] **Step 10.2: Full suite** — `MYSQL_ROOT_PASSWORD=dev_root_password uv run pytest -n 4 -q` → 0 failures (1861 passed, 13 skipped).
+- [x] **Step 10.3: Schema sync** — `MYSQL_ROOT_PASSWORD=dev_root_password uv run pytest tests/integration/test_schema_sync.py --schema-sync -q` → pass.
+- [x] **Step 10.4: Types + lint** — `uv run mypy app/` and `uv run ruff check . && uv run ruff format --check .` → clean.
+- [x] **Step 10.5: Real-model smoke (optional but do it — models exist locally)** — `ML_MODELS_PATH=/home/dtaylor/shuu/ml_models uv run pytest tests/integration/test_wd_tagger_model.py -q -m ""` → pass, not skip (3 passed).
+- [x] **Step 10.6: Commit any stragglers** — `test(ml-suggestions): end-to-end workflow coverage`
