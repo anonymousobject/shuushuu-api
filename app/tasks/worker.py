@@ -31,6 +31,7 @@ from app.tasks.image_jobs import (
     create_thumbnail_job,
     create_variant_job,
 )
+from app.tasks.ml_tag_suggestion_job import generate_ml_tag_suggestions
 from app.tasks.pm_jobs import send_pm_notification
 from app.tasks.r2_jobs import (
     r2_delete_image_job,
@@ -134,6 +135,18 @@ async def startup(ctx: dict[str, Any]) -> None:
             exc_info=True,
         )
 
+    # Load the ML tagging model once per worker when the feature is enabled.
+    # Deliberately NOT wrapped in try/except: if the flag is on but model
+    # files are absent, the worker must fail to start rather than silently
+    # skip suggestion generation (no mock fallback by design).
+    if settings.ML_TAG_SUGGESTIONS_ENABLED:
+        from app.services.ml_service import MLTagSuggestionService
+
+        ml_service = MLTagSuggestionService()
+        await ml_service.load_models()
+        ctx["ml_service"] = ml_service
+        logger.info("ml_service_initialized", model_name=ml_service.model_name)
+
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Worker shutdown - cleanup resources."""
@@ -145,6 +158,8 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     client = ctx.get("meilisearch_client")
     if client is not None:
         await client.aclose()
+    if "ml_service" in ctx:
+        await ctx["ml_service"].cleanup()
     logger.info("arq_worker_shutdown")
 
 
@@ -175,6 +190,7 @@ class WorkerSettings:
         func(r2_finalize_upload_job, max_tries=5),
         func(sync_image_status_job, max_tries=settings.ARQ_MAX_TRIES),
         func(r2_delete_image_job, max_tries=settings.ARQ_MAX_TRIES),
+        func(generate_ml_tag_suggestions, max_tries=3),
     ]
 
     cron_jobs = [

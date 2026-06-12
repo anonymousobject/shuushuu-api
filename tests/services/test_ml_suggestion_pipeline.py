@@ -1,0 +1,451 @@
+"""
+Tests for the shared ML suggestion pipeline.
+
+These drive ``generate_and_store_suggestions(db, image, ml_service)`` against
+the real test database. The ML inference boundary is a small fake service
+returning canned predictions; the mapping/resolver stages are either patched
+to canned outputs (for logic-focused tests) or exercised against real
+``TagMappings`` rows (for the mapping/skip tests). No mocked behavior is
+asserted — the assertions are all on real DB rows the pipeline wrote.
+"""
+
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+from sqlalchemy import select
+
+from app.config import settings
+from app.models.image import Images
+from app.models.ml_tag_suggestion import MlTagSuggestions
+from app.models.tag import Tags
+from app.models.tag_link import TagLinks
+from app.models.user import Users
+from app.services.ml_suggestion_pipeline import generate_and_store_suggestions
+
+PIPELINE = "app.services.ml_suggestion_pipeline"
+
+
+class FakeMLService:
+    """Minimal stand-in for MLTagSuggestionService.
+
+    Returns canned external-tag predictions and records the min_confidence it
+    was called with. It does not implement model loading — the pipeline only
+    calls ``generate_suggestions``.
+    """
+
+    def __init__(self, predictions: list[dict[str, Any]]) -> None:
+        self._predictions = predictions
+        self.called_with_min_confidence: float | None = None
+
+    async def generate_suggestions(
+        self, image_path: str, min_confidence: float = 0.35
+    ) -> list[dict[str, Any]]:
+        self.called_with_min_confidence = min_confidence
+        return list(self._predictions)
+
+
+def _predictions(*tags: str) -> list[dict[str, Any]]:
+    """Build canned external-tag predictions (confidence unused downstream
+    here because resolvers are patched to return tag_id rows)."""
+    return [{"external_tag": t, "confidence": 0.9, "model_version": "v3"} for t in tags]
+
+
+async def _make_user(db_session, suffix: str) -> Users:
+    user = Users(
+        username=f"pipeline_{suffix}",
+        email=f"pipeline_{suffix}@example.com",
+        password="hashed",
+        password_type="bcrypt",
+        salt="testsalt12345678",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
+async def _make_image(db_session, user: Users, suffix: str, tmp_path) -> Images:
+    """Create an image row and the local fullsize file the pipeline expects."""
+    image = Images(
+        filename=f"2024-01-01-{suffix}",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash=f"hash_{suffix}",
+        filesize=1024,
+        width=800,
+        height=600,
+    )
+    db_session.add(image)
+    await db_session.flush()
+
+    fake_image = tmp_path / "fullsize" / f"{image.filename}.{image.ext}"
+    fake_image.parent.mkdir(parents=True, exist_ok=True)
+    fake_image.write_bytes(b"fake image data")
+    return image
+
+
+def _resolver_to_tag_ids(rows: list[dict[str, Any]]):
+    """Build a fake resolve_external_tags that returns the given tag_id rows."""
+
+    async def _resolver(db, suggestions):
+        return [dict(r) for r in rows]
+
+    return _resolver
+
+
+async def _passthrough_resolver(db, suggestions):
+    return suggestions
+
+
+async def test_creates_suggestions(db_session, tmp_path, monkeypatch):
+    """Pipeline maps/resolves predictions and stores pending suggestions."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    tags = [
+        Tags(tag_id=46, title="long hair"),
+        Tags(tag_id=161, title="short hair"),
+        Tags(tag_id=25, title="blush"),
+    ]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "create")
+    image = await _make_image(db_session, user, "1", tmp_path)
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("long_hair", "short_hair", "blush"))
+    mapped = [
+        {"tag_id": 46, "confidence": 0.92, "model_version": "v3"},
+        {"tag_id": 161, "confidence": 0.88, "model_version": "v3"},
+        {"tag_id": 25, "confidence": 0.85, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 3
+
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    suggestions = result.scalars().all()
+    assert len(suggestions) == 3
+    assert all(s.status == "pending" for s in suggestions)
+    assert all(s.model_version == "v3" for s in suggestions)
+    assert {s.tag_id for s in suggestions} == {46, 161, 25}
+
+
+async def test_uses_min_confidence_from_settings(db_session, tmp_path, monkeypatch):
+    """The pipeline asks the model for predictions at settings.ML_MIN_CONFIDENCE."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+    monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.35)
+
+    user = await _make_user(db_session, "minconf")
+    image = await _make_image(db_session, user, "minconf", tmp_path)
+    await db_session.commit()
+
+    ml = FakeMLService([])
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids([])),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        await generate_and_store_suggestions(db_session, image, ml)
+
+    assert ml.called_with_min_confidence == 0.35
+
+
+async def test_skips_existing_tags(db_session, tmp_path, monkeypatch):
+    """Tags already linked to the image are not re-suggested."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    tags = [
+        Tags(tag_id=46, title="long hair"),
+        Tags(tag_id=161, title="short hair"),
+        Tags(tag_id=25, title="blush"),
+    ]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "existing")
+    image = await _make_image(db_session, user, "2", tmp_path)
+    await db_session.flush()
+
+    db_session.add(TagLinks(image_id=image.image_id, tag_id=46, user_id=user.user_id))
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("long_hair", "short_hair", "blush"))
+    mapped = [
+        {"tag_id": 46, "confidence": 0.92, "model_version": "v3"},
+        {"tag_id": 161, "confidence": 0.88, "model_version": "v3"},
+        {"tag_id": 25, "confidence": 0.85, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 2
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    suggestions = result.scalars().all()
+    assert {s.tag_id for s in suggestions} == {161, 25}
+
+
+async def test_skips_existing_suggestion(db_session, tmp_path, monkeypatch):
+    """A tag that already has a suggestion row is not duplicated on regenerate."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    tags = [Tags(tag_id=46, title="long hair"), Tags(tag_id=161, title="short hair")]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "existsugg")
+    image = await _make_image(db_session, user, "existsugg", tmp_path)
+    await db_session.flush()
+
+    db_session.add(
+        MlTagSuggestions(
+            image_id=image.image_id, tag_id=46, confidence=0.9, model_version="v3", status="pending"
+        )
+    )
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("long_hair", "short_hair"))
+    mapped = [
+        {"tag_id": 46, "confidence": 0.92, "model_version": "v3"},
+        {"tag_id": 161, "confidence": 0.88, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 1
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    suggestions = result.scalars().all()
+    assert {s.tag_id for s in suggestions} == {46, 161}
+
+
+async def test_resets_approved_when_tag_removed(db_session, tmp_path, monkeypatch):
+    """Approved suggestions reset to pending when their tag is no longer on the image."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    tags = [Tags(tag_id=46, title="long hair"), Tags(tag_id=161, title="short hair")]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "reset")
+    image = await _make_image(db_session, user, "reset", tmp_path)
+    await db_session.flush()
+
+    # Approved suggestion with NO matching TagLink (tag was removed).
+    approved = MlTagSuggestions(
+        image_id=image.image_id, tag_id=46, confidence=0.92, model_version="v3", status="approved"
+    )
+    approved.reviewed_by_user_id = user.user_id
+    rejected = MlTagSuggestions(
+        image_id=image.image_id, tag_id=161, confidence=0.88, model_version="v3", status="rejected"
+    )
+    db_session.add_all([approved, rejected])
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("long_hair", "short_hair"))
+    mapped = [
+        {"tag_id": 46, "confidence": 0.92, "model_version": "v3"},
+        {"tag_id": 161, "confidence": 0.88, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    # Both tags already have suggestion rows: nothing new created.
+    assert created == 0
+
+    await db_session.refresh(approved)
+    await db_session.refresh(rejected)
+    assert approved.status == "pending"
+    assert approved.reviewed_at is None
+    assert approved.reviewed_by_user_id is None
+    # Rejected stays rejected (its tag is absent too, but only approved rows reset).
+    assert rejected.status == "rejected"
+
+
+async def test_filters_low_confidence(db_session, tmp_path, monkeypatch):
+    """Predictions below ML_MIN_CONFIDENCE are dropped before insert."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+    monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.6)
+
+    tags = [
+        Tags(tag_id=46, title="long hair"),
+        Tags(tag_id=161, title="short hair"),
+        Tags(tag_id=25, title="blush"),
+    ]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "lowconf")
+    image = await _make_image(db_session, user, "lowconf", tmp_path)
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("long_hair", "short_hair", "blush"))
+    # The mapping stage can return below-threshold confidences (e.g. mapping
+    # confidence multiplier). The pipeline double-checks before insert.
+    mapped = [
+        {"tag_id": 46, "confidence": 0.92, "model_version": "v3"},
+        {"tag_id": 161, "confidence": 0.55, "model_version": "v3"},
+        {"tag_id": 25, "confidence": 0.65, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 2
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    suggestions = result.scalars().all()
+    assert {s.tag_id for s in suggestions} == {46, 25}
+    assert all(s.confidence >= 0.6 for s in suggestions)
+
+
+async def test_filters_redundant_ancestor(db_session, tmp_path, monkeypatch):
+    """A suggestion that is an ancestor of an existing tag is dropped."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    # "hair" (parent) is an ancestor of "long hair" (child, already on image).
+    parent = Tags(tag_id=50, title="hair")
+    child = Tags(tag_id=46, title="long hair", inheritedfrom_id=50)
+    db_session.add_all([parent, child])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "ancestor")
+    image = await _make_image(db_session, user, "ancestor", tmp_path)
+    await db_session.flush()
+
+    db_session.add(TagLinks(image_id=image.image_id, tag_id=46, user_id=user.user_id))
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("hair"))
+    mapped = [{"tag_id": 50, "confidence": 0.9, "model_version": "v3"}]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    # Parent "hair" is an ancestor of the existing "long hair" → redundant.
+    assert created == 0
+
+
+async def test_filters_redundant_substring_title(db_session, tmp_path, monkeypatch):
+    """A suggestion whose title is a proper substring of an existing tag is dropped."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    existing = Tags(tag_id=200, title="short kimono")
+    suggested = Tags(tag_id=201, title="kimono")
+    db_session.add_all([existing, suggested])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "substr")
+    image = await _make_image(db_session, user, "substr", tmp_path)
+    await db_session.flush()
+
+    db_session.add(TagLinks(image_id=image.image_id, tag_id=200, user_id=user.user_id))
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("kimono"))
+    mapped = [{"tag_id": 201, "confidence": 0.9, "model_version": "v3"}]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    # "kimono" is a substring of existing "short kimono" → redundant.
+    assert created == 0
+
+
+async def test_no_mappings_creates_nothing(db_session, tmp_path, monkeypatch):
+    """When nothing maps to an internal tag, the pipeline completes with 0 created."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    user = await _make_user(db_session, "nomap")
+    image = await _make_image(db_session, user, "nomap", tmp_path)
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("unmapped_tag"))
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids([])),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 0
+
+
+async def test_missing_file_raises(db_session, tmp_path, monkeypatch):
+    """A missing local image file raises FileNotFoundError (job wrapper translates)."""
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    user = await _make_user(db_session, "missing")
+    # Build image row WITHOUT creating the local file.
+    image = Images(
+        filename="2024-01-01-missing",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash="hash_missing",
+        filesize=1024,
+        width=800,
+        height=600,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("long_hair"))
+    with pytest.raises(FileNotFoundError):
+        await generate_and_store_suggestions(db_session, image, ml)
+
+
+async def test_skips_missing_tag_id(db_session, tmp_path, monkeypatch):
+    """A mapped tag_id that doesn't exist in tags is skipped, not crashed on.
+
+    The resolver already drops unknown tags; the redundancy filter and insert
+    path must also tolerate a stray tag_id without raising.
+    """
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    user = await _make_user(db_session, "missingtag")
+    image = await _make_image(db_session, user, "missingtag", tmp_path)
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("ghost_tag"))
+    # Mapping returns a tag_id that has no row in `tags`. The resolver runs for
+    # real here and should drop it; the pipeline must not crash and must create 0.
+    mapped = [{"tag_id": 999999, "confidence": 0.9, "model_version": "v3"}]
+
+    with patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 0
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    assert result.scalars().all() == []

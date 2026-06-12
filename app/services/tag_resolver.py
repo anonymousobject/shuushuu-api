@@ -32,6 +32,11 @@ async def resolve_tag_relationships(
     Returns:
         List of resolved suggestions (may be longer if parent tags added)
     """
+    # Nothing to resolve — skip the guaranteed-empty tag query (mirrors
+    # resolve_external_tags' early return when there are no inputs).
+    if not suggestions:
+        return []
+
     # Batch load all tags upfront to avoid N+1 queries
     tag_ids = {sugg["tag_id"] for sugg in suggestions}
 
