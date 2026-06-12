@@ -349,11 +349,11 @@ FK names follow the `fk_<table>_<column>` convention enforced by `tests/integrat
 
 **The bug being fixed:** `_predict_sync` in the old branch applied `1/(1+exp(-x))` to model output, but the WD-tagger v3 ONNX graph already ends in sigmoid — output is probabilities. Verified empirically 2026-06-12: raw output range [0.0000, 0.9654] on a real image, all 10,861 values in [0,1]; 24 tags exceed 0.35 raw, while sigmoid(raw) puts **all 10,861** above 0.35.
 
-- [ ] **Step 3.1: Write failing preprocessing unit tests** (`tests/services/test_onnx_model.py`, marked `unit`; no model file needed — `_preprocess_image` works on an unloaded instance). Generate a small RGBA PNG with Pillow in tmp_path; assert output shape `(1, 448, 448, 3)`, dtype float32, value range [0, 255], and BGR order (make the test image solid red; assert channel 0 ≈ 0 and channel 2 ≈ 255 at some pixel).
+- [x] **Step 3.1: Write failing preprocessing unit tests** (`tests/services/test_onnx_model.py`, marked `unit`; no model file needed — `_preprocess_image` works on an unloaded instance). Generate a small RGBA PNG with Pillow in tmp_path; assert output shape `(1, 448, 448, 3)`, dtype float32, value range [0, 255], and BGR order (make the test image solid red; assert channel 0 ≈ 0 and channel 2 ≈ 255 at some pixel).
 
-- [ ] **Step 3.2: Run to confirm failure** — ImportError.
+- [x] **Step 3.2: Run to confirm failure** — ImportError.
 
-- [ ] **Step 3.3: Port the wrappers.**
+- [x] **Step 3.3: Port the wrappers.**
 
 ```bash
 mkdir -p ml_models/wd-swinv2-tagger-v3
@@ -378,7 +378,7 @@ Edits to `onnx_model.py` `_predict_sync`:
 
 `animetimm_model.py` ports unchanged (it already uses the post-sigmoid `prediction` output).
 
-- [ ] **Step 3.4: gitignore** — append the branch's block:
+- [x] **Step 3.4: gitignore** — append the branch's block:
 
 ```
 # ML models (large binary files - download separately)
@@ -386,11 +386,11 @@ ml_models/*.onnx
 ml_models/**/*.onnx
 ```
 
-- [ ] **Step 3.5: Write the real-model integration test** (`tests/integration/test_wd_tagger_model.py`). Resolve model dir the same way `ml_service` does (settings.ML_MODELS_PATH relative to project root); `pytest.mark.skipif` when `model.onnx` is absent. Load `WDTaggerModel`, predict on a Pillow-generated 600×400 RGB image, assert: every confidence in [0,1]; `len(results with min_confidence=0.35, all categories) < 2000` (the double-sigmoid tripwire — under the bug all 10,861 tags pass 0.35); and with `min_confidence=0.0` the max confidence exceeds 0.3 (guards against degenerate all-zeros output from broken preprocessing). Capture log output expectations per repo test rules (model-load INFO lines are expected).
+- [x] **Step 3.5: Write the real-model integration test** (`tests/integration/test_wd_tagger_model.py`). Resolve model dir the same way `ml_service` does (settings.ML_MODELS_PATH relative to project root); `pytest.mark.skipif` when `model.onnx` is absent. Load `WDTaggerModel`, predict on a Pillow-generated 600×400 RGB image, assert: every confidence in [0,1]; `len(results with min_confidence=0.35, all categories) < 2000` (the double-sigmoid tripwire — under the bug all 10,861 tags pass 0.35); and with `min_confidence=0.0` the max confidence exceeds 0.3 (guards against degenerate all-zeros output from broken preprocessing). Capture log output expectations per repo test rules (model-load INFO lines are expected).
 
-- [ ] **Step 3.6: Run** — unit tests pass; integration test passes locally if user has set `ML_MODELS_PATH=/home/dtaylor/shuu/ml_models` in `.env`, else skips. Run it once with the env var pointed at the real models to prove the fix: `ML_MODELS_PATH=/home/dtaylor/shuu/ml_models uv run pytest tests/integration/test_wd_tagger_model.py -q` → pass (not skip).
+- [x] **Step 3.6: Run** — unit tests pass; integration test passes locally if user has set `ML_MODELS_PATH=/home/dtaylor/shuu/ml_models` in `.env`, else skips. Run it once with the env var pointed at the real models to prove the fix: `ML_MODELS_PATH=/home/dtaylor/shuu/ml_models uv run pytest tests/integration/test_wd_tagger_model.py -q` → pass (not skip).
 
-- [ ] **Step 3.7: Commit** — `feat(ml-suggestions): port ONNX tagger wrappers, fixing double-sigmoid on WD-tagger output`
+- [x] **Step 3.7: Commit** — `feat(ml-suggestions): port ONNX tagger wrappers, fixing double-sigmoid on WD-tagger output`
 
 ### Task 4: MLTagSuggestionService (no mock, fail-fast, themes only)
 
