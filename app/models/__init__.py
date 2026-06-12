@@ -39,6 +39,9 @@ from app.models.misc import (
     Tips,
 )
 
+# ML tag suggestion models
+from app.models.ml_tag_suggestion import MlTagSuggestions
+
 # Content models
 from app.models.news import News
 
@@ -52,6 +55,7 @@ from app.models.tag_audit_log import TagAuditLog
 from app.models.tag_external_link import TagExternalLinks
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
+from app.models.tag_mapping import TagMappings
 from app.models.user import Users
 
 __all__ = [
@@ -65,6 +69,7 @@ __all__ = [
     "Favorites",
     "TagLinks",
     "TagExternalLinks",
+    "TagMappings",
     "CharacterSourceLinks",
     "TagAuditLog",
     "TagHistory",
@@ -76,6 +81,7 @@ __all__ = [
     "ImageStatusHistory",
     "ReviewVotes",
     "AdminActions",
+    "MlTagSuggestions",
     # User-related models
     "Bans",
     "RefreshTokens",
