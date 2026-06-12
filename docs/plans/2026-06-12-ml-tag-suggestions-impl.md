@@ -515,13 +515,13 @@ Binds log context, opens a session, loads the image (error result if absent), pu
 - Modify: `app/api/v1/__init__.py`
 - Test: `tests/api/v1/test_ml_tag_suggestions.py`
 
-- [ ] **Step 7.1: Port API tests** from branch `tests/api/v1/test_tag_suggestions.py` (900 lines), adapted: URL prefix `/api/v1/images/{id}/ml-tag-suggestions`; `MlTagSuggestions` model; no `model_source` (assert `model_version`); generate endpoint returns **503 when `ML_TAG_SUGGESTIONS_ENABLED` is false** (new test); sync-mode tests patch the module-level service getter with a fake (same boundary as Task 6). For stubbing `enqueue_job`, mirror main's current pattern in `tests/api/v1/test_upload.py` (`patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock)` — upload tests moved there since January; `test_images.py` no longer touches enqueue).
+- [x] **Step 7.1: Port API tests** from branch `tests/api/v1/test_tag_suggestions.py` (900 lines), adapted: URL prefix `/api/v1/images/{id}/ml-tag-suggestions`; `MlTagSuggestions` model; no `model_source` (assert `model_version`); generate endpoint returns **503 when `ML_TAG_SUGGESTIONS_ENABLED` is false** (new test); sync-mode tests patch the module-level service getter with a fake (same boundary as Task 6). For stubbing `enqueue_job`, mirror main's current pattern in `tests/api/v1/test_upload.py` (`patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock)` — upload tests moved there since January; `test_images.py` no longer touches enqueue).
 
-- [ ] **Step 7.2: Run to confirm failure.**
+- [x] **Step 7.2: Run to confirm failure.**
 
-- [ ] **Step 7.3: Port schemas** (`git show feature/tag-suggestion-system:app/schemas/tag_suggestion.py`, then edit): keep `TagSuggestionResponse`→`MlTagSuggestionResponse`, `TagSuggestionsListResponse`→`MlTagSuggestionsListResponse`, `ReviewSuggestionRequest/ReviewSuggestionsRequest/ReviewSuggestionsResponse`, `GenerateSuggestionsResponse`. Replace `model_source: Literal[...]` with `model_version: str`. Delete `TagSuggestionStatsResponse` and `SuggestionStatusResponse`. Update json_schema_extra examples accordingly.
+- [x] **Step 7.3: Port schemas** (`git show feature/tag-suggestion-system:app/schemas/tag_suggestion.py`, then edit): keep `TagSuggestionResponse`→`MlTagSuggestionResponse`, `TagSuggestionsListResponse`→`MlTagSuggestionsListResponse`, `ReviewSuggestionRequest/ReviewSuggestionsRequest/ReviewSuggestionsResponse`, `GenerateSuggestionsResponse`. Replace `model_source: Literal[...]` with `model_version: str`. Delete `TagSuggestionStatsResponse` and `SuggestionStatusResponse`. Update json_schema_extra examples accordingly.
 
-- [ ] **Step 7.4: Port the API router** (`git show feature/tag-suggestion-system:app/api/v1/tag_suggestions.py` → `app/api/v1/ml_tag_suggestions.py`) with edits:
+- [x] **Step 7.4: Port the API router** (`git show feature/tag-suggestion-system:app/api/v1/tag_suggestions.py` → `app/api/v1/ml_tag_suggestions.py`) with edits:
   - Paths: `/{image_id}/ml-tag-suggestions`, `.../review`, `.../generate`; router `tags=["ml-tag-suggestions"]`.
   - Auth: use main's idiom — `current_user: CurrentUser` (no `= ...` placeholder hack; `CurrentUser` is an Annotated Depends type on main).
   - Model/schema renames throughout; `model_version` replaces `model_source` in response building.
@@ -532,9 +532,9 @@ Binds log context, opens a session, loads the image (error result if absent), pu
   - Trim the docstrings' broken artifacts (the old file has mangled examples like `GET / api / v1 / ...` — fix spacing).
   - Register in `app/api/v1/__init__.py` (import + `router.include_router(ml_tag_suggestions.router)`) in the file's existing order.
 
-- [ ] **Step 7.5: Run** — `uv run pytest tests/api/v1/test_ml_tag_suggestions.py -q` → pass.
+- [x] **Step 7.5: Run** — `uv run pytest tests/api/v1/test_ml_tag_suggestions.py -q` → pass.
 
-- [ ] **Step 7.6: Commit** — `feat(ml-suggestions): API endpoints for listing, reviewing, and generating suggestions`
+- [x] **Step 7.6: Commit** — `feat(ml-suggestions): API endpoints for listing, reviewing, and generating suggestions`
 
 ### Task 8: Upload integration
 
