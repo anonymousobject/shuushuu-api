@@ -426,11 +426,11 @@ ml_models/**/*.onnx
 - Create: `app/services/tag_resolver.py` (port, clean comments)
 - Test: `tests/services/test_tag_mapping_service.py`, `tests/services/test_tag_resolver.py` (port branch tests, adapt)
 
-- [ ] **Step 5.1: Port branch tests**, adapted: model import becomes `TagMappings`, no `external_source` field anywhere, `model_source` keys dropped from suggestion dicts (use `model_version`). **Fixture bug in the branch tests:** `tests/services/test_tag_resolver.py` constructs alias tags as `Tags(..., alias=46)` (3 occurrences) but the field is `alias_of` — SQLModel silently drops the unknown kwarg, so two tests fail against even a correct resolver. Fix to `alias_of=` while porting. These run against the real test DB.
-- [ ] **Step 5.2: Run to confirm failure** (ImportError).
-- [ ] **Step 5.3: Port implementations.** `tag_mapping_service.py`: drop the `external_source == "danbooru"` filter (column is gone); propagate `model_version` instead of `model_source` in resolved dicts; update the docstring Args/Returns lists that still mention `model_source`/`external_source`. `tag_resolver.py`: port as-is but delete the `# CRITICAL FIX #N` / `# IMPORTANT FIX #N` review-artifact comments (keep the explanatory content where it states real constraints, e.g. batch-loading to avoid N+1) and fix its docstring's `model_source` key list.
-- [ ] **Step 5.4: Run** — both test files pass.
-- [ ] **Step 5.5: Commit** — `feat(ml-suggestions): port tag mapping and alias/hierarchy resolution services`
+- [x] **Step 5.1: Port branch tests**, adapted: model import becomes `TagMappings`, no `external_source` field anywhere, `model_source` keys dropped from suggestion dicts (use `model_version`). **Fixture bug in the branch tests:** `tests/services/test_tag_resolver.py` constructs alias tags as `Tags(..., alias=46)` (3 occurrences) but the field is `alias_of` — SQLModel silently drops the unknown kwarg, so two tests fail against even a correct resolver. Fix to `alias_of=` while porting. These run against the real test DB.
+- [x] **Step 5.2: Run to confirm failure** (ImportError).
+- [x] **Step 5.3: Port implementations.** `tag_mapping_service.py`: drop the `external_source == "danbooru"` filter (column is gone); propagate `model_version` instead of `model_source` in resolved dicts; update the docstring Args/Returns lists that still mention `model_source`/`external_source`. `tag_resolver.py`: port as-is but delete the `# CRITICAL FIX #N` / `# IMPORTANT FIX #N` review-artifact comments (keep the explanatory content where it states real constraints, e.g. batch-loading to avoid N+1) and fix its docstring's `model_source` key list.
+- [x] **Step 5.4: Run** — both test files pass.
+- [x] **Step 5.5: Commit** — `feat(ml-suggestions): port tag mapping and alias/hierarchy resolution services`
 
 ---
 
