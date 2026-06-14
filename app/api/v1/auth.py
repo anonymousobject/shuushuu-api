@@ -906,7 +906,24 @@ async def reset_password(
     )
     user = result.scalar_one_or_none()
 
-    if not user or not user.password_reset_token:
+    # The client always sees the same generic 400 to avoid leaking which step failed;
+    # server-side we log the specific outcome so reset failures aren't invisible.
+    if not user:
+        logger.info(
+            "reset_password_attempt",
+            outcome="user_not_found",
+            email=request_data.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+    if not user.password_reset_token:
+        logger.info(
+            "reset_password_attempt",
+            outcome="no_reset_token",
+            user_id=user.user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
@@ -915,6 +932,11 @@ async def reset_password(
     # Verify token matches (constant-time comparison to prevent timing side-channels)
     token_hash = hashlib.sha256(request_data.token.encode()).hexdigest()
     if not hmac.compare_digest(user.password_reset_token, token_hash):
+        logger.info(
+            "reset_password_attempt",
+            outcome="token_mismatch",
+            user_id=user.user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
@@ -922,12 +944,23 @@ async def reset_password(
 
     # Check expiration
     if not user.password_reset_expires_at:
+        logger.info(
+            "reset_password_attempt",
+            outcome="missing_expiry",
+            user_id=user.user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
         )
 
     if user.password_reset_expires_at < datetime.now(UTC):
+        logger.info(
+            "reset_password_attempt",
+            outcome="token_expired",
+            user_id=user.user_id,
+            expired_at=user.password_reset_expires_at.isoformat(),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Reset token has expired. Please request a new one.",
@@ -949,7 +982,12 @@ async def reset_password(
 
     await db.commit()
 
-    logger.info("password_reset_complete", user_id=user.user_id, username=user.username)
+    logger.info(
+        "reset_password_attempt",
+        outcome="success",
+        user_id=user.user_id,
+        username=user.username,
+    )
 
     return MessageResponse(
         message="Password reset successfully. Please login with your new password."

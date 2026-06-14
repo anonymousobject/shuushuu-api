@@ -78,6 +78,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 + ("?" + _redact_query(str(request.url.query)) if request.url.query else ""),
                 status_code=response.status_code,
                 elapsed_ms=elapsed_ms,
+                # client_host + user_agent let anonymous 401s be clustered by source
+                # (one user fat-fingering vs. credential stuffing). request.client is
+                # None when the ASGI server reports no client (e.g. some test harnesses).
+                client_host=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
             )
             return response
         finally:
