@@ -9,6 +9,7 @@ These tests cover the /api/v1/auth endpoints including:
 - Suspension checks during login and refresh
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -21,6 +22,20 @@ from app.core.security import get_password_hash
 from app.models.refresh_token import RefreshTokens
 from app.models.user import Users
 from app.models.user_suspension import UserSuspensions
+
+
+def assert_outcome_logged(caplog: pytest.LogCaptureFixture, event: str, outcome: str) -> None:
+    """Assert a structured log record carrying both `event` and `outcome=<outcome>` was emitted.
+
+    Matches on contiguous substrings rather than the whole `event=... outcome=...`
+    string because the dev ConsoleRenderer interleaves ANSI color codes between the
+    key, `=`, and value. The event name and outcome value are each emitted as one
+    uninterrupted token, so substring matching on them is stable.
+    """
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        event in message and outcome in message for message in messages
+    ), f"expected log event={event!r} with outcome={outcome!r}; got {messages!r}"
 
 
 @pytest.mark.api
@@ -219,7 +234,7 @@ class TestLogin:
         """Test that accounts with real MD5 passwords return a reset prompt, not a generic auth error."""
         import hashlib
 
-        md5_hash = hashlib.md5("oldpassword".encode()).hexdigest()  # 32-char unsalted MD5
+        md5_hash = hashlib.md5(b"oldpassword").hexdigest()  # 32-char unsalted MD5
 
         user = Users(
             username="md5user",
@@ -246,7 +261,7 @@ class TestLogin:
         """Test that MD5 login attempts count toward the failed attempt lockout threshold."""
         import hashlib
 
-        md5_hash = hashlib.md5("oldpassword".encode()).hexdigest()
+        md5_hash = hashlib.md5(b"oldpassword").hexdigest()
 
         user = Users(
             username="md5lockuser",
@@ -699,7 +714,7 @@ class TestLoginSuspensionCheck:
     """Tests for suspension checking during login."""
 
     async def test_login_blocked_by_active_suspension(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
         """Test that login is blocked when user has an active suspension."""
         # Create suspended user
@@ -728,16 +743,18 @@ class TestLoginSuspensionCheck:
         await db_session.commit()
 
         # Attempt login
-        response = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "suspendedlogin", "password": "TestPassword123!"},
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "suspendedlogin", "password": "TestPassword123!"},
+            )
 
         assert response.status_code == 403
         assert "violated our terms" in response.json()["detail"].lower()
+        assert_outcome_logged(caplog, "login_attempt", "account_suspended")
 
     async def test_login_blocked_by_permanent_suspension(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
         """Test that login is blocked when user has a permanent suspension."""
         user = Users(
@@ -763,13 +780,15 @@ class TestLoginSuspensionCheck:
         db_session.add(suspension)
         await db_session.commit()
 
-        response = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "permaban", "password": "TestPassword123!"},
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "permaban", "password": "TestPassword123!"},
+            )
 
         assert response.status_code == 403
         assert "permanent" in response.json()["detail"].lower()
+        assert_outcome_logged(caplog, "login_attempt", "account_suspended")
 
     async def test_login_auto_reactivates_expired_suspension(
         self, client: AsyncClient, db_session: AsyncSession
@@ -822,7 +841,7 @@ class TestLoginSuspensionCheck:
         assert reactivation.actioned_by is None  # Auto-reactivated
 
     async def test_login_inactive_user_without_suspension(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
         """Test that inactive users without suspension records get appropriate error."""
         user = Users(
@@ -837,13 +856,15 @@ class TestLoginSuspensionCheck:
         await db_session.commit()
         # No suspension record created
 
-        response = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "inactivenosuspension", "password": "TestPassword123!"},
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "inactivenosuspension", "password": "TestPassword123!"},
+            )
 
         assert response.status_code == 401
         assert "inactive" in response.json()["detail"].lower()
+        assert_outcome_logged(caplog, "login_attempt", "account_inactive")
 
 
 @pytest.mark.api
@@ -1117,20 +1138,22 @@ class TestResetPassword:
         return user, raw_token
 
     async def test_reset_password_success(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
-        """Test successful password reset."""
+        """Test successful password reset logs a reset_password_attempt success outcome."""
         user, raw_token = await self._create_user_with_reset_token(db_session)
 
-        response = await client.post(
-            "/api/v1/auth/reset-password",
-            json={
-                "email": "reset@example.com",
-                "token": raw_token,
-                "new_password": "NewPassword456!",
-            },
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/reset-password",
+                json={
+                    "email": "reset@example.com",
+                    "token": raw_token,
+                    "new_password": "NewPassword456!",
+                },
+            )
         assert response.status_code == 200
+        assert_outcome_logged(caplog, "reset_password_attempt", "success")
 
         # Verify token fields are cleared
         await db_session.refresh(user)
@@ -1153,25 +1176,27 @@ class TestResetPassword:
         assert old_login.status_code == 401
 
     async def test_reset_password_invalid_token(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
-        """Test reset with wrong token returns 400."""
+        """Test reset with wrong token returns 400 and logs a token_mismatch outcome."""
         await self._create_user_with_reset_token(db_session)
 
-        response = await client.post(
-            "/api/v1/auth/reset-password",
-            json={
-                "email": "reset@example.com",
-                "token": "wrong_token",
-                "new_password": "NewPassword456!",
-            },
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/reset-password",
+                json={
+                    "email": "reset@example.com",
+                    "token": "wrong_token",
+                    "new_password": "NewPassword456!",
+                },
+            )
         assert response.status_code == 400
+        assert_outcome_logged(caplog, "reset_password_attempt", "token_mismatch")
 
     async def test_reset_password_expired_token(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
-        """Test reset with expired token returns 400."""
+        """Test reset with expired token returns 400 and logs a token_expired outcome."""
         import hashlib
         import secrets
         from datetime import UTC, datetime, timedelta
@@ -1193,32 +1218,99 @@ class TestResetPassword:
         db_session.add(user)
         await db_session.commit()
 
-        response = await client.post(
-            "/api/v1/auth/reset-password",
-            json={
-                "email": "expired@example.com",
-                "token": raw_token,
-                "new_password": "NewPassword456!",
-            },
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/reset-password",
+                json={
+                    "email": "expired@example.com",
+                    "token": raw_token,
+                    "new_password": "NewPassword456!",
+                },
+            )
         assert response.status_code == 400
         assert "expired" in response.json()["detail"].lower()
+        assert_outcome_logged(caplog, "reset_password_attempt", "token_expired")
 
     async def test_reset_password_wrong_email(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
-        """Test reset with wrong email returns 400."""
+        """Test reset with wrong email returns 400 and logs a user_not_found outcome."""
         _user, raw_token = await self._create_user_with_reset_token(db_session)
 
-        response = await client.post(
-            "/api/v1/auth/reset-password",
-            json={
-                "email": "wrong@example.com",
-                "token": raw_token,
-                "new_password": "NewPassword456!",
-            },
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/reset-password",
+                json={
+                    "email": "wrong@example.com",
+                    "token": raw_token,
+                    "new_password": "NewPassword456!",
+                },
+            )
         assert response.status_code == 400
+        assert_outcome_logged(caplog, "reset_password_attempt", "user_not_found")
+
+    async def test_reset_password_no_pending_token(
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ):
+        """Test reset for a user with no pending token returns 400 and logs no_reset_token."""
+        user = Users(
+            username="notokenuser",
+            password=get_password_hash("OldPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="notoken@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/reset-password",
+                json={
+                    "email": "notoken@example.com",
+                    "token": "anytoken",
+                    "new_password": "NewPassword456!",
+                },
+            )
+        assert response.status_code == 400
+        assert_outcome_logged(caplog, "reset_password_attempt", "no_reset_token")
+
+    async def test_reset_password_missing_expiry(
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ):
+        """Test reset for a token row with no expiry returns 400 and logs missing_expiry."""
+        import hashlib
+        import secrets
+
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        user = Users(
+            username="noexpiryuser",
+            password=get_password_hash("OldPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="noexpiry@example.com",
+            active=1,
+            password_reset_token=token_hash,
+            password_reset_sent_at=datetime.now(UTC),
+            password_reset_expires_at=None,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/reset-password",
+                json={
+                    "email": "noexpiry@example.com",
+                    "token": raw_token,
+                    "new_password": "NewPassword456!",
+                },
+            )
+        assert response.status_code == 400
+        assert_outcome_logged(caplog, "reset_password_attempt", "missing_expiry")
 
     async def test_reset_password_weak_password(
         self, client: AsyncClient, db_session: AsyncSession

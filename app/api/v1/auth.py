@@ -59,6 +59,8 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 async def _check_and_handle_suspension(
     user: Users,
     db: AsyncSession,
+    *,
+    log_event: str | None = None,
 ) -> None:
     """
     Check if a user is suspended and handle auto-reactivation if expired.
@@ -68,6 +70,9 @@ async def _check_and_handle_suspension(
     Args:
         user: User object to check
         db: Database session
+        log_event: When set, emit a structured log under this event name (e.g.
+            "login_attempt") for the blocked-access outcomes (account_suspended /
+            account_inactive). Left None by callers that have their own logging.
 
     Raises:
         HTTPException: 403 if user is suspended, 401 if inactive for other reasons
@@ -129,12 +134,31 @@ async def _check_and_handle_suspension(
                 if suspension.reason:
                     message += f" Reason: {suspension.reason}"
 
+                if log_event:
+                    logger.info(
+                        log_event,
+                        outcome="account_suspended",
+                        username=user.username,
+                        user_id=user.user_id,
+                        suspended_until=(
+                            suspension.suspended_until.isoformat()
+                            if suspension.suspended_until
+                            else None
+                        ),
+                    )
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=message,
                 )
         else:
             # Inactive but not suspended
+            if log_event:
+                logger.info(
+                    log_event,
+                    outcome="account_inactive",
+                    username=user.username,
+                    user_id=user.user_id,
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User account is inactive",
@@ -389,7 +413,7 @@ async def login(
         )
 
     # Check if user is active and handle suspension
-    await _check_and_handle_suspension(user, db)
+    await _check_and_handle_suspension(user, db, log_event="login_attempt")
 
     # Reset failed login attempts and lockout on successful login
     user.failed_login_attempts = 0
@@ -906,7 +930,24 @@ async def reset_password(
     )
     user = result.scalar_one_or_none()
 
-    if not user or not user.password_reset_token:
+    # The client always sees the same generic 400 to avoid leaking which step failed;
+    # server-side we log the specific outcome so reset failures aren't invisible.
+    if not user:
+        logger.info(
+            "reset_password_attempt",
+            outcome="user_not_found",
+            email=request_data.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+    if not user.password_reset_token:
+        logger.info(
+            "reset_password_attempt",
+            outcome="no_reset_token",
+            user_id=user.user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
@@ -915,6 +956,11 @@ async def reset_password(
     # Verify token matches (constant-time comparison to prevent timing side-channels)
     token_hash = hashlib.sha256(request_data.token.encode()).hexdigest()
     if not hmac.compare_digest(user.password_reset_token, token_hash):
+        logger.info(
+            "reset_password_attempt",
+            outcome="token_mismatch",
+            user_id=user.user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
@@ -922,12 +968,23 @@ async def reset_password(
 
     # Check expiration
     if not user.password_reset_expires_at:
+        logger.info(
+            "reset_password_attempt",
+            outcome="missing_expiry",
+            user_id=user.user_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
         )
 
     if user.password_reset_expires_at < datetime.now(UTC):
+        logger.info(
+            "reset_password_attempt",
+            outcome="token_expired",
+            user_id=user.user_id,
+            expired_at=user.password_reset_expires_at.isoformat(),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Reset token has expired. Please request a new one.",
@@ -949,7 +1006,12 @@ async def reset_password(
 
     await db.commit()
 
-    logger.info("password_reset_complete", user_id=user.user_id, username=user.username)
+    logger.info(
+        "reset_password_attempt",
+        outcome="success",
+        user_id=user.user_id,
+        username=user.username,
+    )
 
     return MessageResponse(
         message="Password reset successfully. Please login with your new password."
