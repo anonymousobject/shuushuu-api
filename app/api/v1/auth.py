@@ -59,6 +59,8 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 async def _check_and_handle_suspension(
     user: Users,
     db: AsyncSession,
+    *,
+    log_event: str | None = None,
 ) -> None:
     """
     Check if a user is suspended and handle auto-reactivation if expired.
@@ -68,6 +70,9 @@ async def _check_and_handle_suspension(
     Args:
         user: User object to check
         db: Database session
+        log_event: When set, emit a structured log under this event name (e.g.
+            "login_attempt") for the blocked-access outcomes (account_suspended /
+            account_inactive). Left None by callers that have their own logging.
 
     Raises:
         HTTPException: 403 if user is suspended, 401 if inactive for other reasons
@@ -129,12 +134,31 @@ async def _check_and_handle_suspension(
                 if suspension.reason:
                     message += f" Reason: {suspension.reason}"
 
+                if log_event:
+                    logger.info(
+                        log_event,
+                        outcome="account_suspended",
+                        username=user.username,
+                        user_id=user.user_id,
+                        suspended_until=(
+                            suspension.suspended_until.isoformat()
+                            if suspension.suspended_until
+                            else None
+                        ),
+                    )
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=message,
                 )
         else:
             # Inactive but not suspended
+            if log_event:
+                logger.info(
+                    log_event,
+                    outcome="account_inactive",
+                    username=user.username,
+                    user_id=user.user_id,
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User account is inactive",
@@ -389,7 +413,7 @@ async def login(
         )
 
     # Check if user is active and handle suspension
-    await _check_and_handle_suspension(user, db)
+    await _check_and_handle_suspension(user, db, log_event="login_attempt")
 
     # Reset failed login attempts and lockout on successful login
     user.failed_login_attempts = 0

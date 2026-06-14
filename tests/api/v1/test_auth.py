@@ -714,7 +714,7 @@ class TestLoginSuspensionCheck:
     """Tests for suspension checking during login."""
 
     async def test_login_blocked_by_active_suspension(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
         """Test that login is blocked when user has an active suspension."""
         # Create suspended user
@@ -743,16 +743,18 @@ class TestLoginSuspensionCheck:
         await db_session.commit()
 
         # Attempt login
-        response = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "suspendedlogin", "password": "TestPassword123!"},
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "suspendedlogin", "password": "TestPassword123!"},
+            )
 
         assert response.status_code == 403
         assert "violated our terms" in response.json()["detail"].lower()
+        assert_outcome_logged(caplog, "login_attempt", "account_suspended")
 
     async def test_login_blocked_by_permanent_suspension(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
         """Test that login is blocked when user has a permanent suspension."""
         user = Users(
@@ -778,13 +780,15 @@ class TestLoginSuspensionCheck:
         db_session.add(suspension)
         await db_session.commit()
 
-        response = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "permaban", "password": "TestPassword123!"},
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "permaban", "password": "TestPassword123!"},
+            )
 
         assert response.status_code == 403
         assert "permanent" in response.json()["detail"].lower()
+        assert_outcome_logged(caplog, "login_attempt", "account_suspended")
 
     async def test_login_auto_reactivates_expired_suspension(
         self, client: AsyncClient, db_session: AsyncSession
@@ -837,7 +841,7 @@ class TestLoginSuspensionCheck:
         assert reactivation.actioned_by is None  # Auto-reactivated
 
     async def test_login_inactive_user_without_suspension(
-        self, client: AsyncClient, db_session: AsyncSession
+        self, client: AsyncClient, db_session: AsyncSession, caplog: pytest.LogCaptureFixture
     ):
         """Test that inactive users without suspension records get appropriate error."""
         user = Users(
@@ -852,13 +856,15 @@ class TestLoginSuspensionCheck:
         await db_session.commit()
         # No suspension record created
 
-        response = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "inactivenosuspension", "password": "TestPassword123!"},
-        )
+        with caplog.at_level(logging.INFO):
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "inactivenosuspension", "password": "TestPassword123!"},
+            )
 
         assert response.status_code == 401
         assert "inactive" in response.json()["detail"].lower()
+        assert_outcome_logged(caplog, "login_attempt", "account_inactive")
 
 
 @pytest.mark.api

@@ -33,6 +33,9 @@ async def test_request_complete_logs_client_host_and_user_agent(
     assert any("test-agent/9.9" in message for message in request_logs), (
         f"user agent missing from access log; got {request_logs!r}"
     )
+    # The httpx ASGITransport reports the loopback address as request.client, so a
+    # wired-up client_host shows up as 127.0.0.1. If the test transport ever changes
+    # (e.g. a Unix-socket transport with no client), update this expected host.
     assert any("127.0.0.1" in message for message in request_logs), (
         f"client host missing from access log; got {request_logs!r}"
     )
