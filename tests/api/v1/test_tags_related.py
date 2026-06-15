@@ -132,19 +132,58 @@ async def test_empty_when_no_neighbours(client: AsyncClient, db_session: AsyncSe
     assert body["items"] == []
 
 
+async def test_missing_tag_returns_404(client: AsyncClient) -> None:
+    """A tag_id that does not exist must 404, not return an empty list."""
+    r = await client.get("/api/v1/tags/99999/related")
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Tag not found"
+
+
 async def test_response_is_cached(
     client: AsyncClient, db_session: AsyncSession, mock_redis
 ) -> None:
     """The endpoint writes the response to Redis on a cache miss.
 
     The mock returns None for `get` (so the DB path runs) but records `set`,
-    letting us verify the cache-write half of the read-through. Cache-*hit*
-    behaviour can't be exercised here because the mock always misses; that path
-    is covered by the model_validate_json round-trip in the schema itself.
+    letting us verify the cache-write half of the read-through. The call args
+    confirm the correct key prefix and TTL.
     """
+    from app.config import settings
+
     await _seed(db_session)
 
     r = await client.get("/api/v1/tags/10/related")
 
     assert r.status_code == 200
-    mock_redis.set.assert_awaited()  # response was written to the cache
+    mock_redis.set.assert_awaited()
+    call_args = mock_redis.set.await_args
+    assert call_args is not None
+    # First positional arg is the cache key — must start with "related:"
+    assert call_args.args[0].startswith("related:")
+    # Keyword arg ex must equal COOCCUR_CACHE_TTL
+    assert call_args.kwargs.get("ex") == settings.COOCCUR_CACHE_TTL
+
+
+async def test_cache_hit_returns_same_response(
+    client_real_redis: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Calling the endpoint twice hits the cache on the second call and returns
+    identical data, exercising the model_validate_json deserialization path."""
+    await _seed(db_session)
+
+    r1 = await client_real_redis.get("/api/v1/tags/10/related")
+    r2 = await client_real_redis.get("/api/v1/tags/10/related")
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json() == r2.json()
+
+
+async def test_input_validation_rejects_out_of_range(client: AsyncClient) -> None:
+    """?type=0 and ?limit=51 must each return 422 (FastAPI constraint violation)."""
+    r_type = await client.get("/api/v1/tags/10/related?type=0")
+    assert r_type.status_code == 422
+
+    r_limit = await client.get("/api/v1/tags/10/related?limit=51")
+    assert r_limit.status_code == 422

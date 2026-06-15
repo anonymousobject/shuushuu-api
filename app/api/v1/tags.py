@@ -940,7 +940,9 @@ async def get_related_tags(
     tag_id: Annotated[int, Path(description="Tag ID")],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
-    type: Annotated[int | None, Query(ge=1, le=4, description="Filter by related tag type")] = None,
+    type_id: Annotated[
+        int | None, Query(ge=1, le=4, description="Filter by related tag type", alias="type")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=50, description="Max related tags to return")] = 10,
 ) -> RelatedTagsResponse:
     """
@@ -957,9 +959,12 @@ async def get_related_tags(
     """
     # Resolve alias -> canonical: the cooccurrence table is keyed by canonical id
     # (mirrors get_tag / get_images_by_tag, which resolve before querying).
-    _tag, canonical_id = await resolve_tag_alias(db, tag_id)
+    tag, canonical_id = await resolve_tag_alias(db, tag_id)
 
-    cache_key = f"related:{canonical_id}:{type or 0}:{limit}"
+    if tag is None:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    cache_key = f"related:{canonical_id}:{type_id or 0}:{limit}"
     cached = await redis_client.get(cache_key)
     if cached:
         return RelatedTagsResponse.model_validate_json(cached)
@@ -974,9 +979,13 @@ async def get_related_tags(
         .join(Tags, Tags.tag_id == TagCooccurrence.related_tag_id)  # type: ignore[arg-type]
         .where(TagCooccurrence.tag_id == canonical_id)  # type: ignore[arg-type]
     )
-    if type is not None:
-        stmt = stmt.where(TagCooccurrence.related_type == type)  # type: ignore[arg-type]
-    stmt = stmt.order_by(desc(TagCooccurrence.lift)).limit(limit)  # type: ignore[arg-type]
+    if type_id is not None:
+        stmt = stmt.where(TagCooccurrence.related_type == type_id)  # type: ignore[arg-type]
+    stmt = stmt.order_by(
+        desc(TagCooccurrence.lift),
+        desc(TagCooccurrence.cooccur_count),
+        TagCooccurrence.related_tag_id,
+    ).limit(limit)  # type: ignore[arg-type]
 
     rows = (await db.execute(stmt)).all()
     items = [
