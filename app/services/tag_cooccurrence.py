@@ -49,10 +49,14 @@ async def refresh_tag_cooccurrence(
         logger.info("tag_cooccurrence_refresh_skipped_locked")
         return -1  # sentinel: another refresh is already running
     try:
-        # Keep the big DISTINCT / GROUP BY in RAM (global tmp_table_size is only 16MB here).
+        # Optionally keep the big DISTINCT / GROUP BY in RAM. 0 (default) means
+        # "use the server default; the build will spill to disk, which is acceptable
+        # for a weekly job" — a large value on a memory-constrained host can OOM-crash
+        # MariaDB mid-build, so this is opt-in.
         sz = settings.COOCCUR_SESSION_TMP_TABLE_SIZE
-        await _exec(db, f"SET SESSION tmp_table_size = {int(sz)}")
-        await _exec(db, f"SET SESSION max_heap_table_size = {int(sz)}")
+        if sz > 0:
+            await _exec(db, f"SET SESSION tmp_table_size = {int(sz)}")
+            await _exec(db, f"SET SESSION max_heap_table_size = {int(sz)}")
 
         for t in _HELPERS:
             await _exec(db, f"DROP TABLE IF EXISTS {t}")
@@ -163,4 +167,8 @@ async def refresh_tag_cooccurrence(
         return n_rows
     finally:
         # Connection-scoped lock survives the DDL implicit-commits on this session.
-        await db.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": _LOCK_NAME})
+        try:
+            await db.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": _LOCK_NAME})
+        except Exception:
+            # lock auto-releases on connection close; never mask the real exception
+            pass

@@ -196,9 +196,11 @@ class Settings(BaseSettings):
     COOCCUR_CACHE_TTL: int = Field(
         default=604800, ge=1
     )  # related-tags response cache; ~1 week (refresh cadence)
-    COOCCUR_SESSION_TMP_TABLE_SIZE: int = Field(
-        default=536870912
-    )  # 512MB; session-scoped temp limit for the batch
+    COOCCUR_SESSION_TMP_TABLE_SIZE: int = Field(default=0, ge=0)
+    # 0 = leave the server default (SAFE). Raising this enlarges per-session in-memory
+    # temp tables to avoid disk spills during the batch, but on a memory-constrained host
+    # (small container cap / little free RAM) a large value can exhaust memory and CRASH
+    # MariaDB mid-build — 512MB crashed the 3GB dev container. Only raise on hosts with spare RAM.
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
