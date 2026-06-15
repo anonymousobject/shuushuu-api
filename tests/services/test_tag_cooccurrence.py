@@ -6,7 +6,7 @@ from app.config import ImageStatus, TagType
 from app.models.image import Images
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
-from app.services.tag_cooccurrence import _LOCK_NAME, refresh_tag_cooccurrence
+from app.services.tag_cooccurrence import _LOCK_PREFIX, refresh_tag_cooccurrence
 
 pytestmark = [pytest.mark.integration, pytest.mark.needs_commit]
 
@@ -217,11 +217,15 @@ async def test_refresh_is_repeatable_and_leaves_no_helper_tables(db_session):
 async def test_refresh_skips_when_lock_held_elsewhere(db_session, engine):
     # Hold the named lock on a SEPARATE connection so the refresh can't acquire
     # it: GET_LOCK is connection-scoped, so this models the cron-vs-manual race.
+    # We must use the same database-scoped name that the service computes: same
+    # DB -> same lock name -> service is blocked -> returns the -1 sentinel.
     async with AsyncSession(engine) as holder:
-        got = (await holder.execute(text("SELECT GET_LOCK(:n, 0)"), {"n": _LOCK_NAME})).scalar()
+        db_name = (await holder.execute(text("SELECT DATABASE()"))).scalar()
+        lock_name = f"{_LOCK_PREFIX}:{db_name}"
+        got = (await holder.execute(text("SELECT GET_LOCK(:n, 0)"), {"n": lock_name})).scalar()
         assert got == 1  # we hold the lock on the holder connection
         try:
             result = await refresh_tag_cooccurrence(db_session, min_cooccur=2, top_n=50)
             assert result == -1  # sentinel: skipped without touching any tables
         finally:
-            await holder.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": _LOCK_NAME})
+            await holder.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": lock_name})

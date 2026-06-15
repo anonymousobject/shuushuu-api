@@ -20,7 +20,13 @@ logger = get_logger(__name__)
 
 _PUBLIC = list(PUBLIC_IMAGE_STATUSES)
 _HELPERS = ("_cooccur_vl", "_cooccur_vc", "_cooccur_vlf", "_cooccur_pairs")
-_LOCK_NAME = "tag_cooccurrence_refresh"
+# MySQL advisory lock names are server-global (shared across all databases on
+# the same MariaDB instance). In production there is only one database, so the
+# bare prefix serializes the weekly cron and any manual run. In test environments
+# pytest-xdist spins up a separate database per worker (shuushuu_pytest_gw0,
+# _gw1, …) all on the same server, so we scope the name to the current database
+# to give each worker its own independent lock.
+_LOCK_PREFIX = "tag_cooccurrence_refresh"
 
 
 async def _exec(db, sql, params=None):
@@ -44,7 +50,12 @@ async def refresh_tag_cooccurrence(
     """
     # Acquire before any work; GET_LOCK(name, 0) -> 1 if acquired now, 0 on
     # timeout, NULL on error. Anything falsy means "another refresh is running".
-    locked = (await db.execute(text("SELECT GET_LOCK(:n, 0)"), {"n": _LOCK_NAME})).scalar()
+    # Lock name is scoped to the current database so per-worker test DBs
+    # (shuushuu_pytest_gw0, _gw1, …) get distinct names while production's
+    # single DB still serializes cron + manual runs.
+    db_name = (await db.execute(text("SELECT DATABASE()"))).scalar()
+    lock_name = f"{_LOCK_PREFIX}:{db_name}"
+    locked = (await db.execute(text("SELECT GET_LOCK(:n, 0)"), {"n": lock_name})).scalar()
     if not locked:
         logger.info("tag_cooccurrence_refresh_skipped_locked")
         return -1  # sentinel: another refresh is already running
@@ -168,7 +179,7 @@ async def refresh_tag_cooccurrence(
     finally:
         # Connection-scoped lock survives the DDL implicit-commits on this session.
         try:
-            await db.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": _LOCK_NAME})
+            await db.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": lock_name})
         except Exception:
             # lock auto-releases on connection close; never mask the real exception
             pass
