@@ -187,6 +187,19 @@ class Settings(BaseSettings):
     BANNER_CACHE_TTL: int = Field(default=600, ge=0)
     BANNER_CACHE_TTL_JITTER: int = Field(default=300, ge=0)
 
+    # Tag co-occurrence batch
+    COOCCUR_MIN_COOCCUR: int = Field(default=20, ge=1)  # minimum-support floor
+    COOCCUR_TOP_N: int = Field(default=50, ge=1)  # neighbours stored per tag
+    COOCCUR_MIN_BASE_USAGE: int = Field(
+        default=0, ge=0
+    )  # >0 enables EXTRA lossy pruning (off; see note)
+    COOCCUR_CACHE_TTL: int = Field(
+        default=604800, ge=1
+    )  # related-tags response cache; ~1 week (refresh cadence)
+    COOCCUR_SESSION_TMP_TABLE_SIZE: int = Field(
+        default=536870912
+    )  # 512MB; session-scoped temp limit for the batch
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:
