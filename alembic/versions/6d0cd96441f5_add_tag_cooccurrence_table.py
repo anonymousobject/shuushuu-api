@@ -21,6 +21,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # No FKs: this table is fully rebuilt weekly via atomic swap (CREATE TABLE ... LIKE drops FKs anyway).
     op.create_table(
         "tag_cooccurrence",
         sa.Column("tag_id", mysql.INTEGER(unsigned=True), nullable=False),
@@ -30,14 +31,6 @@ def upgrade() -> None:
         sa.Column("lift", sa.Float(), nullable=False),
         sa.Column("confidence", sa.Float(), nullable=False),
         sa.PrimaryKeyConstraint("tag_id", "related_tag_id"),
-        sa.ForeignKeyConstraint(
-            ["tag_id"], ["tags.tag_id"],
-            name="fk_tag_cooccurrence_tag_id", onupdate="CASCADE", ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["related_tag_id"], ["tags.tag_id"],
-            name="fk_tag_cooccurrence_related_tag_id", onupdate="CASCADE", ondelete="CASCADE",
-        ),
     )
     op.create_index("idx_tag_cooccurrence_lookup", "tag_cooccurrence", ["tag_id", "lift"])
 
