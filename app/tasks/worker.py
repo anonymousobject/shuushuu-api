@@ -25,6 +25,7 @@ from app.core.logging import configure_logging
 from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.review_jobs import check_review_deadlines
 from app.services.user_cleanup import cleanup_unverified_accounts
+from app.tasks.cooccurrence import refresh_tag_cooccurrence_job
 from app.tasks.email_jobs import send_password_reset_email_job, send_verification_email_job
 from app.tasks.image_jobs import (
     add_to_iqdb_job,
@@ -175,9 +176,13 @@ class WorkerSettings:
         func(r2_finalize_upload_job, max_tries=5),
         func(sync_image_status_job, max_tries=settings.ARQ_MAX_TRIES),
         func(r2_delete_image_job, max_tries=settings.ARQ_MAX_TRIES),
+        func(refresh_tag_cooccurrence_job, max_tries=1),
     ]
 
     cron_jobs = [
         cron(cleanup_stale_accounts, hour=3, minute=0),
         cron(process_review_deadlines, minute=0),  # Every hour on the hour
+        cron(
+            refresh_tag_cooccurrence_job, weekday="sun", hour=4, minute=0
+        ),  # weekly, Sun 04:00 UTC
     ]
