@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
-from app.config import ImageStatus, TagAuditActionType, TagType
+from app.config import ImageStatus, TagAuditActionType, TagType, settings
 from app.core.auth import get_current_user, get_optional_current_user
 from app.core.database import get_db
 from app.core.permission_deps import require_permission
@@ -25,6 +25,7 @@ from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.permissions import UserGroups
 from app.models.tag_audit_log import TagAuditLog
+from app.models.tag_cooccurrence import TagCooccurrence
 from app.models.tag_history import TagHistory
 from app.schemas.audit import (
     TagAuditLogListResponse,
@@ -42,6 +43,8 @@ from app.schemas.tag import (
     CharacterSourceLinkListResponse,
     CharacterSourceLinkResponse,
     LinkedTag,
+    RelatedTag,
+    RelatedTagsResponse,
     TagCreate,
     TagExternalLinkCreate,
     TagExternalLinkReorder,
@@ -52,6 +55,7 @@ from app.schemas.tag import (
     TagWithStats,
 )
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
+from app.services.feeds import TAG_TYPE_NAME
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
@@ -929,6 +933,69 @@ async def get_characters_for_source(
         per_page=pagination.per_page,
         tags=[TagResponse.model_validate(t) for t in tags],
     )
+
+
+@router.get("/{tag_id}/related", response_model=RelatedTagsResponse)
+async def get_related_tags(
+    tag_id: Annotated[int, Path(description="Tag ID")],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+    type: Annotated[int | None, Query(ge=1, le=4, description="Filter by related tag type")] = None,
+    limit: Annotated[int, Query(ge=1, le=50, description="Max related tags to return")] = 10,
+) -> RelatedTagsResponse:
+    """
+    Get tags that statistically co-occur with this tag, ranked by lift.
+
+    Reads the precomputed `tag_cooccurrence` table (refreshed weekly). Results
+    are ranked by lift descending and each carries co-occurrence scores plus the
+    related tag's title/type/usage_count. Alias tags resolve to their canonical
+    tag first, since the table is keyed by canonical id. Returns an empty list
+    when the tag has no recorded neighbours.
+
+    The response is Redis-cached for `COOCCUR_CACHE_TTL` (tracks the refresh
+    cadence), keyed by canonical tag id, type filter, and limit.
+    """
+    # Resolve alias -> canonical: the cooccurrence table is keyed by canonical id
+    # (mirrors get_tag / get_images_by_tag, which resolve before querying).
+    _tag, canonical_id = await resolve_tag_alias(db, tag_id)
+
+    cache_key = f"related:{canonical_id}:{type or 0}:{limit}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        return RelatedTagsResponse.model_validate_json(cached)
+
+    # Join tags on related_tag_id for title + type_name + usage_count (free add).
+    stmt = (
+        select(
+            TagCooccurrence,
+            Tags.title,
+            Tags.usage_count,  # type: ignore[arg-type]
+        )
+        .join(Tags, Tags.tag_id == TagCooccurrence.related_tag_id)  # type: ignore[arg-type]
+        .where(TagCooccurrence.tag_id == canonical_id)  # type: ignore[arg-type]
+    )
+    if type is not None:
+        stmt = stmt.where(TagCooccurrence.related_type == type)  # type: ignore[arg-type]
+    stmt = stmt.order_by(desc(TagCooccurrence.lift)).limit(limit)  # type: ignore[arg-type]
+
+    rows = (await db.execute(stmt)).all()
+    items = [
+        RelatedTag(
+            tag_id=co.related_tag_id,
+            title=title,
+            type=co.related_type,
+            type_name=TAG_TYPE_NAME.get(co.related_type, "Tag"),
+            usage_count=usage_count or 0,
+            cooccur_count=co.cooccur_count,
+            confidence=co.confidence,
+            lift=co.lift,
+        )
+        for co, title, usage_count in rows
+    ]
+
+    resp = RelatedTagsResponse(tag_id=canonical_id, items=items)
+    await redis_client.set(cache_key, resp.model_dump_json(), ex=settings.COOCCUR_CACHE_TTL)
+    return resp
 
 
 @router.get("/{tag_id}", response_model=TagWithStats)
