@@ -19,12 +19,20 @@ async def refresh_tag_cooccurrence_job(ctx: dict[str, Any]) -> None:
     from app.services.tag_cooccurrence import refresh_tag_cooccurrence
 
     async with get_async_session() as db:
-        n = await refresh_tag_cooccurrence(
-            db,
-            min_cooccur=settings.COOCCUR_MIN_COOCCUR,
-            top_n=settings.COOCCUR_TOP_N,
-            min_base_usage=settings.COOCCUR_MIN_BASE_USAGE,
-        )
+        try:
+            n = await refresh_tag_cooccurrence(
+                db,
+                min_cooccur=settings.COOCCUR_MIN_COOCCUR,
+                top_n=settings.COOCCUR_TOP_N,
+                min_base_usage=settings.COOCCUR_MIN_BASE_USAGE,
+            )
+        except Exception as e:
+            logger.exception(
+                "tag_cooccurrence_refresh_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return
 
     if n < 0:
         logger.info("tag_cooccurrence_refresh_skipped_lock_held")
