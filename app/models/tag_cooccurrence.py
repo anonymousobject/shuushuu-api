@@ -1,7 +1,9 @@
 """SQLModel for precomputed tag co-occurrence (top-N related tags per tag)."""
 
-from sqlalchemy import Column, Float, ForeignKeyConstraint, Index, SmallInteger
+from sqlalchemy import Column, Float, ForeignKeyConstraint, Index, Integer, SmallInteger
 from sqlmodel import Field, SQLModel
+
+from app.models.types import UnsignedInt
 
 
 class TagCooccurrence(SQLModel, table=True):
@@ -32,9 +34,9 @@ class TagCooccurrence(SQLModel, table=True):
         Index("idx_tag_cooccurrence_lookup", "tag_id", "lift"),
     )
 
-    tag_id: int = Field(primary_key=True)
-    related_tag_id: int = Field(primary_key=True)
+    tag_id: int = Field(sa_column=Column(UnsignedInt, primary_key=True, nullable=False))
+    related_tag_id: int = Field(sa_column=Column(UnsignedInt, primary_key=True, nullable=False))
     related_type: int = Field(sa_column=Column(SmallInteger, nullable=False))
-    cooccur_count: int = Field(nullable=False)
+    cooccur_count: int = Field(sa_column=Column(Integer, nullable=False))
     lift: float = Field(sa_column=Column(Float, nullable=False))
     confidence: float = Field(sa_column=Column(Float, nullable=False))
