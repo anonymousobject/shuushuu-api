@@ -186,3 +186,28 @@ async def test_self_pairs_excluded(db_session):
     rows = await _rows(db_session)
     assert (10, 10) not in rows
     assert (20, 20) not in rows
+
+
+async def test_refresh_is_repeatable_and_leaves_no_helper_tables(db_session):
+    _tag(db_session, 10, TagType.CHARACTER, "A")
+    _tag(db_session, 20, TagType.SOURCE, "B")
+    for i in range(1, 5):
+        _img(db_session, i)
+        _link(db_session, 10, i)
+        _link(db_session, 20, i)
+    await db_session.commit()
+
+    n1 = await refresh_tag_cooccurrence(db_session, min_cooccur=2, top_n=50)
+    n2 = await refresh_tag_cooccurrence(db_session, min_cooccur=2, top_n=50)
+    assert n1 == n2  # second run replaces cleanly with the same row count
+
+    leftovers = (
+        await db_session.execute(
+            text(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = DATABASE() AND (table_name LIKE '\\_cooccur\\_%' "
+                "OR table_name IN ('tag_cooccurrence_old','tag_cooccurrence_new'))"
+            )
+        )
+    ).all()
+    assert leftovers == []
