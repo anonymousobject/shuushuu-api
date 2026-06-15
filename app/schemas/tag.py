@@ -172,6 +172,26 @@ class TagListResponse(BaseModel):
     invalid_ids: list[str] | None = None  # IDs that were invalid and filtered out
 
 
+class RelatedTag(BaseModel):
+    """A co-occurring tag with relatedness scores."""
+
+    tag_id: int
+    title: str | None
+    type: int
+    type_name: str  # filled by the endpoint from TAG_TYPE_NAME, not validated here
+    usage_count: int = 0
+    cooccur_count: int
+    confidence: float  # 0..1; UI shows as "appears on X%"
+    lift: float
+
+
+class RelatedTagsResponse(BaseModel):
+    """Co-occurring tags for a base tag, ranked by lift descending."""
+
+    tag_id: int  # canonical base tag the results are for
+    items: list[RelatedTag]
+
+
 class TagExternalLinkCreate(BaseModel):
     """Schema for adding a new external link to a tag"""
 
