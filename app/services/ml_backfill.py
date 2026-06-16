@@ -61,14 +61,45 @@ def write_results(path: Path, rows: Iterable[dict[str, Any]]) -> None:
 
 
 def iter_results(path: Path) -> Iterator[dict[str, Any]]:
-    """Yield result objects from a JSONL file; nothing if it doesn't exist."""
+    """Yield result objects from a JSONL file; nothing if it doesn't exist.
+
+    A malformed line (e.g. a truncated trailing line left by a hard kill
+    mid-write) is logged and skipped rather than aborting the whole read, so
+    resume survives an unclean shutdown of a previous run.
+    """
     if not path.exists():
         return
     with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
+        for lineno, raw in enumerate(f, start=1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
                 yield json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("ml_backfill_skipping_bad_line", path=str(path), line=lineno)
+
+
+def check_shard_output(out_path: Path, shards: int, shard_index: int) -> None:
+    """Bind an output file to its (shards, shard_index) to make resume safe.
+
+    Resume skips images already present in the output file, so pointing the
+    wrong shard at an existing file would silently skip the wrong images and
+    interleave results. On first use this records the shard identity in a
+    ``<out>.meta`` sidecar; on resume it validates the sidecar matches and
+    raises ValueError otherwise.
+    """
+    meta_path = out_path.with_name(out_path.name + ".meta")
+    identity = {"shards": shards, "shard_index": shard_index}
+    if meta_path.exists():
+        existing = json.loads(meta_path.read_text())
+        if existing != identity:
+            raise ValueError(
+                f"{out_path} belongs to {existing}, not {identity}; "
+                "use a dedicated output file per shard"
+            )
+    else:
+        meta_path.write_text(json.dumps(identity))
 
 
 def load_image_ids(path: Path) -> set[int]:

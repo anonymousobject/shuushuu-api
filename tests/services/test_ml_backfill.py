@@ -12,11 +12,12 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 
-from app.models.image import ImageStatus, Images
+from app.models.image import Images, ImageStatus
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.user import Users
 from app.services.ml_backfill import (
+    check_shard_output,
     fetch_manifest_rows,
     ingest_results,
     load_image_ids,
@@ -77,6 +78,34 @@ def test_jsonl_roundtrip_and_resume_ids(tmp_path):
 
 def test_load_image_ids_missing_file_is_empty(tmp_path):
     assert load_image_ids(tmp_path / "nope.jsonl") == set()
+
+
+def test_iter_results_tolerates_malformed_lines(tmp_path):
+    """A truncated/corrupt line (e.g. from a hard kill mid-write) is skipped, not fatal."""
+    out = tmp_path / "results.jsonl"
+    out.write_text(
+        '{"image_id": 1, "predictions": []}\n'
+        '{"image_id": 2, "predictions": [  <- truncated\n'  # garbage / partial line
+        '{"image_id": 3, "predictions": []}\n'
+    )
+    # Resume must recover the intact records and ignore the broken one.
+    assert load_image_ids(out) == {1, 3}
+
+
+def test_check_shard_output_creates_then_accepts_matching(tmp_path):
+    out = tmp_path / "r0.jsonl"
+    check_shard_output(out, shards=2, shard_index=0)  # first run writes the binding
+    # Resuming the same shard into the same file is fine.
+    check_shard_output(out, shards=2, shard_index=0)
+
+
+def test_check_shard_output_rejects_mismatch(tmp_path):
+    out = tmp_path / "r0.jsonl"
+    check_shard_output(out, shards=2, shard_index=0)
+    with pytest.raises(ValueError):
+        check_shard_output(out, shards=2, shard_index=1)  # wrong shard index
+    with pytest.raises(ValueError):
+        check_shard_output(out, shards=4, shard_index=0)  # wrong shard count
 
 
 # --- DB helpers -----------------------------------------------------------

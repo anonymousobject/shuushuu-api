@@ -24,6 +24,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.services.ml_backfill import (
+    check_shard_output,
     iter_results,
     load_image_ids,
     select_shard,
@@ -40,6 +41,9 @@ async def run(args: argparse.Namespace) -> None:
     manifest = list(iter_results(Path(args.manifest)))
     shard = select_shard(manifest, args.shards, args.shard_index)
     out = Path(args.out)
+    # Guard against resuming the wrong shard into this file (would skip the wrong
+    # images and interleave results).
+    check_shard_output(out, args.shards, args.shard_index)
     done = load_image_ids(out)  # resume: skip images already written
     todo = [rec for rec in shard if rec["image_id"] not in done]
     print(
