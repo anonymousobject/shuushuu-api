@@ -226,6 +226,54 @@ aliases/hierarchy → drop redundant → insert pending rows). Resumable via a
 checkpoint file (`--checkpoint`, default `ml_backfill_ingest.done`); a row whose
 image was deleted since the manifest was built is logged and skipped.
 
+### Running Stage 2 on a separate AMD GPU host (ROCm)
+
+`scripts/ml_gpu_infer.py` is an **app-free** twin of `ml_backfill_infer.py`
+(only onnxruntime + numpy + pillow) so Stage 2 can run on a GPU box that can't
+host the main app's stack. Its preprocessing/selection are copied from the
+canonical code and drift-guarded by `tests/integration/test_ml_gpu_infer.py`.
+
+Setup notes from an AMD Radeon RX 6800 XT (RDNA2 / gfx1030) on Linux Mint 22.3
+(Ubuntu 24.04 "noble" base):
+
+- The card's official consumer ROCm support ended at the 6.x line, so use
+  **ROCm 6.4.4** (the last 6.x), not 7.x.
+- The amdgpu kernel driver is already in-box (kernel 6.x exposes `/dev/kfd`); a
+  **runtime-only** install is enough — no DKMS:
+  ```bash
+  sudo usermod -aG render,video $USER   # then reboot
+  wget https://repo.radeon.com/amdgpu-install/6.4.4/ubuntu/noble/amdgpu-install_6.4.60404-1_all.deb
+  sudo apt install ./amdgpu-install_6.4.60404-1_all.deb && sudo apt update
+  sudo apt install --no-install-recommends \
+      rocm-core hip-runtime-amd rocblas miopen-hip hipblas hipfft rccl rocminfo rocm-smi-lib
+  sudo ln -s /opt/rocm-6.4.4 /opt/rocm
+  echo /opt/rocm/lib | sudo tee /etc/ld.so.conf.d/rocm.conf && sudo ldconfig
+  ```
+  (`hipblas`, `hipfft`, and `rccl` are load-time `NEEDED` deps of the onnxruntime
+  ROCm EP even though single-GPU inference doesn't use them all.)
+- onnxruntime-rocm ships **cp312** wheels (not 3.14), so use a Python 3.12 venv:
+  ```bash
+  python3.12 -m venv ~/ml-rocm && source ~/ml-rocm/bin/activate
+  pip install numpy pillow \
+      https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.4/onnxruntime_rocm-1.21.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+  ```
+- **`HSA_OVERRIDE_GFX_VERSION=10.3.0` is required** for gfx1030 — without it HIP
+  fails to init the kernels ("Module not initialized"). Verify the EP actually
+  loads (not just that `get_available_providers()` lists it) by checking the
+  runner prints `providers: ['ROCMExecutionProvider', ...]`.
+
+```bash
+export HSA_OVERRIDE_GFX_VERSION=10.3.0
+python ml_gpu_infer.py --manifest manifest.jsonl --out results.jsonl \
+    --model-dir ~/ml-models/swinv2_base_window8_256.dbv4-full \
+    --storage-path /mnt/shuushuu --variant thumbs
+```
+
+**Throughput:** ~28 img/s on a 6800 XT at batch size 1 (~11 h for ~1.1M images
+— an overnight run, vs ~a week on the CPU box). It is GPU-bound at batch-1, so
+running parallel shards does *not* increase aggregate throughput; batched
+inference (the model has a dynamic batch dim) is the lever to go faster.
+
 ---
 
 ## docker-compose mounts
