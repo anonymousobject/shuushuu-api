@@ -27,6 +27,8 @@ Usage:
 import argparse
 import csv
 import json
+import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -219,6 +221,15 @@ def run(args: argparse.Namespace) -> None:
                 print(f"  {processed}/{len(todo)} processed...")
 
     print(f"done: {processed} processed, {missing} skipped (no image file) → {out}")
+
+    # onnxruntime's ROCm runtime can corrupt the heap in its teardown
+    # destructors at interpreter exit ("corrupted size vs prev_size in
+    # fastbins"). All results are written and flushed above (the output file is
+    # closed by the `with` block), so hard-exit now to skip the buggy teardown
+    # and the session destructor that triggers it. Exit 0 keeps shard
+    # orchestration happy.
+    sys.stdout.flush()
+    os._exit(0)
 
 
 def main() -> None:
