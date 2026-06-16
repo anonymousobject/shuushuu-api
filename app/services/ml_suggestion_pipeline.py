@@ -154,6 +154,7 @@ async def generate_and_store_suggestions(
     Returns the number of new suggestions created.
     Raises FileNotFoundError if the local image file is missing.
     """
+    assert image.image_id is not None  # a persisted image always has an id
     image_id = image.image_id
 
     # Resolve the local image path. Images are stored as:
@@ -168,7 +169,9 @@ async def generate_and_store_suggestions(
 
     logger.info("ml_suggestion_pipeline_started", image_id=image_id, path=str(image_path))
 
-    # 1. Call ML service to generate predictions (Danbooru external tags).
+    # Run inference for external (Danbooru) tag predictions, then hand off to the
+    # DB half. store_predictions is shared with the offline bulk-ingest path,
+    # which supplies predictions computed on another host.
     predictions = await ml_service.generate_suggestions(
         str(image_path), min_confidence=settings.ML_MIN_CONFIDENCE
     )
@@ -179,7 +182,27 @@ async def generate_and_store_suggestions(
         count=len(predictions),
     )
 
-    # 2. Resolve external tags (Danbooru) to internal tag IDs.
+    return await store_predictions(db, image_id, predictions)
+
+
+async def store_predictions(
+    db: AsyncSession,
+    image_id: int,
+    predictions: list[dict[str, Any]],
+) -> int:
+    """
+    Map/resolve external-tag predictions and store pending MlTagSuggestions rows.
+
+    This is the database half of the pipeline, independent of how the
+    predictions were produced (live inference or an offline GPU backfill).
+    ``predictions`` are external-tag dicts (external_tag, confidence,
+    model_version) as returned by MLTagSuggestionService.generate_suggestions.
+
+    Existing suggestions are kept (idempotent regeneration); approved
+    suggestions whose tag was since removed from the image reset to pending.
+    Commits the session. Returns the number of new suggestions created.
+    """
+    # 1. Resolve external tags (Danbooru) to internal tag IDs.
     mapped_predictions = await resolve_external_tags(db, predictions)
 
     logger.info(
@@ -189,7 +212,7 @@ async def generate_and_store_suggestions(
         mapped_count=len(mapped_predictions),
     )
 
-    # 3. Resolve tag relationships (aliases, hierarchies).
+    # 2. Resolve tag relationships (aliases, hierarchies).
     resolved_predictions = await resolve_tag_relationships(db, mapped_predictions)
 
     logger.info(
@@ -199,7 +222,7 @@ async def generate_and_store_suggestions(
         resolved_count=len(resolved_predictions),
     )
 
-    # 4. Get ALL existing tags on the image (for redundancy filtering).
+    # 3. Get ALL existing tags on the image (for redundancy filtering).
     all_existing_links_result = await db.execute(
         select(TagLinks.tag_id).where(  # type: ignore[call-overload]
             TagLinks.image_id == image_id,
@@ -213,12 +236,12 @@ async def generate_and_store_suggestions(
         existing_count=len(all_existing_tag_ids),
     )
 
-    # 5. Filter out redundant suggestions (ancestors or substrings of existing tags).
+    # 4. Filter out redundant suggestions (ancestors or substrings of existing tags).
     filtered_predictions = await filter_redundant_suggestions(
         db, resolved_predictions, all_existing_tag_ids
     )
 
-    # 6. Get existing suggestions for this image (to avoid duplicate key errors on regenerate).
+    # 5. Get existing suggestions for this image (to avoid duplicate key errors on regenerate).
     existing_suggestions_result = await db.execute(
         select(MlTagSuggestions).where(
             MlTagSuggestions.image_id == image_id,  # type: ignore[arg-type]
@@ -234,7 +257,7 @@ async def generate_and_store_suggestions(
             count=len(existing_suggestion_tag_ids),
         )
 
-    # 7. Reset "approved" suggestions back to "pending" if their tag was removed.
+    # 6. Reset "approved" suggestions back to "pending" if their tag was removed.
     suggestions_reset = 0
     for suggestion in existing_suggestions:
         if suggestion.status == "approved" and suggestion.tag_id not in all_existing_tag_ids:
@@ -255,7 +278,7 @@ async def generate_and_store_suggestions(
             count=suggestions_reset,
         )
 
-    # 8. Create MlTagSuggestions records.
+    # 7. Create MlTagSuggestions records.
     suggestions_created = 0
 
     for pred in filtered_predictions:

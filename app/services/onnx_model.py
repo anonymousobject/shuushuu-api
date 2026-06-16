@@ -14,6 +14,7 @@ import onnxruntime as ort  # type: ignore[import-untyped]
 from PIL import Image
 
 from app.core.logging import get_logger
+from app.services.onnx_providers import select_providers
 
 logger = get_logger(__name__)
 
@@ -49,8 +50,10 @@ class WDTaggerModel:
         if not self.model_path.exists():
             raise FileNotFoundError(f"Model not found: {self.model_path}")
 
-        # Prefer GPU if available
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        # Prefer GPU (CUDA/ROCm) when the installed onnxruntime build exposes
+        # it, else CPU. Requesting only available providers avoids spurious
+        # "provider not available" warnings.
+        providers = select_providers(ort.get_available_providers())
         self.session = ort.InferenceSession(str(self.model_path), providers=providers)
 
         active_providers = self.session.get_providers()

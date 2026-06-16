@@ -23,7 +23,10 @@ from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
-from app.services.ml_suggestion_pipeline import generate_and_store_suggestions
+from app.services.ml_suggestion_pipeline import (
+    generate_and_store_suggestions,
+    store_predictions,
+)
 
 PIPELINE = "app.services.ml_suggestion_pipeline"
 
@@ -486,6 +489,45 @@ async def test_alias_resolves_to_canonical(db_session, tmp_path, monkeypatch):
     assert len(suggestions) == 1
     # The stored suggestion must reference the canonical tag, not the alias.
     assert suggestions[0].tag_id == 300
+
+
+async def test_store_predictions_persists_without_inference(db_session, tmp_path, monkeypatch):
+    """store_predictions runs the DB half (map→resolve→filter→insert) on its own.
+
+    This is the seam the bulk-ingest path reuses: external-tag predictions in,
+    stored MlTagSuggestions rows out, no image file or ML service involved.
+    """
+    tags = [Tags(tag_id=46, title="long hair"), Tags(tag_id=161, title="short hair")]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "store")
+    image = await _make_image(db_session, user, "store", tmp_path)
+    await db_session.commit()
+
+    predictions = [
+        {"external_tag": "long_hair", "confidence": 0.92, "model_version": "v3"},
+        {"external_tag": "short_hair", "confidence": 0.88, "model_version": "v3"},
+    ]
+    mapped = [
+        {"tag_id": 46, "confidence": 0.92, "model_version": "v3"},
+        {"tag_id": 161, "confidence": 0.88, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await store_predictions(db_session, image.image_id, predictions)
+
+    assert created == 2
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    suggestions = result.scalars().all()
+    assert {s.tag_id for s in suggestions} == {46, 161}
+    assert all(s.model_version == "v3" for s in suggestions)
+    assert all(s.status == "pending" for s in suggestions)
 
 
 async def test_filters_redundant_grandparent(db_session, tmp_path, monkeypatch):

@@ -163,6 +163,71 @@ Trigger (re-)generation manually.
 
 ---
 
+## Bulk backfill (existing images)
+
+Generating suggestions for the whole corpus is a separate offline job, split
+into three stages so GPU inference can run on another host **without database
+access**. The reusable logic lives in `app/services/ml_backfill.py`; the stages
+are thin CLIs under `scripts/`.
+
+CPU throughput is on the order of ~1.7 images/sec on a 10-core box (≈ a week for
+~1.1M images), so a GPU host is worth it. Inference auto-selects CUDA/ROCm when
+the installed onnxruntime build exposes one (`app/services/onnx_providers.py`) —
+no code change between CPU and GPU runs.
+
+### Stage 1 — manifest (needs the DB)
+
+```bash
+uv run python scripts/ml_backfill_manifest.py --out manifest.jsonl \
+    --missing-theme --exclude-existing
+```
+
+Writes `{image_id, filename, ext}` rows. Flags:
+
+- `--missing-theme` — only images with no theme tags yet (skips already-themed images)
+- `--exclude-existing` — skip images that already have ML suggestion rows
+- `--status N` / `--all-statuses` — status filter (default: active)
+- `--limit N` — cap the count (smoke tests)
+
+### Stage 2 — inference (GPU host; no DB)
+
+Copy the manifest to the inference host and point it at the image store
+(`STORAGE_PATH`). Reads thumbnails by default — they downscale to the model's
+448px input with no quality loss for theme tags, and keep I/O tiny.
+
+```bash
+uv run python scripts/ml_backfill_infer.py \
+    --manifest manifest.jsonl --out results.jsonl --variant thumbs
+```
+
+Sharded and resumable. Split across hosts/processes by shard:
+
+```bash
+# host A
+uv run python scripts/ml_backfill_infer.py --manifest manifest.jsonl \
+    --out r0.jsonl --shards 2 --shard-index 0
+# host B
+uv run python scripts/ml_backfill_infer.py --manifest manifest.jsonl \
+    --out r1.jsonl --shards 2 --shard-index 1
+```
+
+Re-running skips images already present in the output file. The inference host
+needs onnxruntime with a GPU provider (CUDA, or ROCm for AMD) and read access to
+the image store (e.g. the same NFS mount); it never connects to the database.
+
+### Stage 3 — ingest (needs the DB)
+
+```bash
+uv run python scripts/ml_backfill_ingest.py results.jsonl r0.jsonl r1.jsonl
+```
+
+Feeds predictions through the same DB pipeline as live inference (map → resolve
+aliases/hierarchy → drop redundant → insert pending rows). Resumable via a
+checkpoint file (`--checkpoint`, default `ml_backfill_ingest.done`); a row whose
+image was deleted since the manifest was built is logged and skipped.
+
+---
+
 ## docker-compose mounts
 
 The `ml_models/` directory is mounted read-only into both services:
