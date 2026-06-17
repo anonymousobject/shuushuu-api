@@ -4,7 +4,7 @@
 
 **Goal:** Persist raw per-image ML predictions (general + character) in a queryable store so expanding `tag_mappings` re-surfaces suggestions via a cheap **re-map** (no re-inference), and capture the populate pass with the caformer model.
 
-**Architecture:** Three new tables (`ml_external_tags`, `ml_models` dictionaries + `ml_raw_predictions`). A new ML-service method captures raw predictions across categories; `ml_backfill_infer.py` writes them (now with `category`). `ml_raw_ingest` bulk-loads the JSONL into the tables. The prediction→implied-set computation is **extracted from `store_predictions` into a shared helper**; `ml_remap` reads raw preds from the table, runs that helper, then applies its **own** reconcile (regenerate pending, preserve reviewed, never re-suggest a dismissed tag).
+**Architecture:** Three new tables (`ml_external_tags`, `ml_models` dictionaries + `ml_raw_predictions`). The GPU populate pass uses `scripts/ml_gpu_infer.py` (standalone, app-free) extended to capture general+character raw predictions (now with `category`); `ml_backfill_infer.py` is the app-coupled CPU twin and is not used for the GPU populate. A new app-side `generate_raw_predictions` service method supports a future live/CPU raw-capture path. `ml_raw_ingest` bulk-loads the JSONL into the tables. The prediction→implied-set computation is **extracted from `store_predictions` into a shared helper**; `ml_remap` reads raw preds from the table, runs that helper, then applies its **own** reconcile (regenerate pending scoped to `model_version`, preserve reviewed, never re-suggest a dismissed tag).
 
 **Tech Stack:** FastAPI, SQLModel/SQLAlchemy (async), Alembic, MariaDB, pytest (real test DB, no mocks), onnxruntime.
 
@@ -257,6 +257,8 @@ git commit -m "feat(ml): migration for raw-prediction store tables"
 
 ### Task 3: Route `caformer*` model names to the animetimm loader
 
+> **Note:** The standalone `scripts/ml_gpu_infer.py` already loads caformer via its generic `load_model` (reads `model.onnx` + `selected_tags.csv` + `preprocess.json` — no dispatch). This task is a **nice-to-have for app-side use** (e.g. the live `MLTagSuggestionService` path), not required for the GPU populate.
+
 **Files:**
 - Modify: `app/services/ml_service.py:70-79`
 - Test: `tests/services/test_ml_service.py`
@@ -299,6 +301,8 @@ async def test_caformer_name_routes_to_animetimm(monkeypatch):
 - [ ] **Step 4: Run — passes.** **Step 5: Commit** (`feat(ml): route caformer* model names to the animetimm loader`).
 
 ### Task 4: `generate_raw_predictions` service method (raw, multi-category)
+
+> **Note:** This method is for the **app-coupled path only** (i.e. `MLTagSuggestionService` / live inference via the FastAPI app). It is **not** used by the standalone GPU populate — `scripts/ml_gpu_infer.py` captures raw predictions independently in its own app-free venv. Keep this task (it provides a useful future live/CPU raw-capture path) but it is not on the GPU populate critical path.
 
 **Files:**
 - Modify: `app/services/ml_service.py` (add method)
@@ -367,29 +371,21 @@ async def test_generate_raw_predictions_shape(monkeypatch):
 
 - [ ] **Step 4: Run — passes.** **Step 5: Commit** (`feat(ml): generate_raw_predictions (multi-category raw output)`).
 
-### Task 5: `ml_backfill_infer.py` — `--model` flag + capture general+character
+### Task 5: `ml_gpu_infer.py` — `--include-character` flag + capture general+character
+
+> **Scope:** `scripts/ml_gpu_infer.py` is the **standalone GPU runner** used on the GPU box ("skinny"). It is app-free (only onnxruntime + numpy + pillow) and runs in a Python 3.12 + onnxruntime-rocm venv. `scripts/ml_backfill_infer.py` is the app-coupled CPU twin (`from app.config import settings`, `from app.services...`) and **cannot run on skinny's app-free venv** — it is not used for the populate. The live theme-only suggestion path is unaffected by this task; `ml_gpu_infer.py` is only used for backfill/populate.
 
 **Files:**
-- Modify: `scripts/ml_backfill_infer.py`
-- Test: `tests/tasks/test_ml_backfill_infer.py` (or wherever script tests live; if none, a small unit test on the arg/model-selection helper)
+- Modify: `scripts/ml_gpu_infer.py`
+- Test: `tests/integration/test_ml_gpu_infer.py`
 
-- [ ] **Step 1: Add `--model`** to the argparser; if set, `settings.ML_MODEL_NAME = args.model` **before** `service.load_models()`. Add a `--include-character` flag (default **on**) controlling the category set.
+- [ ] **Step 1: Add `--include-character`** flag (default **on**) to the argparser, controlling the category set passed to `predict()`.
 
-- [ ] **Step 2: Switch the per-image call** from `generate_suggestions(...)` to:
+- [ ] **Step 2: Extend `predict()`** — currently it filters to general-only (`if category != GENERAL_CATEGORY: continue`). Change it to also include `CHARACTER_CATEGORY` when `--include-character` is set, and add `category` to each emitted prediction record. The written record stays `{"image_id": ..., "predictions": [...]}` — now each prediction carries `category` (extra key; harmless to the existing `ingest_results`).
 
-```python
-from app.services.animetimm_model import CHARACTER_CATEGORY, GENERAL_CATEGORY
-categories = {GENERAL_CATEGORY, CHARACTER_CATEGORY} if args.include_character else {GENERAL_CATEGORY}
-predictions = await service.generate_raw_predictions(
-    str(path), include_categories=categories, min_confidence=settings.ML_MIN_CONFIDENCE
-)
-```
+- [ ] **Step 3: Test** — update the drift-guard test in `tests/integration/test_ml_gpu_infer.py`: assert that with `--include-character` (default), predictions for both category 0 (general) and category 4 (character) are emitted; assert that without `--include-character`, only general predictions appear. Also confirm `uv run python scripts/ml_gpu_infer.py --help` shows the new flag.
 
-The written record stays `{"image_id": rec["image_id"], "predictions": predictions}` — now each prediction carries `category` (extra key; harmless to the existing `ingest_results`).
-
-- [ ] **Step 3: Test** — if the script has no existing test harness, extract the model-selection + category logic into a tiny pure helper and unit-test it (arg `--model` overrides settings; `--include-character` toggles the set). Confirm `uv run python scripts/ml_backfill_infer.py --help` shows the new flags. Also confirm the **live path stays general-only** (unchanged): `uv run pytest tests/services/test_ml_service.py -k animetimm -v` stays green (the existing general-category assertion).
-
-- [ ] **Step 4: Commit** (`feat(ml): infer script --model flag + capture general+character raw preds`).
+- [ ] **Step 4: Commit** (`feat(ml): gpu infer --include-character flag + capture general+character raw preds`).
 
 ---
 
@@ -417,7 +413,7 @@ async def test_populate_external_tags_idempotent(db_session, tmp_path):
     assert n1 == 2 and n2 == 0
 ```
 
-- [ ] **Step 2: Run — fails. Step 3: Implement** `populate_external_tags` (read CSV `name`,`category`; insert names not already present; return count inserted). Use a select of existing names + `db.add_all` for missing; `await db.commit()`.
+- [ ] **Step 2: Run — fails. Step 3: Implement** `populate_external_tags` (read CSV `name`,`category`; insert names not already present; return count inserted). Use a select of existing names + `db.add_all` for missing; `await db.commit()`. **Important:** the real animetimm `selected_tags.csv` has the header `name,category,best_threshold` — there is **no `tag_id` column**. Read columns by name (`name` and `category`), not by position, and do not depend on a `tag_id` column. (The synthetic test CSV above uses `tag_id,name,category` for convenience — that is fine for the test, but the implementation must not require `tag_id`.)
 
 - [ ] **Step 4: Run — passes. Step 5: Commit** (`feat(ml): populate ml_external_tags dictionary from selected_tags.csv`).
 
@@ -533,11 +529,12 @@ Expected: all PASS (refactor is behavior-preserving).
 - Create: `scripts/ml_remap.py`
 - Test: `tests/services/test_ml_remap.py`
 
-- [ ] **Step 1: Failing tests** for the reconcile (`remap_image(db, image_id, predictions)`), each seeding tags + mappings:
+- [ ] **Step 1: Failing tests** for the reconcile (`remap_image(db, image_id, predictions, model_name)`), each seeding tags + mappings:
   1. **adds pending** for a newly-mapped tag with no existing row;
-  2. **deletes a stale pending** whose tag is no longer implied;
-  3. **preserves `approved`/`rejected`** rows and does **not** re-add/re-suggest them (dismissed stays dismissed);
-  4. **does NOT reset** an `approved` row whose image-tag was removed (the deliberate divergence from `store_predictions`).
+  2. **deletes a stale pending** (same `model_version`) whose tag is no longer implied; assert it deletes only the SAME-model pending row;
+  3. **preserves a pending row with a DIFFERENT `model_version`** — a pending row from another model (e.g. swinv2) must not be deleted when re-mapping with caformer (cross-source clobber guard);
+  4. **preserves `approved`/`rejected`** rows and does **not** re-add/re-suggest them (dismissed stays dismissed);
+  5. **does NOT reset** an `approved` row whose image-tag was removed (the deliberate divergence from `store_predictions`).
 
 ```python
 async def test_remap_preserves_rejected(db_session):
@@ -564,19 +561,27 @@ from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.services.ml_suggestion_pipeline import compute_implied_suggestions
 
 
-async def remap_image(db: AsyncSession, image_id: int, predictions: list[dict[str, Any]]) -> int:
+async def remap_image(
+    db: AsyncSession, image_id: int, predictions: list[dict[str, Any]], model_name: str
+) -> int:
     """Re-map raw predictions into ml_tag_suggestions: regenerate the pending set
     from current mappings, preserve approved/rejected, never re-suggest a
-    dismissed tag. Returns pending rows added."""
+    dismissed tag. Returns pending rows added.
+
+    The delete step is scoped to `model_name`: because ml_tag_suggestions has a
+    UNIQUE(image_id, tag_id) constraint, re-map scopes its reconcile to its own
+    model_version so it never deletes pending rows produced by a different model
+    (e.g. swinv2 live path rows are safe during a caformer re-map).
+    """
     implied, _applied = await compute_implied_suggestions(db, image_id, predictions)
     implied_by_tag = {p["tag_id"]: p for p in implied}
     existing = list((await db.execute(
         select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)
     )).scalars().all())
     existing_tag_ids = {s.tag_id for s in existing}
-    # delete stale pending (tag no longer implied)
+    # delete stale pending for THIS model only (tag no longer implied)
     for s in existing:
-        if s.status == "pending" and s.tag_id not in implied_by_tag:
+        if s.status == "pending" and s.model_version == model_name and s.tag_id not in implied_by_tag:
             await db.delete(s)
     # add pending for implied tags with no existing row (any status)
     added = 0
@@ -602,7 +607,7 @@ async def remap_image_from_store(db: AsyncSession, image_id: int, model_name: st
         {"external_tag": name, "confidence": conf, "model_version": model_name}
         for name, conf in rows
     ]
-    return await remap_image(db, image_id, predictions)
+    return await remap_image(db, image_id, predictions, model_name)
 ```
 
 - [ ] **Step 4: CLI `scripts/ml_remap.py`** — mirror `ml_backfill_ingest.py` (argparse `--model <name>`, optional `--image-id` / `--limit`, `--checkpoint`; `async with get_async_session() as db:`). Default: iterate distinct `image_id`s in `ml_raw_predictions` for the model (resumable via checkpoint) and call `remap_image_from_store` per image. Print added counts.
@@ -617,7 +622,7 @@ This is the order to actually use the feature once Chunks 1–4 are merged. Not 
 
 - [ ] **Migrate:** `uv run alembic upgrade head` (creates the three tables).
 - [ ] **Infer on skinny (caformer, general+character):**
-  `uv run python scripts/ml_backfill_infer.py --manifest <manifest.jsonl> --model caformer_b36.dbv4-full --out caformer_results.jsonl` (shard as needed; resumable).
+  `python scripts/ml_gpu_infer.py --manifest <manifest.jsonl> --model caformer_b36.dbv4-full --include-character --out caformer_results.jsonl` (shard as needed; resumable). Use the standalone `ml_gpu_infer.py` — it runs in the app-free onnxruntime-rocm venv on skinny. `ml_backfill_infer.py` is app-coupled and cannot run there.
 - [ ] **Ingest raw preds (next to the DB):**
   `uv run python scripts/ml_raw_ingest.py caformer_results.jsonl --model caformer_b36.dbv4-full`
   (populates `ml_external_tags` from the model's `selected_tags.csv`, seeds `ml_models`, bulk-loads `ml_raw_predictions`).

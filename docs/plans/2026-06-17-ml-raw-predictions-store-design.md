@@ -10,10 +10,10 @@
 
 Two further constraints make this acute:
 - The existing `results.jsonl` (2.8 GB, 1,051,908 images, 24,676,243 predictions) is **theme-only** — inference filtered to the general category (`{ANIMETIMM_GENERAL}`). It contains **zero character predictions**, so testing character tags can't reuse it; it needs a re-inference pass that includes the character category.
-- Mapping coverage is currently tiny: only ~256 of the model's 12,476 vocabulary tags map to internal tags. Iterating coverage is exactly the workflow we want to make cheap.
+- Mapping coverage is currently tiny: only ~257 of the model's 12,476 vocabulary tags map to internal tags. Iterating coverage is exactly the workflow we want to make cheap.
 
 **Solution.** Persist raw per-image predictions (general + character) in a queryable table. Then:
-- Expanding `tag_mappings` (theme or character) → a cheap **re-map** (read raw preds → apply current mappings → upsert suggestions), no re-inference. Minutes, not hours/days.
+- Expanding `tag_mappings` (theme or character) → a cheap **re-map** (read raw preds → apply current mappings → upsert suggestions), no re-inference. A *targeted* re-map (e.g. the ~195k images with zero suggestions) takes minutes; a *full-corpus* (~1M image) re-map is per-image-commit work on the order of the ingest (~a couple of hours) — still far cheaper than re-inference (no GPU, vs ~11h GPU / days CPU).
 - Raw predictions become queryable for evaluation (model coverage, per-category breakdowns, model-A-vs-B comparisons).
 
 Full inference is needed only when the **model changes** (raw predictions differ). The per-prediction model id lets a re-map detect staleness.
@@ -60,10 +60,13 @@ This is all backend. The frontend gets character suggestions **for free**: the r
 ## Data flow
 
 ### Populate (GPU box; one-time now, repeat only on model change)
-1. **`ml_backfill_infer.py` (modified)** — capture **raw** predictions across **general + character**. Today it calls `generate_suggestions` (general-only, mapped-shape); change it to use `model.predict(include_categories={GENERAL, CHARACTER})`, which returns `{tag, confidence, category}`. The **live** suggestion path (`generate_and_store_suggestions`) stays theme-only and untouched. Floor unchanged: per-tag `best_threshold` floored at `ML_MIN_CONFIDENCE`. Output → `results.jsonl` (now carrying `category`).
+1. **`ml_gpu_infer.py` (modified)** — capture **raw** predictions across **general + character**. `ml_gpu_infer.py` is the **standalone GPU runner** used on the GPU box ("skinny"): it is app-free (only onnxruntime + numpy + pillow) and runs in a Python 3.12 + onnxruntime-rocm venv. It already loads any animetimm model (including caformer) via a generic `load_model` that reads `model.onnx` + `selected_tags.csv` + `preprocess.json` — no model-name dispatch needed. Today its `predict()` filters to general-only (`if category != GENERAL_CATEGORY: continue`); change it to also include `CHARACTER_CATEGORY` and add `category` to each emitted prediction. The **live** suggestion path (`generate_and_store_suggestions`) stays theme-only and untouched. Floor unchanged: per-tag `best_threshold` floored at `ML_MIN_CONFIDENCE`. Output → `results.jsonl` (now carrying `category`).
+
+   **Note:** `ml_backfill_infer.py` is the app-coupled CPU twin — it `from app.config import settings` and `from app.services...`, so it cannot run on skinny's app-free venv. It is NOT used for the GPU populate pass.
+
 2. **`ml_raw_ingest` (new)** — load the JSONL → upsert `ml_external_tags` (by name) + `ml_models` (by name) + `ml_raw_predictions`. Idempotent by PK; re-inferring an image overwrites its raw rows. **Performance:** at ~24.7M+ rows, insert via batched `executemany` / `INSERT ... ON DUPLICATE KEY UPDATE` (or per-image-batch `INSERT IGNORE`), **not** per-row ORM `add()`s. Dictionary upserts use `INSERT ... ON DUPLICATE KEY UPDATE` (or insert-then-select) so concurrent/ resumed runs don't race a naive get-or-create.
 
-**Model for this pass: `caformer_b36.dbv4-full`** (already downloaded; same 12,476-tag vocab as swinv2, so the dictionary is shared). Preprocessing is **already data-driven** — `AnimetimmModel` loads each model's `preprocess.json` via `animetimm_preprocess.load_test_pipeline` (caformer → 384px; swinv2 ships none and falls back to the default that mirrors its 448px spec), so caformer is a drop-in. **One code fix required:** add `caformer` to the animetimm dispatch in `ml_service.py` (today only `swinv2_*`/`convnext*` route to `_load_animetimm`, so a `caformer*` name raises `Unknown ML_MODEL_NAME`). Select the model via `ML_MODEL_NAME` or a new `--model` flag on `ml_backfill_infer.py`.
+**Model for this pass: `caformer_b36.dbv4-full`** (already downloaded; same 12,476-tag vocab as swinv2, so the dictionary is shared). Preprocessing is **already data-driven** — `ml_gpu_infer.py` loads each model's `preprocess.json` via `animetimm_preprocess.load_test_pipeline` (caformer → 384px; swinv2 falls back to the default 448px spec), so caformer is a drop-in with no extra code. Adding `caformer` to the app-side `ml_service.py` dispatch (currently only `swinv2_*`/`convnext*` route to `_load_animetimm`) is a nice-to-have for app-side use but is **not required** for the GPU populate (see Task 3 in the implementation plan).
 
 ### Re-map (cheap, repeatable, against the DB — the iteration loop)
 **`ml_remap` (new service + CLI)** — for a set of images (all, or a filter such as "missing character tags"): read raw preds from `ml_raw_predictions` (join the dictionary for name/category), compute the **implied internal suggestion set** via the existing resolution helpers — `resolve_external_tags` (`tag_mappings` → internal tag id), `resolve_tag_relationships` (alias/hierarchy), `filter_redundant_suggestions`, and the existing "exclude tags already applied to the image" rule — then run `ml_remap`'s **own reconciliation** (see "Re-map semantics") against `ml_tag_suggestions`. Run it after each `tag_mappings` change.
@@ -76,7 +79,7 @@ Character suggestions therefore require both: (a) character raw preds in the sto
 
 For each image, `ml_remap` computes the **implied set** `S` = internal tags produced by current mappings after `resolve_external_tags` → `resolve_tag_relationships` → `filter_redundant_suggestions`, excluding tags already applied to the image. Note `S` is **image-state-dependent** (the redundancy filter and applied-tag exclusion depend on the image's current tags), not mappings-only. Then it reconciles `ml_tag_suggestions` for that image:
 - **Add** a `pending` row for each tag in `S` that has **no** existing suggestion row (any status). Each added row stores the **resolved** confidence (raw × the mapping's weight, × any hierarchy/parent multiplier `resolve_tag_relationships` applies) — *not* the raw prediction value — and `model_version` = the model name from the `ml_models` join (both are NOT NULL on `ml_tag_suggestions`).
-- **Delete** existing `pending` rows whose tag is **not** in `S` (a removed/changed mapping — or a tag that became redundant/was applied — cleans up its stale pending).
+- **Delete** existing `pending` rows whose `model_version` matches the model being re-mapped **and** whose tag is **not** in `S` (a removed/changed mapping — or a tag that became redundant/was applied — cleans up its stale pending). The scope is intentionally limited to `model_version`: because `ml_tag_suggestions` has a UNIQUE(image_id, tag_id) constraint — one row per tag per image regardless of model — re-map scopes its reconcile to its own `model_version` so experimenting across models (e.g. a caformer re-map alongside the swinv2 live path) never deletes another source's pending rows. Settling on a single model is the expected end state; the scoping just makes the multi-model experimentation phase safe.
 - **Preserve** `approved` and `rejected` rows untouched, regardless of `S` — never clobber a human decision; a dismissed tag already has a row, so the "add" rule never re-suggests it.
 
 This is "regenerate the pending set, preserve reviewed," chosen over purely-additive so iterating on mappings doesn't accumulate stale pending suggestions.
@@ -104,12 +107,12 @@ Service-level pytest against the test DB (real DB, no mocks — house rule):
 - **Schema:** normalized rows + external-tag dictionary (queryable for eval), over a JSON-blob-per-image store.
 - **Re-map reconcile is its own code, not `store_predictions`:** the shared part is the prediction→implied-set computation (extracted into a helper); the write/reconcile differs. `ml_remap` preserves all reviewed rows and does **not** replicate the live approved→pending-on-removal reset.
 - **Model staleness:** `model_id` per row lets a re-map/re-infer decision detect a model change (re-infer) vs. a mappings-only change (re-map).
-- **Populate model:** `caformer_b36.dbv4-full` (caformer-only this pass). Preprocessing is already data-driven (`preprocess.json` via `animetimm_preprocess`); the only code fix is adding `caformer` to the `ml_service` dispatch. swinv2 A/B deferred.
+- **Populate model:** `caformer_b36.dbv4-full` (caformer-only this pass). Preprocessing is already data-driven (`preprocess.json` via `animetimm_preprocess`) in `ml_gpu_infer.py` — no dispatch change needed for the GPU populate. Adding `caformer` to the app-side `ml_service` dispatch is a nice-to-have (not blocking). swinv2 A/B deferred.
 
 ## Sequencing
 
 1. Migration + dictionaries.
-2. Modify `ml_backfill_infer.py` for general+character raw capture.
+2. Modify `ml_gpu_infer.py` (standalone GPU runner) for general+character raw capture.
 3. `ml_raw_ingest`.
 4. Re-infer on the GPU box → ingest into the tables.
 5. `ml_remap` service + CLI.
