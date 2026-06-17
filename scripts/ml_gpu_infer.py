@@ -37,12 +37,98 @@ import numpy as np
 import onnxruntime as ort  # type: ignore[import-untyped]
 from PIL import Image
 
-# --- animetimm preprocessing constants (copied from app/services/animetimm_model.py) ---
-PAD_SIZE = 512
-INPUT_SIZE = 448
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 GENERAL_CATEGORY = 0  # theme/general tags; v1 keeps only these
+
+
+# --- preprocessing: app-free copy of app/services/animetimm_preprocess.py ---
+# Driven by each model's preprocess.json so any animetimm model is a drop-in.
+# tests/integration/test_ml_gpu_infer.py guards this copy against the canonical.
+
+_FILTERS = {
+    "nearest": Image.Resampling.NEAREST,
+    "bilinear": Image.Resampling.BILINEAR,
+    "bicubic": Image.Resampling.BICUBIC,
+    "lanczos": Image.Resampling.LANCZOS,
+}
+
+DEFAULT_TEST_PIPELINE: list[dict[str, Any]] = [
+    {
+        "type": "pad_to_size",
+        "size": [512, 512],
+        "background_color": "white",
+        "interpolation": "bilinear",
+    },
+    {"type": "resize", "size": 448, "interpolation": "bicubic"},
+    {"type": "center_crop", "size": [448, 448]},
+    {"type": "maybe_to_tensor"},
+    {"type": "normalize", "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+]
+
+
+def load_test_pipeline(model_dir: Path) -> list[dict[str, Any]]:
+    path = model_dir / "preprocess.json"
+    if not path.exists():
+        return DEFAULT_TEST_PIPELINE
+    pipeline: list[dict[str, Any]] = json.loads(path.read_text())["test"]
+    return pipeline
+
+
+def _filter(name: str) -> Image.Resampling:
+    try:
+        return _FILTERS[name]
+    except KeyError:
+        raise ValueError(f"unsupported interpolation: {name}") from None
+
+
+def load_rgb(image_path: str) -> Image.Image:
+    img = Image.open(image_path).convert("RGBA")
+    background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+    background.paste(img, mask=img.split()[3])
+    return background.convert("RGB")
+
+
+def apply_test_pipeline(
+    img: Image.Image, pipeline: list[dict[str, Any]]
+) -> np.ndarray[Any, np.dtype[np.float32]]:
+    arr: np.ndarray[Any, np.dtype[np.float32]] | None = None
+    for op in pipeline:
+        kind = op["type"]
+        if kind == "pad_to_size":
+            target_w, target_h = op["size"]
+            bg = (255, 255, 255) if op.get("background_color") == "white" else (0, 0, 0)
+            scale = min(target_w / img.width, target_h / img.height)
+            new = (int(img.width * scale), int(img.height * scale))
+            img = img.resize(new, _filter(op.get("interpolation", "bilinear")))
+            canvas = Image.new("RGB", (target_w, target_h), bg)
+            canvas.paste(img, ((target_w - new[0]) // 2, (target_h - new[1]) // 2))
+            img = canvas
+        elif kind == "resize":
+            size = op["size"]
+            if isinstance(size, int):
+                scale = size / min(img.width, img.height)
+                new = (int(img.width * scale), int(img.height * scale))
+            else:
+                new = (size[1], size[0])
+            img = img.resize(new, _filter(op.get("interpolation", "bicubic")))
+        elif kind == "center_crop":
+            crop_h, crop_w = op["size"]
+            left = (img.width - crop_w) // 2
+            top = (img.height - crop_h) // 2
+            img = img.crop((left, top, left + crop_w, top + crop_h))
+        elif kind == "maybe_to_tensor":
+            arr = np.asarray(img, dtype=np.float32) / 255.0
+            arr = np.transpose(arr, (2, 0, 1))
+        elif kind == "normalize":
+            if arr is None:
+                raise ValueError("normalize op before maybe_to_tensor in pipeline")
+            mean = np.array(op["mean"], dtype=np.float32).reshape(3, 1, 1)
+            std = np.array(op["std"], dtype=np.float32).reshape(3, 1, 1)
+            arr = (arr - mean) / std
+        else:
+            raise ValueError(f"unsupported preprocess op: {kind}")
+    if arr is None:
+        raise ValueError("preprocess pipeline produced no tensor (missing maybe_to_tensor)")
+    return np.expand_dims(arr, axis=0)
 
 
 # --- provider selection (mirrors app/services/onnx_providers.py) ---
@@ -60,7 +146,9 @@ def select_providers() -> list[str]:
 # --- model + inference (copied from AnimetimmModel) ---
 
 
-def load_model(model_dir: Path) -> tuple[ort.InferenceSession, str, list[str], list[int], list[float]]:
+def load_model(
+    model_dir: Path,
+) -> tuple[ort.InferenceSession, str, list[str], list[int], list[float], list[dict[str, Any]]]:
     model_path = model_dir / "model.onnx"
     tags_path = model_dir / "selected_tags.csv"
     if not model_path.exists() or not tags_path.exists():
@@ -77,28 +165,8 @@ def load_model(model_dir: Path) -> tuple[ort.InferenceSession, str, list[str], l
             names.append(row["name"])
             categories.append(int(row["category"]))
             thresholds.append(float(row.get("best_threshold", 0.35)))
-    return session, input_name, names, categories, thresholds
-
-
-def preprocess(image_path: str) -> np.ndarray[Any, np.dtype[np.float32]]:
-    """Pad to 512 (bilinear) → resize 448 (bicubic) → ImageNet-normalize → NCHW."""
-    img = Image.open(image_path).convert("RGBA")
-    background = Image.new("RGBA", img.size, (255, 255, 255, 255))
-    background.paste(img, mask=img.split()[3] if len(img.split()) == 4 else None)
-    img = background.convert("RGB")
-
-    scale = PAD_SIZE / max(img.size)
-    new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
-    img = img.resize(new_size, Image.Resampling.BILINEAR)
-
-    padded = Image.new("RGB", (PAD_SIZE, PAD_SIZE), (255, 255, 255))
-    padded.paste(img, ((PAD_SIZE - img.size[0]) // 2, (PAD_SIZE - img.size[1]) // 2))
-
-    img = padded.resize((INPUT_SIZE, INPUT_SIZE), Image.Resampling.BICUBIC)
-    arr = np.asarray(img, dtype=np.float32) / 255.0
-    arr = (arr - IMAGENET_MEAN) / IMAGENET_STD
-    arr = np.transpose(arr, (2, 0, 1))
-    return np.expand_dims(arr, axis=0)
+    pipeline = load_test_pipeline(model_dir)
+    return session, input_name, names, categories, thresholds, pipeline
 
 
 def predict(
@@ -107,12 +175,13 @@ def predict(
     names: list[str],
     categories: list[int],
     thresholds: list[float],
+    pipeline: list[dict[str, Any]],
     image_path: str,
     min_confidence: float,
     model_version: str,
 ) -> list[dict[str, Any]]:
     """Theme-tag predictions for one image, shaped for ml_backfill_ingest."""
-    img_array = preprocess(image_path)
+    img_array = apply_test_pipeline(load_rgb(image_path), pipeline)
     # "prediction" output already has sigmoid applied.
     probabilities = session.run(["prediction"], {input_name: img_array})[0][0]
 
@@ -194,7 +263,7 @@ def run(args: argparse.Namespace) -> None:
         f"{len(done)} already done, {len(todo)} to process"
     )
 
-    session, input_name, names, categories, thresholds = load_model(model_dir)
+    session, input_name, names, categories, thresholds, pipeline = load_model(model_dir)
     print(f"providers: {session.get_providers()}")
 
     storage = Path(args.storage_path)
@@ -215,7 +284,7 @@ def run(args: argparse.Namespace) -> None:
             # not abort a million-image run — log it and move on.
             try:
                 predictions = predict(
-                    session, input_name, names, categories, thresholds,
+                    session, input_name, names, categories, thresholds, pipeline,
                     str(path), args.min_confidence, model_version,
                 )
             except Exception as exc:

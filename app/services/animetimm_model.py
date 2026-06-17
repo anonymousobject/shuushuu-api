@@ -12,20 +12,16 @@ from typing import Any
 
 import numpy as np
 import onnxruntime as ort  # type: ignore[import-untyped]
-from PIL import Image
 
 from app.core.logging import get_logger
+from app.services.animetimm_preprocess import (
+    apply_test_pipeline,
+    load_rgb,
+    load_test_pipeline,
+)
 from app.services.onnx_providers import select_providers
 
 logger = get_logger(__name__)
-
-# Animetimm model constants
-PAD_SIZE = 512  # Pad to this size first
-INPUT_SIZE = 448  # Final input size after resize and crop
-
-# ImageNet normalization values
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 # Category IDs (same as WD-Tagger)
 GENERAL_CATEGORY = 0
@@ -49,6 +45,7 @@ class AnimetimmModel:
         self.tag_categories: list[int] = []
         self.tag_thresholds: list[float] = []  # Per-tag best thresholds
         self.input_name: str = ""
+        self.preprocess_pipeline: list[dict[str, Any]] = []
 
     async def load(self) -> None:
         """Load model into memory (runs in thread pool)."""
@@ -78,6 +75,10 @@ class AnimetimmModel:
 
         # Load tag vocabulary with thresholds
         self._load_tags()
+
+        # Load this model's preprocessing pipeline (preprocess.json), so any
+        # animetimm model — at any resolution/normalization — is a drop-in.
+        self.preprocess_pipeline = load_test_pipeline(self.model_path.parent)
 
     def _load_tags(self) -> None:
         """Load tag names, categories, and per-tag thresholds from CSV."""
@@ -180,54 +181,8 @@ class AnimetimmModel:
         return results
 
     def _preprocess_image(self, image_path: str) -> np.ndarray[Any, np.dtype[np.float32]]:
-        """
-        Preprocess image for animetimm models.
-
-        Based on preprocess.json:
-        1. Pad to 512x512 with white background (bilinear)
-        2. Resize to 448 (bicubic with antialiasing)
-        3. Center crop to 448x448
-        4. Convert to tensor (0-1 range)
-        5. Normalize with ImageNet mean/std
-        6. Format: NCHW (batch, channels, height, width)
-        """
-        img = Image.open(image_path).convert("RGBA")
-
-        # Composite alpha onto white background
-        background = Image.new("RGBA", img.size, (255, 255, 255, 255))
-        background.paste(img, mask=img.split()[3] if len(img.split()) == 4 else None)
-        img = background.convert("RGB")
-
-        # Step 1: Pad to 512x512 with white background (maintaining aspect ratio)
-        # Calculate scale to fit within PAD_SIZE
-        scale = PAD_SIZE / max(img.size)
-        new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
-        img = img.resize(new_size, Image.Resampling.BILINEAR)
-
-        # Center on white canvas
-        padded = Image.new("RGB", (PAD_SIZE, PAD_SIZE), (255, 255, 255))
-        paste_x = (PAD_SIZE - img.size[0]) // 2
-        paste_y = (PAD_SIZE - img.size[1]) // 2
-        padded.paste(img, (paste_x, paste_y))
-
-        # Step 2: Resize to 448 (bicubic)
-        img = padded.resize((INPUT_SIZE, INPUT_SIZE), Image.Resampling.BICUBIC)
-
-        # Step 3: Center crop (already 448x448, so no-op)
-
-        # Step 4: Convert to numpy array and normalize to 0-1
-        img_array = np.asarray(img, dtype=np.float32) / 255.0
-
-        # Step 5: Apply ImageNet normalization
-        img_array = (img_array - IMAGENET_MEAN) / IMAGENET_STD
-
-        # Step 6: Convert HWC to CHW format
-        img_array = np.transpose(img_array, (2, 0, 1))
-
-        # Add batch dimension: (C, H, W) -> (1, C, H, W)
-        img_array = np.expand_dims(img_array, axis=0)
-
-        return img_array
+        """Preprocess an image using this model's preprocess.json pipeline."""
+        return apply_test_pipeline(load_rgb(image_path), self.preprocess_pipeline)
 
     async def cleanup(self) -> None:
         """Release resources."""

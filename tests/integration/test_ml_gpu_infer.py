@@ -34,20 +34,26 @@ _MODEL_DIR = Path(os.environ.get("ML_MODELS_PATH", "ml_models")) / "swinv2_base_
 
 
 @pytest.mark.unit
-def test_preprocess_matches_canonical(tmp_path):
-    """The copied preprocessing must be tensor-identical to AnimetimmModel."""
-    from app.services.animetimm_model import AnimetimmModel
+def test_standalone_preprocess_matches_canonical(tmp_path):
+    """The runner's app-free preprocessing copy must match the canonical app code."""
+    from app.services import animetimm_preprocess as canonical
+
+    # The default pipelines (constants) must not drift between copy and canonical.
+    assert ml_gpu_infer.DEFAULT_TEST_PIPELINE == canonical.DEFAULT_TEST_PIPELINE
 
     rng = np.random.default_rng(42)
     arr = rng.integers(0, 256, (300, 200, 3), dtype=np.uint8)
     img_path = tmp_path / "img.png"
     Image.fromarray(arr).save(img_path)
 
-    canonical = AnimetimmModel("unused", "unused")._preprocess_image(str(img_path))
-    mine = ml_gpu_infer.preprocess(str(img_path))
-
-    assert mine.shape == canonical.shape == (1, 3, 448, 448)
-    assert np.allclose(mine, canonical, atol=1e-6)
+    mine = ml_gpu_infer.apply_test_pipeline(
+        ml_gpu_infer.load_rgb(str(img_path)), ml_gpu_infer.DEFAULT_TEST_PIPELINE
+    )
+    want = canonical.apply_test_pipeline(
+        canonical.load_rgb(str(img_path)), canonical.DEFAULT_TEST_PIPELINE
+    )
+    assert mine.shape == want.shape == (1, 3, 448, 448)
+    assert np.allclose(mine, want, atol=1e-7)
 
 
 @pytest.mark.skipif(
