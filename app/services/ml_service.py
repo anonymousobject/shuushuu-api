@@ -163,6 +163,33 @@ class MLTagSuggestionService:
 
         return suggestions
 
+    async def generate_raw_predictions(
+        self,
+        image_path: str,
+        *,
+        include_categories: set[int],
+        min_confidence: float,
+    ) -> list[dict[str, Any]]:
+        """Raw predictions across the given categories, for the raw-prediction store.
+
+        Unlike generate_suggestions (general-only, mapped-shape), this returns the
+        model's external tags with their category, for any categories requested.
+        """
+        if not self.model:
+            raise RuntimeError("Models not loaded. Call load_models() first.")
+        preds = await self.model.predict(
+            image_path, min_confidence=min_confidence, include_categories=include_categories
+        )
+        return [
+            {
+                "external_tag": p["tag"],
+                "confidence": p["confidence"],
+                "category": p["category"],
+                "model_version": self._model_name,
+            }
+            for p in preds
+        ]
+
     @property
     def model_name(self) -> str:
         """Name of the loaded model."""
