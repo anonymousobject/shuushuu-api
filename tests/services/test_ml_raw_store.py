@@ -1,16 +1,19 @@
 """
 Tests for the ML raw store service.
 
-Exercises ``populate_external_tags(db, csv_path)`` against the real test
-database. Idempotency is verified by running the function twice on the same
-CSV and asserting the second call inserts nothing.
+Exercises ``populate_external_tags(db, csv_path)`` and
+``ingest_raw_predictions(db, records)`` against the real test database.
+Idempotency is verified by running each function twice and asserting the
+second call inserts nothing.
 """
 
 import pytest
 from sqlalchemy import select
 
-from app.models.ml_raw_prediction import MlExternalTags
-from app.services.ml_raw_store import populate_external_tags
+from app.models.image import Images
+from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
+from app.models.user import Users
+from app.services.ml_raw_store import ingest_raw_predictions, populate_external_tags
 
 
 async def test_populate_external_tags_idempotent(db_session, tmp_path):
@@ -21,3 +24,96 @@ async def test_populate_external_tags_idempotent(db_session, tmp_path):
     rows = (await db_session.execute(select(MlExternalTags))).scalars().all()
     assert {(r.name, r.category) for r in rows} == {("long_hair", 0), ("hatsune_miku", 4)}
     assert n1 == 2 and n2 == 0
+
+
+async def _make_user(db_session, suffix: str) -> Users:
+    user = Users(
+        username=f"rawstore_{suffix}",
+        email=f"rawstore_{suffix}@example.com",
+        password="hashed",
+        password_type="bcrypt",
+        salt="testsalt12345678",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
+async def _make_image(db_session, user: Users, suffix: str) -> Images:
+    image = Images(
+        filename=f"2024-01-01-{suffix}",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash=f"rawstore_hash_{suffix}",
+        filesize=1024,
+        width=800,
+        height=600,
+    )
+    db_session.add(image)
+    await db_session.flush()
+    return image
+
+
+async def test_ingest_raw_predictions(db_session, tmp_path):
+    # Seed image + external-tag dict.
+    csv = tmp_path / "selected_tags.csv"
+    csv.write_text("tag_id,name,category\n1,long_hair,0\n2,hatsune_miku,4\n")
+    await populate_external_tags(db_session, csv)
+
+    user = await _make_user(db_session, "ingest")
+    img = await _make_image(db_session, user, "ingest")
+    await db_session.commit()
+
+    records = [
+        {
+            "image_id": img.image_id,
+            "predictions": [
+                {
+                    "external_tag": "long_hair",
+                    "confidence": 0.9,
+                    "model_version": "caformer_b36.dbv4-full",
+                    "category": 0,
+                },
+                {
+                    "external_tag": "hatsune_miku",
+                    "confidence": 0.8,
+                    "model_version": "caformer_b36.dbv4-full",
+                    "category": 4,
+                },
+            ],
+        }
+    ]
+
+    created = await ingest_raw_predictions(db_session, records)
+    assert created == 2
+
+    # Idempotent: re-running inserts nothing.
+    again = await ingest_raw_predictions(db_session, records)
+    assert again == 0
+
+    # Verify rows exist in the DB.
+    rows = (await db_session.execute(select(MlRawPredictions))).scalars().all()
+    assert len(rows) == 2
+    assert {r.confidence for r in rows} == {0.9, 0.8}
+
+    # Unknown external_tag is skipped — must not error.
+    unknown_records = [
+        {
+            "image_id": img.image_id,
+            "predictions": [
+                {
+                    "external_tag": "no_such_tag_xyz",
+                    "confidence": 0.7,
+                    "model_version": "caformer_b36.dbv4-full",
+                    "category": 0,
+                },
+            ],
+        }
+    ]
+    skipped = await ingest_raw_predictions(db_session, unknown_records)
+    assert skipped == 0
+
+    # Verify the model was upserted.
+    models = (await db_session.execute(select(MlModels))).scalars().all()
+    assert len(models) == 1
+    assert models[0].name == "caformer_b36.dbv4-full"
