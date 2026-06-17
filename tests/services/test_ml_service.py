@@ -80,6 +80,19 @@ class TestMLTagSuggestionServiceLoadModels:
         with pytest.raises(ValueError, match="totally_unknown_model_xyz"):
             await service.load_models()
 
+    async def test_caformer_name_routes_to_animetimm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """caformer* model names route to the animetimm loader, not ValueError."""
+        monkeypatch.setattr("app.services.ml_service.settings.ML_MODELS_PATH", str(tmp_path))
+        monkeypatch.setattr(
+            "app.services.ml_service.settings.ML_MODEL_NAME", "caformer_b36.dbv4-full"
+        )
+
+        service = MLTagSuggestionService()
+        with pytest.raises(FileNotFoundError, match=str(tmp_path)):
+            await service.load_models()
+
 
 @pytest.mark.unit
 class TestMLTagSuggestionServiceGenerateSuggestions:

@@ -41,6 +41,7 @@ class MLTagSuggestionService:
     Supports multiple tagging models configured via ML_MODEL_NAME setting:
     - wd-swinv2-tagger-v3: WD-Tagger v3
     - swinv2_base_window8_256.dbv4-full: Animetimm SwinV2 (newer, more tags)
+    - caformer_b36.dbv4-full: Animetimm CAFormer
 
     Missing model files raise FileNotFoundError; unknown model names raise ValueError.
     """
@@ -69,13 +70,17 @@ class MLTagSuggestionService:
 
         if model_name == "wd-swinv2-tagger-v3":
             await self._load_wd_tagger(model_dir)
-        elif model_name.startswith("swinv2_") or model_name.startswith("convnext"):
+        elif (
+            model_name.startswith("swinv2_")
+            or model_name.startswith("convnext")
+            or model_name.startswith("caformer")
+        ):
             await self._load_animetimm(model_dir, model_name)
         else:
             raise ValueError(
                 f"Unknown ML_MODEL_NAME: {model_name!r}. "
                 "Supported values: 'wd-swinv2-tagger-v3' or an animetimm model name "
-                "starting with 'swinv2_' or 'convnext'."
+                "starting with 'swinv2_', 'convnext', or 'caformer'."
             )
 
     async def _load_wd_tagger(self, model_dir: Path) -> None:
