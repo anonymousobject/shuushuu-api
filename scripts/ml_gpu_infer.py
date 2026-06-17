@@ -200,6 +200,7 @@ def run(args: argparse.Namespace) -> None:
     storage = Path(args.storage_path)
     processed = 0
     missing = 0
+    failed = 0
     with open(out, "a") as out_fh:
         for rec in todo:
             path = storage / variant_relpath(args.variant, rec["filename"], rec["ext"])
@@ -210,17 +211,25 @@ def run(args: argparse.Namespace) -> None:
                     continue
                 path = fallback
 
-            predictions = predict(
-                session, input_name, names, categories, thresholds,
-                str(path), args.min_confidence, model_version,
-            )
+            # A corrupt/unreadable image (or any per-image inference error) must
+            # not abort a million-image run — log it and move on.
+            try:
+                predictions = predict(
+                    session, input_name, names, categories, thresholds,
+                    str(path), args.min_confidence, model_version,
+                )
+            except Exception as exc:
+                failed += 1
+                print(f"  warning: skipping image {rec['image_id']} ({path}): "
+                      f"{type(exc).__name__}: {exc}")
+                continue
             out_fh.write(json.dumps({"image_id": rec["image_id"], "predictions": predictions}) + "\n")
             out_fh.flush()
             processed += 1
             if processed % 500 == 0:
                 print(f"  {processed}/{len(todo)} processed...")
 
-    print(f"done: {processed} processed, {missing} skipped (no image file) → {out}")
+    print(f"done: {processed} processed, {missing} missing-file, {failed} unreadable → {out}")
 
     # onnxruntime's ROCm runtime can corrupt the heap in its teardown
     # destructors at interpreter exit ("corrupted size vs prev_size in

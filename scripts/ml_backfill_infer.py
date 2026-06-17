@@ -57,6 +57,7 @@ async def run(args: argparse.Namespace) -> None:
 
     processed = 0
     missing = 0
+    failed = 0
     try:
         for rec in todo:
             path = storage / variant_relpath(args.variant, rec["filename"], rec["ext"])
@@ -68,9 +69,16 @@ async def run(args: argparse.Namespace) -> None:
                     continue
                 path = fallback
 
-            predictions = await service.generate_suggestions(
-                str(path), min_confidence=settings.ML_MIN_CONFIDENCE
-            )
+            # A corrupt/unreadable image must not abort the whole run.
+            try:
+                predictions = await service.generate_suggestions(
+                    str(path), min_confidence=settings.ML_MIN_CONFIDENCE
+                )
+            except Exception as exc:
+                failed += 1
+                print(f"  warning: skipping image {rec['image_id']} ({path}): "
+                      f"{type(exc).__name__}: {exc}")
+                continue
             write_results(out, [{"image_id": rec["image_id"], "predictions": predictions}])
             processed += 1
             if processed % 500 == 0:
@@ -78,7 +86,7 @@ async def run(args: argparse.Namespace) -> None:
     finally:
         await service.cleanup()
 
-    print(f"done: {processed} processed, {missing} skipped (no image file) → {out}")
+    print(f"done: {processed} processed, {missing} missing-file, {failed} unreadable → {out}")
 
 
 def main() -> None:

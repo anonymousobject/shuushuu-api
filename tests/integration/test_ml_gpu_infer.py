@@ -101,3 +101,46 @@ async def test_predict_matches_canonical(tmp_path):
     assert set(standalone) == set(canonical)
     for tag, conf in canonical.items():
         assert abs(standalone[tag] - conf) < 1e-4
+
+
+@pytest.mark.skipif(
+    not (_MODEL_DIR / "model.onnx").exists(),
+    reason="animetimm model not present; set ML_MODELS_PATH to the dir containing it",
+)
+def test_corrupt_image_is_skipped_not_fatal(tmp_path):
+    """A corrupt/unreadable image is logged and skipped; the run still completes.
+
+    Regression for the backfill crash on a corrupt fullsize .png — one bad file
+    must not abort a million-image run.
+    """
+    storage = tmp_path / "storage"
+    (storage / "fullsize").mkdir(parents=True)
+    rng = np.random.default_rng(11)
+    Image.fromarray(rng.integers(0, 256, (200, 200, 3), dtype=np.uint8)).save(
+        storage / "fullsize" / "good.png"
+    )
+    # Not a valid image — PIL raises UnidentifiedImageError on open.
+    (storage / "fullsize" / "bad.png").write_bytes(b"this is not a PNG")
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text(
+        json.dumps({"image_id": 1, "filename": "bad", "ext": "png"}) + "\n"
+        + json.dumps({"image_id": 2, "filename": "good", "ext": "png"}) + "\n"
+    )
+    out = tmp_path / "r.jsonl"
+
+    proc = subprocess.run(
+        [
+            sys.executable, str(_RUNNER),
+            "--manifest", str(manifest), "--out", str(out),
+            "--model-dir", str(_MODEL_DIR), "--storage-path", str(storage),
+            "--variant", "fullsize", "--min-confidence", "0.35",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    ids = {json.loads(line)["image_id"] for line in out.read_text().splitlines() if line.strip()}
+    assert ids == {2}  # good image processed, corrupt one skipped
+    assert "skipping image 1" in proc.stdout
