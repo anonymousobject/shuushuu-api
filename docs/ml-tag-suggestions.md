@@ -170,6 +170,11 @@ into three stages so GPU inference can run on another host **without database
 access**. The reusable logic lives in `app/services/ml_backfill.py`; the stages
 are thin CLIs under `scripts/`.
 
+To seed a **production** database from an already-completed run (e.g. a dev box
+that is a prod-backup restore — the results file is keyed by `image_id` and
+stores external tags, so it ports across DBs), see the
+[production seeding runbook](ml-tag-suggestions-prod-seeding.md).
+
 CPU throughput is on the order of ~1.7 images/sec on a 10-core box (≈ a week for
 ~1.1M images), so a GPU host is worth it. Inference auto-selects CUDA/ROCm when
 the installed onnxruntime build exposes one (`app/services/onnx_providers.py`) —
