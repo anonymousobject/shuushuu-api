@@ -40,6 +40,7 @@ from app.models.misc import (
 )
 
 # ML tag suggestion models
+from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
 from app.models.ml_tag_suggestion import MlTagSuggestions
 
 # Content models
@@ -81,6 +82,9 @@ __all__ = [
     "ImageStatusHistory",
     "ReviewVotes",
     "AdminActions",
+    "MlExternalTags",
+    "MlModels",
+    "MlRawPredictions",
     "MlTagSuggestions",
     # User-related models
     "Bans",
