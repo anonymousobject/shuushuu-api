@@ -11,12 +11,13 @@ It is a deliberate, self-contained twin of `ml_backfill_infer.py`: it reads the
 same manifest, writes the same results JSONL that `ml_backfill_ingest.py`
 consumes, and is sharded + resumable the same way. The preprocessing and
 selection logic below are copied from `app/services/animetimm_model.py` and the
-themes-only filter in `app/services/ml_service.py`; they MUST stay in sync.
+category-selection logic in `app/services/ml_service.py`; they MUST stay in sync.
 `tests/integration/test_ml_gpu_infer.py` guards against drift by asserting this
 runner's output matches the canonical AnimetimmModel on the real model.
 
-Targets the animetimm swinv2 model (ImageNet preprocessing, "prediction"
-output). v1 keeps general (theme) tags only.
+Targets animetimm models (preprocessing is driven by each model's
+preprocess.json — see below). By default emits general (theme) and character
+tags; pass --no-include-character to restrict to general only.
 
 Usage:
     python ml_gpu_infer.py --manifest m.jsonl --out results.jsonl \
@@ -37,7 +38,8 @@ import numpy as np
 import onnxruntime as ort  # type: ignore[import-untyped]
 from PIL import Image
 
-GENERAL_CATEGORY = 0  # theme/general tags; v1 keeps only these
+GENERAL_CATEGORY = 0  # theme/general tags
+CHARACTER_CATEGORY = 4  # character tags
 
 
 # --- preprocessing: app-free copy of app/services/animetimm_preprocess.py ---
@@ -179,8 +181,16 @@ def predict(
     image_path: str,
     min_confidence: float,
     model_version: str,
+    allowed_categories: set[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Theme-tag predictions for one image, shaped for ml_backfill_ingest."""
+    """Tag predictions for one image, shaped for ml_backfill_ingest.
+
+    allowed_categories controls which tag categories are emitted.  Defaults to
+    {GENERAL_CATEGORY} when not supplied (general/theme tags only).
+    """
+    if allowed_categories is None:
+        allowed_categories = {GENERAL_CATEGORY}
+
     img_array = apply_test_pipeline(load_rgb(image_path), pipeline)
     # "prediction" output already has sigmoid applied.
     probabilities = session.run(["prediction"], {input_name: img_array})[0][0]
@@ -189,12 +199,17 @@ def predict(
     for name, category, prob, tag_threshold in zip(
         names, categories, probabilities, thresholds, strict=True
     ):
-        if category != GENERAL_CATEGORY:  # v1: theme tags only
+        if category not in allowed_categories:
             continue
         if prob < max(tag_threshold, min_confidence):
             continue
         results.append(
-            {"external_tag": name, "confidence": float(prob), "model_version": model_version}
+            {
+                "external_tag": name,
+                "confidence": float(prob),
+                "model_version": model_version,
+                "category": category,
+            }
         )
     results.sort(key=lambda r: r["confidence"], reverse=True)
     return results
@@ -266,6 +281,10 @@ def run(args: argparse.Namespace) -> None:
     session, input_name, names, categories, thresholds, pipeline = load_model(model_dir)
     print(f"providers: {session.get_providers()}")
 
+    allowed_categories: set[int] = {GENERAL_CATEGORY}
+    if args.include_character:
+        allowed_categories.add(CHARACTER_CATEGORY)
+
     storage = Path(args.storage_path)
     processed = 0
     missing = 0
@@ -286,6 +305,7 @@ def run(args: argparse.Namespace) -> None:
                 predictions = predict(
                     session, input_name, names, categories, thresholds, pipeline,
                     str(path), args.min_confidence, model_version,
+                    allowed_categories=allowed_categories,
                 )
             except Exception as exc:
                 failed += 1
@@ -323,6 +343,12 @@ def main() -> None:
     parser.add_argument("--min-confidence", type=float, default=0.35)
     parser.add_argument("--shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument(
+        "--include-character",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Emit character tags (category 4) in addition to general tags (default: on).",
+    )
     run(parser.parse_args())
 
 

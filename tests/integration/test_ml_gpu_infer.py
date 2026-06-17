@@ -84,6 +84,7 @@ async def test_predict_matches_canonical(tmp_path):
             "--storage-path", str(storage),
             "--variant", "fullsize",
             "--min-confidence", "0.35",
+            "--no-include-character",  # compare general-only against canonical
         ],
         check=True,
         capture_output=True,
@@ -150,3 +151,128 @@ def test_corrupt_image_is_skipped_not_fatal(tmp_path):
     ids = {json.loads(line)["image_id"] for line in out.read_text().splitlines() if line.strip()}
     assert ids == {2}  # good image processed, corrupt one skipped
     assert "skipping image 1" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Synthetic predict() tests — no real model or GPU required
+# ---------------------------------------------------------------------------
+
+class _FakeSession:
+    """Minimal ONNX session stub for predict() unit tests."""
+
+    def __init__(self, probabilities: list[float]) -> None:
+        # probabilities must align with the tag lists passed to predict()
+        self._probs = np.array(probabilities, dtype=np.float32)
+
+    def run(self, outputs, feed):  # noqa: ANN001,ANN201
+        # predict() does session.run(["prediction"], {...})[0][0]
+        return [np.array([self._probs])]
+
+
+def _make_fake_pipeline_patches(monkeypatch):
+    """Patch load_rgb and apply_test_pipeline so predict() needs no real image."""
+    dummy_img = object()
+    monkeypatch.setattr(ml_gpu_infer, "load_rgb", lambda path: dummy_img)
+    monkeypatch.setattr(
+        ml_gpu_infer,
+        "apply_test_pipeline",
+        lambda img, pipeline: np.zeros((1, 3, 448, 448), dtype=np.float32),
+    )
+
+
+# Tags layout used by the synthetic tests:
+#   index 0: general tag "sky",       category=0 (GENERAL), threshold=0.35, prob=0.9
+#   index 1: rating tag "safe",       category=9 (rating),  threshold=0.35, prob=0.8
+#   index 2: character tag "reimu",   category=4 (CHARACTER), threshold=0.35, prob=0.7
+#   index 3: general tag "outdoors",  category=0 (GENERAL), threshold=0.35, prob=0.5
+
+_NAMES      = ["sky",  "safe", "reimu",   "outdoors"]
+_CATEGORIES = [0,      9,      4,         0         ]
+_THRESHOLDS = [0.35,   0.35,   0.35,      0.35      ]
+_PROBS      = [0.9,    0.8,    0.7,       0.5       ]
+
+DUMMY_PIPELINE: list = []
+
+
+@pytest.mark.unit
+def test_predict_include_character_emits_general_and_character(monkeypatch, tmp_path):
+    """With allowed_categories={GENERAL, CHARACTER}, predictions for both categories appear."""
+    _make_fake_pipeline_patches(monkeypatch)
+
+    session = _FakeSession(_PROBS)
+    results = ml_gpu_infer.predict(
+        session=session,
+        input_name="input",
+        names=_NAMES,
+        categories=_CATEGORIES,
+        thresholds=_THRESHOLDS,
+        pipeline=DUMMY_PIPELINE,
+        image_path=str(tmp_path / "fake.png"),
+        min_confidence=0.35,
+        model_version="test-model",
+        allowed_categories={ml_gpu_infer.GENERAL_CATEGORY, ml_gpu_infer.CHARACTER_CATEGORY},
+    )
+
+    emitted_tags = {r["external_tag"] for r in results}
+    emitted_categories = {r["category"] for r in results}
+
+    # General tags present
+    assert "sky" in emitted_tags
+    assert "outdoors" in emitted_tags
+    # Character tag present
+    assert "reimu" in emitted_tags
+    # Rating tag (category 9) not present
+    assert "safe" not in emitted_tags
+
+    assert ml_gpu_infer.GENERAL_CATEGORY in emitted_categories
+    assert ml_gpu_infer.CHARACTER_CATEGORY in emitted_categories
+
+    # Each result carries a category key
+    for r in results:
+        assert "category" in r
+
+
+@pytest.mark.unit
+def test_predict_no_include_character_emits_general_only(monkeypatch, tmp_path):
+    """With allowed_categories={GENERAL} only, character predictions are suppressed."""
+    _make_fake_pipeline_patches(monkeypatch)
+
+    session = _FakeSession(_PROBS)
+    results = ml_gpu_infer.predict(
+        session=session,
+        input_name="input",
+        names=_NAMES,
+        categories=_CATEGORIES,
+        thresholds=_THRESHOLDS,
+        pipeline=DUMMY_PIPELINE,
+        image_path=str(tmp_path / "fake.png"),
+        min_confidence=0.35,
+        model_version="test-model",
+        allowed_categories={ml_gpu_infer.GENERAL_CATEGORY},
+    )
+
+    emitted_tags = {r["external_tag"] for r in results}
+    emitted_categories = {r["category"] for r in results}
+
+    assert "sky" in emitted_tags
+    assert "outdoors" in emitted_tags
+    assert "reimu" not in emitted_tags   # character tag suppressed
+    assert "safe" not in emitted_tags    # rating tag suppressed
+
+    assert emitted_categories == {ml_gpu_infer.GENERAL_CATEGORY}
+
+    for r in results:
+        assert "category" in r
+
+
+@pytest.mark.unit
+def test_help_shows_include_character_flag():
+    """--help output must advertise --include-character / --no-include-character."""
+    result = subprocess.run(
+        [sys.executable, str(_RUNNER), "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--include-character" in result.stdout
+    assert "--no-include-character" in result.stdout
