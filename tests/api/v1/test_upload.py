@@ -242,7 +242,7 @@ class TestUploadMLTagSuggestions:
         assert len(ml_calls) == 1, f"Expected 1 ml job call, got {len(ml_calls)}: {enqueue_mock.call_args_list}"
         image_id = response.json()["image"]["image_id"]
         assert ml_calls[0].kwargs.get("image_id") == image_id
-        assert ml_calls[0].kwargs.get("_defer_by") == 30.0
+        assert ml_calls[0].kwargs.get("_defer_by") is None  # runs immediately, no defer
 
     @pytest.mark.asyncio
     async def test_upload_does_not_enqueue_ml_job_when_flag_disabled(

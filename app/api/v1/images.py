@@ -2761,13 +2761,13 @@ async def upload_image(
             )
 
         if settings.ML_TAG_SUGGESTIONS_ENABLED:
-            # Defer so thumbnail/variant processing finishes first; failure
-            # must never fail the upload itself.
+            # Run as soon as the worker is free — inference reads the fullsize,
+            # which is already saved above, so no defer is needed. Failure must
+            # never fail the upload itself.
             try:
                 await enqueue_job(
                     "generate_ml_tag_suggestions",
                     image_id=image_id,
-                    _defer_by=30.0,
                 )
                 logger.debug("ml_tag_suggestion_job_enqueued", image_id=image_id)
             except Exception as e:
