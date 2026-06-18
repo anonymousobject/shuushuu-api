@@ -6,6 +6,20 @@ Usage:
     uv run python scripts/import_tag_mappings.py [csv_file]
 
     Default CSV: data/tag_mappings.csv
+
+CSV columns (header row required):
+    danbooru_tag       external (Danbooru) tag name — the mapping's unique key
+    internal_tag_title human-readable internal tag title (resolved case-insensitively)
+    internal_tag_id    OPTIONAL authoritative internal tag id; when set it wins over
+                       the title (and resolves titles shared by multiple tags). If a
+                       title is shared across tags (e.g. a theme AND a character named
+                       "snake") and no id is given, the row is reported as ambiguous
+                       and skipped rather than guessed.
+    action             "map" (default) or "ignore" (store NULL = known-but-ignored)
+
+This is an UPSERT keyed by danbooru_tag: new rows are created, rows whose target
+changed are updated in place, matching rows are left unchanged. Rows removed from
+the CSV are NOT deleted from the DB.
 """
 
 import asyncio
@@ -51,61 +65,103 @@ async def import_mappings(db: AsyncSession, csv_path: Path) -> dict[str, object]
         reader = csv.DictReader(f)
         rows = list(reader)
 
+    # Validate any explicit internal_tag_id values up front (single query). An
+    # explicit id is authoritative and bypasses the title lookup, so it resolves
+    # otherwise-ambiguous titles. Allow any tag id (not just MAPPABLE_TAG_TYPES) —
+    # if a curator names an id explicitly, trust it.
+    explicit_ids: set[int] = set()
+    for row in rows:
+        raw_id = (row.get("internal_tag_id") or "").strip()
+        if raw_id:
+            try:
+                explicit_ids.add(int(raw_id))
+            except ValueError:
+                continue  # malformed values are reported per-row below
+    id_to_title: dict[int, str | None] = {}
+    if explicit_ids:
+        res = await db.execute(
+            select(Tags.tag_id, Tags.title).where(Tags.tag_id.in_(explicit_ids))  # type: ignore[attr-defined]
+        )
+        id_to_title = {tag_id: title for tag_id, title in res.all()}
+
     created = 0
-    skipped = 0
+    updated = 0
+    unchanged = 0
     errors: list[str] = []
+    warnings: list[str] = []
 
     for row in rows:
         danbooru_tag = row["danbooru_tag"].strip()
-        internal_title = row.get("internal_tag_title", "").strip()
-        action = row.get("action", "map").strip()
+        internal_title = (row.get("internal_tag_title") or "").strip()
+        raw_id = (row.get("internal_tag_id") or "").strip()
+        action = (row.get("action") or "map").strip()
 
-        # Check if mapping already exists
-        existing_result = await db.execute(
-            select(TagMappings).where(TagMappings.external_tag == danbooru_tag)  # type: ignore[arg-type]
-        )
-        existing = existing_result.scalar_one_or_none()
-        if existing:
-            skipped += 1
-            continue
-
-        # Determine internal_tag_id
-        internal_tag_id: int | None = None
-        if action == "map" and internal_title:
+        # Resolve the target internal_tag_id for this row.
+        target_id: int | None = None
+        if action == "ignore":
+            target_id = None  # NULL internal_tag_id means "known but ignored"
+        elif raw_id:
+            # Explicit id wins: unambiguous, authoritative.
+            try:
+                tid = int(raw_id)
+            except ValueError:
+                errors.append(f"Invalid internal_tag_id {raw_id!r} for {danbooru_tag}")
+                continue
+            if tid not in id_to_title:
+                errors.append(f"internal_tag_id {tid} not found for {danbooru_tag}")
+                continue
+            actual_title = id_to_title[tid]
+            if internal_title and (actual_title or "").lower() != internal_title.lower():
+                warnings.append(
+                    f"{danbooru_tag}: internal_tag_id {tid} is {actual_title!r} but CSV "
+                    f"title is {internal_title!r} (using id)"
+                )
+            target_id = tid
+        elif action == "map" and internal_title:
             key = internal_title.lower()
             if key in ambiguous_titles:
                 errors.append(
-                    f"Ambiguous internal title '{internal_title}' "
-                    f"(multiple tags share it) for {danbooru_tag}"
+                    f"Ambiguous internal title {internal_title!r} for {danbooru_tag} "
+                    "(set internal_tag_id to disambiguate)"
                 )
                 continue
-            internal_tag_id = internal_tags.get(key)
-            if internal_tag_id is None:
-                errors.append(
-                    f"Internal tag not found: '{internal_title}' for {danbooru_tag}"
-                )
+            target_id = internal_tags.get(key)
+            if target_id is None:
+                errors.append(f"Internal tag not found: {internal_title!r} for {danbooru_tag}")
                 continue
-        elif action == "ignore":
-            # NULL internal_tag_id means "known but ignored"
-            internal_tag_id = None
         else:
-            continue  # Skip unknown actions
+            continue  # unknown action / nothing to map
 
-        # Create mapping
-        mapping = TagMappings(
-            external_tag=danbooru_tag,
-            internal_tag_id=internal_tag_id,
-            confidence=1.0,
-        )
-        db.add(mapping)
-        created += 1
+        # Upsert by external_tag (insert new, update changed target, else unchanged).
+        existing = (
+            await db.execute(
+                select(TagMappings).where(TagMappings.external_tag == danbooru_tag)  # type: ignore[arg-type]
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if existing.internal_tag_id != target_id:
+                existing.internal_tag_id = target_id
+                updated += 1
+            else:
+                unchanged += 1
+        else:
+            db.add(
+                TagMappings(
+                    external_tag=danbooru_tag,
+                    internal_tag_id=target_id,
+                    confidence=1.0,
+                )
+            )
+            created += 1
 
     await db.commit()
 
     return {
         "created": created,
-        "skipped": skipped,
+        "updated": updated,
+        "unchanged": unchanged,
         "errors": errors,
+        "warnings": warnings,
         "internal_tags_loaded": len(internal_tags),
     }
 
@@ -124,11 +180,21 @@ async def main() -> None:
 
     print(f"Loaded {summary['internal_tags_loaded']} mappable internal tags")
     print("\nResults:")
-    print(f"  Created: {summary['created']}")
-    print(f"  Skipped (already exist): {summary['skipped']}")
+    print(f"  Created:   {summary['created']}")
+    print(f"  Updated:   {summary['updated']}")
+    print(f"  Unchanged: {summary['unchanged']}")
+    warnings = summary["warnings"]
     errors = summary["errors"]
-    assert isinstance(errors, list)
-    print(f"  Errors: {len(errors)}")
+    assert isinstance(warnings, list) and isinstance(errors, list)
+    print(f"  Warnings:  {len(warnings)}")
+    print(f"  Errors:    {len(errors)}")
+
+    if warnings:
+        print("\nWarnings:")
+        for warn in warnings[:20]:
+            print(f"  {warn}")
+        if len(warnings) > 20:
+            print(f"  ... and {len(warnings) - 20} more")
 
     if errors:
         print("\nErrors:")
