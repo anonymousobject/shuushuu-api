@@ -66,6 +66,7 @@ dev = [
     "moto[s3,server]>=5.0.0",  # Mock S3 for R2 adapter tests
     "types-aioboto3>=13.0.0",  # Type stubs
     "pytest-xdist>=3.8.0",
+    "rapidfuzz>=3.14.5",
 ]
 
 [build-system]
