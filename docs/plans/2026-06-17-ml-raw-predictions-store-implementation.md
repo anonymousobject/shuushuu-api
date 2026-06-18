@@ -413,7 +413,7 @@ async def test_populate_external_tags_idempotent(db_session, tmp_path):
     assert n1 == 2 and n2 == 0
 ```
 
-- [ ] **Step 2: Run — fails. Step 3: Implement** `populate_external_tags` (read CSV `name`,`category`; insert names not already present; return count inserted). Use a select of existing names + `db.add_all` for missing; `await db.commit()`. **Important:** the real animetimm `selected_tags.csv` has the header `name,category,best_threshold` — there is **no `tag_id` column**. Read columns by name (`name` and `category`), not by position, and do not depend on a `tag_id` column. (The synthetic test CSV above uses `tag_id,name,category` for convenience — that is fine for the test, but the implementation must not require `tag_id`.)
+- [ ] **Step 2: Run — fails. Step 3: Implement** `populate_external_tags` (read CSV `name`,`category`; insert names not already present; return count inserted). Use a select of existing names + `db.add_all` for missing; `await db.commit()`. **Important:** the real animetimm `selected_tags.csv` column set varies by model (the caformer file's header begins `tag_id,name,category,count,...`), so do NOT depend on a fixed column layout. Read columns BY NAME (`name` and `category`) via `csv.DictReader`, not by position, and do not depend on any particular extra column being present or absent. (The synthetic test CSV uses `tag_id,name,category` for convenience; the implementation must work regardless of which extra columns the real file carries.)
 
 - [ ] **Step 4: Run — passes. Step 5: Commit** (`feat(ml): populate ml_external_tags dictionary from selected_tags.csv`).
 
@@ -622,10 +622,15 @@ This is the order to actually use the feature once Chunks 1–4 are merged. Not 
 
 - [ ] **Migrate:** `uv run alembic upgrade head` (creates the three tables).
 - [ ] **Infer on skinny (caformer, general+character):**
-  `python scripts/ml_gpu_infer.py --manifest <manifest.jsonl> --model caformer_b36.dbv4-full --include-character --out caformer_results.jsonl` (shard as needed; resumable). Use the standalone `ml_gpu_infer.py` — it runs in the app-free onnxruntime-rocm venv on skinny. `ml_backfill_infer.py` is app-coupled and cannot run there.
+  ```
+  python scripts/ml_gpu_infer.py --manifest <manifest.jsonl> --out caformer_results.jsonl \
+      --model-dir <ML_MODELS_PATH>/caformer_b36.dbv4-full \
+      --storage-path <image-store-root> --variant thumbs --include-character
+  ```
+  (shard via `--shards`/`--shard-index` as needed; resumable). Use the standalone `ml_gpu_infer.py` — it runs in the app-free onnxruntime-rocm venv on skinny. `ml_backfill_infer.py` is app-coupled and cannot run there. NOTE: there is no `--model` flag here; `--model-dir` points at the dir holding `model.onnx`+`selected_tags.csv`, and `--storage-path` is required. The stored `model_version` label defaults to the model-dir name (`caformer_b36.dbv4-full`), so it matches the `--model` you pass to ingest/remap below; override with `--model-name` if needed.
 - [ ] **Ingest raw preds (next to the DB):**
   `uv run python scripts/ml_raw_ingest.py caformer_results.jsonl --model caformer_b36.dbv4-full`
-  (populates `ml_external_tags` from the model's `selected_tags.csv`, seeds `ml_models`, bulk-loads `ml_raw_predictions`).
+  (populates `ml_external_tags` from the model's `selected_tags.csv`, seeds `ml_models`, bulk-loads `ml_raw_predictions`). NOTE: ingest is `INSERT IGNORE` keyed on `(image_id, model_id, external_tag_id)`, so re-ingesting an image already stored under the same model is a no-op — it will NOT refresh confidences. To refresh predictions for an unchanged model version, delete that image's `ml_raw_predictions` rows for the model first (or use a new model name).
 - [ ] **Add character mappings:** insert Danbooru-character → internal-character-tag rows into `tag_mappings` (the internal tag's `type` must be the character type so the frontend renders them as character — the panel already keys off `tag.type`).
 - [ ] **Re-map:** `uv run python scripts/ml_remap.py --model caformer_b36.dbv4-full` → character (and any newly-mapped theme) suggestions appear as `pending`.
 - [ ] **Verify:** spot-check an image via `GET /api/v1/images/{id}/ml-tag-suggestions?status=pending`; iterate on `tag_mappings` + re-map (cheap, no re-inference).
