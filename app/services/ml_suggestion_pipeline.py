@@ -185,6 +185,73 @@ async def generate_and_store_suggestions(
     return await store_predictions(db, image_id, predictions)
 
 
+async def compute_implied_suggestions(
+    db: AsyncSession, image_id: int, predictions: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], set[int]]:
+    """Map raw external predictions to the internal suggestions implied by the
+    current state of the image.
+
+    Pipeline: resolve external tags -> resolve aliases/hierarchy -> filter
+    ancestors/substrings of applied tags -> exclude already-applied -> exclude
+    below ML_MIN_CONFIDENCE.
+
+    Queries TagLinks to determine which tags are currently applied to the image,
+    so the result is image-state-dependent (calling twice may differ for the same
+    predictions if the image's tags changed in between). Returns
+    ``(implied, applied)`` so the caller can reuse ``applied`` without a second
+    query (e.g. to reset approved suggestions whose tag was since removed).
+    """
+    # 1. Resolve external tags (Danbooru) to internal tag IDs.
+    mapped = await resolve_external_tags(db, predictions)
+
+    logger.info(
+        "ml_suggestion_pipeline_tags_mapped",
+        image_id=image_id,
+        original_count=len(predictions),
+        mapped_count=len(mapped),
+    )
+
+    # 2. Resolve tag relationships (aliases, hierarchies).
+    resolved = await resolve_tag_relationships(db, mapped)
+
+    logger.info(
+        "ml_suggestion_pipeline_tags_resolved",
+        image_id=image_id,
+        mapped_count=len(mapped),
+        resolved_count=len(resolved),
+    )
+
+    # 3. Get ALL existing tags on the image (for redundancy filtering).
+    applied = {
+        row[0]
+        for row in (
+            await db.execute(
+                select(TagLinks.tag_id).where(  # type: ignore[call-overload]
+                    TagLinks.image_id == image_id,
+                )
+            )
+        ).all()
+    }
+
+    logger.info(
+        "ml_suggestion_pipeline_existing_tags_found",
+        image_id=image_id,
+        existing_count=len(applied),
+    )
+
+    # 4. Filter out redundant suggestions (ancestors or substrings of existing tags).
+    filtered = await filter_redundant_suggestions(db, resolved, applied)
+
+    # 5. Drop tags already applied to the image and those below the confidence threshold.
+    implied = [
+        p
+        for p in filtered
+        if p["tag_id"] not in applied and p["confidence"] >= settings.ML_MIN_CONFIDENCE
+    ]
+
+    return implied, applied
+
+
 async def store_predictions(
     db: AsyncSession,
     image_id: int,
@@ -202,44 +269,7 @@ async def store_predictions(
     suggestions whose tag was since removed from the image reset to pending.
     Commits the session. Returns the number of new suggestions created.
     """
-    # 1. Resolve external tags (Danbooru) to internal tag IDs.
-    mapped_predictions = await resolve_external_tags(db, predictions)
-
-    logger.info(
-        "ml_suggestion_pipeline_tags_mapped",
-        image_id=image_id,
-        original_count=len(predictions),
-        mapped_count=len(mapped_predictions),
-    )
-
-    # 2. Resolve tag relationships (aliases, hierarchies).
-    resolved_predictions = await resolve_tag_relationships(db, mapped_predictions)
-
-    logger.info(
-        "ml_suggestion_pipeline_tags_resolved",
-        image_id=image_id,
-        mapped_count=len(mapped_predictions),
-        resolved_count=len(resolved_predictions),
-    )
-
-    # 3. Get ALL existing tags on the image (for redundancy filtering).
-    all_existing_links_result = await db.execute(
-        select(TagLinks.tag_id).where(  # type: ignore[call-overload]
-            TagLinks.image_id == image_id,
-        )
-    )
-    all_existing_tag_ids = {row[0] for row in all_existing_links_result.all()}
-
-    logger.info(
-        "ml_suggestion_pipeline_existing_tags_found",
-        image_id=image_id,
-        existing_count=len(all_existing_tag_ids),
-    )
-
-    # 4. Filter out redundant suggestions (ancestors or substrings of existing tags).
-    filtered_predictions = await filter_redundant_suggestions(
-        db, resolved_predictions, all_existing_tag_ids
-    )
+    implied, applied = await compute_implied_suggestions(db, image_id, predictions)
 
     # 5. Get existing suggestions for this image (to avoid duplicate key errors on regenerate).
     existing_suggestions_result = await db.execute(
@@ -260,7 +290,7 @@ async def store_predictions(
     # 6. Reset "approved" suggestions back to "pending" if their tag was removed.
     suggestions_reset = 0
     for suggestion in existing_suggestions:
-        if suggestion.status == "approved" and suggestion.tag_id not in all_existing_tag_ids:
+        if suggestion.status == "approved" and suggestion.tag_id not in applied:
             suggestion.status = "pending"
             suggestion.reviewed_at = None
             suggestion.reviewed_by_user_id = None
@@ -281,16 +311,9 @@ async def store_predictions(
     # 7. Create MlTagSuggestions records.
     suggestions_created = 0
 
-    for pred in filtered_predictions:
+    for pred in implied:
         tag_id = pred["tag_id"]
         confidence = pred["confidence"]
-
-        # Skip if tag is already applied to the image.
-        if tag_id in all_existing_tag_ids:
-            logger.debug(
-                "ml_suggestion_pipeline_skipping_existing_tag", image_id=image_id, tag_id=tag_id
-            )
-            continue
 
         # Skip if suggestion already exists for this tag (from previous generation).
         if tag_id in existing_suggestion_tag_ids:
@@ -298,16 +321,6 @@ async def store_predictions(
                 "ml_suggestion_pipeline_skipping_existing_suggestion",
                 image_id=image_id,
                 tag_id=tag_id,
-            )
-            continue
-
-        # Filter by confidence threshold (double-check; ML service already filters).
-        if confidence < settings.ML_MIN_CONFIDENCE:
-            logger.debug(
-                "ml_suggestion_pipeline_skipping_low_confidence",
-                image_id=image_id,
-                tag_id=tag_id,
-                confidence=confidence,
             )
             continue
 

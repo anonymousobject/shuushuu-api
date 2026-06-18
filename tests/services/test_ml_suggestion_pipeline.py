@@ -24,6 +24,7 @@ from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.services.ml_suggestion_pipeline import (
+    compute_implied_suggestions,
     generate_and_store_suggestions,
     store_predictions,
 )
@@ -564,3 +565,67 @@ async def test_filters_redundant_grandparent(db_session, tmp_path, monkeypatch):
 
     # Grandparent "color" is an ancestor of the existing "blonde hair" → redundant.
     assert created == 0
+
+
+async def test_compute_implied_suggestions(db_session, monkeypatch):
+    """compute_implied_suggestions returns (implied, applied) after map/resolve/filter.
+
+    Exercises:
+    - applied_tag_ids correctly reflects TagLinks on the image
+    - a tag already applied to the image is excluded from implied
+    - a tag below ML_MIN_CONFIDENCE is excluded from implied
+    - a tag that passes all filters is included in implied (with tag_id, confidence,
+      model_version)
+    """
+    monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.6)
+
+    tags = [
+        Tags(tag_id=500, title="long hair"),
+        Tags(tag_id=501, title="blush"),
+        Tags(tag_id=502, title="smile"),
+    ]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "implied")
+    image = Images(
+        filename="2024-01-01-implied",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash="hash_implied",
+        filesize=1024,
+        width=800,
+        height=600,
+    )
+    db_session.add(image)
+    await db_session.flush()
+
+    # tag 500 is already applied to the image
+    db_session.add(TagLinks(image_id=image.image_id, tag_id=500, user_id=user.user_id))
+    await db_session.commit()
+
+    # Three predictions:
+    #   tag 500 -> already applied, must be excluded
+    #   tag 501 -> confidence 0.55 < 0.6, must be excluded
+    #   tag 502 -> confidence 0.85 >= 0.6 and not applied, must be included
+    predictions = [
+        {"tag_id": 500, "confidence": 0.9, "model_version": "v3"},
+        {"tag_id": 501, "confidence": 0.55, "model_version": "v3"},
+        {"tag_id": 502, "confidence": 0.85, "model_version": "v3"},
+    ]
+
+    with (
+        # predictions already carry tag_id; _resolver_to_tag_ids is a passthrough here.
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(predictions)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        implied, applied = await compute_implied_suggestions(
+            db_session, image.image_id, predictions
+        )
+
+    assert applied == {500}
+    assert len(implied) == 1
+    kept = implied[0]
+    assert kept["tag_id"] == 502
+    assert kept["confidence"] == 0.85
+    assert kept["model_version"] == "v3"
