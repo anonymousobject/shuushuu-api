@@ -392,6 +392,69 @@ async def test_remap_image_from_store_creates_suggestion(db_session, monkeypatch
     assert rows[0].model_version == CAFORMER
 
 
+# ---------------------------------------------------------------------------
+# Case 6: cross-model ADD guard — never inserts a duplicate (image, tag) row
+# ---------------------------------------------------------------------------
+
+
+async def test_does_not_duplicate_tag_held_by_another_model(db_session, monkeypatch):
+    """remap_image with caformer must NOT insert a second MlTagSuggestions row for
+    a tag that already has a pending row from swinv2.
+
+    The UNIQUE(image_id, tag_id) constraint means a second insert would raise an
+    integrity error. The add-guard (existing_tag_ids covers all statuses/models)
+    must skip T silently and only insert U. The swinv2 row for T must be
+    untouched — not duplicated, not overwritten, not deleted."""
+    monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.35)
+
+    SWINV2_FULL = "swinv2_base_window8_256.dbv4-full"
+
+    user = await _make_user(db_session, "case6")
+    image = await _make_image(db_session, user, "case6")
+    await _make_tags(db_session, 601, 602)
+
+    # tag 601 (T) — existing pending row from a DIFFERENT model (swinv2)
+    db_session.add(
+        MlTagSuggestions(
+            image_id=image.image_id, tag_id=601, confidence=0.75,
+            model_version=SWINV2_FULL, status="pending",
+        )
+    )
+    await db_session.commit()
+
+    # caformer re-map implies BOTH T (601) and U (602)
+    predictions = _preds(601, 602, model=CAFORMER)
+
+    # No exception must be raised (no UNIQUE violation)
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(predictions)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _resolver_passthrough),
+    ):
+        added = await remap_image(db_session, image.image_id, predictions, CAFORMER)
+
+    # Only U (602) was added; T (601) was skipped by the add-guard
+    assert added == 1
+
+    rows = (
+        await db_session.execute(
+            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        )
+    ).scalars().all()
+
+    # Exactly one row for tag T — no duplication
+    t_rows = [r for r in rows if r.tag_id == 601]
+    assert len(t_rows) == 1, "tag T must have exactly one MlTagSuggestions row (no duplication)"
+    t = t_rows[0]
+    assert t.status == "pending", "swinv2 row for T must remain pending (untouched)"
+    assert t.model_version == SWINV2_FULL, "swinv2 row for T must not be overwritten"
+
+    # Tag U got a new caformer row
+    u_rows = [r for r in rows if r.tag_id == 602]
+    assert len(u_rows) == 1
+    assert u_rows[0].status == "pending"
+    assert u_rows[0].model_version == CAFORMER
+
+
 async def test_remap_image_from_store_ignores_other_model(db_session, monkeypatch):
     """remap_image_from_store filters by model name: raw predictions for a
     different model are NOT picked up when remapping with CAFORMER."""
