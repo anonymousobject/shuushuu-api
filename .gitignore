@@ -111,6 +111,12 @@ docker/nginx/e-shuushuu.net.conf
 # Redis dumps
 dump.rdb
 
+# Tag-mapping data is environment-bound (carries real internal_tag_ids) — the DB
+# (tag_mappings table) is the source of truth. Kept outside git; back up separately.
+data/tag_mappings.csv
+data/character_mappings_draft.csv
+data/character_mappings_launchable.csv
+
 # PHP codebase
 shuu-php/
 .worktrees/
