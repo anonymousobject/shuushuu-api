@@ -34,13 +34,15 @@ import argparse
 import asyncio
 import csv
 import re
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from rapidfuzz import fuzz, process
 from sqlalchemy import select
 
 from app.core.database import get_async_session
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.tag import Tags
 from scripts.generate_tag_mappings import normalize_tag  # shared theme/char normalizer
 
@@ -193,6 +195,28 @@ def match_all(
     ]
 
 
+def apply_linked_only(
+    results: list[MatchResult], linked_ids: set[int]
+) -> list[MatchResult]:
+    """Restrict auto-`map` to the launchable set: keep `map` only when the internal
+    tag is source-linked (clean per analysis) AND the mapping is a clean 1:1 (no
+    other Danbooru name maps to the same internal tag). Everything else is demoted
+    to `review` with the reason recorded. Non-map results pass through unchanged."""
+    map_counts = Counter(r.internal_tag_id for r in results if r.action == "map" and r.internal_tag_id)
+    out: list[MatchResult] = []
+    for r in results:
+        if r.action == "map" and r.internal_tag_id:
+            if int(r.internal_tag_id) not in linked_ids:
+                r = replace(r, action="review", candidates="needs source link (internal tag unlinked)")
+            elif map_counts[r.internal_tag_id] > 1:
+                r = replace(
+                    r, action="review",
+                    candidates="merge collision (multiple Danbooru names -> this tag); needs source-aware",
+                )
+        out.append(r)
+    return out
+
+
 def load_vocab_characters(vocab_path: Path) -> list[str]:
     """Danbooru character tag names (category 4) from a model's selected_tags.csv."""
     names: list[str] = []
@@ -249,10 +273,20 @@ async def main() -> None:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT, help="output draft CSV")
     parser.add_argument("--fuzzy-threshold", type=int, default=DEFAULT_FUZZY_THRESHOLD)
     parser.add_argument("--no-fuzzy", action="store_true", help="skip the fuzzy fallback")
+    parser.add_argument(
+        "--linked-only",
+        action="store_true",
+        help="launchable set: auto-map only characters whose internal tag is source-linked "
+        "AND a clean 1:1 match; demote everything else to review",
+    )
     args = parser.parse_args()
 
     if not args.vocab.exists():
         parser.error(f"vocab not found: {args.vocab}")
+
+    out = args.out
+    if args.linked_only and out == DEFAULT_OUTPUT:
+        out = Path("data/character_mappings_launchable.csv")
 
     print(f"Loading Danbooru character vocab from {args.vocab} ...")
     danbooru = load_vocab_characters(args.vocab)
@@ -266,11 +300,20 @@ async def main() -> None:
     results = match_all(
         danbooru, internal, fuzzy_threshold=args.fuzzy_threshold, use_fuzzy=not args.no_fuzzy
     )
+
+    if args.linked_only:
+        async with get_async_session() as db:
+            linked_ids = set(
+                (await db.execute(select(CharacterSourceLinks.character_tag_id).distinct())).scalars().all()
+            )
+        results = apply_linked_only(results, linked_ids)
+        print(f"linked-only: restricted auto-map to {len(linked_ids)} source-linked internal characters")
+
     summarize(results)
 
-    write_draft(results, args.out)
-    print(f"\nWrote draft: {args.out}")
-    print("Next: review the action=review rows, merge the good rows into")
+    write_draft(results, out)
+    print(f"\nWrote draft: {out}")
+    print("Next: review the action=review rows, merge the good (action=map) rows into")
     print("data/tag_mappings.csv, then run scripts/import_tag_mappings.py.")
 
 

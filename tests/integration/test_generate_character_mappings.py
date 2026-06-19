@@ -6,11 +6,25 @@ Danbooru name -> several internal tags), fuzzy (romanization/typo), and no-match
 """
 
 from scripts.generate_character_mappings import (
+    MatchResult,
+    apply_linked_only,
     build_internal_index,
     classify,
     match_all,
     strip_qualifier,
 )
+
+
+def _mr(danbooru: str, iid: int, action: str = "map", match_type: str = "exact") -> MatchResult:
+    return MatchResult(
+        danbooru_tag=danbooru,
+        internal_tag_id=str(iid) if iid else "",
+        internal_tag_title=f"Tag{iid}",
+        match_type=match_type,
+        score=100,
+        candidates="",
+        action=action,
+    )
 
 # (tag_id, title)
 INTERNAL = [
@@ -94,3 +108,24 @@ def test_match_all_counts():
     for r in results:
         by_action[r.action] = by_action.get(r.action, 0) + 1
     assert by_action == {"map": 1, "review": 1, "ignore": 1}
+
+
+def test_linked_only_keeps_linked_unique_demotes_unlinked():
+    res = [_mr("a", 10), _mr("b", 11)]  # 10 is source-linked, 11 is not
+    out = {r.danbooru_tag: r for r in apply_linked_only(res, {10})}
+    assert out["a"].action == "map"
+    assert out["b"].action == "review"  # unlinked internal -> not launchable
+
+
+def test_linked_only_demotes_merge_collisions_even_if_linked():
+    # both Danbooru names map to the same linked internal (10) -> merge collision
+    res = [_mr("a", 10), _mr("c", 10)]
+    out = apply_linked_only(res, {10})
+    assert all(r.action == "review" for r in out)
+
+
+def test_linked_only_leaves_review_and_ignore_untouched():
+    res = [_mr("x", 0, action="review", match_type="fuzzy"),
+           _mr("y", 0, action="ignore", match_type="none")]
+    out = apply_linked_only(res, {10})
+    assert [r.action for r in out] == ["review", "ignore"]
