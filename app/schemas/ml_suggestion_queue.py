@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.image import ImageResponse
+from app.schemas.image import ImageResponse, TagSummary
 
 
 class SuggestionTagWorklistItem(BaseModel):
@@ -26,6 +26,8 @@ class SuggestionGridItem(BaseModel):
 
     Embeds the full ``ImageResponse`` so the frontend gets the computed
     ``thumbnail_url`` (and other URL fields) rather than a raw filename.
+    Also carries the image's currently-applied tags so the frontend can
+    spot redundant suggestions without a second request.
     """
 
     suggestion_id: int = Field(description="ID of the suggestion")
@@ -35,6 +37,10 @@ class SuggestionGridItem(BaseModel):
         description="Confidence score from the ML model (0.0 to 1.0)",
     )
     image: ImageResponse = Field(description="The image this suggestion is for")
+    tags: list[TagSummary] = Field(
+        default_factory=list,
+        description="Tags currently applied to the image (for redundancy detection)",
+    )
 
 
 class SuggestionGridResponse(BaseModel):
@@ -45,6 +51,10 @@ class SuggestionGridResponse(BaseModel):
     )
     total: int = Field(description="Total pending suggestions matching tag + min_confidence")
     page: int = Field(description="1-based page number for this result set")
+    tag: TagSummary | None = Field(
+        default=None,
+        description="Summary of the tag being reviewed (tag_id, title, type_id)",
+    )
 
 
 class BulkReviewItem(BaseModel):

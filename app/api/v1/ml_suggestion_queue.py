@@ -8,8 +8,11 @@ All endpoints are gated by ``require_image_tag_add`` (admin OR IMAGE_TAG_ADD).
 The per-image review router lives in ``app/api/v1/ml_tag_suggestions.py``.
 """
 
+import json
+import logging
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,9 +20,12 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.permission_deps import require_image_tag_add
+from app.core.redis import get_redis
 from app.models.image import Images
+from app.models.tag import Tags
+from app.models.tag_link import TagLinks
 from app.models.user import Users
-from app.schemas.image import ImageResponse
+from app.schemas.image import ImageResponse, TagSummary
 from app.schemas.ml_suggestion_queue import (
     BulkReviewItem,
     BulkReviewResult,
@@ -30,7 +36,12 @@ from app.schemas.ml_suggestion_queue import (
 from app.services.ml_suggestion_queue import count_pending_by_tag, list_pending_for_tag
 from app.services.ml_suggestion_review import bulk_review_suggestions
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/ml-suggestions", tags=["ml-suggestions"])
+
+_WORKLIST_CACHE_PREFIX = "ml_suggestions:worklist:"
+_WORKLIST_CACHE_TTL = 60  # seconds
 
 
 @router.get(
@@ -48,24 +59,76 @@ async def get_suggestion_worklist(
         float,
         Query(description="Only count suggestions at or above this confidence"),
     ] = 0.0,
+    limit: Annotated[
+        int,
+        Query(ge=1, description="Maximum number of tags to return (top-N by pending count)"),
+    ] = 100,
+    search: Annotated[
+        str | None,
+        Query(description="Filter to tags whose title contains this string (case-insensitive)"),
+    ] = None,
     db: AsyncSession = Depends(get_db),
+    redis_client: Annotated[redis.Redis, Depends(get_redis)] = None,  # type: ignore[assignment]
 ) -> list[SuggestionTagWorklistItem]:
     """Return pending-suggestion counts grouped by tag, ordered by count DESC.
 
     Used as the entry point of the review queue: a reviewer picks a tag to work
     through. ``type`` narrows to one tag type; ``min_confidence`` excludes
-    low-confidence suggestions from the counts.
+    low-confidence suggestions from the counts. ``limit`` caps the result to the
+    top-N tags. ``search`` filters by tag title (bypasses cache).
+
+    When ``search`` is not provided, the result is cached in Redis for
+    ``_WORKLIST_CACHE_TTL`` seconds keyed by (type, min_confidence, limit).
+    Redis errors silently fall back to a direct DB query.
     """
-    rows = await count_pending_by_tag(db, type_filter=type, min_confidence=min_confidence)
-    return [
-        SuggestionTagWorklistItem(
-            tag_id=tag_id,
-            title=title,
-            type=tag_type,
-            pending_count=pending_count,
+
+    def _build_items(
+        rows: list[tuple[int, str | None, int, int]],
+    ) -> list[SuggestionTagWorklistItem]:
+        return [
+            SuggestionTagWorklistItem(
+                tag_id=tag_id,
+                title=title,
+                type=tag_type,
+                pending_count=pending_count,
+            )
+            for (tag_id, title, tag_type, pending_count) in rows
+        ]
+
+    # Only cache when search is not active (search results are per-query and cheap to skip)
+    if search is None and redis_client is not None:
+        cache_key = f"{_WORKLIST_CACHE_PREFIX}{type}:{min_confidence}:{limit}"
+        try:
+            cached = await redis_client.get(cache_key)
+            if cached is not None:
+                raw = json.loads(cached)
+                return [SuggestionTagWorklistItem(**item) for item in raw]
+        except Exception:
+            logger.warning(
+                "Redis get failed for worklist cache key %s; falling back to DB", cache_key
+            )
+
+        rows = await count_pending_by_tag(
+            db, type_filter=type, min_confidence=min_confidence, limit=limit
         )
-        for (tag_id, title, tag_type, pending_count) in rows
-    ]
+        items = _build_items(rows)
+
+        try:
+            await redis_client.setex(
+                cache_key,
+                _WORKLIST_CACHE_TTL,
+                json.dumps([item.model_dump() for item in items]),
+            )
+        except Exception:
+            logger.warning("Redis setex failed for worklist cache key %s; ignoring", cache_key)
+
+        return items
+
+    # search provided or no redis client — query directly, no cache
+    rows = await count_pending_by_tag(
+        db, type_filter=type, min_confidence=min_confidence, limit=limit, search=search
+    )
+    return _build_items(rows)
 
 
 @router.get(
@@ -89,6 +152,11 @@ async def get_suggestions_for_tag(
     Each item embeds the full image (via ``ImageResponse``) so the frontend
     gets the computed ``thumbnail_url`` rather than a raw filename. The
     confidence-DESC ordering from the queue service is preserved.
+
+    The response also includes:
+    - ``tag``: summary of the tag being reviewed (for a human header + tag-detail link).
+    - ``items[*].tags``: the image's currently-applied tags (for hover/redundancy detection).
+      These are loaded via a single batched selectinload — NOT per-image/N+1.
     """
     items, total = await list_pending_for_tag(
         db,
@@ -98,13 +166,18 @@ async def get_suggestions_for_tag(
         per_page=per_page,
     )
 
+    # Fetch the tag summary (one SELECT — null-safe if tag_id doesn't exist).
+    tag_row = await db.get(Tags, tag_id)
+    tag_summary: TagSummary | None = TagSummary.model_validate(tag_row) if tag_row else None
+
     # Load the page's images in one query, then serialize in the service's
     # confidence-DESC order (a dict lookup keeps the order from `items`).
     image_ids = [image_id for (_suggestion_id, image_id, _confidence) in items]
     images_by_id: dict[int, Images] = {}
     if image_ids:
-        # Eager-load the embedded uploader; ImageResponse serializes Images.user,
-        # and a lazy load there fails under the async session.
+        # Eager-load the uploader and all applied tag_links in the same query.
+        # selectinload(tag_links).selectinload(tag) issues one extra batched SQL
+        # for the whole page — NOT one per image (no N+1).
         result = await db.execute(
             select(Images)
             .options(
@@ -114,7 +187,8 @@ async def get_suggestions_for_tag(
                     Users.avatar,  # type: ignore[arg-type]
                     Users.avatar_in_r2,  # type: ignore[arg-type]
                     Users.user_title,  # type: ignore[arg-type]
-                )
+                ),
+                selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
             )
             .where(Images.image_id.in_(image_ids))  # type: ignore[union-attr]
         )
@@ -125,12 +199,13 @@ async def get_suggestions_for_tag(
             suggestion_id=suggestion_id,
             confidence=confidence,
             image=ImageResponse.model_validate(images_by_id[image_id]),
+            tags=[TagSummary.model_validate(tl.tag) for tl in images_by_id[image_id].tag_links],
         )
         for (suggestion_id, image_id, confidence) in items
         if image_id in images_by_id
     ]
 
-    return SuggestionGridResponse(items=grid_items, total=total, page=page)
+    return SuggestionGridResponse(items=grid_items, total=total, page=page, tag=tag_summary)
 
 
 @router.post(

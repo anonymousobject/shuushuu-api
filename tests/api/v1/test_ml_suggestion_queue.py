@@ -348,6 +348,195 @@ class TestSuggestionReviewEndpoint:
 
 
 @pytest.mark.api
+class TestWorklistLimitAndSearch:
+    """GET /api/v1/ml-suggestions/tags — limit and search parameters."""
+
+    async def test_limit_param_restricts_results(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """?limit=2 with 3 seeded tags returns at most 2 items."""
+        user = await _make_user(db_session, "lsrch1")
+        await _grant_image_tag_add(db_session, user)
+        images = [await _make_image(db_session, user, f"lsrch1_{i}") for i in range(6)]
+        tag_x = await _make_tag(db_session, user, "lsrch1_x")
+        tag_y = await _make_tag(db_session, user, "lsrch1_y")
+        tag_z = await _make_tag(db_session, user, "lsrch1_z")
+        for img in images[:3]:
+            await _make_suggestion(db_session, img, tag_x)
+        for img in images[3:5]:
+            await _make_suggestion(db_session, img, tag_y)
+        await _make_suggestion(db_session, images[5], tag_z)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            "/api/v1/ml-suggestions/tags?limit=2",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        items = response.json()
+        # Only the top-2 by pending count from our seed should appear
+        seeded_ids = {tag_x.tag_id, tag_y.tag_id, tag_z.tag_id}
+        returned_seeded = [r for r in items if r["tag_id"] in seeded_ids]
+        assert len(returned_seeded) <= 2
+        returned_ids = {r["tag_id"] for r in returned_seeded}
+        assert tag_x.tag_id in returned_ids
+        assert tag_y.tag_id in returned_ids
+        assert tag_z.tag_id not in returned_ids
+
+    async def test_search_param_filters_by_title(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """?search=xyz returns only tags whose title contains 'xyz'."""
+        user = await _make_user(db_session, "lsrch2")
+        await _grant_image_tag_add(db_session, user)
+        image1 = await _make_image(db_session, user, "lsrch2a")
+        image2 = await _make_image(db_session, user, "lsrch2b")
+        tag_match = await _make_tag(db_session, user, "lsrch2_unique_xyz_tag")
+        tag_nomatch = await _make_tag(db_session, user, "lsrch2_other_tag")
+        await _make_suggestion(db_session, image1, tag_match)
+        await _make_suggestion(db_session, image2, tag_nomatch)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            "/api/v1/ml-suggestions/tags?search=unique_xyz",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        items = response.json()
+        tag_ids = [r["tag_id"] for r in items]
+        assert tag_match.tag_id in tag_ids
+        assert tag_nomatch.tag_id not in tag_ids
+
+    async def test_cache_returns_same_data_on_repeat_call(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Two identical calls (no search) return the same data — cache correctness check."""
+        user = await _make_user(db_session, "lsrch3")
+        await _grant_image_tag_add(db_session, user)
+        image = await _make_image(db_session, user, "lsrch3a")
+        tag = await _make_tag(db_session, user, "lsrch3_tag")
+        await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        r1 = await client.get("/api/v1/ml-suggestions/tags?limit=100", headers=headers)
+        r2 = await client.get("/api/v1/ml-suggestions/tags?limit=100", headers=headers)
+
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        # Both calls must return the same data (cache correctness, not Redis internals)
+        assert r1.json() == r2.json()
+
+
+@pytest.mark.api
+class TestGridTagSummaryAndExistingTags:
+    """GET /api/v1/ml-suggestions — tag summary and existing image tags."""
+
+    async def test_response_includes_tag_summary(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The grid response includes a `tag` field with tag_id, tag title, type_id."""
+        user = await _make_user(db_session, "gts1")
+        await _grant_image_tag_add(db_session, user)
+        image = await _make_image(db_session, user, "gts1a")
+        tag = await _make_tag(db_session, user, "gts1_character_tag", tag_type=TagType.CHARACTER)
+        await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/ml-suggestions?tag_id={tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "tag" in data
+        tag_summary = data["tag"]
+        assert tag_summary is not None
+        assert tag_summary["tag_id"] == tag.tag_id
+        # FastAPI serializes TagSummary with by_alias=True -> field aliases are used
+        assert tag_summary["title"] == tag.title
+        assert tag_summary["type"] == TagType.CHARACTER
+
+    async def test_tag_summary_is_null_for_nonexistent_tag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """When the requested tag_id does not exist, `tag` is null."""
+        user = await _make_user(db_session, "gts2")
+        await _grant_image_tag_add(db_session, user)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            "/api/v1/ml-suggestions?tag_id=999999999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["tag"] is None
+
+    async def test_grid_items_carry_existing_applied_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Each grid item's `tags` field contains the image's currently-applied tags."""
+        user = await _make_user(db_session, "gts3")
+        await _grant_image_tag_add(db_session, user)
+        image = await _make_image(db_session, user, "gts3a")
+        suggestion_tag = await _make_tag(db_session, user, "gts3_suggest_tag")
+        applied_tag = await _make_tag(db_session, user, "gts3_applied_tag", tag_type=TagType.THEME)
+        # Apply the applied_tag to the image via a TagLink
+        db_session.add(
+            TagLinks(image_id=image.image_id, tag_id=applied_tag.tag_id, user_id=user.user_id)
+        )
+        await _make_suggestion(db_session, image, suggestion_tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/ml-suggestions?tag_id={suggestion_tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) == 1
+        item = data["items"][0]
+        assert "tags" in item
+        item_tag_ids = [t["tag_id"] for t in item["tags"]]
+        assert applied_tag.tag_id in item_tag_ids
+
+    async def test_grid_items_tags_empty_when_no_applied_tags(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A grid item with no applied tags has an empty `tags` list."""
+        user = await _make_user(db_session, "gts4")
+        await _grant_image_tag_add(db_session, user)
+        image = await _make_image(db_session, user, "gts4a")
+        tag = await _make_tag(db_session, user, "gts4_tag")
+        await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/ml-suggestions?tag_id={tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["tags"] == []
+
+
+@pytest.mark.api
 class TestSuggestionQueuePermissions:
     """The security-critical admin-OR-permission gate on all three endpoints."""
 

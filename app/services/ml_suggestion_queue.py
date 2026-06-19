@@ -21,6 +21,8 @@ async def count_pending_by_tag(
     db: AsyncSession,
     type_filter: int | None = None,
     min_confidence: float = 0.0,
+    limit: int = 100,
+    search: str | None = None,
 ) -> list[tuple[int, str | None, int, int]]:
     """Return pending suggestion counts grouped by tag.
 
@@ -28,8 +30,11 @@ async def count_pending_by_tag(
     status='pending' and confidence >= min_confidence.  When type_filter is
     not None, only tags with that type are included.
 
+    When search is provided, only tags whose title contains the search string
+    (case-insensitive LIKE %search%) are included.
+
     Returns a list of (tag_id, title, type, pending_count) ordered by
-    pending_count DESC.
+    pending_count DESC, limited to the top ``limit`` rows.
     """
     stmt = (
         select(
@@ -45,10 +50,14 @@ async def count_pending_by_tag(
         )
         .group_by(Tags.tag_id, Tags.title, Tags.type)
         .order_by(func.count(MlTagSuggestions.suggestion_id).desc())
+        .limit(limit)
     )
 
     if type_filter is not None:
         stmt = stmt.where(Tags.type == type_filter)  # type: ignore[arg-type]
+
+    if search is not None:
+        stmt = stmt.where(Tags.title.ilike(f"%{search}%"))  # type: ignore[union-attr]
 
     result = await db.execute(stmt)
     rows = result.all()

@@ -291,3 +291,98 @@ class TestListPendingForTag:
 
         assert total == 0
         assert items == []
+
+
+class TestCountPendingByTagLimitAndSearch:
+    """Tests for the limit and search parameters added to count_pending_by_tag."""
+
+    async def test_limit_returns_only_top_n_by_count(self, db_session: AsyncSession):
+        """With limit=2 and 3 tags seeded, only the top-2 by pending_count are returned."""
+        user = await _make_user(db_session, "lim1")
+        images = [await _make_image(db_session, user, f"lim1_{i}") for i in range(6)]
+        # tag_x: 3 pending, tag_y: 2 pending, tag_z: 1 pending
+        tag_x = await _make_tag(db_session, user, "lim1_x")
+        tag_y = await _make_tag(db_session, user, "lim1_y")
+        tag_z = await _make_tag(db_session, user, "lim1_z")
+        for img in images[:3]:
+            await _make_suggestion(db_session, img, tag_x)
+        for img in images[3:5]:
+            await _make_suggestion(db_session, img, tag_y)
+        await _make_suggestion(db_session, images[5], tag_z)
+        await db_session.commit()
+
+        results = await count_pending_by_tag(db_session, limit=2)
+
+        tag_ids = [r[0] for r in results]
+        assert len([tid for tid in tag_ids if tid in {tag_x.tag_id, tag_y.tag_id, tag_z.tag_id}]) <= 2
+        # The two returned tags from this seed must be tag_x and tag_y (highest counts)
+        seeded_ids = {tid for tid in tag_ids if tid in {tag_x.tag_id, tag_y.tag_id, tag_z.tag_id}}
+        assert tag_x.tag_id in seeded_ids
+        assert tag_y.tag_id in seeded_ids
+        assert tag_z.tag_id not in seeded_ids
+
+    async def test_limit_result_is_ordered_desc(self, db_session: AsyncSession):
+        """Results with limit are still ordered by pending_count DESC."""
+        user = await _make_user(db_session, "lim2")
+        images = [await _make_image(db_session, user, f"lim2_{i}") for i in range(3)]
+        tag_a = await _make_tag(db_session, user, "lim2_a")
+        tag_b = await _make_tag(db_session, user, "lim2_b")
+        await _make_suggestion(db_session, images[0], tag_a)
+        await _make_suggestion(db_session, images[1], tag_b)
+        await _make_suggestion(db_session, images[2], tag_b)
+        await db_session.commit()
+
+        results = await count_pending_by_tag(db_session, limit=2)
+
+        seeded = [r for r in results if r[0] in {tag_a.tag_id, tag_b.tag_id}]
+        assert len(seeded) == 2
+        # tag_b (count=2) must come before tag_a (count=1)
+        seeded_ids = [r[0] for r in seeded]
+        assert seeded_ids.index(tag_b.tag_id) < seeded_ids.index(tag_a.tag_id)
+
+    async def test_search_filters_by_title(self, db_session: AsyncSession):
+        """search='unique_xyz' returns only tags whose title contains that substring."""
+        user = await _make_user(db_session, "srch1")
+        image1 = await _make_image(db_session, user, "srch1a")
+        image2 = await _make_image(db_session, user, "srch1b")
+        tag_match = await _make_tag(db_session, user, "srch1_unique_xyz_tag")
+        tag_nomatch = await _make_tag(db_session, user, "srch1_other_tag")
+        await _make_suggestion(db_session, image1, tag_match)
+        await _make_suggestion(db_session, image2, tag_nomatch)
+        await db_session.commit()
+
+        results = await count_pending_by_tag(db_session, search="unique_xyz")
+
+        tag_ids = [r[0] for r in results]
+        assert tag_match.tag_id in tag_ids
+        assert tag_nomatch.tag_id not in tag_ids
+
+    async def test_search_is_case_insensitive(self, db_session: AsyncSession):
+        """search='UPPER' matches a tag title stored as lower-case."""
+        user = await _make_user(db_session, "srch2")
+        image = await _make_image(db_session, user, "srch2a")
+        tag = await _make_tag(db_session, user, "srch2_upper_case_tag")
+        await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        results = await count_pending_by_tag(db_session, search="UPPER_CASE")
+
+        tag_ids = [r[0] for r in results]
+        assert tag.tag_id in tag_ids
+
+    async def test_search_none_returns_all(self, db_session: AsyncSession):
+        """search=None (default) does not filter by title."""
+        user = await _make_user(db_session, "srch3")
+        image1 = await _make_image(db_session, user, "srch3a")
+        image2 = await _make_image(db_session, user, "srch3b")
+        tag_a = await _make_tag(db_session, user, "srch3_alpha")
+        tag_b = await _make_tag(db_session, user, "srch3_beta")
+        await _make_suggestion(db_session, image1, tag_a)
+        await _make_suggestion(db_session, image2, tag_b)
+        await db_session.commit()
+
+        results = await count_pending_by_tag(db_session)
+
+        tag_ids = [r[0] for r in results]
+        assert tag_a.tag_id in tag_ids
+        assert tag_b.tag_id in tag_ids
