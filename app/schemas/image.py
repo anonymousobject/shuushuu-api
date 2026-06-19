@@ -167,6 +167,9 @@ class ImageDetailedResponse(ImageResponse):
     # red status band can explain why an image was taken down without a comment.
     reason_category: int | None = None
     status_reason: str | None = None
+    # Tagger/admin-only: number of pending ML tag suggestions for this image.
+    # None for anonymous users and users without IMAGE_TAG_ADD (or admin).
+    ml_suggestion_count: int | None = None
 
     model_config = {"from_attributes": True}
 

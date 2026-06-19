@@ -71,6 +71,7 @@ from app.models import (
 )
 from app.models.image import ImageSortBy, VariantStatus
 from app.models.image_status_history import ImageStatusHistory
+from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import UserGroups
 from app.schemas.audit import (
     ImageReviewListResponse,
@@ -871,20 +872,54 @@ async def list_images(
         )
     )
 
+    # ML suggestion counts: one grouped query for the page, only for users who
+    # hold IMAGE_TAG_ADD or are admins (same predicate as the review queue gate).
+    # Anonymous users and plain users always get None (field default).
+    # None means "not computed" (no permission); {} means "computed, all zero".
+    pending_counts: dict[int, int] | None = None
+    if (
+        current_user is not None
+        and current_user.user_id is not None
+        and images
+        and (
+            current_user.admin
+            or await has_permission(
+                db, current_user.user_id, Permission.IMAGE_TAG_ADD, redis_client
+            )
+        )
+    ):
+        page_ids = [img.image_id for img in images]
+        count_result = await db.execute(
+            select(MlTagSuggestions.image_id, func.count().label("cnt"))
+            .where(
+                MlTagSuggestions.image_id.in_(page_ids),  # type: ignore[attr-defined]
+                MlTagSuggestions.status == "pending",
+            )
+            .group_by(MlTagSuggestions.image_id)
+        )
+        pending_counts = {row.image_id: row.cnt for row in count_result}
+
+    # Build response items; assign ml_suggestion_count after construction since
+    # from_db_model does not accept it as a parameter.
+    response_items: list[ImageDetailedResponse] = []
+    for img in images:
+        item = ImageDetailedResponse.from_db_model(
+            img,
+            is_favorited=img.image_id in favorited_ids,
+            has_open_report=img.image_id in open_report_ids,
+            can_see_reason=viewer_can_moderate
+            or (current_user is not None and img.user_id == current_user.user_id),
+        )
+        if pending_counts is not None:
+            # Permitted user: set actual count (0 for images absent from grouped result).
+            item.ml_suggestion_count = pending_counts.get(img.image_id, 0)
+        response_items.append(item)
+
     return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
-        images=[
-            ImageDetailedResponse.from_db_model(
-                img,
-                is_favorited=img.image_id in favorited_ids,
-                has_open_report=img.image_id in open_report_ids,
-                can_see_reason=viewer_can_moderate
-                or (current_user is not None and img.user_id == current_user.user_id),
-            )
-            for img in images
-        ],
+        images=response_items,
     )
 
 
