@@ -1,0 +1,161 @@
+"""Cross-image ML suggestion review queue API endpoints.
+
+Provides a worklist (pending counts per tag), a per-tag paginated grid of
+pending suggestions, and a cross-image bulk approve/reject endpoint, so
+taggers / mods / admins can clear the ML suggestion backlog efficiently.
+
+All endpoints are gated by ``require_image_tag_add`` (admin OR IMAGE_TAG_ADD).
+The per-image review router lives in ``app/api/v1/ml_tag_suggestions.py``.
+"""
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.core.database import get_db
+from app.core.permission_deps import require_image_tag_add
+from app.models.image import Images
+from app.models.user import Users
+from app.schemas.image import ImageResponse
+from app.schemas.ml_suggestion_queue import (
+    BulkReviewItem,
+    BulkReviewResult,
+    SuggestionGridItem,
+    SuggestionGridResponse,
+    SuggestionTagWorklistItem,
+)
+from app.services.ml_suggestion_queue import count_pending_by_tag, list_pending_for_tag
+from app.services.ml_suggestion_review import bulk_review_suggestions
+
+router = APIRouter(prefix="/ml-suggestions", tags=["ml-suggestions"])
+
+
+@router.get(
+    "/tags",
+    response_model=list[SuggestionTagWorklistItem],
+    response_description="Pending suggestion counts grouped by tag (worklist)",
+)
+async def get_suggestion_worklist(
+    _user: Annotated[Users, Depends(require_image_tag_add)],
+    type: Annotated[
+        int | None,
+        Query(description="Filter to tags of this type (e.g. 4 = character)"),
+    ] = None,
+    min_confidence: Annotated[
+        float,
+        Query(description="Only count suggestions at or above this confidence"),
+    ] = 0.0,
+    db: AsyncSession = Depends(get_db),
+) -> list[SuggestionTagWorklistItem]:
+    """Return pending-suggestion counts grouped by tag, ordered by count DESC.
+
+    Used as the entry point of the review queue: a reviewer picks a tag to work
+    through. ``type`` narrows to one tag type; ``min_confidence`` excludes
+    low-confidence suggestions from the counts.
+    """
+    rows = await count_pending_by_tag(db, type_filter=type, min_confidence=min_confidence)
+    return [
+        SuggestionTagWorklistItem(
+            tag_id=tag_id,
+            title=title,
+            type=tag_type,
+            pending_count=pending_count,
+        )
+        for (tag_id, title, tag_type, pending_count) in rows
+    ]
+
+
+@router.get(
+    "",
+    response_model=SuggestionGridResponse,
+    response_description="Paginated pending suggestions for a single tag",
+)
+async def get_suggestions_for_tag(
+    _user: Annotated[Users, Depends(require_image_tag_add)],
+    tag_id: Annotated[int, Query(description="Tag to list pending suggestions for")],
+    min_confidence: Annotated[
+        float,
+        Query(description="Only include suggestions at or above this confidence"),
+    ] = 0.0,
+    page: Annotated[int, Query(ge=1, description="1-based page number")] = 1,
+    per_page: Annotated[int, Query(ge=1, description="Items per page")] = 50,
+    db: AsyncSession = Depends(get_db),
+) -> SuggestionGridResponse:
+    """Return a confidence-sorted page of pending suggestions for one tag.
+
+    Each item embeds the full image (via ``ImageResponse``) so the frontend
+    gets the computed ``thumbnail_url`` rather than a raw filename. The
+    confidence-DESC ordering from the queue service is preserved.
+    """
+    items, total = await list_pending_for_tag(
+        db,
+        tag_id=tag_id,
+        min_confidence=min_confidence,
+        page=page,
+        per_page=per_page,
+    )
+
+    # Load the page's images in one query, then serialize in the service's
+    # confidence-DESC order (a dict lookup keeps the order from `items`).
+    image_ids = [image_id for (_suggestion_id, image_id, _confidence) in items]
+    images_by_id: dict[int, Images] = {}
+    if image_ids:
+        # Eager-load the embedded uploader; ImageResponse serializes Images.user,
+        # and a lazy load there fails under the async session.
+        result = await db.execute(
+            select(Images)
+            .options(
+                selectinload(Images.user).load_only(  # type: ignore[arg-type]
+                    Users.user_id,  # type: ignore[arg-type]
+                    Users.username,  # type: ignore[arg-type]
+                    Users.avatar,  # type: ignore[arg-type]
+                    Users.avatar_in_r2,  # type: ignore[arg-type]
+                    Users.user_title,  # type: ignore[arg-type]
+                )
+            )
+            .where(Images.image_id.in_(image_ids))  # type: ignore[union-attr]
+        )
+        images_by_id = {img.image_id: img for img in result.scalars().all()}  # type: ignore[misc]
+
+    grid_items = [
+        SuggestionGridItem(
+            suggestion_id=suggestion_id,
+            confidence=confidence,
+            image=ImageResponse.model_validate(images_by_id[image_id]),
+        )
+        for (suggestion_id, image_id, confidence) in items
+        if image_id in images_by_id
+    ]
+
+    return SuggestionGridResponse(items=grid_items, total=total, page=page)
+
+
+@router.post(
+    "/review",
+    response_model=BulkReviewResult,
+    response_description="Counts of approved/rejected suggestions and any errors",
+)
+async def review_suggestions(
+    reviews: list[BulkReviewItem],
+    current_user: Annotated[Users, Depends(require_image_tag_add)],
+    db: AsyncSession = Depends(get_db),
+) -> BulkReviewResult:
+    """Approve or reject pending suggestions across multiple images at once.
+
+    Approving applies the suggestion's (alias-resolved) tag to its image and
+    records tag history; rejecting only marks the suggestion. Missing
+    suggestion ids are reported in ``errors`` without aborting the valid ones.
+    """
+    result = await bulk_review_suggestions(
+        db,
+        [{"suggestion_id": r.suggestion_id, "action": r.action} for r in reviews],
+        current_user.id,
+    )
+    return BulkReviewResult(
+        approved=result.approved,
+        rejected=result.rejected,
+        errors=result.errors,
+    )
