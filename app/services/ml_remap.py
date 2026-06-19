@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import get_logger
 from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
 from app.models.ml_tag_suggestion import MlTagSuggestions
+from app.models.tag_mapping import TagMappings
 from app.services.ml_suggestion_pipeline import compute_implied_suggestions
 
 logger = get_logger(__name__)
@@ -119,3 +120,63 @@ async def remap_image_from_store(db: AsyncSession, image_id: int, model_name: st
         prediction_count=len(predictions),
     )
     return await remap_image(db, image_id, predictions, model_name)
+
+
+async def remap_images_for_tag(db: AsyncSession, internal_tag_id: int, model_name: str) -> int:
+    """Re-map all images that have raw predictions for external tags mapped to
+    ``internal_tag_id``.
+
+    Resolves the external tag names that map to ``internal_tag_id`` via
+    ``tag_mappings``, finds the distinct ``image_id``s in ``ml_raw_predictions``
+    (for ``model_name``) that carry any of those external tags, then calls
+    ``remap_image_from_store`` once per image.  Returns the count of images
+    processed (not the count of suggestions added).
+    """
+    # Step 1: find external tag names that map to internal_tag_id
+    external_tag_names = list(
+        (
+            await db.execute(
+                select(TagMappings.external_tag).where(
+                    TagMappings.internal_tag_id == internal_tag_id
+                )
+            )
+        ).scalars()
+    )
+
+    if not external_tag_names:
+        logger.info(
+            "ml_remap_tag_no_external_tags",
+            internal_tag_id=internal_tag_id,
+            model_version=model_name,
+        )
+        return 0
+
+    # Step 2: find distinct image_ids in ml_raw_predictions for those external tags + model
+    image_ids = list(
+        (
+            await db.execute(
+                select(MlRawPredictions.image_id)
+                .join(MlExternalTags, MlExternalTags.id == MlRawPredictions.external_tag_id)
+                .join(MlModels, MlModels.id == MlRawPredictions.model_id)
+                .where(
+                    MlExternalTags.name.in_(external_tag_names),
+                    MlModels.name == model_name,
+                )
+                .distinct()
+                .order_by(MlRawPredictions.image_id)
+            )
+        ).scalars()
+    )
+
+    logger.info(
+        "ml_remap_tag_images_found",
+        internal_tag_id=internal_tag_id,
+        model_version=model_name,
+        image_count=len(image_ids),
+    )
+
+    # Step 3: remap each image using the existing per-image entry point
+    for image_id in image_ids:
+        await remap_image_from_store(db, image_id, model_name)
+
+    return len(image_ids)

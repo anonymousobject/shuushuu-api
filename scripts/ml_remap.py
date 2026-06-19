@@ -24,25 +24,34 @@ from sqlalchemy import select
 from app.core.database import get_async_session
 from app.models.ml_raw_prediction import MlModels, MlRawPredictions
 from app.services.ml_backfill import load_image_ids, write_results
-from app.services.ml_remap import remap_image_from_store
+from app.services.ml_remap import remap_image_from_store, remap_images_for_tag
 
 
 async def run(args: argparse.Namespace) -> None:
     model_name: str = args.model
-    checkpoint = Path(args.checkpoint)
-    already_done = load_image_ids(checkpoint)
-    limit: int | None = args.limit
-    single_image_id: int | None = args.image_id
+    single_tag_id: int | None = args.tag
 
     print(f"model: {model_name}")
-    print(f"checkpoint: {checkpoint} ({len(already_done)} already processed)")
-
-    processed = 0
-    added_total = 0
-    skipped = 0
-    errors: list[str] = []
 
     async with get_async_session() as db:
+        if single_tag_id is not None:
+            print(f"tag: {single_tag_id} (scoped remap)")
+            count = await remap_images_for_tag(db, single_tag_id, model_name)
+            print(f"done: images_remapped={count}")
+            return
+
+        checkpoint = Path(args.checkpoint)
+        already_done = load_image_ids(checkpoint)
+        limit: int | None = args.limit
+        single_image_id: int | None = args.image_id
+
+        print(f"checkpoint: {checkpoint} ({len(already_done)} already processed)")
+
+        processed = 0
+        added_total = 0
+        skipped = 0
+        errors: list[str] = []
+
         if single_image_id is not None:
             image_ids = [single_image_id]
         else:
@@ -94,6 +103,16 @@ def main() -> None:
         "--model",
         required=True,
         help="ML model name to re-map (e.g. caformer_b36.dbv4-full)",
+    )
+    parser.add_argument(
+        "--tag",
+        type=int,
+        default=None,
+        metavar="INTERNAL_TAG_ID",
+        help=(
+            "Re-map only images that have raw predictions for external tags mapping "
+            "to this internal tag ID (fast onboarding path; skips checkpoint/limit)"
+        ),
     )
     parser.add_argument(
         "--image-id",

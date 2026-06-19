@@ -28,7 +28,8 @@ from app.models.image import Images
 from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
-from app.services.ml_remap import remap_image, remap_image_from_store
+from app.models.tag_mapping import TagMappings
+from app.services.ml_remap import remap_image, remap_image_from_store, remap_images_for_tag
 
 PIPELINE = "app.services.ml_suggestion_pipeline"
 
@@ -453,6 +454,94 @@ async def test_does_not_duplicate_tag_held_by_another_model(db_session, monkeypa
     assert len(u_rows) == 1
     assert u_rows[0].status == "pending"
     assert u_rows[0].model_version == CAFORMER
+
+
+async def test_remap_images_for_tag_scopes_to_mapped_images(db_session, monkeypatch):
+    """remap_images_for_tag remaps only images that have raw predictions for
+    external tags that map to the given internal_tag_id; images with unrelated
+    raw predictions are left untouched."""
+    monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.35)
+
+    user = await _make_user(db_session, "ftag1")
+    image_a = await _make_image(db_session, user, "ftag1a")
+    image_b = await _make_image(db_session, user, "ftag1b")
+    # internal tag 801 is the target; tag 802 is unrelated
+    await _make_tags(db_session, 801, 802)
+    await db_session.commit()
+
+    # Seed model + external tags
+    model_row = MlModels(name=CAFORMER)
+    db_session.add(model_row)
+    await db_session.flush()
+
+    ext_tag_a = MlExternalTags(name="blue_eyes", category=0)
+    ext_tag_b = MlExternalTags(name="red_hair", category=0)
+    db_session.add_all([ext_tag_a, ext_tag_b])
+    await db_session.flush()
+
+    # tag_mappings: blue_eyes → internal tag 801; red_hair is unmapped (no row)
+    db_session.add(TagMappings(external_tag="blue_eyes", internal_tag_id=801))
+    await db_session.flush()
+
+    # Image A has a raw prediction for blue_eyes (the mapped tag)
+    db_session.add(
+        MlRawPredictions(
+            image_id=image_a.image_id,
+            model_id=model_row.id,
+            external_tag_id=ext_tag_a.id,
+            confidence=0.92,
+        )
+    )
+    # Image B has a raw prediction for red_hair only (unrelated — no mapping to 801)
+    db_session.add(
+        MlRawPredictions(
+            image_id=image_b.image_id,
+            model_id=model_row.id,
+            external_tag_id=ext_tag_b.id,
+            confidence=0.88,
+        )
+    )
+    await db_session.commit()
+
+    # Patch resolvers so blue_eyes → tag_id=801 passes through
+    resolved_a = [{"tag_id": 801, "confidence": 0.92, "model_version": CAFORMER}]
+
+    def _resolver_for_tag_801(rows):
+        """Return tag_id=801 only when the prediction list is non-empty (image A),
+        otherwise return empty (image B will have no blue_eyes prediction)."""
+        async def _inner(db, suggestions):
+            if not suggestions:
+                return []
+            # Passthrough for the known external_tag; inject tag_id
+            return [dict(r) for r in rows]
+        return _inner
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_for_tag_801(resolved_a)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _resolver_passthrough),
+    ):
+        count = await remap_images_for_tag(db_session, 801, CAFORMER)
+
+    # Only image A should have been remapped (1 image with the mapped external tag)
+    assert count == 1
+
+    # Image A must have a pending suggestion for internal tag 801
+    rows_a = (
+        await db_session.execute(
+            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_a.image_id)
+        )
+    ).scalars().all()
+    assert len(rows_a) == 1
+    assert rows_a[0].tag_id == 801
+    assert rows_a[0].status == "pending"
+
+    # Image B must have NO suggestion rows
+    rows_b = (
+        await db_session.execute(
+            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_b.image_id)
+        )
+    ).scalars().all()
+    assert rows_b == [], "image B must not receive any suggestion (unrelated raw pred)"
 
 
 async def test_remap_image_from_store_ignores_other_model(db_session, monkeypatch):
