@@ -7,7 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.tag import Tags
 from app.models.tag_mapping import TagMappings
 from app.models.user import Users
-from app.services.tag_mapping_service import resolve_external_tags
+from app.services.tag_mapping_service import (
+    find_orphan_mappings,
+    get_mapped_external_tag_names,
+    resolve_external_tags,
+)
 
 
 async def test_resolve_danbooru_tags_to_internal(
@@ -221,3 +225,114 @@ async def test_preserves_model_version(
 
     assert len(resolved) == 1
     assert resolved[0]["model_version"] == "wd-swinv2-tagger-v3"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for find_orphan_mappings (pure function, no DB)
+# ---------------------------------------------------------------------------
+
+
+def test_find_orphan_mappings_all_present() -> None:
+    """All mapped tags exist in the vocab → no orphans."""
+    result = find_orphan_mappings(
+        {"long_hair", "smile", "1girl"},
+        {"long_hair", "smile", "1girl", "extra_tag"},
+    )
+    assert result == []
+
+
+def test_find_orphan_mappings_some_missing() -> None:
+    """Tags in mappings but not in the vocab are returned, sorted."""
+    result = find_orphan_mappings(
+        {"long_hair", "missing_tag", "another_missing"},
+        {"long_hair"},
+    )
+    assert result == ["another_missing", "missing_tag"]
+
+
+def test_find_orphan_mappings_empty_mapped() -> None:
+    """No mapped tags → no orphans regardless of vocab."""
+    result = find_orphan_mappings(set(), {"long_hair", "smile"})
+    assert result == []
+
+
+def test_find_orphan_mappings_empty_vocab() -> None:
+    """All mapped tags are orphans when the vocab is empty."""
+    result = find_orphan_mappings({"long_hair", "smile"}, set())
+    assert result == ["long_hair", "smile"]
+
+
+# ---------------------------------------------------------------------------
+# Integration tests for get_mapped_external_tag_names (real DB)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_mapped_external_tag_names_returns_names(
+    db_session: AsyncSession,
+) -> None:
+    """Returns the external_tag names from all real mappings (both mapped and ignored)."""
+    user = Users(
+        username="orphan_check_user",
+        email="orphancheck@example.com",
+        password="hashed",
+        password_type="bcrypt",
+        salt="testsalt12345678",
+        active=1,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    tag = Tags(title="orphan test tag", type=1, user_id=user.user_id)
+    db_session.add(tag)
+    await db_session.flush()
+
+    # One real mapping and one ignored (NULL internal_tag_id) mapping
+    db_session.add(TagMappings(external_tag="orphan_mapped_ext", internal_tag_id=tag.tag_id))
+    db_session.add(TagMappings(external_tag="orphan_ignored_ext", internal_tag_id=None))
+    await db_session.commit()
+
+    names = await get_mapped_external_tag_names(db_session)
+
+    assert "orphan_mapped_ext" in names
+    assert "orphan_ignored_ext" in names
+
+
+async def test_get_mapped_external_tag_names_excludes_unmapped(
+    db_session: AsyncSession,
+) -> None:
+    """Rows that were never inserted are not in the result (basic sanity check)."""
+    names = await get_mapped_external_tag_names(db_session)
+    assert "this_tag_was_never_inserted_xyz" not in names
+
+
+async def test_find_orphan_mappings_integration(
+    db_session: AsyncSession,
+) -> None:
+    """End-to-end: seed two mappings, drop one from the vocab, confirm the orphan is flagged."""
+    user = Users(
+        username="orphan_integration_user",
+        email="orphanintegration@example.com",
+        password="hashed",
+        password_type="bcrypt",
+        salt="testsalt12345678",
+        active=1,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    tag = Tags(title="orphan integration tag", type=1, user_id=user.user_id)
+    db_session.add(tag)
+    await db_session.flush()
+
+    db_session.add(TagMappings(external_tag="orphan_in_vocab", internal_tag_id=tag.tag_id))
+    db_session.add(TagMappings(external_tag="orphan_not_in_vocab", internal_tag_id=tag.tag_id))
+    await db_session.commit()
+
+    mapped = await get_mapped_external_tag_names(db_session)
+
+    # Vocab that only contains one of the two mapped tags
+    vocab = {"orphan_in_vocab", "some_other_model_tag"}
+    orphans = find_orphan_mappings(mapped, vocab)
+
+    assert "orphan_not_in_vocab" in orphans
+    assert "orphan_in_vocab" not in orphans
