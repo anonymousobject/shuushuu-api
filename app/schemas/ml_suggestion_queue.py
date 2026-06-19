@@ -21,6 +21,16 @@ class SuggestionTagWorklistItem(BaseModel):
     pending_count: int = Field(description="Number of pending suggestions for this tag")
 
 
+class SuggestionTagWorklistResponse(BaseModel):
+    """Paginated response for the detected-tags worklist."""
+
+    items: list[SuggestionTagWorklistItem] = Field(
+        description="Tags with pending suggestions for this page, ordered by pending_count DESC"
+    )
+    total: int = Field(description="Total number of distinct tags with pending suggestions")
+    page: int = Field(description="1-based page number for this result set")
+
+
 class SuggestionGridItem(BaseModel):
     """A single pending suggestion in the per-tag review grid.
 

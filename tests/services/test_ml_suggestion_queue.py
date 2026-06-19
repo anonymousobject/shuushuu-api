@@ -86,7 +86,7 @@ class TestCountPendingByTag:
         await _make_suggestion(db_session, image3, tag_b)
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session)
+        results, _total = await count_pending_by_tag(db_session)
 
         tag_ids = [r[0] for r in results]
         assert tag_a.tag_id in tag_ids
@@ -118,7 +118,7 @@ class TestCountPendingByTag:
         await _make_suggestion(db_session, image3, tag, status="rejected")
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session)
+        results, _total = await count_pending_by_tag(db_session)
 
         row = next((r for r in results if r[0] == tag.tag_id), None)
         assert row is not None
@@ -135,7 +135,7 @@ class TestCountPendingByTag:
         await _make_suggestion(db_session, image2, char_tag)
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session, type_filter=TagType.CHARACTER)
+        results, _total = await count_pending_by_tag(db_session, type_filter=TagType.CHARACTER)
 
         tag_ids = [r[0] for r in results]
         assert char_tag.tag_id in tag_ids
@@ -156,7 +156,7 @@ class TestCountPendingByTag:
         await _make_suggestion(db_session, image3, tag, confidence=0.5)
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session, min_confidence=0.75)
+        results, _total = await count_pending_by_tag(db_session, min_confidence=0.75)
 
         row = next((r for r in results if r[0] == tag.tag_id), None)
         assert row is not None
@@ -170,7 +170,7 @@ class TestCountPendingByTag:
         await _make_suggestion(db_session, image1, tag, status="approved")
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session)
+        results, _total = await count_pending_by_tag(db_session)
 
         tag_ids = [r[0] for r in results]
         assert tag.tag_id not in tag_ids
@@ -294,10 +294,10 @@ class TestListPendingForTag:
 
 
 class TestCountPendingByTagLimitAndSearch:
-    """Tests for the limit and search parameters added to count_pending_by_tag."""
+    """Tests for the per_page and search parameters of count_pending_by_tag."""
 
-    async def test_limit_returns_only_top_n_by_count(self, db_session: AsyncSession):
-        """With limit=2 and 3 tags seeded, only the top-2 by pending_count are returned."""
+    async def test_per_page_returns_only_top_n_by_count(self, db_session: AsyncSession):
+        """With per_page=2 and 3 tags seeded, only the top-2 by pending_count are returned."""
         user = await _make_user(db_session, "lim1")
         images = [await _make_image(db_session, user, f"lim1_{i}") for i in range(6)]
         # tag_x: 3 pending, tag_y: 2 pending, tag_z: 1 pending
@@ -311,7 +311,7 @@ class TestCountPendingByTagLimitAndSearch:
         await _make_suggestion(db_session, images[5], tag_z)
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session, limit=2)
+        results, _total = await count_pending_by_tag(db_session, per_page=2)
 
         tag_ids = [r[0] for r in results]
         assert len([tid for tid in tag_ids if tid in {tag_x.tag_id, tag_y.tag_id, tag_z.tag_id}]) <= 2
@@ -321,8 +321,8 @@ class TestCountPendingByTagLimitAndSearch:
         assert tag_y.tag_id in seeded_ids
         assert tag_z.tag_id not in seeded_ids
 
-    async def test_limit_result_is_ordered_desc(self, db_session: AsyncSession):
-        """Results with limit are still ordered by pending_count DESC."""
+    async def test_per_page_result_is_ordered_desc(self, db_session: AsyncSession):
+        """Results with per_page are still ordered by pending_count DESC."""
         user = await _make_user(db_session, "lim2")
         images = [await _make_image(db_session, user, f"lim2_{i}") for i in range(3)]
         tag_a = await _make_tag(db_session, user, "lim2_a")
@@ -332,7 +332,7 @@ class TestCountPendingByTagLimitAndSearch:
         await _make_suggestion(db_session, images[2], tag_b)
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session, limit=2)
+        results, _total = await count_pending_by_tag(db_session, per_page=2)
 
         seeded = [r for r in results if r[0] in {tag_a.tag_id, tag_b.tag_id}]
         assert len(seeded) == 2
@@ -351,7 +351,7 @@ class TestCountPendingByTagLimitAndSearch:
         await _make_suggestion(db_session, image2, tag_nomatch)
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session, search="unique_xyz")
+        results, _total = await count_pending_by_tag(db_session, search="unique_xyz")
 
         tag_ids = [r[0] for r in results]
         assert tag_match.tag_id in tag_ids
@@ -365,7 +365,7 @@ class TestCountPendingByTagLimitAndSearch:
         await _make_suggestion(db_session, image, tag)
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session, search="UPPER_CASE")
+        results, _total = await count_pending_by_tag(db_session, search="UPPER_CASE")
 
         tag_ids = [r[0] for r in results]
         assert tag.tag_id in tag_ids
@@ -381,8 +381,84 @@ class TestCountPendingByTagLimitAndSearch:
         await _make_suggestion(db_session, image2, tag_b)
         await db_session.commit()
 
-        results = await count_pending_by_tag(db_session)
+        results, _total = await count_pending_by_tag(db_session)
 
         tag_ids = [r[0] for r in results]
         assert tag_a.tag_id in tag_ids
         assert tag_b.tag_id in tag_ids
+
+
+class TestCountPendingByTagPagination:
+    """Tests for page/per_page pagination added to count_pending_by_tag."""
+
+    async def test_returns_tuple_of_items_and_total(self, db_session: AsyncSession):
+        """count_pending_by_tag returns a (items, total) tuple."""
+        user = await _make_user(db_session, "pag0")
+        image = await _make_image(db_session, user, "pag0a")
+        tag = await _make_tag(db_session, user, "pag0_tag")
+        await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        result = await count_pending_by_tag(db_session, page=1, per_page=50)
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        items, total = result
+        assert isinstance(items, list)
+        assert isinstance(total, int)
+
+    async def test_page1_and_page2_return_different_items(self, db_session: AsyncSession):
+        """With 12 tags seeded and per_page=5, page 1 and page 2 return disjoint sets."""
+        user = await _make_user(db_session, "pag1")
+        # 12 images so each tag gets exactly 1 pending suggestion
+        images = [await _make_image(db_session, user, f"pag1_{i}") for i in range(12)]
+        tags = [await _make_tag(db_session, user, f"pag1_t{i}") for i in range(12)]
+        for img, tag in zip(images, tags):
+            await _make_suggestion(db_session, img, tag)
+        await db_session.commit()
+
+        items_p1, total_p1 = await count_pending_by_tag(db_session, page=1, per_page=5)
+        items_p2, total_p2 = await count_pending_by_tag(db_session, page=2, per_page=5)
+
+        ids_p1 = {item[0] for item in items_p1}
+        ids_p2 = {item[0] for item in items_p2}
+        # Pages must not overlap
+        assert ids_p1.isdisjoint(ids_p2)
+        # Both pages must be non-empty (12 tags with per_page=5 gives 3 pages)
+        assert len(items_p1) == 5
+        assert len(items_p2) == 5
+
+    async def test_total_is_distinct_tag_count_independent_of_page(self, db_session: AsyncSession):
+        """total reflects all distinct pending tag ids, not just the current page."""
+        user = await _make_user(db_session, "pag2")
+        images = [await _make_image(db_session, user, f"pag2_{i}") for i in range(12)]
+        tags = [await _make_tag(db_session, user, f"pag2_t{i}") for i in range(12)]
+        seeded_tag_ids = {tag.tag_id for tag in tags}
+        for img, tag in zip(images, tags):
+            await _make_suggestion(db_session, img, tag)
+        await db_session.commit()
+
+        _items_p1, total_p1 = await count_pending_by_tag(db_session, page=1, per_page=5)
+        _items_p2, total_p2 = await count_pending_by_tag(db_session, page=2, per_page=5)
+
+        # total must be at least 12 (our seeded tags), same on both pages
+        assert total_p1 >= 12
+        assert total_p1 == total_p2
+
+    async def test_items_ordered_by_pending_count_desc(self, db_session: AsyncSession):
+        """Items on page 1 are ordered by pending_count DESC."""
+        user = await _make_user(db_session, "pag3")
+        images = [await _make_image(db_session, user, f"pag3_{i}") for i in range(6)]
+        tag_hi = await _make_tag(db_session, user, "pag3_hi")  # 3 pending
+        tag_lo = await _make_tag(db_session, user, "pag3_lo")  # 1 pending
+        for img in images[:3]:
+            await _make_suggestion(db_session, img, tag_hi)
+        await _make_suggestion(db_session, images[3], tag_lo)
+        await db_session.commit()
+
+        items, _total = await count_pending_by_tag(db_session, page=1, per_page=50)
+
+        seeded = [item for item in items if item[0] in {tag_hi.tag_id, tag_lo.tag_id}]
+        assert len(seeded) == 2
+        seeded_ids = [item[0] for item in seeded]
+        assert seeded_ids.index(tag_hi.tag_id) < seeded_ids.index(tag_lo.tag_id)

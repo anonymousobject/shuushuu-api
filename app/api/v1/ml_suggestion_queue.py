@@ -32,6 +32,7 @@ from app.schemas.ml_suggestion_queue import (
     SuggestionGridItem,
     SuggestionGridResponse,
     SuggestionTagWorklistItem,
+    SuggestionTagWorklistResponse,
 )
 from app.services.ml_suggestion_queue import count_pending_by_tag, list_pending_for_tag
 from app.services.ml_suggestion_review import bulk_review_suggestions
@@ -46,7 +47,7 @@ _WORKLIST_CACHE_TTL = 60  # seconds
 
 @router.get(
     "/tags",
-    response_model=list[SuggestionTagWorklistItem],
+    response_model=SuggestionTagWorklistResponse,
     response_description="Pending suggestion counts grouped by tag (worklist)",
 )
 async def get_suggestion_worklist(
@@ -59,76 +60,93 @@ async def get_suggestion_worklist(
         float,
         Query(description="Only count suggestions at or above this confidence"),
     ] = 0.0,
-    limit: Annotated[
+    page: Annotated[
         int,
-        Query(ge=1, description="Maximum number of tags to return (top-N by pending count)"),
-    ] = 100,
+        Query(ge=1, description="1-based page number"),
+    ] = 1,
+    per_page: Annotated[
+        int,
+        Query(ge=1, le=200, description="Number of tags per page"),
+    ] = 50,
     search: Annotated[
         str | None,
         Query(description="Filter to tags whose title contains this string (case-insensitive)"),
     ] = None,
     db: AsyncSession = Depends(get_db),
     redis_client: Annotated[redis.Redis, Depends(get_redis)] = None,  # type: ignore[assignment]
-) -> list[SuggestionTagWorklistItem]:
-    """Return pending-suggestion counts grouped by tag, ordered by count DESC.
+) -> SuggestionTagWorklistResponse:
+    """Return paginated pending-suggestion counts grouped by tag, ordered by count DESC.
 
     Used as the entry point of the review queue: a reviewer picks a tag to work
     through. ``type`` narrows to one tag type; ``min_confidence`` excludes
-    low-confidence suggestions from the counts. ``limit`` caps the result to the
-    top-N tags. ``search`` filters by tag title (bypasses cache).
+    low-confidence suggestions from the counts. ``page`` and ``per_page``
+    control pagination. ``search`` filters by tag title (bypasses cache).
 
     When ``search`` is not provided, the result is cached in Redis for
-    ``_WORKLIST_CACHE_TTL`` seconds keyed by (type, min_confidence, limit).
-    Redis errors silently fall back to a direct DB query.
+    ``_WORKLIST_CACHE_TTL`` seconds keyed by (type, min_confidence, page,
+    per_page). Redis errors silently fall back to a direct DB query.
+
+    The DISTINCT tag count query is slow on large datasets (~300ms), so the
+    full response (items + total) is cached together to avoid repeating it.
     """
 
-    def _build_items(
+    def _build_response(
         rows: list[tuple[int, str | None, int, int]],
-    ) -> list[SuggestionTagWorklistItem]:
-        return [
-            SuggestionTagWorklistItem(
-                tag_id=tag_id,
-                title=title,
-                type=tag_type,
-                pending_count=pending_count,
-            )
-            for (tag_id, title, tag_type, pending_count) in rows
-        ]
+        total: int,
+    ) -> SuggestionTagWorklistResponse:
+        return SuggestionTagWorklistResponse(
+            items=[
+                SuggestionTagWorklistItem(
+                    tag_id=tag_id,
+                    title=title,
+                    type=tag_type,
+                    pending_count=pending_count,
+                )
+                for (tag_id, title, tag_type, pending_count) in rows
+            ],
+            total=total,
+            page=page,
+        )
 
     # Only cache when search is not active (search results are per-query and cheap to skip)
     if search is None and redis_client is not None:
-        cache_key = f"{_WORKLIST_CACHE_PREFIX}{type}:{min_confidence}:{limit}"
+        cache_key = f"{_WORKLIST_CACHE_PREFIX}{type}:{min_confidence}:{page}:{per_page}"
         try:
             cached = await redis_client.get(cache_key)
             if cached is not None:
                 raw = json.loads(cached)
-                return [SuggestionTagWorklistItem(**item) for item in raw]
+                return SuggestionTagWorklistResponse(**raw)
         except Exception:
             logger.warning(
                 "Redis get failed for worklist cache key %s; falling back to DB", cache_key
             )
 
-        rows = await count_pending_by_tag(
-            db, type_filter=type, min_confidence=min_confidence, limit=limit
+        rows, total = await count_pending_by_tag(
+            db, type_filter=type, min_confidence=min_confidence, page=page, per_page=per_page
         )
-        items = _build_items(rows)
+        response = _build_response(rows, total)
 
         try:
             await redis_client.setex(
                 cache_key,
                 _WORKLIST_CACHE_TTL,
-                json.dumps([item.model_dump() for item in items]),
+                json.dumps(response.model_dump()),
             )
         except Exception:
             logger.warning("Redis setex failed for worklist cache key %s; ignoring", cache_key)
 
-        return items
+        return response
 
     # search provided or no redis client — query directly, no cache
-    rows = await count_pending_by_tag(
-        db, type_filter=type, min_confidence=min_confidence, limit=limit, search=search
+    rows, total = await count_pending_by_tag(
+        db,
+        type_filter=type,
+        min_confidence=min_confidence,
+        page=page,
+        per_page=per_page,
+        search=search,
     )
-    return _build_items(rows)
+    return _build_response(rows, total)
 
 
 @router.get(

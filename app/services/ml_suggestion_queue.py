@@ -21,10 +21,11 @@ async def count_pending_by_tag(
     db: AsyncSession,
     type_filter: int | None = None,
     min_confidence: float = 0.0,
-    limit: int = 100,
+    page: int = 1,
+    per_page: int = 50,
     search: str | None = None,
-) -> list[tuple[int, str | None, int, int]]:
-    """Return pending suggestion counts grouped by tag.
+) -> tuple[list[tuple[int, str | None, int, int]], int]:
+    """Return paginated pending suggestion counts grouped by tag.
 
     Joins MlTagSuggestions → Tags and aggregates only suggestions with
     status='pending' and confidence >= min_confidence.  When type_filter is
@@ -33,10 +34,31 @@ async def count_pending_by_tag(
     When search is provided, only tags whose title contains the search string
     (case-insensitive LIKE %search%) are included.
 
-    Returns a list of (tag_id, title, type, pending_count) ordered by
-    pending_count DESC, limited to the top ``limit`` rows.
+    Returns (items, total) where:
+    - items is a list of (tag_id, title, type, pending_count) for the
+      requested page, ordered by pending_count DESC
+    - total is the count of DISTINCT tags matching the filters (before
+      pagination), used for building pagination controls
     """
-    stmt = (
+    base_filters = [
+        MlTagSuggestions.status == "pending",  # type: ignore[arg-type]
+        MlTagSuggestions.confidence >= min_confidence,  # type: ignore[operator]
+    ]
+    if type_filter is not None:
+        base_filters.append(Tags.type == type_filter)  # type: ignore[arg-type]
+    if search is not None:
+        base_filters.append(Tags.title.ilike(f"%{search}%"))  # type: ignore[union-attr]
+
+    # Total count of DISTINCT tags matching filters (used for pagination metadata).
+    total_stmt = (
+        select(func.count(func.distinct(MlTagSuggestions.tag_id)))
+        .join(Tags, MlTagSuggestions.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+        .where(*base_filters)
+    )
+    total: int = (await db.execute(total_stmt)).scalar_one()
+
+    offset = (page - 1) * per_page
+    items_stmt = (
         select(
             Tags.tag_id,
             Tags.title,
@@ -44,24 +66,17 @@ async def count_pending_by_tag(
             func.count(MlTagSuggestions.suggestion_id).label("pending_count"),
         )
         .join(Tags, MlTagSuggestions.tag_id == Tags.tag_id)  # type: ignore[arg-type]
-        .where(
-            MlTagSuggestions.status == "pending",  # type: ignore[arg-type]
-            MlTagSuggestions.confidence >= min_confidence,  # type: ignore[operator]
-        )
+        .where(*base_filters)
         .group_by(Tags.tag_id, Tags.title, Tags.type)
         .order_by(func.count(MlTagSuggestions.suggestion_id).desc())
-        .limit(limit)
+        .offset(offset)
+        .limit(per_page)
     )
 
-    if type_filter is not None:
-        stmt = stmt.where(Tags.type == type_filter)  # type: ignore[arg-type]
-
-    if search is not None:
-        stmt = stmt.where(Tags.title.ilike(f"%{search}%"))  # type: ignore[union-attr]
-
-    result = await db.execute(stmt)
+    result = await db.execute(items_stmt)
     rows = result.all()
-    return [(row[0], row[1], row[2], row[3]) for row in rows]
+    items = [(row[0], row[1], row[2], row[3]) for row in rows]
+    return items, total
 
 
 async def list_pending_for_tag(

@@ -129,7 +129,8 @@ class TestSuggestionWorklistEndpoint:
         )
 
         assert response.status_code == 200
-        items = response.json()
+        data = response.json()
+        items = data["items"]
         row = next((r for r in items if r["tag_id"] == tag.tag_id), None)
         assert row is not None
         assert row["title"] == tag.title
@@ -157,7 +158,7 @@ class TestSuggestionWorklistEndpoint:
         )
 
         assert response.status_code == 200
-        items = response.json()
+        items = response.json()["items"]
         tag_ids = [r["tag_id"] for r in items]
         assert char_tag.tag_id in tag_ids
         assert theme_tag.tag_id not in tag_ids
@@ -349,12 +350,12 @@ class TestSuggestionReviewEndpoint:
 
 @pytest.mark.api
 class TestWorklistLimitAndSearch:
-    """GET /api/v1/ml-suggestions/tags — limit and search parameters."""
+    """GET /api/v1/ml-suggestions/tags — per_page and search parameters."""
 
-    async def test_limit_param_restricts_results(
+    async def test_per_page_param_restricts_results(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """?limit=2 with 3 seeded tags returns at most 2 items."""
+        """?per_page=2 with 3 seeded tags returns at most 2 items."""
         user = await _make_user(db_session, "lsrch1")
         await _grant_image_tag_add(db_session, user)
         images = [await _make_image(db_session, user, f"lsrch1_{i}") for i in range(6)]
@@ -370,12 +371,12 @@ class TestWorklistLimitAndSearch:
 
         token = create_access_token(user_id=user.user_id)
         response = await client.get(
-            "/api/v1/ml-suggestions/tags?limit=2",
+            "/api/v1/ml-suggestions/tags?per_page=2",
             headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 200
-        items = response.json()
+        items = response.json()["items"]
         # Only the top-2 by pending count from our seed should appear
         seeded_ids = {tag_x.tag_id, tag_y.tag_id, tag_z.tag_id}
         returned_seeded = [r for r in items if r["tag_id"] in seeded_ids]
@@ -406,7 +407,7 @@ class TestWorklistLimitAndSearch:
         )
 
         assert response.status_code == 200
-        items = response.json()
+        items = response.json()["items"]
         tag_ids = [r["tag_id"] for r in items]
         assert tag_match.tag_id in tag_ids
         assert tag_nomatch.tag_id not in tag_ids
@@ -425,13 +426,160 @@ class TestWorklistLimitAndSearch:
         token = create_access_token(user_id=user.user_id)
         headers = {"Authorization": f"Bearer {token}"}
 
-        r1 = await client.get("/api/v1/ml-suggestions/tags?limit=100", headers=headers)
-        r2 = await client.get("/api/v1/ml-suggestions/tags?limit=100", headers=headers)
+        r1 = await client.get("/api/v1/ml-suggestions/tags?per_page=100", headers=headers)
+        r2 = await client.get("/api/v1/ml-suggestions/tags?per_page=100", headers=headers)
 
         assert r1.status_code == 200
         assert r2.status_code == 200
         # Both calls must return the same data (cache correctness, not Redis internals)
         assert r1.json() == r2.json()
+
+
+@pytest.mark.api
+class TestWorklistPagination:
+    """GET /api/v1/ml-suggestions/tags — page/per_page pagination."""
+
+    async def test_response_shape_matches_worklist_response_schema(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Response is an object with items, total, and page fields."""
+        user = await _make_user(db_session, "wpag0")
+        await _grant_image_tag_add(db_session, user)
+        image = await _make_image(db_session, user, "wpag0a")
+        tag = await _make_tag(db_session, user, "wpag0_tag")
+        await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            "/api/v1/ml-suggestions/tags",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "items" in data
+        assert "total" in data
+        assert "page" in data
+        assert isinstance(data["items"], list)
+        assert isinstance(data["total"], int)
+        assert isinstance(data["page"], int)
+
+    async def test_page2_returns_different_items_than_page1(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """?page=2&per_page=3 returns different items than page=1&per_page=3."""
+        user = await _make_user(db_session, "wpag1")
+        await _grant_image_tag_add(db_session, user)
+        images = [await _make_image(db_session, user, f"wpag1_{i}") for i in range(8)]
+        tags = [await _make_tag(db_session, user, f"wpag1_t{i}") for i in range(8)]
+        for img, tag in zip(images, tags):
+            await _make_suggestion(db_session, img, tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        r1 = await client.get(
+            "/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers
+        )
+        r2 = await client.get(
+            "/api/v1/ml-suggestions/tags?page=2&per_page=3", headers=headers
+        )
+
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+
+        d1 = r1.json()
+        d2 = r2.json()
+        ids_p1 = {item["tag_id"] for item in d1["items"]}
+        ids_p2 = {item["tag_id"] for item in d2["items"]}
+        assert ids_p1.isdisjoint(ids_p2)
+        assert len(d1["items"]) == 3
+        assert d1["page"] == 1
+        assert d2["page"] == 2
+
+    async def test_total_is_same_across_pages(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """total reflects all distinct pending tags, independent of page."""
+        user = await _make_user(db_session, "wpag2")
+        await _grant_image_tag_add(db_session, user)
+        images = [await _make_image(db_session, user, f"wpag2_{i}") for i in range(8)]
+        tags = [await _make_tag(db_session, user, f"wpag2_t{i}") for i in range(8)]
+        for img, tag in zip(images, tags):
+            await _make_suggestion(db_session, img, tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        r1 = await client.get(
+            "/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers
+        )
+        r2 = await client.get(
+            "/api/v1/ml-suggestions/tags?page=2&per_page=3", headers=headers
+        )
+
+        assert r1.json()["total"] == r2.json()["total"]
+        assert r1.json()["total"] >= 8
+
+    async def test_search_still_filters_with_pagination(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """search param filters correctly when pagination is active."""
+        user = await _make_user(db_session, "wpag3")
+        await _grant_image_tag_add(db_session, user)
+        image1 = await _make_image(db_session, user, "wpag3a")
+        image2 = await _make_image(db_session, user, "wpag3b")
+        tag_match = await _make_tag(db_session, user, "wpag3_uniq_zzz_tag")
+        tag_other = await _make_tag(db_session, user, "wpag3_other_tag")
+        await _make_suggestion(db_session, image1, tag_match)
+        await _make_suggestion(db_session, image2, tag_other)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            "/api/v1/ml-suggestions/tags?search=uniq_zzz&page=1&per_page=50",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "items" in data
+        tag_ids = [r["tag_id"] for r in data["items"]]
+        assert tag_match.tag_id in tag_ids
+        assert tag_other.tag_id not in tag_ids
+
+    async def test_cache_key_includes_page_and_per_page(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Different page/per_page combos return different items (distinct cache slots)."""
+        user = await _make_user(db_session, "wpag4")
+        await _grant_image_tag_add(db_session, user)
+        images = [await _make_image(db_session, user, f"wpag4_{i}") for i in range(6)]
+        tags = [await _make_tag(db_session, user, f"wpag4_t{i}") for i in range(6)]
+        for img, tag in zip(images, tags):
+            await _make_suggestion(db_session, img, tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # First call: page=1, per_page=2
+        r_a = await client.get(
+            "/api/v1/ml-suggestions/tags?page=1&per_page=2", headers=headers
+        )
+        # Second call: page=1, per_page=3  (different per_page → different items)
+        r_b = await client.get(
+            "/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers
+        )
+
+        assert r_a.status_code == 200
+        assert r_b.status_code == 200
+        # per_page=2 gives 2 items, per_page=3 gives 3 items — they can't be equal
+        assert len(r_a.json()["items"]) == 2
+        assert len(r_b.json()["items"]) == 3
 
 
 @pytest.mark.api
