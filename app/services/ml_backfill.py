@@ -113,6 +113,7 @@ async def fetch_manifest_rows(
     status: int | None = ImageStatus.ACTIVE,
     missing_theme: bool = False,
     exclude_existing: bool = False,
+    exclude_image_ids: set[int] | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return (image_id, filename, ext) rows for images to run inference on.
@@ -121,6 +122,10 @@ async def fetch_manifest_rows(
         status: keep only images with this status; None for any status.
         missing_theme: keep only images with no theme tags (has_theme is False).
         exclude_existing: skip images that already have ML suggestion rows.
+        exclude_image_ids: post-fetch filter; remove rows whose image_id is in
+            this set.  Useful for delta runs: pass IDs already covered by a
+            prior results file so they are not re-queued.  None (default) or an
+            empty set both mean no filtering.
         limit: cap the number of rows (mainly for smoke tests).
     """
     query = select(Images.image_id, Images.filename, Images.ext)  # type: ignore[call-overload]
@@ -137,7 +142,10 @@ async def fetch_manifest_rows(
         query = query.limit(limit)
 
     result = await db.execute(query)
-    return [{"image_id": row[0], "filename": row[1], "ext": row[2]} for row in result.all()]
+    rows = [{"image_id": row[0], "filename": row[1], "ext": row[2]} for row in result.all()]
+    if exclude_image_ids:
+        rows = [row for row in rows if row["image_id"] not in exclude_image_ids]
+    return rows
 
 
 @dataclass

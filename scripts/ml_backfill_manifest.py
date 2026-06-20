@@ -10,18 +10,31 @@ Usage:
     uv run python scripts/ml_backfill_manifest.py --out manifest.jsonl
     uv run python scripts/ml_backfill_manifest.py --out m.jsonl --missing-theme --exclude-existing
     uv run python scripts/ml_backfill_manifest.py --out m.jsonl --all-statuses --limit 100
+    uv run python scripts/ml_backfill_manifest.py --out delta.jsonl \\
+        --exclude-results results_shard0.jsonl --exclude-results results_shard1.jsonl
 """
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 
 from app.config import ImageStatus
 from app.core.database import get_async_session
-from app.services.ml_backfill import fetch_manifest_rows, write_results
+from app.services.ml_backfill import fetch_manifest_rows, load_image_ids, write_results
 
 
 async def run(args: argparse.Namespace) -> None:
+    exclude_paths = [Path(p) for p in (args.exclude_results or [])]
+    for path in exclude_paths:
+        if not path.exists():
+            print(f"error: --exclude-results file not found: {path}", file=sys.stderr)
+            sys.exit(1)
+
+    exclude_image_ids: set[int] = set()
+    for path in exclude_paths:
+        exclude_image_ids |= load_image_ids(path)
+
     status = None if args.all_statuses else args.status
     async with get_async_session() as db:
         rows = await fetch_manifest_rows(
@@ -29,12 +42,22 @@ async def run(args: argparse.Namespace) -> None:
             status=status,
             missing_theme=args.missing_theme,
             exclude_existing=args.exclude_existing,
+            exclude_image_ids=exclude_image_ids if exclude_image_ids else None,
             limit=args.limit,
         )
     out = Path(args.out)
     out.unlink(missing_ok=True)  # always write a fresh manifest
     write_results(out, rows)
-    print(f"Wrote {len(rows)} image rows to {out}")
+
+    if exclude_paths:
+        n_files = len(exclude_paths)
+        n_excluded = len(exclude_image_ids)
+        print(
+            f"Wrote {len(rows)} image rows to {out} "
+            f"(excluded {n_excluded} already covered by {n_files} results file(s))"
+        )
+    else:
+        print(f"Wrote {len(rows)} image rows to {out}")
 
 
 def main() -> None:
@@ -64,6 +87,15 @@ def main() -> None:
         help="Skip images that already have ML suggestion rows",
     )
     parser.add_argument("--limit", type=int, default=None, help="Cap the number of rows")
+    parser.add_argument(
+        "--exclude-results",
+        action="append",
+        metavar="RESULTS_JSONL",
+        help=(
+            "Skip image IDs already present in this results JSONL file. "
+            "Can be given multiple times; IDs from all files are unioned."
+        ),
+    )
     asyncio.run(run(parser.parse_args()))
 
 

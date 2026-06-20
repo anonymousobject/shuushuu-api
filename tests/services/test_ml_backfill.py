@@ -193,6 +193,53 @@ async def test_fetch_manifest_all_statuses_and_limit(db_session):
     assert len(limited) == 1
 
 
+async def test_fetch_manifest_exclude_image_ids_filters_given_ids(db_session):
+    """exclude_image_ids removes specific ids from the result; None returns all."""
+    user = await _make_user(db_session, "excl_ids")
+    a = await _make_image(db_session, user, "excl_a", status=ImageStatus.ACTIVE)
+    b = await _make_image(db_session, user, "excl_b", status=ImageStatus.ACTIVE)
+    c = await _make_image(db_session, user, "excl_c", status=ImageStatus.ACTIVE)
+    await db_session.flush()
+
+    # exclude a and b explicitly; only c should remain
+    rows = await fetch_manifest_rows(
+        db_session,
+        status=ImageStatus.ACTIVE,
+        missing_theme=False,
+        exclude_image_ids={a.image_id, b.image_id},
+    )
+    ids = {r["image_id"] for r in rows}
+    assert a.image_id not in ids
+    assert b.image_id not in ids
+    assert c.image_id in ids
+
+    # None means no post-filter: all three are present
+    rows_all = await fetch_manifest_rows(
+        db_session,
+        status=ImageStatus.ACTIVE,
+        missing_theme=False,
+        exclude_image_ids=None,
+    )
+    ids_all = {r["image_id"] for r in rows_all}
+    assert {a.image_id, b.image_id, c.image_id}.issubset(ids_all)
+
+
+async def test_fetch_manifest_exclude_image_ids_empty_set_returns_all(db_session):
+    """An empty exclude set behaves the same as None — nothing is filtered."""
+    user = await _make_user(db_session, "excl_empty")
+    a = await _make_image(db_session, user, "excl_empty_a", status=ImageStatus.ACTIVE)
+    await db_session.flush()
+
+    rows = await fetch_manifest_rows(
+        db_session,
+        status=ImageStatus.ACTIVE,
+        missing_theme=False,
+        exclude_image_ids=set(),
+    )
+    ids = {r["image_id"] for r in rows}
+    assert a.image_id in ids
+
+
 def _fixed_resolver(mapped: list[dict[str, Any]]):
     async def _r(db, suggestions):
         return [dict(m) for m in mapped]
