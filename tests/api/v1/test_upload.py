@@ -203,6 +203,39 @@ class TestUploadIQDBDuplicateDetection:
         assert data["image"]["miscmeta"] == "pixiv: 12345"
 
 
+class TestUploadMD5DuplicateDetection:
+    """Tests for exact-duplicate (MD5) detection during upload."""
+
+    @pytest.mark.asyncio
+    async def test_upload_returns_409_with_existing_image_id_on_md5_duplicate(
+        self, upload_client: AsyncClient, test_image, verified_user: Users
+    ):
+        """An exact MD5 duplicate returns 409 carrying the existing image's ID as a
+        structured field (so the frontend can link to it), alongside the
+        human-readable detail message.
+        """
+        # Capture before the call: the duplicate path rolls back the (shared, in
+        # tests) session, which would expire the fixture instance afterwards.
+        existing_md5 = test_image.md5_hash
+        expected_id = test_image.image_id
+
+        # save_uploaded_image is mocked to yield the md5 of an image that already
+        # exists in the DB (the test_image fixture), triggering the duplicate path.
+        with _mock_save_uploaded_image(existing_md5):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("dup.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 409, response.text
+        data = response.json()
+        assert data["existing_image_id"] == expected_id
+        # detail remains a human-readable string carrying the id
+        assert "detail" in data
+        assert str(expected_id) in data["detail"]
+
+
 class TestUploadClientIPHandling:
     """Tests for client IP header handling on upload."""
 
