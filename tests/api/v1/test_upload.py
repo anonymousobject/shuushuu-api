@@ -1,5 +1,7 @@
 """Tests for the image upload route."""
 
+import os
+import tempfile
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -75,11 +77,17 @@ def _make_similar_result(image_id: int, score: float) -> SimilarImageResult:
 
 
 def _mock_save_uploaded_image(md5: str = "abc123unique"):
-    """Create an AsyncMock for save_uploaded_image that returns a fake path."""
-    fake_path = Path("/tmp/fake-upload.jpg")
+    """Create an AsyncMock for save_uploaded_image that returns a fake path.
+
+    Uses a per-xdist-worker temp path (not a single shared file) so parallel
+    workers can't touch()/unlink() one another's file mid-request — the
+    duplicate and IQDB 409 paths both unlink it, while the success path stats it.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    fake_path = Path(tempfile.gettempdir()) / f"fake-upload-{worker}.jpg"
 
     async def _save(file, storage_path, image_id):
-        # Create the fake file so cleanup code doesn't error
+        # Create the fake file so cleanup code (and stat()) don't error
         fake_path.touch()
         return fake_path, "jpg", md5
 
@@ -201,6 +209,39 @@ class TestUploadIQDBDuplicateDetection:
         assert response.status_code == 201
         data = response.json()
         assert data["image"]["miscmeta"] == "pixiv: 12345"
+
+
+class TestUploadMD5DuplicateDetection:
+    """Tests for exact-duplicate (MD5) detection during upload."""
+
+    @pytest.mark.asyncio
+    async def test_upload_returns_409_with_existing_image_id_on_md5_duplicate(
+        self, upload_client: AsyncClient, test_image, verified_user: Users
+    ):
+        """An exact MD5 duplicate returns 409 carrying the existing image's ID as a
+        structured field (so the frontend can link to it), alongside the
+        human-readable detail message.
+        """
+        # Capture before the call: the duplicate path rolls back the (shared, in
+        # tests) session, which would expire the fixture instance afterwards.
+        existing_md5 = test_image.md5_hash
+        expected_id = test_image.image_id
+
+        # save_uploaded_image is mocked to yield the md5 of an image that already
+        # exists in the DB (the test_image fixture), triggering the duplicate path.
+        with _mock_save_uploaded_image(existing_md5):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("dup.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 409, response.text
+        data = response.json()
+        assert data["existing_image_id"] == expected_id
+        # detail remains a human-readable string carrying the id
+        assert "detail" in data
+        assert str(expected_id) in data["detail"]
 
 
 class TestUploadClientIPHandling:
