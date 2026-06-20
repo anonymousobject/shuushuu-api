@@ -2621,7 +2621,7 @@ async def upload_image(
 
         if existing_image:
             # Capture the id before rollback expires the instance.
-            existing_image_id = existing_image.image_id
+            existing_image_id: int = existing_image.image_id  # type: ignore[assignment]
             logger.warning(
                 "duplicate_image_detected",
                 image_id=image_id,
@@ -2631,8 +2631,8 @@ async def upload_image(
             # Clean up the temp record and saved file before returning 409,
             # mirroring the IQDB near-duplicate path below.
             await db.rollback()
-            if file_path and file_path.exists():
-                file_path.unlink()
+            if file_path:
+                file_path.unlink(missing_ok=True)
             return JSONResponse(
                 status_code=status.HTTP_409_CONFLICT,
                 content=ImageUploadDuplicateResponse(

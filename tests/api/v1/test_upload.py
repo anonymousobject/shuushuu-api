@@ -1,5 +1,7 @@
 """Tests for the image upload route."""
 
+import os
+import tempfile
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -75,11 +77,17 @@ def _make_similar_result(image_id: int, score: float) -> SimilarImageResult:
 
 
 def _mock_save_uploaded_image(md5: str = "abc123unique"):
-    """Create an AsyncMock for save_uploaded_image that returns a fake path."""
-    fake_path = Path("/tmp/fake-upload.jpg")
+    """Create an AsyncMock for save_uploaded_image that returns a fake path.
+
+    Uses a per-xdist-worker temp path (not a single shared file) so parallel
+    workers can't touch()/unlink() one another's file mid-request — the
+    duplicate and IQDB 409 paths both unlink it, while the success path stats it.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    fake_path = Path(tempfile.gettempdir()) / f"fake-upload-{worker}.jpg"
 
     async def _save(file, storage_path, image_id):
-        # Create the fake file so cleanup code doesn't error
+        # Create the fake file so cleanup code (and stat()) don't error
         fake_path.touch()
         return fake_path, "jpg", md5
 
