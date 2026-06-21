@@ -240,6 +240,61 @@ async def test_fetch_manifest_exclude_image_ids_empty_set_returns_all(db_session
     assert a.image_id in ids
 
 
+async def test_fetch_manifest_min_id_filters_by_image_id(db_session):
+    """min_id applies a SQL-level >= filter; None returns all (unchanged)."""
+    user = await _make_user(db_session, "min_id")
+    a = await _make_image(db_session, user, "min_a", status=ImageStatus.ACTIVE)
+    b = await _make_image(db_session, user, "min_b", status=ImageStatus.ACTIVE)
+    c = await _make_image(db_session, user, "min_c", status=ImageStatus.ACTIVE)
+    await db_session.flush()
+
+    # min_id=b.image_id: only b and c should be returned (SQL >= filter)
+    rows = await fetch_manifest_rows(
+        db_session,
+        status=ImageStatus.ACTIVE,
+        missing_theme=False,
+        min_id=b.image_id,
+    )
+    ids = {r["image_id"] for r in rows}
+    assert a.image_id not in ids
+    assert b.image_id in ids
+    assert c.image_id in ids
+
+    # min_id=None: all three present (behavior unchanged)
+    rows_all = await fetch_manifest_rows(
+        db_session,
+        status=ImageStatus.ACTIVE,
+        missing_theme=False,
+        min_id=None,
+    )
+    ids_all = {r["image_id"] for r in rows_all}
+    assert {a.image_id, b.image_id, c.image_id}.issubset(ids_all)
+
+
+async def test_fetch_manifest_min_id_composes_with_exclude_image_ids(db_session):
+    """min_id and exclude_image_ids both apply: SQL filter + post-fetch filter."""
+    user = await _make_user(db_session, "min_excl")
+    a = await _make_image(db_session, user, "me_a", status=ImageStatus.ACTIVE)
+    b = await _make_image(db_session, user, "me_b", status=ImageStatus.ACTIVE)
+    c = await _make_image(db_session, user, "me_c", status=ImageStatus.ACTIVE)
+    d = await _make_image(db_session, user, "me_d", status=ImageStatus.ACTIVE)
+    await db_session.flush()
+
+    # min_id=b excludes a via SQL; exclude_image_ids={c} removes c post-fetch
+    rows = await fetch_manifest_rows(
+        db_session,
+        status=ImageStatus.ACTIVE,
+        missing_theme=False,
+        min_id=b.image_id,
+        exclude_image_ids={c.image_id},
+    )
+    ids = {r["image_id"] for r in rows}
+    assert a.image_id not in ids  # excluded by min_id
+    assert b.image_id in ids
+    assert c.image_id not in ids  # excluded by exclude_image_ids
+    assert d.image_id in ids
+
+
 def _fixed_resolver(mapped: list[dict[str, Any]]):
     async def _r(db, suggestions):
         return [dict(m) for m in mapped]

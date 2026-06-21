@@ -43,6 +43,7 @@ async def run(args: argparse.Namespace) -> None:
             missing_theme=args.missing_theme,
             exclude_existing=args.exclude_existing,
             exclude_image_ids=exclude_image_ids if exclude_image_ids else None,
+            min_id=args.min_id,
             limit=args.limit,
         )
     out = Path(args.out)
@@ -95,6 +96,13 @@ def main() -> None:
             "Skip image IDs already present in this results JSONL file. "
             "Can be given multiple times; IDs from all files are unioned."
         ),
+    )
+    parser.add_argument(
+        "--min-id",
+        type=int,
+        default=None,
+        metavar="IMAGE_ID",
+        help="Only images with image_id >= this value (catch-up since a known id)",
     )
     asyncio.run(run(parser.parse_args()))
 

@@ -114,6 +114,7 @@ async def fetch_manifest_rows(
     missing_theme: bool = False,
     exclude_existing: bool = False,
     exclude_image_ids: set[int] | None = None,
+    min_id: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return (image_id, filename, ext) rows for images to run inference on.
@@ -126,6 +127,9 @@ async def fetch_manifest_rows(
             this set.  Useful for delta runs: pass IDs already covered by a
             prior results file so they are not re-queued.  None (default) or an
             empty set both mean no filtering.
+        min_id: SQL-level filter; keep only images with image_id >= this value.
+            Useful for catch-up runs after a DB restore: set to the first
+            image_id added since the last full backfill.  None means no filter.
         limit: cap the number of rows (mainly for smoke tests).
     """
     query = select(Images.image_id, Images.filename, Images.ext)  # type: ignore[call-overload]
@@ -137,6 +141,8 @@ async def fetch_manifest_rows(
     if exclude_existing:
         existing = select(MlTagSuggestions.image_id)  # type: ignore[call-overload]
         query = query.where(Images.image_id.not_in(existing))  # type: ignore[union-attr]
+    if min_id is not None:
+        query = query.where(Images.image_id >= min_id)  # type: ignore[union-attr]
     query = query.order_by(Images.image_id)
     if limit is not None:
         query = query.limit(limit)
