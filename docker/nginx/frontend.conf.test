@@ -31,9 +31,14 @@ server {
 
     client_max_body_size 100M;
 
+    # Re-resolve the upstream per request (see `resolver` in nginx.conf) so a
+    # container recreate with a new IP doesn't strand a cached address. A literal
+    # `proxy_pass http://api:8000` resolves once at config load and never again.
+    set $api_upstream api;
+
     # API proxy - the only endpoint SSR needs
     location /api/ {
-        proxy_pass http://api:8000;
+        proxy_pass http://$api_upstream:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -78,9 +83,15 @@ server {
 
     client_max_body_size 100M;
 
+    # Re-resolve upstreams per request (see `resolver` in nginx.conf) so a
+    # container recreate with a new IP doesn't strand a cached address. A literal
+    # `proxy_pass http://api:8000` resolves once at config load and never again.
+    set $api_upstream api;
+    set $frontend_upstream frontend;
+
     # Protected image routes - proxy to FastAPI for permission checks
     location ~ "^/images/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
-        proxy_pass http://api:8000;
+        proxy_pass http://$api_upstream:8000;
         proxy_set_header Host $host;
         proxy_set_header Cookie $http_cookie;
         proxy_set_header X-Real-IP $remote_addr;
@@ -89,7 +100,7 @@ server {
     }
 
     location ~ "^/thumbs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
-        proxy_pass http://api:8000;
+        proxy_pass http://$api_upstream:8000;
         proxy_set_header Host $host;
         proxy_set_header Cookie $http_cookie;
         proxy_set_header X-Real-IP $remote_addr;
@@ -98,7 +109,7 @@ server {
     }
 
     location ~ "^/medium/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
-        proxy_pass http://api:8000;
+        proxy_pass http://$api_upstream:8000;
         proxy_set_header Host $host;
         proxy_set_header Cookie $http_cookie;
         proxy_set_header X-Real-IP $remote_addr;
@@ -107,7 +118,7 @@ server {
     }
 
     location ~ "^/large/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]+\.(png|jpg|jpeg|gif|webp)$" {
-        proxy_pass http://api:8000;
+        proxy_pass http://$api_upstream:8000;
         proxy_set_header Host $host;
         proxy_set_header Cookie $http_cookie;
         proxy_set_header X-Real-IP $remote_addr;
@@ -160,7 +171,7 @@ server {
 
     # Frontend - proxy to SvelteKit SSR server (production build in Docker)
     location / {
-        proxy_pass http://frontend:3000;
+        proxy_pass http://$frontend_upstream:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -178,7 +189,7 @@ server {
 
     # API proxy
     location /api/ {
-        proxy_pass http://api:8000;
+        proxy_pass http://$api_upstream:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
