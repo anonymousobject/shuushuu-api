@@ -93,6 +93,7 @@ from app.schemas.image import (
     ImageTagItem,
     ImageTagsResponse,
     ImageUpdate,
+    ImageUploadDuplicateResponse,
     ImageUploadResponse,
     ImageUploadSimilarResponse,
     SimilarImageResult,
@@ -2551,7 +2552,15 @@ async def unfavorite_image(
     "/upload",
     response_model=ImageUploadResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={409: {"model": ImageUploadSimilarResponse, "description": "Similar images found"}},
+    responses={
+        409: {
+            "model": ImageUploadSimilarResponse | ImageUploadDuplicateResponse,
+            "description": (
+                "Near-duplicate images found (confirm to proceed), "
+                "or an exact duplicate already exists on the board"
+            ),
+        }
+    },
 )
 async def upload_image(
     request: Request,
@@ -2646,18 +2655,25 @@ async def upload_image(
         existing_image = existing_result.scalar_one_or_none()
 
         if existing_image:
-            # Delete the uploaded file and temp record since it's a duplicate
+            # Capture the id before rollback expires the instance.
+            existing_image_id: int = existing_image.image_id  # type: ignore[assignment]
             logger.warning(
                 "duplicate_image_detected",
                 image_id=image_id,
-                duplicate_of=existing_image.image_id,
+                duplicate_of=existing_image_id,
                 md5_hash=md5_hash,
             )
-            # Don't rollback here - let the exception handler do it
-            # Just raise the exception and the handler will clean up
-            raise HTTPException(
+            # Clean up the temp record and saved file before returning 409,
+            # mirroring the IQDB near-duplicate path below.
+            await db.rollback()
+            if file_path:
+                file_path.unlink(missing_ok=True)
+            return JSONResponse(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Image already exists with ID {existing_image.image_id}",
+                content=ImageUploadDuplicateResponse(
+                    detail=f"Image already exists with ID {existing_image_id}",
+                    existing_image_id=existing_image_id,
+                ).model_dump(mode="json"),
             )
 
         # Get image dimensions and update record

@@ -341,3 +341,15 @@ class ImageUploadSimilarResponse(BaseModel):
 
     message: str
     similar_images: list[SimilarImageResult]
+
+
+class ImageUploadDuplicateResponse(BaseModel):
+    """Schema for 409 response when an exact duplicate is found during upload.
+
+    Returned when the uploaded file's MD5 hash matches an image already on the
+    board. ``detail`` is a human-readable message; ``existing_image_id`` lets the
+    frontend link the user straight to the image that already exists.
+    """
+
+    detail: str
+    existing_image_id: int
