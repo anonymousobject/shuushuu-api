@@ -2,7 +2,7 @@
 
 Drives the whole feature through the real API + real test DB, faking only the
 two boundaries the rest of the suite already fakes: the ML inference service
-(``_get_ml_service`` in the router) and the mapping/resolution resolvers in the
+(``get_ml_service`` in ml_runtime) and the mapping/resolution resolvers in the
 shared pipeline (``resolve_external_tags`` / ``resolve_tag_relationships``).
 Everything else — suggestion storage, the review approve/reject path, TagLink
 and TagHistory creation, the denormalized tag-type flag refresh, and the
@@ -39,7 +39,7 @@ class FakeMLService:
     """Stand-in for MLTagSuggestionService at the inference boundary.
 
     The pipeline only ever calls ``generate_suggestions``; the model is never
-    loaded because ``_get_ml_service`` is patched to return this instance.
+    loaded because ``get_ml_service`` is patched to return this instance.
     """
 
     def __init__(self, predictions: list[dict[str, Any]]) -> None:
@@ -107,7 +107,7 @@ async def _generate_sync(
 ):
     """Drive the sync generate endpoint with the inference + resolver boundaries faked."""
     with (
-        patch(f"{ROUTER}._get_ml_service", AsyncMock(return_value=fake_service)),
+        patch(f"{ROUTER}.get_ml_service", AsyncMock(return_value=fake_service)),
         patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
         patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
     ):
@@ -529,7 +529,7 @@ class TestMlTagSuggestionWorkflow:
 
         token = create_access_token(user_id=user.user_id)
         fake = FakeMLService([])
-        with patch(f"{ROUTER}._get_ml_service", AsyncMock(return_value=fake)):
+        with patch(f"{ROUTER}.get_ml_service", AsyncMock(return_value=fake)):
             resp = await client.post(
                 f"/api/v1/images/{image.image_id}/ml-tag-suggestions/generate?sync=true",
                 headers={"Authorization": f"Bearer {token}"},

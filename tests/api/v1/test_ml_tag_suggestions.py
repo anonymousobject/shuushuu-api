@@ -26,10 +26,11 @@ from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 
-# Patch targets for the synchronous generate path. The router calls
-# _get_ml_service() for the ML inference boundary; the pipeline resolves
-# external tags and relationships against the real DB. We patch the resolvers
-# (same boundary the pipeline's own tests use) so a sync generate produces
+# Patch targets for the synchronous generate path. The router imports
+# get_ml_service from ml_runtime; we patch it at the router's namespace so the
+# import binding is replaced, not the original. The pipeline resolves external
+# tags and relationships against the real DB. We patch the resolvers (same
+# boundary the pipeline's own tests use) so a sync generate produces
 # deterministic suggestions without loading an ONNX model.
 ROUTER = "app.api.v1.ml_tag_suggestions"
 PIPELINE = "app.services.ml_suggestion_pipeline"
@@ -39,7 +40,7 @@ class FakeMLService:
     """Minimal stand-in for MLTagSuggestionService used by the sync path.
 
     The pipeline only calls ``generate_suggestions``; it never loads models
-    here because _get_ml_service is patched to return this instance.
+    here because get_ml_service is patched to return this instance.
     """
 
     def __init__(self, predictions: list[dict[str, Any]]) -> None:
@@ -1602,7 +1603,7 @@ class TestGenerateMlTagSuggestions:
 
         access_token = create_access_token(user_id=user.user_id)
         with (
-            patch(f"{ROUTER}._get_ml_service", AsyncMock(return_value=fake_service)),
+            patch(f"{ROUTER}.get_ml_service", AsyncMock(return_value=fake_service)),
             patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
             patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
         ):
@@ -1660,7 +1661,7 @@ class TestGenerateMlTagSuggestions:
         fake_service = FakeMLService([])
 
         access_token = create_access_token(user_id=user.user_id)
-        with patch(f"{ROUTER}._get_ml_service", AsyncMock(return_value=fake_service)):
+        with patch(f"{ROUTER}.get_ml_service", AsyncMock(return_value=fake_service)):
             response = await client.post(
                 f"/api/v1/images/{image.image_id}/ml-tag-suggestions/generate?sync=true",
                 headers={"Authorization": f"Bearer {access_token}"},

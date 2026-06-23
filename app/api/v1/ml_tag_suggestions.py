@@ -4,7 +4,7 @@ ML Tag Suggestions API Endpoints
 Provides endpoints for viewing and managing ML-generated tag suggestions.
 """
 
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import desc, func, select
@@ -27,12 +27,10 @@ from app.schemas.ml_tag_suggestion import (
     ReviewSuggestionsResponse,
 )
 from app.schemas.tag import TagResponse
+from app.services.ml_runtime import get_ml_service
 from app.services.ml_suggestion_pipeline import generate_and_store_suggestions
 from app.services.ml_suggestion_review import review_ml_tag_suggestions as apply_review
 from app.tasks.queue import enqueue_job
-
-if TYPE_CHECKING:
-    from app.services.ml_service import MLTagSuggestionService
 
 logger = get_logger(__name__)
 
@@ -351,7 +349,7 @@ async def generate_ml_tag_suggestions(
         response.status_code = status.HTTP_200_OK
         try:
             suggestions_created = await generate_and_store_suggestions(
-                db, image, await _get_ml_service()
+                db, image, await get_ml_service()
             )
         except FileNotFoundError as exc:
             # The pipeline already logs the absolute path; do not leak it to the client.
@@ -373,27 +371,3 @@ async def generate_ml_tag_suggestions(
             image_id=image_id,
             job_id=job_id,
         )
-
-
-# Lazy-loaded ML service singleton for sync mode. The API process loads the
-# ONNX model on the first synchronous generate call only.
-_ml_service: MLTagSuggestionService | None = None
-
-
-async def _get_ml_service() -> MLTagSuggestionService:
-    """Get or create the ML service singleton.
-
-    The import is function-local (mirroring app/tasks/worker.py) so that
-    importing this router does not pull onnxruntime into the API import chain.
-    The module global is only set once load_models() succeeds, so a failed load
-    does not leave a half-initialized service cached.
-    """
-    global _ml_service
-    if _ml_service is None:
-        from app.services.ml_service import MLTagSuggestionService
-
-        service = MLTagSuggestionService()
-        await service.load_models()
-        _ml_service = service
-        logger.info("ml_service_loaded_for_sync_mode")
-    return _ml_service
