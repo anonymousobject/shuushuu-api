@@ -347,10 +347,18 @@ async def engine():
     Note: Tables are created once per session by setup_test_database fixture.
     Test isolation is achieved via transaction rollback (not truncation).
     """
+    # NullPool: never keep a pooled connection that could be reused from a
+    # different per-test event loop (pytest-asyncio loop_scope=function). Pooled
+    # async connections crossing loops caused nondeterministic
+    # "Lost connection / IncompleteReadError" setup errors under xdist (-n4);
+    # the server was never near its connection limit. Each checkout opens a
+    # fresh connection that is fully closed on return.
+    from sqlalchemy.pool import NullPool
+
     test_engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
-        pool_pre_ping=True,
+        poolclass=NullPool,
     )
 
     yield test_engine
