@@ -30,6 +30,26 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/ml-tag-suggestions", tags=["ml-tag-suggestions"])
 
 
+def _downscale_for_inference(content: bytes, max_edge: int) -> bytes:
+    """Return image bytes with the longest edge bounded to ``max_edge``.
+
+    Already-small images are returned unchanged (no recompression). Larger ones
+    are decoded — JPEGs at a reduced libjpeg scale via ``draft()`` so the full
+    resolution is never materialised (cheap, and no decompression bomb) — then
+    downscaled and re-encoded as JPEG. Raises on an undecodable or pathologically
+    huge non-JPEG image (the caller maps that to 400).
+    """
+    with Image.open(io.BytesIO(content)) as img:
+        if max(img.size) <= max_edge:
+            return content
+        img.draft("RGB", (max_edge, max_edge))  # JPEG: decode at 1/2..1/8; no-op otherwise
+        rgb = img.convert("RGB")  # decode happens here (reduced for JPEG via draft)
+    rgb.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+    out = io.BytesIO()
+    rgb.save(out, format="JPEG", quality=95)
+    return out.getvalue()
+
+
 @router.post("/analyze", response_model=AnalyzeTagsResponse)
 async def analyze_image_tags(
     current_user: VerifiedUser,
@@ -53,23 +73,18 @@ async def analyze_image_tags(
     md5 = hashlib.md5(content).hexdigest()
 
     try:
-        with Image.open(io.BytesIO(content)) as probe:
-            width, height = probe.size
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image file"
-        ) from exc
-    if max(width, height) > settings.ML_ANALYZE_MAX_DIMENSION:
+        inference_bytes = _downscale_for_inference(content, settings.ML_ANALYZE_DOWNSCALE_EDGE)
+    except Exception as exc:  # undecodable, or a pathologically huge non-JPEG (bomb)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Image dimensions too large to analyze",
-        )
+            detail="Invalid or unprocessable image",
+        ) from exc
 
     suffix = os.path.splitext(file.filename or "")[1] or ".img"
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(content)
+            tmp.write(inference_bytes)
             tmp_path = tmp.name
         ml_service = await get_ml_service()
         async with inference_slot():

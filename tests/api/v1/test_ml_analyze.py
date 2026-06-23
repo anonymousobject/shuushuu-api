@@ -134,14 +134,69 @@ async def test_analyze_returns_theme_and_character_tags(
     assert titles.get("hatsune miku") == TagType.CHARACTER
 
 
-async def test_analyze_rejects_oversize_dimensions(analyze_client: AsyncClient, monkeypatch):
-    """An image whose longest edge exceeds the cap returns 400 before inference."""
+async def test_analyze_downscales_large_image(
+    analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A large image is downscaled before inference (200, not 400) and the model
+    receives an image bounded to ML_ANALYZE_DOWNSCALE_EDGE."""
     monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
-    monkeypatch.setattr(settings, "ML_ANALYZE_MAX_DIMENSION", 10)
+    monkeypatch.setattr(settings, "ML_ANALYZE_DOWNSCALE_EDGE", 256)
 
-    response = await analyze_client.post("/api/v1/ml-tag-suggestions/analyze", files=_files())
+    seen: dict = {}
 
-    assert response.status_code == 400, response.text
+    class _CapturingService:
+        async def generate_raw_predictions(self, image_path, *, include_categories, min_confidence):
+            from PIL import Image
+
+            with Image.open(image_path) as im:
+                seen["size"] = im.size
+            return []
+
+    big_file = {"file": ("big.jpg", _fake_image_bytes(2000, 1500), "image/jpeg")}
+    with (
+        patch(
+            "app.api.v1.ml_analyze.get_ml_service",
+            new_callable=AsyncMock,
+            return_value=_CapturingService(),
+        ),
+        patch(
+            "app.api.v1.ml_analyze.resolve_external_tags",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+    ):
+        response = await analyze_client.post("/api/v1/ml-tag-suggestions/analyze", files=big_file)
+
+    assert response.status_code == 200, response.text
+    assert max(seen["size"]) <= 256  # downscaled, not rejected
+
+
+async def test_analyze_small_image_not_recompressed(
+    analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """An already-small image passes through unchanged (no needless recompression)."""
+    monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+    monkeypatch.setattr(settings, "ML_ANALYZE_DOWNSCALE_EDGE", 2048)
+    original = _fake_image_bytes(100, 100)
+    seen: dict = {}
+
+    class _CapturingService:
+        async def generate_raw_predictions(self, image_path, *, include_categories, min_confidence):
+            with open(image_path, "rb") as fh:
+                seen["bytes"] = fh.read()
+            return []
+
+    with (
+        patch("app.api.v1.ml_analyze.get_ml_service", new_callable=AsyncMock,
+              return_value=_CapturingService()),
+        patch("app.api.v1.ml_analyze.resolve_external_tags", new_callable=AsyncMock, return_value=[]),
+    ):
+        response = await analyze_client.post(
+            "/api/v1/ml-tag-suggestions/analyze",
+            files={"file": ("small.jpg", original, "image/jpeg")},
+        )
+    assert response.status_code == 200, response.text
+    assert seen["bytes"] == original  # unchanged — temp file holds the original bytes
 
 
 async def test_analyze_busy_returns_429(analyze_client: AsyncClient, monkeypatch):

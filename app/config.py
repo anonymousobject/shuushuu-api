@@ -163,9 +163,12 @@ class Settings(BaseSettings):
     ML_ANALYZE_MAX_SUGGESTIONS: int = Field(
         default=12, description="Max suggestions returned per tag type from /analyze"
     )
-    ML_ANALYZE_MAX_DIMENSION: int = Field(
-        default=12000,
-        description="Reject images whose longest edge exceeds this many px before inference",
+    ML_ANALYZE_DOWNSCALE_EDGE: int = Field(
+        default=2048,
+        description=(
+            "Longest edge images are downscaled to before inference (the model "
+            "resizes to ~448 internally); larger images are scaled down, not rejected"
+        ),
     )
     ML_INTRA_OP_THREADS: int = Field(
         default=0,
