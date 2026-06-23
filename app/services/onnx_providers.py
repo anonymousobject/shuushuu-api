@@ -7,6 +7,24 @@ avoids the spurious "provider not available" warnings ORT emits when you ask
 for a provider it can't load.
 """
 
+import onnxruntime as ort  # type: ignore[import-untyped]
+
+
+def make_session_options(intra_op_threads: int) -> ort.SessionOptions:
+    """Build SessionOptions, optionally capping intra-op threads.
+
+    ``intra_op_threads <= 0`` leaves onnxruntime's default (all cores). A positive
+    value caps cores per inference (with inter_op pinned to 1), so that
+    ``semaphore_size x intra_op_threads`` is the process-wide CPU ceiling for
+    inference and serving keeps headroom.
+    """
+    so = ort.SessionOptions()
+    if intra_op_threads > 0:
+        so.intra_op_num_threads = intra_op_threads
+        so.inter_op_num_threads = 1
+    return so
+
+
 # Highest-throughput first; CPU is always the final fallback.
 _PREFERRED = (
     "CUDAExecutionProvider",

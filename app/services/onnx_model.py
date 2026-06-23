@@ -13,8 +13,9 @@ import numpy as np
 import onnxruntime as ort  # type: ignore[import-untyped]
 from PIL import Image
 
+from app.config import settings
 from app.core.logging import get_logger
-from app.services.onnx_providers import select_providers
+from app.services.onnx_providers import make_session_options, select_providers
 
 logger = get_logger(__name__)
 
@@ -54,7 +55,11 @@ class WDTaggerModel:
         # it, else CPU. Requesting only available providers avoids spurious
         # "provider not available" warnings.
         providers = select_providers(ort.get_available_providers())
-        self.session = ort.InferenceSession(str(self.model_path), providers=providers)
+        self.session = ort.InferenceSession(
+            str(self.model_path),
+            sess_options=make_session_options(settings.ML_INTRA_OP_THREADS),
+            providers=providers,
+        )
 
         active_providers = self.session.get_providers()
         logger.info(
