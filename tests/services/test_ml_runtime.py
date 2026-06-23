@@ -31,6 +31,17 @@ async def test_inference_slot_released_on_success(monkeypatch):
     assert sem._value == 1  # released back
 
 
+async def test_inference_slot_released_on_exception(monkeypatch):
+    # A failure inside the slot must still release it, or slots leak and
+    # inference eventually 429s forever.
+    sem = asyncio.Semaphore(1)
+    monkeypatch.setattr(ml_runtime, "_inference_semaphore", sem)
+    with pytest.raises(ValueError):
+        async with inference_slot():
+            raise ValueError("boom")
+    assert sem._value == 1  # released despite exception
+
+
 async def test_warm_load_calls_get_ml_service_when_enabled(monkeypatch):
     called = False
     async def fake_get():
