@@ -25,13 +25,17 @@ PIPELINE = "app.services.ml_suggestion_pipeline"
 
 
 class FakeMLService:
-    """Canned ML service: returns external-tag predictions for the pipeline."""
+    """Canned ML service: returns raw predictions for the pipeline."""
 
     def __init__(self, predictions: list[dict[str, Any]]) -> None:
         self._predictions = predictions
 
-    async def generate_suggestions(
-        self, image_path: str, min_confidence: float = 0.35
+    async def generate_raw_predictions(
+        self,
+        image_path: str,
+        *,
+        include_categories: set[int],
+        min_confidence: float,
     ) -> list[dict[str, Any]]:
         return list(self._predictions)
 
@@ -121,8 +125,8 @@ async def test_happy_path_creates_rows(db_session, tmp_path, monkeypatch):
 
     ml = FakeMLService(
         [
-            {"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"},
-            {"external_tag": "blush", "confidence": 0.9, "model_version": "v3"},
+            {"external_tag": "long_hair", "confidence": 0.9, "category": 0, "model_version": "v3"},
+            {"external_tag": "blush", "confidence": 0.9, "category": 0, "model_version": "v3"},
         ]
     )
     mapped = [

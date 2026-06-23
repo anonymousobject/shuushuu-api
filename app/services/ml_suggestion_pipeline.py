@@ -22,6 +22,8 @@ from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
+from app.services.ml_categories import SUGGESTION_CATEGORIES
+from app.services.ml_raw_store import ingest_raw_predictions
 from app.services.tag_mapping_service import resolve_external_tags
 from app.services.tag_resolver import resolve_tag_relationships
 
@@ -169,20 +171,37 @@ async def generate_and_store_suggestions(
 
     logger.info("ml_suggestion_pipeline_started", image_id=image_id, path=str(image_path))
 
-    # Run inference for external (Danbooru) tag predictions, then hand off to the
-    # DB half. store_predictions is shared with the offline bulk-ingest path,
-    # which supplies predictions computed on another host.
-    predictions = await ml_service.generate_suggestions(
-        str(image_path), min_confidence=settings.ML_MIN_CONFIDENCE
+    # ONE inference across the suggestion categories (general + character). The
+    # raw output feeds both the raw-prediction store and the pending suggestions
+    # via persist_predictions, so character coverage and the raw store come for
+    # free from the same model run.
+    raw_predictions = await ml_service.generate_raw_predictions(
+        str(image_path),
+        include_categories=SUGGESTION_CATEGORIES,
+        min_confidence=settings.ML_MIN_CONFIDENCE,
     )
 
     logger.info(
         "ml_suggestion_pipeline_predictions_generated",
         image_id=image_id,
-        count=len(predictions),
+        count=len(raw_predictions),
     )
 
-    return await store_predictions(db, image_id, predictions)
+    return await persist_predictions(db, image_id, raw_predictions)
+
+
+async def persist_predictions(
+    db: AsyncSession, image_id: int, raw_predictions: list[dict[str, Any]]
+) -> int:
+    """Persist one image's raw predictions: populate the raw-prediction store
+    AND create pending suggestions. Shared by the live worker (cache hit or
+    fresh inference) and generate_and_store_suggestions.
+
+    ingest_raw_predictions and store_predictions run in the SAME session;
+    store_predictions issues the commit (do not add a second commit here).
+    Returns the number of suggestions created."""
+    await ingest_raw_predictions(db, [{"image_id": image_id, "predictions": raw_predictions}])
+    return await store_predictions(db, image_id, raw_predictions)
 
 
 async def compute_implied_suggestions(
@@ -263,7 +282,8 @@ async def store_predictions(
     This is the database half of the pipeline, independent of how the
     predictions were produced (live inference or an offline GPU backfill).
     ``predictions`` are external-tag dicts (external_tag, confidence,
-    model_version) as returned by MLTagSuggestionService.generate_suggestions.
+    model_version; an extra ``category`` key is ignored) as returned by
+    MLTagSuggestionService.generate_raw_predictions.
 
     Existing suggestions are kept (idempotent regeneration); approved
     suggestions whose tag was since removed from the image reset to pending.

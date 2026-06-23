@@ -35,26 +35,34 @@ PIPELINE = "app.services.ml_suggestion_pipeline"
 class FakeMLService:
     """Minimal stand-in for MLTagSuggestionService.
 
-    Returns canned external-tag predictions and records the min_confidence it
-    was called with. It does not implement model loading — the pipeline only
-    calls ``generate_suggestions``.
+    Returns canned raw predictions and records the include_categories /
+    min_confidence it was called with. It does not implement model loading —
+    the pipeline only calls ``generate_raw_predictions``.
     """
 
     def __init__(self, predictions: list[dict[str, Any]]) -> None:
         self._predictions = predictions
         self.called_with_min_confidence: float | None = None
+        self.called_with_include_categories: set[int] | None = None
 
-    async def generate_suggestions(
-        self, image_path: str, min_confidence: float = 0.35
+    async def generate_raw_predictions(
+        self,
+        image_path: str,
+        *,
+        include_categories: set[int],
+        min_confidence: float,
     ) -> list[dict[str, Any]]:
         self.called_with_min_confidence = min_confidence
+        self.called_with_include_categories = include_categories
         return list(self._predictions)
 
 
 def _predictions(*tags: str) -> list[dict[str, Any]]:
-    """Build canned external-tag predictions (confidence unused downstream
-    here because resolvers are patched to return tag_id rows)."""
-    return [{"external_tag": t, "confidence": 0.9, "model_version": "v3"} for t in tags]
+    """Build canned raw predictions (confidence/category unused downstream here
+    because resolvers are patched to return tag_id rows)."""
+    return [
+        {"external_tag": t, "confidence": 0.9, "category": 0, "model_version": "v3"} for t in tags
+    ]
 
 
 async def _make_user(db_session, suffix: str) -> Users:
@@ -490,6 +498,67 @@ async def test_alias_resolves_to_canonical(db_session, tmp_path, monkeypatch):
     assert len(suggestions) == 1
     # The stored suggestion must reference the canonical tag, not the alias.
     assert suggestions[0].tag_id == 300
+
+
+async def test_generate_and_store_populates_raw_store_and_suggestions(
+    db_session, tmp_path, monkeypatch
+):
+    """The live path runs ONE inference (general+character) that feeds BOTH the
+    raw-prediction store and the pending suggestions.
+
+    Asserts the fake service is asked for SUGGESTION_CATEGORIES, that the raw
+    predictions are forwarded verbatim to ingest_raw_predictions, and that
+    suggestions are created from the same predictions.
+    """
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    tags = [Tags(tag_id=46, title="long hair"), Tags(tag_id=99, title="hatsune miku")]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "rawstore")
+    image = await _make_image(db_session, user, "rawstore", tmp_path)
+    await db_session.commit()
+
+    raw = [
+        {"external_tag": "long_hair", "confidence": 0.92, "category": 0, "model_version": "v3"},
+        {"external_tag": "hatsune_miku", "confidence": 0.88, "category": 4, "model_version": "v3"},
+    ]
+
+    class FakeService:
+        model_name = "v3"
+
+        async def generate_raw_predictions(
+            self, image_path, *, include_categories, min_confidence
+        ):
+            assert include_categories == {0, 4}  # SUGGESTION_CATEGORIES
+            return list(raw)
+
+    captured: dict[str, Any] = {}
+
+    async def fake_ingest(db, records):
+        captured["records"] = records
+        return sum(len(r["predictions"]) for r in records)
+
+    mapped = [
+        {"tag_id": 46, "confidence": 0.92, "model_version": "v3"},
+        {"tag_id": 99, "confidence": 0.88, "model_version": "v3"},
+    ]
+    with (
+        patch(f"{PIPELINE}.ingest_raw_predictions", fake_ingest),
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, FakeService())
+
+    assert created == 2
+    assert captured["records"] == [{"image_id": image.image_id, "predictions": raw}]
+
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    suggestions = result.scalars().all()
+    assert {s.tag_id for s in suggestions} == {46, 99}
 
 
 async def test_store_predictions_persists_without_inference(db_session, tmp_path, monkeypatch):

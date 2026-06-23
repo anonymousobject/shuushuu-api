@@ -39,15 +39,19 @@ PIPELINE = "app.services.ml_suggestion_pipeline"
 class FakeMLService:
     """Minimal stand-in for MLTagSuggestionService used by the sync path.
 
-    The pipeline only calls ``generate_suggestions``; it never loads models
+    The pipeline only calls ``generate_raw_predictions``; it never loads models
     here because get_ml_service is patched to return this instance.
     """
 
     def __init__(self, predictions: list[dict[str, Any]]) -> None:
         self._predictions = predictions
 
-    async def generate_suggestions(
-        self, image_path: str, min_confidence: float = 0.35
+    async def generate_raw_predictions(
+        self,
+        image_path: str,
+        *,
+        include_categories: set[int],
+        min_confidence: float,
     ) -> list[dict[str, Any]]:
         return list(self._predictions)
 

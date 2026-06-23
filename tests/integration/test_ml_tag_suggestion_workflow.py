@@ -38,15 +38,19 @@ PIPELINE = "app.services.ml_suggestion_pipeline"
 class FakeMLService:
     """Stand-in for MLTagSuggestionService at the inference boundary.
 
-    The pipeline only ever calls ``generate_suggestions``; the model is never
-    loaded because ``get_ml_service`` is patched to return this instance.
+    The pipeline only ever calls ``generate_raw_predictions``; the model is
+    never loaded because ``get_ml_service`` is patched to return this instance.
     """
 
     def __init__(self, predictions: list[dict[str, Any]]) -> None:
         self._predictions = predictions
 
-    async def generate_suggestions(
-        self, image_path: str, min_confidence: float = 0.35
+    async def generate_raw_predictions(
+        self,
+        image_path: str,
+        *,
+        include_categories: set[int],
+        min_confidence: float,
     ) -> list[dict[str, Any]]:
         return list(self._predictions)
 

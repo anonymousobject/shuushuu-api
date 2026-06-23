@@ -11,9 +11,8 @@ from typing import Any, Protocol
 
 from app.config import settings
 from app.core.logging import get_logger
-from app.services.animetimm_model import GENERAL_CATEGORY as ANIMETIMM_GENERAL
 from app.services.animetimm_model import AnimetimmModel
-from app.services.onnx_model import GENERAL_CATEGORY, WDTaggerModel
+from app.services.onnx_model import WDTaggerModel
 
 logger = get_logger(__name__)
 
@@ -115,54 +114,6 @@ class MLTagSuggestionService:
         self.model = AnimetimmModel(str(model_path), str(tags_path))
         await self.model.load()
 
-    async def generate_suggestions(
-        self,
-        image_path: str,
-        min_confidence: float = 0.35,
-    ) -> list[dict[str, Any]]:
-        """
-        Generate tag suggestions for an image.
-
-        Returns list of dicts with keys:
-            - external_tag: Danbooru tag name (e.g., "long_hair")
-            - confidence: float 0-1
-            - model_version: model name (ML_MODEL_NAME setting)
-        """
-        if not self.model:
-            raise RuntimeError("Models not loaded. Call load_models() first.")
-
-        # v1 suggests theme tags only. To enable character suggestions later,
-        # add CHARACTER_CATEGORY here and populate character rows in tag_mappings.
-        if isinstance(self.model, AnimetimmModel):
-            include_categories: set[int] = {ANIMETIMM_GENERAL}
-        else:
-            include_categories = {GENERAL_CATEGORY}
-
-        predictions = await self.model.predict(
-            image_path,
-            min_confidence=min_confidence,
-            include_categories=include_categories,
-        )
-
-        suggestions = []
-        for pred in predictions:
-            suggestions.append(
-                {
-                    "external_tag": pred["tag"],
-                    "confidence": pred["confidence"],
-                    "model_version": self._model_name,
-                }
-            )
-
-        logger.info(
-            "ml_service_suggestions_generated",
-            image_path=image_path,
-            suggestion_count=len(suggestions),
-            model_name=self._model_name,
-        )
-
-        return suggestions
-
     async def generate_raw_predictions(
         self,
         image_path: str,
@@ -172,8 +123,9 @@ class MLTagSuggestionService:
     ) -> list[dict[str, Any]]:
         """Raw predictions across the given categories, for the raw-prediction store.
 
-        Unlike generate_suggestions (general-only, mapped-shape), this returns the
-        model's external tags with their category, for any categories requested.
+        Returns the model's external tags with their category for any categories
+        requested. This single inference feeds both the raw-prediction store and
+        the suggestion pipeline.
         """
         if not self.model:
             raise RuntimeError("Models not loaded. Call load_models() first.")
