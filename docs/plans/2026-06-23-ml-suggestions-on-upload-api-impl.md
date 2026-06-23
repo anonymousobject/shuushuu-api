@@ -77,9 +77,9 @@ Claude-Session: https://claude.ai/code/session_01BiQ7vc9MkxJFbL8Hdh8FF8
     ML_ANALYZE_MAX_SUGGESTIONS: int = Field(
         default=12, description="Max suggestions returned per tag type from /analyze"
     )
-    ML_ANALYZE_MAX_DIMENSION: int = Field(
-        default=12000,
-        description="Reject images whose longest edge exceeds this many px before inference",
+    ML_ANALYZE_DOWNSCALE_EDGE: int = Field(
+        default=2048,
+        description="Longest edge images are downscaled to before inference (the model resizes to ~448 internally); larger images are scaled down, not rejected",
     )
     ML_INTRA_OP_THREADS: int = Field(
         default=0,
@@ -574,7 +574,9 @@ git commit -m "feat(ml): analyze response schema (tag_id/title/type, no confiden
 - Modify: router registration (find with `grep -rn "include_router" app/`)
 - Test: `tests/api/v1/test_ml_analyze.py`
 
-**Behavior:** `POST /api/v1/ml-tag-suggestions/analyze`, multipart `file`. Verified user. 503 when flag off. Per-user rate limit. Read bytes (413 if over `MAX_IMAGE_SIZE`). Compute MD5. Decode with PIL to validate + enforce `ML_ANALYZE_MAX_DIMENSION` (400 on bad/oversize). Acquire `inference_slot()` (429 on timeout). Write bytes to a temp file; `generate_raw_predictions(SUGGESTION_CATEGORIES, min_confidence=ML_ANALYZE_MIN_CONFIDENCE)`; delete temp. Cache raw JSON under `ml:analyze:<md5>` with TTL. Resolve via `resolve_external_tags`; fetch `Tags` for title+type; per-type sort by confidence desc, apply floor, cap at `ML_ANALYZE_MAX_SUGGESTIONS`. Return `AnalyzeTagsResponse`.
+> **SUPERSEDED (commit 7e8664b):** the original dimension *reject* below was replaced by *downscale-on-decode*. Large uploads are now downscaled (`_downscale_for_inference`, JPEG `draft()`) instead of rejected — there's no stored thumbnail/variant pre-submit, so analyze downscales the bytes itself; a 400 is returned only for an undecodable/huge non-JPEG. `ML_ANALYZE_MAX_DIMENSION` (12000, reject) became `ML_ANALYZE_DOWNSCALE_EDGE` (2048, downscale-to). MD5 stays on the ORIGINAL bytes; the downscaled bytes go to the temp file. Inference floor is `ML_MIN_CONFIDENCE` (storage floor; the display floor is applied in `_resolve_to_response`). The code/test snippets below predate this and are illustrative.
+
+**Behavior:** `POST /api/v1/ml-tag-suggestions/analyze`, multipart `file`. Verified user. 503 when flag off. Per-user rate limit. Read bytes (413 if over `MAX_IMAGE_SIZE`). Compute MD5 (on the original bytes). **Downscale large uploads via `ML_ANALYZE_DOWNSCALE_EDGE`** (scaled down, not rejected; 400 only on undecodable). Acquire `inference_slot()` (429 on timeout). Write the (possibly downscaled) bytes to a temp file; `generate_raw_predictions(SUGGESTION_CATEGORIES, min_confidence=ML_MIN_CONFIDENCE)`; delete temp. Cache raw JSON under `ml:analyze:<md5>` with TTL. Resolve via `resolve_external_tags`; fetch `Tags` for title+type; per-type sort by confidence desc, apply the **display** floor `ML_ANALYZE_MIN_CONFIDENCE`, cap at `ML_ANALYZE_MAX_SUGGESTIONS`. Return `AnalyzeTagsResponse`.
 
 - [ ] **Step 1: Write the failing tests.** Create `tests/api/v1/test_ml_analyze.py`. **Copy** the `verified_user` fixture into this file — it's defined locally in `tests/api/v1/test_upload.py` (lines ~18-39), NOT in conftest, so it can't be imported as a shared fixture. Use the same `create_access_token(user.id)` + Bearer pattern, the `client` fixture, and patch the inference seam (`app.api.v1.ml_analyze.get_ml_service`) to return a fake service with `generate_raw_predictions`. Patch `resolve_external_tags` at the endpoint module. Cover:
 
