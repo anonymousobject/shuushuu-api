@@ -143,6 +143,38 @@ class Settings(BaseSettings):
         description="Minimum model probability for a prediction to become a suggestion",
     )
 
+    # ML suggestions on upload (analyze endpoint)
+    ML_ANALYZE_RATE_LIMIT: int = Field(
+        default=20, description="Max /analyze calls per user per minute"
+    )
+    ML_ANALYZE_CONCURRENCY: int = Field(
+        default=2, description="Max concurrent inferences process-wide (global semaphore)"
+    )
+    ML_ANALYZE_SEMAPHORE_TIMEOUT: float = Field(
+        default=8.0,
+        description="Seconds to wait for an inference slot before returning 429",
+    )
+    ML_ANALYZE_MIN_CONFIDENCE: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Display floor for upload-form suggestions (separate from ML_MIN_CONFIDENCE used for stored suggestions)",
+    )
+    ML_ANALYZE_MAX_SUGGESTIONS: int = Field(
+        default=12, description="Max suggestions returned per tag type from /analyze"
+    )
+    ML_ANALYZE_MAX_DIMENSION: int = Field(
+        default=12000,
+        description="Reject images whose longest edge exceeds this many px before inference",
+    )
+    ML_INTRA_OP_THREADS: int = Field(
+        default=0,
+        description="onnxruntime intra-op thread cap per inference; 0 = library default (all cores)",
+    )
+    ML_ANALYZE_CACHE_TTL_SECONDS: int = Field(
+        default=3600, description="TTL for the md5 -> raw-predictions analyze cache"
+    )
+
     # Avatar Settings
     AVATAR_STORAGE_PATH: str = ""  # Derived from STORAGE_PATH if not set
     BANNER_STORAGE_PATH: str = ""  # Derived from STORAGE_PATH if not set
