@@ -5,7 +5,7 @@ import io
 import json
 import os
 import tempfile
-from typing import Annotated
+from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -97,7 +97,7 @@ async def analyze_image_tags(
     return await _resolve_to_response(db, raw)
 
 
-async def _resolve_to_response(db: AsyncSession, raw: list[dict]) -> AnalyzeTagsResponse:
+async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> AnalyzeTagsResponse:
     """Map raw external preds -> internal tags, attach title/type, sort+floor+cap per type."""
     resolved = await resolve_external_tags(db, raw)  # [{tag_id, confidence, model_version}]
     if not resolved:
@@ -115,16 +115,22 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict]) -> AnalyzeTags
     # NOTE: this floor is on the MAPPING-SCALED confidence (resolve_external_tags
     # multiplied each by mapping.confidence), so it is NOT redundant with the
     # pre-mapping inference floor. Tags with a NULL title are dropped (unusable as a chip).
-    by_type: dict[int, list[tuple[float, Tags]]] = {}
+    by_type: dict[int, list[tuple[float, AnalyzedTag]]] = {}
     for tid, conf in best.items():
         tag = tags_by_id.get(tid)
-        if tag is None or not tag.title or conf < settings.ML_ANALYZE_MIN_CONFIDENCE:
+        if (
+            tag is None
+            or tag.tag_id is None
+            or not tag.title
+            or conf < settings.ML_ANALYZE_MIN_CONFIDENCE
+        ):
             continue
-        by_type.setdefault(tag.type, []).append((conf, tag))
+        by_type.setdefault(tag.type, []).append(
+            (conf, AnalyzedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type))
+        )
 
     suggestions: list[AnalyzedTag] = []
     for _type, rows in by_type.items():
         rows.sort(key=lambda x: x[0], reverse=True)
-        for _conf, tag in rows[: settings.ML_ANALYZE_MAX_SUGGESTIONS]:
-            suggestions.append(AnalyzedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type))
+        suggestions.extend(at for _conf, at in rows[: settings.ML_ANALYZE_MAX_SUGGESTIONS])
     return AnalyzeTagsResponse(suggestions=suggestions)
