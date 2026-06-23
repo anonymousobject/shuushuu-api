@@ -10,6 +10,7 @@ an error dict) so a single bad image never crashes the worker queue.
 import json
 from typing import Any
 
+import redis.asyncio as redis
 from sqlalchemy import select
 
 from app.config import settings
@@ -24,10 +25,8 @@ from app.services.ml_suggestion_pipeline import (
 logger = get_logger(__name__)
 
 
-def _analyze_redis():
+def _analyze_redis() -> redis.Redis:  # type: ignore[type-arg]
     """Return a Redis client pointed at the analyze-cache DB (db 0, same as the API endpoint)."""
-    import redis.asyncio as redis
-
     return redis.from_url(str(settings.REDIS_URL), encoding="utf-8", decode_responses=True)
 
 
@@ -81,7 +80,7 @@ async def generate_ml_tag_suggestions(
                     try:
                         blob = await client.get(f"ml:analyze:{image.md5_hash}")
                     finally:
-                        await client.aclose()
+                        await client.aclose()  # type: ignore[attr-defined]  # stub lags runtime; aclose is correct
                     if blob:
                         cached_raw = json.loads(blob)
                 except Exception:
