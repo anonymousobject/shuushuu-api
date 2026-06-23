@@ -58,8 +58,8 @@ async def populate_external_tags(db: AsyncSession, csv_path: Path) -> int:
 
     # Fetch names already in the DB so we only insert missing ones.
     existing_result = await db.execute(
-        select(MlExternalTags.name).where(
-            MlExternalTags.name.in_(list(file_entries.keys()))  # type: ignore[union-attr]
+        select(MlExternalTags.name).where(  # type: ignore[call-overload]
+            MlExternalTags.name.in_(list(file_entries.keys()))  # type: ignore[attr-defined]
         )
     )
     existing_names: set[str] = {row[0] for row in existing_result.all()}
@@ -111,7 +111,7 @@ async def ingest_raw_predictions(
         Number of rows actually inserted (0 if all rows already existed).
     """
     # --- 1. Build name → external_tag_id map (one query) ---
-    ext_tag_result = await db.execute(select(MlExternalTags.name, MlExternalTags.id))
+    ext_tag_result = await db.execute(select(MlExternalTags.name, MlExternalTags.id))  # type: ignore[call-overload]
     ext_tag_map: dict[str, int] = {row[0]: row[1] for row in ext_tag_result.all()}
 
     # --- 2. Collect model versions and upsert into ml_models ---
@@ -126,8 +126,8 @@ async def ingest_raw_predictions(
     model_id_map: dict[str, int] = {}
     if model_versions:
         existing_models = await db.execute(
-            select(MlModels.name, MlModels.id).where(
-                MlModels.name.in_(list(model_versions))  # type: ignore[union-attr]
+            select(MlModels.name, MlModels.id).where(  # type: ignore[call-overload]
+                MlModels.name.in_(list(model_versions))  # type: ignore[attr-defined]
             )
         )
         model_id_map = {row[0]: row[1] for row in existing_models.all()}
@@ -192,7 +192,7 @@ async def ingest_raw_predictions(
         batch = rows[start : start + _BATCH_SIZE]
         stmt = mysql_insert(MlRawPredictions).values(batch).prefix_with("IGNORE")
         res = await db.execute(stmt)
-        total_inserted += res.rowcount
+        total_inserted += res.rowcount  # type: ignore[attr-defined]
 
     if rows:
         await db.commit()

@@ -41,11 +41,11 @@ async def count_pending_by_tag(
       pagination), used for building pagination controls
     """
     base_filters = [
-        MlTagSuggestions.status == "pending",  # type: ignore[arg-type]
-        MlTagSuggestions.confidence >= min_confidence,  # type: ignore[operator]
+        MlTagSuggestions.status == "pending",
+        MlTagSuggestions.confidence >= min_confidence,
     ]
     if type_filter is not None:
-        base_filters.append(Tags.type == type_filter)  # type: ignore[arg-type]
+        base_filters.append(Tags.type == type_filter)
     if search is not None:
         base_filters.append(Tags.title.ilike(f"%{search}%"))  # type: ignore[union-attr]
 
@@ -53,22 +53,22 @@ async def count_pending_by_tag(
     total_stmt = (
         select(func.count(func.distinct(MlTagSuggestions.tag_id)))
         .join(Tags, MlTagSuggestions.tag_id == Tags.tag_id)  # type: ignore[arg-type]
-        .where(*base_filters)
+        .where(*base_filters)  # type: ignore[arg-type]
     )
     total: int = (await db.execute(total_stmt)).scalar_one()
 
     offset = (page - 1) * per_page
     items_stmt = (
-        select(
+        select(  # type: ignore[call-overload]
             Tags.tag_id,
             Tags.title,
             Tags.type,
-            func.count(MlTagSuggestions.suggestion_id).label("pending_count"),
+            func.count(MlTagSuggestions.suggestion_id).label("pending_count"),  # type: ignore[arg-type]
         )
-        .join(Tags, MlTagSuggestions.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+        .join(Tags, MlTagSuggestions.tag_id == Tags.tag_id)
         .where(*base_filters)
         .group_by(Tags.tag_id, Tags.title, Tags.type)
-        .order_by(func.count(MlTagSuggestions.suggestion_id).desc())
+        .order_by(func.count(MlTagSuggestions.suggestion_id).desc())  # type: ignore[arg-type]
         .offset(offset)
         .limit(per_page)
     )
@@ -97,23 +97,23 @@ async def list_pending_for_tag(
     - total is the full count matching tag_id + min_confidence (before pagination)
     """
     base_filter = (
-        MlTagSuggestions.status == "pending",  # type: ignore[arg-type]
-        MlTagSuggestions.tag_id == tag_id,  # type: ignore[arg-type]
-        MlTagSuggestions.confidence >= min_confidence,  # type: ignore[operator]
+        MlTagSuggestions.status == "pending",
+        MlTagSuggestions.tag_id == tag_id,
+        MlTagSuggestions.confidence >= min_confidence,
     )
 
-    count_stmt = select(func.count(MlTagSuggestions.suggestion_id)).where(*base_filter)
+    count_stmt = select(func.count(MlTagSuggestions.suggestion_id)).where(*base_filter)  # type: ignore[arg-type]
     total: int = (await db.execute(count_stmt)).scalar_one()
 
     offset = (page - 1) * per_page
     items_stmt = (
-        select(
+        select(  # type: ignore[call-overload]
             MlTagSuggestions.suggestion_id,
             MlTagSuggestions.image_id,
             MlTagSuggestions.confidence,
         )
         .where(*base_filter)
-        .order_by(MlTagSuggestions.confidence.desc())  # type: ignore[union-attr]
+        .order_by(MlTagSuggestions.confidence.desc())  # type: ignore[attr-defined]
         .offset(offset)
         .limit(per_page)
     )

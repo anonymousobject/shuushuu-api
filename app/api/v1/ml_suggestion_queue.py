@@ -73,7 +73,7 @@ async def get_suggestion_worklist(
         Query(description="Filter to tags whose title contains this string (case-insensitive)"),
     ] = None,
     db: AsyncSession = Depends(get_db),
-    redis_client: Annotated[redis.Redis, Depends(get_redis)] = None,  # type: ignore[assignment]
+    redis_client: Annotated[redis.Redis, Depends(get_redis)] = None,  # type: ignore[assignment, type-arg]
 ) -> SuggestionTagWorklistResponse:
     """Return paginated pending-suggestion counts grouped by tag, ordered by count DESC.
 

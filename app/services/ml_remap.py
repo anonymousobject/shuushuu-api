@@ -44,7 +44,7 @@ async def remap_image(
     implied_by_tag = {p["tag_id"]: p for p in implied}
 
     existing = list(
-        (await db.execute(select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)))
+        (await db.execute(select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)))  # type: ignore[arg-type]
         .scalars()
         .all()
     )
@@ -99,7 +99,7 @@ async def remap_image_from_store(db: AsyncSession, image_id: int, model_name: st
     then call remap_image. This is the normal operational entry point for the CLI."""
     rows = (
         await db.execute(
-            select(MlExternalTags.name, MlRawPredictions.confidence)
+            select(MlExternalTags.name, MlRawPredictions.confidence)  # type: ignore[call-overload]
             .join(MlRawPredictions, MlRawPredictions.external_tag_id == MlExternalTags.id)
             .join(MlModels, MlModels.id == MlRawPredictions.model_id)
             .where(
@@ -136,7 +136,7 @@ async def remap_images_for_tag(db: AsyncSession, internal_tag_id: int, model_nam
     external_tag_names = list(
         (
             await db.execute(
-                select(TagMappings.external_tag).where(
+                select(TagMappings.external_tag).where(  # type: ignore[call-overload]
                     TagMappings.internal_tag_id == internal_tag_id
                 )
             )
@@ -155,11 +155,11 @@ async def remap_images_for_tag(db: AsyncSession, internal_tag_id: int, model_nam
     image_ids = list(
         (
             await db.execute(
-                select(MlRawPredictions.image_id)
+                select(MlRawPredictions.image_id)  # type: ignore[call-overload]
                 .join(MlExternalTags, MlExternalTags.id == MlRawPredictions.external_tag_id)
                 .join(MlModels, MlModels.id == MlRawPredictions.model_id)
                 .where(
-                    MlExternalTags.name.in_(external_tag_names),
+                    MlExternalTags.name.in_(external_tag_names),  # type: ignore[attr-defined]
                     MlModels.name == model_name,
                 )
                 .distinct()

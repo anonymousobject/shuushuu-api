@@ -142,7 +142,7 @@ async def fetch_manifest_rows(
         existing = select(MlTagSuggestions.image_id)  # type: ignore[call-overload]
         query = query.where(Images.image_id.not_in(existing))  # type: ignore[union-attr]
     if min_id is not None:
-        query = query.where(Images.image_id >= min_id)  # type: ignore[union-attr]
+        query = query.where(Images.image_id >= min_id)  # type: ignore[operator]
     query = query.order_by(Images.image_id)
     if limit is not None:
         query = query.limit(limit)

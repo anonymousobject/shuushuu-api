@@ -48,7 +48,7 @@ async def get_mapped_external_tag_names(db: AsyncSession) -> set[str]:
     Returns:
         Set of external_tag strings from all tag_mappings rows.
     """
-    result = await db.execute(select(TagMappings.external_tag))
+    result = await db.execute(select(TagMappings.external_tag))  # type: ignore[call-overload]
     return {row[0] for row in result.all()}
 
 

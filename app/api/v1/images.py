@@ -891,7 +891,7 @@ async def list_images(
     ):
         page_ids = [img.image_id for img in images]
         count_result = await db.execute(
-            select(MlTagSuggestions.image_id, func.count().label("cnt"))
+            select(MlTagSuggestions.image_id, func.count().label("cnt"))  # type: ignore[call-overload]
             .where(
                 MlTagSuggestions.image_id.in_(page_ids),  # type: ignore[attr-defined]
                 MlTagSuggestions.status == "pending",
@@ -913,7 +913,7 @@ async def list_images(
         )
         if pending_counts is not None:
             # Permitted user: set actual count (0 for images absent from grouped result).
-            item.ml_suggestion_count = pending_counts.get(img.image_id, 0)
+            item.ml_suggestion_count = pending_counts.get(img.image_id, 0)  # type: ignore[arg-type]
         response_items.append(item)
 
     return ImageDetailedListResponse(
