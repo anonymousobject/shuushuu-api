@@ -76,7 +76,11 @@ async def analyze_image_tags(
             raw = await ml_service.generate_raw_predictions(
                 tmp_path,
                 include_categories=SUGGESTION_CATEGORIES,
-                min_confidence=settings.ML_ANALYZE_MIN_CONFIDENCE,
+                # Infer at the STORAGE floor so the md5 cache holds the complete set the
+                # post-upload worker will persist (cache-hit must match cache-miss, which
+                # stores at ML_MIN_CONFIDENCE). The higher upload-form DISPLAY floor
+                # (ML_ANALYZE_MIN_CONFIDENCE) is applied in _resolve_to_response.
+                min_confidence=settings.ML_MIN_CONFIDENCE,
             )
     finally:
         if tmp_path:

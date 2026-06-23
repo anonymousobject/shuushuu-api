@@ -51,11 +51,18 @@ def _fake_image_bytes(width: int = 100, height: int = 100) -> bytes:
     return buf.getvalue()
 
 
-def _fake_ml_service(raw_preds: list[dict]):
-    """Build a fake ML service whose generate_raw_predictions returns canned raw dicts."""
+def _fake_ml_service(raw_preds: list[dict], captured: dict | None = None):
+    """Build a fake ML service whose generate_raw_predictions returns canned raw dicts.
+
+    If ``captured`` is provided, the call's kwargs are recorded into it so tests can
+    assert which floor/categories the endpoint inferred at.
+    """
 
     class _FakeService:
         async def generate_raw_predictions(self, image_path, *, include_categories, min_confidence):
+            if captured is not None:
+                captured["min_confidence"] = min_confidence
+                captured["include_categories"] = include_categories
             return raw_preds
 
     return _FakeService()
@@ -195,3 +202,55 @@ async def test_analyze_caches_predictions(
     assert mock_redis.set.await_count >= 1
     cache_keys = [call.args[0] for call in mock_redis.set.await_args_list]
     assert any(key.startswith("ml:analyze:") for key in cache_keys)
+
+
+async def test_analyze_infers_at_storage_floor_but_displays_at_higher_floor(
+    analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """Inference/cache use the STORAGE floor (ML_MIN_CONFIDENCE) so the cached raw is the
+    complete set the worker will persist; the response applies the higher DISPLAY floor
+    (ML_ANALYZE_MIN_CONFIDENCE). Guards against the cache-hit/cache-miss storage mismatch.
+    """
+    monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+    monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.35)
+    monkeypatch.setattr(settings, "ML_ANALYZE_MIN_CONFIDENCE", 0.5)
+
+    high_tag = Tags(title="smile", type=TagType.THEME)
+    low_tag = Tags(title="outdoors", type=TagType.THEME)
+    db_session.add(high_tag)
+    db_session.add(low_tag)
+    await db_session.commit()
+    await db_session.refresh(high_tag)
+    await db_session.refresh(low_tag)
+
+    raw_preds = [
+        {"external_tag": "smile", "confidence": 0.9, "category": 0, "model_version": "v1"},
+        {"external_tag": "outdoors", "confidence": 0.4, "category": 0, "model_version": "v1"},
+    ]
+    resolved = [
+        {"tag_id": high_tag.tag_id, "confidence": 0.9, "model_version": "v1"},
+        {"tag_id": low_tag.tag_id, "confidence": 0.4, "model_version": "v1"},  # below display floor
+    ]
+    captured: dict = {}
+
+    with (
+        patch(
+            "app.api.v1.ml_analyze.get_ml_service",
+            new_callable=AsyncMock,
+            return_value=_fake_ml_service(raw_preds, captured),
+        ),
+        patch(
+            "app.api.v1.ml_analyze.resolve_external_tags",
+            new_callable=AsyncMock,
+            return_value=resolved,
+        ),
+    ):
+        response = await analyze_client.post("/api/v1/ml-tag-suggestions/analyze", files=_files())
+
+    assert response.status_code == 200, response.text
+    # Inference (and therefore the cache) uses the LOWER storage floor → cache is complete.
+    assert captured["min_confidence"] == 0.35
+    # The response applies the HIGHER display floor: the 0.4 tag is dropped, the 0.9 tag kept.
+    titles = {s["title"] for s in response.json()["suggestions"]}
+    assert "smile" in titles
+    assert "outdoors" not in titles
