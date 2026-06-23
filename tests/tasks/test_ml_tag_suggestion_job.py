@@ -180,3 +180,84 @@ async def test_missing_file_translates_to_error(db_session, tmp_path, monkeypatc
 
     assert result["status"] == "error"
     assert "not found" in result["error"].lower()
+
+
+async def test_job_reuses_cached_predictions_without_inference(db_session, monkeypatch):
+    """Cache HIT: persist_predictions is called with cached raw; no inference occurs."""
+    user = await _make_user(db_session, "cached")
+    image = Images(
+        filename="2024-01-01-cached",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash="abc123",
+        filesize=1024,
+        width=800,
+        height=600,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    import json
+
+    raw = [{"external_tag": "long_hair", "confidence": 0.9, "category": 0, "model_version": "v3"}]
+
+    fake_redis = AsyncMock()
+    fake_redis.get = AsyncMock(return_value=json.dumps(raw))
+    fake_redis.aclose = AsyncMock(return_value=None)
+
+    persisted = {}
+
+    async def fake_persist(db, image_id, preds):
+        persisted["preds"] = preds
+        return len(preds)
+
+    sentinel_service = object()  # must NOT be used for inference on a cache hit
+    with (
+        patch(f"{JOB}.get_async_session", return_value=_session_cm(db_session)),
+        patch(f"{JOB}._analyze_redis", return_value=fake_redis),
+        patch(f"{JOB}.persist_predictions", fake_persist),
+    ):
+        result = await generate_ml_tag_suggestions(
+            {"ml_service": sentinel_service}, image_id=image.image_id
+        )
+
+    assert result["status"] == "completed"
+    assert persisted["preds"] == raw
+
+
+async def test_job_falls_back_to_inference_on_cache_miss(db_session, monkeypatch):
+    """Cache MISS: generate_and_store_suggestions is called (inference path)."""
+    user = await _make_user(db_session, "miss")
+    image = Images(
+        filename="2024-01-01-miss",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash="misshash",
+        filesize=1024,
+        width=800,
+        height=600,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    fake_redis = AsyncMock()
+    fake_redis.get = AsyncMock(return_value=None)
+    fake_redis.aclose = AsyncMock(return_value=None)
+
+    called = {}
+
+    async def fake_generate(db, img, ml_service):
+        called["yes"] = True
+        return 0
+
+    with (
+        patch(f"{JOB}.get_async_session", return_value=_session_cm(db_session)),
+        patch(f"{JOB}._analyze_redis", return_value=fake_redis),
+        patch(f"{JOB}.generate_and_store_suggestions", fake_generate),
+    ):
+        result = await generate_ml_tag_suggestions(
+            {"ml_service": object()}, image_id=image.image_id
+        )
+
+    assert called.get("yes") is True
+    assert result["status"] == "completed"

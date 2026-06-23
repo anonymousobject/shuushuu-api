@@ -7,16 +7,28 @@ ML_TAG_SUGGESTIONS_ENABLED is on. Handles errors gracefully (logs and returns
 an error dict) so a single bad image never crashes the worker queue.
 """
 
+import json
 from typing import Any
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.core.database import get_async_session
 from app.core.logging import bind_context, get_logger
 from app.models.image import Images
-from app.services.ml_suggestion_pipeline import generate_and_store_suggestions
+from app.services.ml_suggestion_pipeline import (
+    generate_and_store_suggestions,
+    persist_predictions,
+)
 
 logger = get_logger(__name__)
+
+
+def _analyze_redis():
+    """Return a Redis client pointed at the analyze-cache DB (db 0, same as the API endpoint)."""
+    import redis.asyncio as redis
+
+    return redis.from_url(str(settings.REDIS_URL), encoding="utf-8", decode_responses=True)
 
 
 async def generate_ml_tag_suggestions(
@@ -62,7 +74,27 @@ async def generate_ml_tag_suggestions(
                     ),
                 }
 
-            suggestions_created = await generate_and_store_suggestions(db, image, ml_service)
+            cached_raw = None
+            if image.md5_hash:
+                try:
+                    client = _analyze_redis()
+                    try:
+                        blob = await client.get(f"ml:analyze:{image.md5_hash}")
+                    finally:
+                        await client.aclose()
+                    if blob:
+                        cached_raw = json.loads(blob)
+                except Exception:
+                    logger.warning(
+                        "ml_tag_suggestion_job_cache_read_failed",
+                        image_id=image_id,
+                        exc_info=True,
+                    )
+
+            if cached_raw is not None:
+                suggestions_created = await persist_predictions(db, image_id, cached_raw)
+            else:
+                suggestions_created = await generate_and_store_suggestions(db, image, ml_service)
 
             logger.info(
                 "ml_tag_suggestion_job_completed",
