@@ -19,6 +19,7 @@ class PublicConfig(BaseModel):
     upload_delay_seconds: int
     search_delay_seconds: int
     tag_types: dict[int, str]
+    ml_tag_suggestions_enabled: bool
 
 
 @router.get("/config", response_model=PublicConfig)
@@ -37,4 +38,5 @@ async def get_public_config() -> PublicConfig:
             for name in dir(TagType)
             if name.isupper()
         },
+        ml_tag_suggestions_enabled=settings.ML_TAG_SUGGESTIONS_ENABLED,
     )
