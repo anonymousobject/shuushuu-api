@@ -1,7 +1,7 @@
 """
 Tag Relationship Resolver
 
-Resolves tag aliases and hierarchies for ML suggestions.
+Resolves tag aliases for ML suggestions.
 """
 
 from typing import Any
@@ -11,26 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tag import Tags
 
-# Constants for hierarchy processing
-HIERARCHY_CONFIDENCE_THRESHOLD = 0.7
-PARENT_CONFIDENCE_MULTIPLIER = 0.9
-
 
 async def resolve_tag_relationships(
     db: AsyncSession, suggestions: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """
-    Resolve tag aliases and hierarchies.
+    Resolve tag aliases.
 
     - If tag is an alias, replace with canonical tag
-    - Optionally add parent tags from hierarchy
 
     Args:
         db: Database session
         suggestions: List of dicts with keys: tag_id, confidence, model_version
 
     Returns:
-        List of resolved suggestions (may be longer if parent tags added)
+        List of resolved suggestions (deduped by tag_id, keeping highest confidence)
     """
     # Nothing to resolve — skip the guaranteed-empty tag query (mirrors
     # resolve_external_tags' early return when there are no inputs).
@@ -94,23 +89,5 @@ async def resolve_tag_relationships(
         tag_id = sugg["tag_id"]
         if tag_id not in resolved_dict or sugg["confidence"] > resolved_dict[tag_id]["confidence"]:
             resolved_dict[tag_id] = sugg
-
-        # Add parent tag if exists and confidence is high enough
-        if tag and tag.inheritedfrom_id and sugg["confidence"] > HIERARCHY_CONFIDENCE_THRESHOLD:
-            parent_sugg = sugg.copy()
-            parent_sugg["tag_id"] = tag.inheritedfrom_id
-            parent_sugg["confidence"] *= PARENT_CONFIDENCE_MULTIPLIER
-            parent_sugg["from_hierarchy"] = True
-
-            # Remove alias flag from parent (it's not from an alias)
-            parent_sugg.pop("resolved_from_alias", None)
-
-            # Add or update parent, keeping highest confidence
-            parent_id = parent_sugg["tag_id"]
-            if (
-                parent_id not in resolved_dict
-                or parent_sugg["confidence"] > resolved_dict[parent_id]["confidence"]
-            ):
-                resolved_dict[parent_id] = parent_sugg
 
     return list(resolved_dict.values())

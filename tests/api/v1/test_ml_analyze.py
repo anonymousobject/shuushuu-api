@@ -262,6 +262,105 @@ async def test_analyze_caches_predictions(
     assert any(key.startswith("ml:analyze:") for key in cache_keys)
 
 
+async def test_analyze_confident_child_supersedes_parent(
+    analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A confident suggested child (>= supersede floor) drops its suggested parent.
+
+    sundress 0.70 + dress 0.85 -> keep sundress, drop dress.
+    """
+    monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+    monkeypatch.setattr(settings, "ML_ANALYZE_MIN_CONFIDENCE", 0.5)  # display floor
+    monkeypatch.setattr(settings, "ML_PARENT_SUPERSEDE_MIN_CONFIDENCE", 0.6)
+
+    parent = Tags(title="dress", type=TagType.THEME)
+    db_session.add(parent)
+    await db_session.commit()
+    await db_session.refresh(parent)
+    child = Tags(title="sundress", type=TagType.THEME, inheritedfrom_id=parent.tag_id)
+    db_session.add(child)
+    await db_session.commit()
+    await db_session.refresh(child)
+
+    raw_preds = [
+        {"external_tag": "dress", "confidence": 0.85, "category": 0, "model_version": "v1"},
+        {"external_tag": "sundress", "confidence": 0.70, "category": 0, "model_version": "v1"},
+    ]
+    resolved = [
+        {"tag_id": parent.tag_id, "confidence": 0.85, "model_version": "v1"},
+        {"tag_id": child.tag_id, "confidence": 0.70, "model_version": "v1"},
+    ]
+
+    with (
+        patch(
+            "app.api.v1.ml_analyze.get_ml_service",
+            new_callable=AsyncMock,
+            return_value=_fake_ml_service(raw_preds),
+        ),
+        patch(
+            "app.api.v1.ml_analyze.resolve_external_tags",
+            new_callable=AsyncMock,
+            return_value=resolved,
+        ),
+    ):
+        response = await analyze_client.post("/api/v1/ml-tag-suggestions/analyze", files=_files())
+
+    assert response.status_code == 200, response.text
+    titles = {s["title"] for s in response.json()["suggestions"]}
+    assert "sundress" in titles  # confident child kept
+    assert "dress" not in titles  # superseded parent dropped
+
+
+async def test_analyze_weak_child_keeps_parent(
+    analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A weak suggested child (< supersede floor) does NOT suppress its parent; both
+    render as long as each clears the display floor.
+
+    Bands: display floor 0.5, supersede floor 0.6, child 0.55 (>= display, < supersede).
+    """
+    monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+    monkeypatch.setattr(settings, "ML_ANALYZE_MIN_CONFIDENCE", 0.5)  # display floor
+    monkeypatch.setattr(settings, "ML_PARENT_SUPERSEDE_MIN_CONFIDENCE", 0.6)
+
+    parent = Tags(title="dress", type=TagType.THEME)
+    db_session.add(parent)
+    await db_session.commit()
+    await db_session.refresh(parent)
+    child = Tags(title="sundress", type=TagType.THEME, inheritedfrom_id=parent.tag_id)
+    db_session.add(child)
+    await db_session.commit()
+    await db_session.refresh(child)
+
+    raw_preds = [
+        {"external_tag": "dress", "confidence": 0.80, "category": 0, "model_version": "v1"},
+        {"external_tag": "sundress", "confidence": 0.55, "category": 0, "model_version": "v1"},
+    ]
+    resolved = [
+        {"tag_id": parent.tag_id, "confidence": 0.80, "model_version": "v1"},
+        {"tag_id": child.tag_id, "confidence": 0.55, "model_version": "v1"},
+    ]
+
+    with (
+        patch(
+            "app.api.v1.ml_analyze.get_ml_service",
+            new_callable=AsyncMock,
+            return_value=_fake_ml_service(raw_preds),
+        ),
+        patch(
+            "app.api.v1.ml_analyze.resolve_external_tags",
+            new_callable=AsyncMock,
+            return_value=resolved,
+        ),
+    ):
+        response = await analyze_client.post("/api/v1/ml-tag-suggestions/analyze", files=_files())
+
+    assert response.status_code == 200, response.text
+    titles = {s["title"] for s in response.json()["suggestions"]}
+    assert "sundress" in titles  # weak child still rendered (clears display floor)
+    assert "dress" in titles  # parent NOT superseded by a weak child
+
+
 async def test_analyze_infers_at_storage_floor_but_displays_at_higher_floor(
     analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
 ):

@@ -42,8 +42,12 @@ async def test_resolve_alias_to_canonical_tag(db_session: AsyncSession):
     assert resolved[0]["resolved_from_alias"] is True
 
 
-async def test_add_parent_tag_from_hierarchy(db_session: AsyncSession):
-    """Test that parent tags are added when child tag has high confidence."""
+async def test_does_not_add_parent_tag_from_hierarchy(db_session: AsyncSession):
+    """Parent tags are NO LONGER auto-added — only the resolved child is returned.
+
+    (Parent suppression now runs the other way: a confident suggested child drops
+    its suggested parent in filter_superseded_parents, not by expanding to parents.)
+    """
     user = Users(
         username="resolver_test2",
         email="resolver2@example.com",
@@ -70,18 +74,14 @@ async def test_add_parent_tag_from_hierarchy(db_session: AsyncSession):
 
     resolved = await resolve_tag_relationships(db_session, suggestions)
 
-    assert len(resolved) == 2
-    tag_ids = [s["tag_id"] for s in resolved]
-    assert 46 in tag_ids
-    assert 50 in tag_ids
-
-    parent_sugg = next(s for s in resolved if s["tag_id"] == 50)
-    assert parent_sugg["confidence"] < 0.95
-    assert parent_sugg["from_hierarchy"] is True
+    # Only the child is returned; the parent is not auto-added.
+    assert len(resolved) == 1
+    assert resolved[0]["tag_id"] == 46
+    assert "from_hierarchy" not in resolved[0]
 
 
 async def test_low_confidence_does_not_add_parent(db_session: AsyncSession):
-    """Test that parent tags are NOT added when confidence is below threshold (0.7)."""
+    """A child below the old hierarchy threshold also returns only itself."""
     user = Users(
         username="resolver_test3",
         email="resolver3@example.com",

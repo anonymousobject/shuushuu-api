@@ -140,6 +140,53 @@ async def filter_redundant_suggestions(
     return filtered
 
 
+async def filter_superseded_parents(
+    db: AsyncSession,
+    suggestions: list[dict[str, Any]],
+    min_child_confidence: float,
+) -> list[dict[str, Any]]:
+    """Drop a suggested tag when a more-specific suggested descendant (via
+    Tags.inheritedfrom_id) is present and that descendant's confidence is
+    >= min_child_confidence. Operates only WITHIN the suggestion set — never
+    drops a tag that isn't itself suggested. A low-confidence child does not
+    suppress its parent (both kept). Input dicts have at least tag_id + confidence.
+    """
+    if len(suggestions) < 2:
+        return suggestions
+
+    conf_by_id: dict[int, float] = {}
+    for s in suggestions:
+        tid = s["tag_id"]
+        conf_by_id[tid] = max(conf_by_id.get(tid, 0.0), s["confidence"])
+    suggested_ids = set(conf_by_id)
+
+    # inheritedfrom_id for every suggested tag (one query). A suggested ancestor
+    # is itself in this map, so the chain can be walked entirely within the set.
+    rows = (
+        await db.execute(
+            select(Tags.tag_id, Tags.inheritedfrom_id).where(  # type: ignore[call-overload]
+                Tags.tag_id.in_(suggested_ids)  # type: ignore[union-attr]
+            )
+        )
+    ).all()
+    parent_of: dict[int, int | None] = {row[0]: row[1] for row in rows}
+
+    superseded: set[int] = set()
+    for child_id, conf in conf_by_id.items():
+        if conf < min_child_confidence:
+            continue
+        cur = parent_of.get(child_id)  # the child's direct parent
+        depth = 0
+        while cur is not None and cur in suggested_ids and depth < 10:
+            superseded.add(cur)
+            cur = parent_of.get(cur)  # cur is suggested -> present in parent_of
+            depth += 1
+
+    if not superseded:
+        return suggestions
+    return [s for s in suggestions if s["tag_id"] not in superseded]
+
+
 async def generate_and_store_suggestions(
     db: AsyncSession,
     image: Images,
@@ -238,6 +285,11 @@ async def compute_implied_suggestions(
         image_id=image_id,
         mapped_count=len(mapped),
         resolved_count=len(resolved),
+    )
+
+    # 2b. Drop a suggested parent when a confident suggested child supersedes it.
+    resolved = await filter_superseded_parents(
+        db, resolved, settings.ML_PARENT_SUPERSEDE_MIN_CONFIDENCE
     )
 
     # 3. Get ALL existing tags on the image (for redundancy filtering).

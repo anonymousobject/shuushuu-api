@@ -22,6 +22,9 @@ from app.models.tag import Tags
 from app.schemas.ml_analyze import AnalyzedTag, AnalyzeTagsResponse
 from app.services.ml_categories import SUGGESTION_CATEGORIES  # light: no onnxruntime
 from app.services.ml_runtime import get_ml_service, inference_slot
+from app.services.ml_suggestion_pipeline import (  # light: no onnxruntime
+    filter_superseded_parents,
+)
 from app.services.rate_limit import check_analyze_rate_limit
 from app.services.tag_mapping_service import resolve_external_tags
 
@@ -121,6 +124,11 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> A
     resolved = await resolve_external_tags(db, raw)  # [{tag_id, confidence, model_version}]
     if not resolved:
         return AnalyzeTagsResponse(suggestions=[])
+
+    # Drop a suggested parent when a confident suggested child supersedes it.
+    resolved = await filter_superseded_parents(
+        db, resolved, settings.ML_PARENT_SUPERSEDE_MIN_CONFIDENCE
+    )
 
     # Keep the best confidence per tag_id (resolve can collapse aliases to one id).
     best: dict[int, float] = {}

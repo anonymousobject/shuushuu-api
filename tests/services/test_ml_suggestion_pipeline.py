@@ -25,6 +25,7 @@ from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.services.ml_suggestion_pipeline import (
     compute_implied_suggestions,
+    filter_superseded_parents,
     generate_and_store_suggestions,
     store_predictions,
 )
@@ -698,3 +699,102 @@ async def test_compute_implied_suggestions(db_session, monkeypatch):
     assert kept["tag_id"] == 502
     assert kept["confidence"] == 0.85
     assert kept["model_version"] == "v3"
+
+
+async def test_filter_superseded_parents_confident_child_drops_parent(db_session):
+    """A confident child (>= min) drops its suggested parent; the child stays."""
+    parent = Tags(tag_id=600, title="dress")
+    child = Tags(tag_id=601, title="sundress", inheritedfrom_id=600)
+    db_session.add_all([parent, child])
+    await db_session.commit()
+
+    suggestions = [
+        {"tag_id": 600, "confidence": 0.85, "model_version": "v3"},  # dress (parent)
+        {"tag_id": 601, "confidence": 0.70, "model_version": "v3"},  # sundress (child)
+    ]
+
+    result = await filter_superseded_parents(db_session, suggestions, 0.6)
+
+    assert {s["tag_id"] for s in result} == {601}
+
+
+async def test_filter_superseded_parents_weak_child_keeps_both(db_session):
+    """A weak child (< min) does NOT suppress its parent; both are kept."""
+    parent = Tags(tag_id=610, title="dress")
+    child = Tags(tag_id=611, title="sundress", inheritedfrom_id=610)
+    db_session.add_all([parent, child])
+    await db_session.commit()
+
+    suggestions = [
+        {"tag_id": 610, "confidence": 0.80, "model_version": "v3"},  # dress (parent)
+        {"tag_id": 611, "confidence": 0.40, "model_version": "v3"},  # sundress (weak child)
+    ]
+
+    result = await filter_superseded_parents(db_session, suggestions, 0.6)
+
+    assert {s["tag_id"] for s in result} == {610, 611}
+
+
+async def test_filter_superseded_parents_three_level_chain(db_session):
+    """A confident leaf in a GP -> P -> C chain drops both ancestors that are suggested."""
+    grandparent = Tags(tag_id=620, title="clothing")
+    parent = Tags(tag_id=621, title="dress", inheritedfrom_id=620)
+    child = Tags(tag_id=622, title="sundress", inheritedfrom_id=621)
+    db_session.add_all([grandparent, parent, child])
+    await db_session.commit()
+
+    suggestions = [
+        {"tag_id": 620, "confidence": 0.90, "model_version": "v3"},  # clothing (grandparent)
+        {"tag_id": 621, "confidence": 0.85, "model_version": "v3"},  # dress (parent)
+        {"tag_id": 622, "confidence": 0.70, "model_version": "v3"},  # sundress (child)
+    ]
+
+    result = await filter_superseded_parents(db_session, suggestions, 0.6)
+
+    assert {s["tag_id"] for s in result} == {622}
+
+
+async def test_filter_superseded_parents_no_hierarchy_unchanged(db_session):
+    """Unrelated suggested tags (no hierarchy link) are all kept."""
+    tag_a = Tags(tag_id=630, title="smile")
+    tag_b = Tags(tag_id=631, title="blush")
+    db_session.add_all([tag_a, tag_b])
+    await db_session.commit()
+
+    suggestions = [
+        {"tag_id": 630, "confidence": 0.90, "model_version": "v3"},
+        {"tag_id": 631, "confidence": 0.85, "model_version": "v3"},
+    ]
+
+    result = await filter_superseded_parents(db_session, suggestions, 0.6)
+
+    assert {s["tag_id"] for s in result} == {630, 631}
+
+
+async def test_filter_superseded_parents_single_suggestion_unchanged(db_session):
+    """Fewer than two suggestions short-circuits to the input unchanged."""
+    suggestions = [{"tag_id": 640, "confidence": 0.90, "model_version": "v3"}]
+
+    result = await filter_superseded_parents(db_session, suggestions, 0.6)
+
+    assert result == suggestions
+
+
+async def test_filter_superseded_parents_parent_not_suggested_kept(db_session):
+    """A parent that is NOT itself in the suggestion set is never dropped (operates
+    only within the suggested set), and the child is kept."""
+    parent = Tags(tag_id=650, title="dress")
+    child = Tags(tag_id=651, title="sundress", inheritedfrom_id=650)
+    other = Tags(tag_id=652, title="smile")
+    db_session.add_all([parent, child, other])
+    await db_session.commit()
+
+    # Parent 650 is NOT suggested; only the confident child and an unrelated tag are.
+    suggestions = [
+        {"tag_id": 651, "confidence": 0.70, "model_version": "v3"},  # sundress (child)
+        {"tag_id": 652, "confidence": 0.80, "model_version": "v3"},  # unrelated
+    ]
+
+    result = await filter_superseded_parents(db_session, suggestions, 0.6)
+
+    assert {s["tag_id"] for s in result} == {651, 652}
