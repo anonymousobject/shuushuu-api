@@ -145,7 +145,7 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> A
         ):
             continue
         by_type.setdefault(tag.type, []).append(
-            (conf, AnalyzedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type))
+            (conf, AnalyzedTag(tag_id=tag.tag_id, title=tag.title, type=tag.type, confidence=conf))
         )
 
     suggestions: list[AnalyzedTag] = []

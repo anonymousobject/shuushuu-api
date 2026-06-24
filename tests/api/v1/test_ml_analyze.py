@@ -129,9 +129,12 @@ async def test_analyze_returns_theme_and_character_tags(
 
     assert response.status_code == 200, response.text
     data = response.json()
-    titles = {s["title"]: s["type"] for s in data["suggestions"]}
-    assert titles.get("smile") == TagType.THEME
-    assert titles.get("hatsune miku") == TagType.CHARACTER
+    by_title = {s["title"]: s for s in data["suggestions"]}
+    assert by_title["smile"]["type"] == TagType.THEME
+    assert by_title["hatsune miku"]["type"] == TagType.CHARACTER
+    # confidence is surfaced for evaluation (mapping-scaled; mapping.confidence=1.0 in this fake)
+    assert by_title["smile"]["confidence"] == 0.9
+    assert by_title["hatsune miku"]["confidence"] == 0.95
 
 
 async def test_analyze_downscales_large_image(
