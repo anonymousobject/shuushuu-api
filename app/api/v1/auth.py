@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -463,9 +463,10 @@ async def login(
 async def refresh_token(
     request: Request,
     response: Response,
-    refresh_token: Annotated[str, Depends(get_refresh_token_from_cookie)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+    refresh_token: Annotated[str | None, Cookie()] = None,
+    access_token: Annotated[str | None, Cookie()] = None,
 ) -> TokenResponse:
     """
     Refresh access token using refresh token.
@@ -481,6 +482,24 @@ async def refresh_token(
     If an already-used (revoked) refresh token is presented, this indicates
     potential token theft, and all tokens in the family are revoked.
     """
+    # TEMP INSTRUMENTATION (remove after capturing the prod 401-reason split):
+    # classify every refresh failure so we can confirm the dominant cause before
+    # reworking rotation/cookies. `had_access_cookie` distinguishes "cookies
+    # diverged" (access cookie present, refresh cookie gone) from a benign
+    # unauthenticated poke; `user_agent` exposes any browser-specific skew.
+    if not refresh_token:
+        logger.info(
+            "refresh_failed",
+            reason="cookie_missing",
+            had_access_cookie=bool(access_token),
+            user_agent=get_user_agent(request),
+            ip_address=get_client_ip(request),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token missing",
+        )
+
     # Hash the provided token to look up in database
     token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
 
@@ -489,6 +508,13 @@ async def refresh_token(
     db_token = result.scalar_one_or_none()
 
     if not db_token:
+        logger.info(
+            "refresh_failed",
+            reason="token_not_found",
+            had_access_cookie=bool(access_token),
+            user_agent=get_user_agent(request),
+            ip_address=get_client_ip(request),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
@@ -496,6 +522,14 @@ async def refresh_token(
 
     # Check if token is expired
     if db_token.expires_at < datetime.now(UTC):
+        logger.info(
+            "refresh_failed",
+            reason="expired",
+            user_id=db_token.user_id,
+            had_access_cookie=bool(access_token),
+            user_agent=get_user_agent(request),
+            ip_address=get_client_ip(request),
+        )
         # Clean up expired token
         await db.delete(db_token)
         await db.commit()
