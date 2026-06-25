@@ -382,6 +382,45 @@ class TestLogin:
 class TestRefresh:
     """Tests for POST /api/v1/auth/refresh endpoint."""
 
+    async def test_refresh_cookies_are_samesite_lax(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Rotated cookies from /auth/refresh must also be SameSite=Lax.
+
+        _set_auth_cookies is shared with login, but refresh rotates both cookies
+        on every call, so guard the SameSite policy on this path too (see
+        test_login_cookies_are_samesite_lax for the rationale).
+        """
+        user = Users(
+            username="refreshsamesiteuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="refreshsamesite@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "refreshsamesiteuser", "password": "TestPassword123!"},
+        )
+        assert login_response.status_code == 200
+
+        refresh_response = await client.post("/api/v1/auth/refresh")
+        assert refresh_response.status_code == 200
+
+        set_cookies = refresh_response.headers.get_list("set-cookie")
+        auth_cookies = [
+            c for c in set_cookies if c.startswith(("refresh_token=", "access_token="))
+        ]
+        assert len(auth_cookies) == 2, f"expected both rotated cookies, got: {set_cookies}"
+        for cookie in auth_cookies:
+            lowered = cookie.lower()
+            assert "samesite=lax" in lowered, f"rotated cookie is not SameSite=Lax: {cookie}"
+            assert "samesite=strict" not in lowered
+
     async def test_refresh_token_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test successful token refresh."""
         # Create user and login
