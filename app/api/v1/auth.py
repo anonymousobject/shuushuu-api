@@ -616,10 +616,12 @@ async def refresh_token(
     if user.active:
         await db.commit()
 
-    # Create new access token
+    # Create new access token. Named distinctly from the `access_token` cookie
+    # parameter above (which feeds the had_access_cookie diagnostic) so the two
+    # can never be confused.
     if user.user_id is None:
         raise ValueError("User ID cannot be None")
-    access_token = create_access_token(user.user_id)
+    new_access_token = create_access_token(user.user_id)
 
     # Create new refresh token (rotation)
     new_refresh_token = create_refresh_token()
@@ -647,7 +649,7 @@ async def refresh_token(
     await db.commit()
 
     # Set authentication cookies
-    _set_auth_cookies(response, access_token, new_refresh_token)
+    _set_auth_cookies(response, new_access_token, new_refresh_token)
 
     # `user` already has user_groups eager-loaded (see the SELECT earlier), so
     # the helper skips its internal DB round trip and the None branch can't
@@ -655,7 +657,7 @@ async def refresh_token(
     user_response = await build_user_private_response(db, redis_client, user=user)
 
     return TokenResponse(
-        access_token=access_token,
+        access_token=new_access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=user_response,
