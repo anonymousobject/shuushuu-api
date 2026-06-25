@@ -82,6 +82,47 @@ class TestLogin:
         # Security: refresh token must NOT be in response body (HTTPOnly cookie only)
         assert "refresh_token" not in data
 
+    async def test_login_cookies_are_samesite_lax(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Auth cookies must be SameSite=Lax, never Strict.
+
+        This is a server-rendered app: the SSR needs the auth cookie on the
+        top-level document request. SameSite=Strict withholds cookies from
+        top-level navigations the browser doesn't treat as same-site-initiated
+        (reloads, links from other sites, a tab first opened cross-site), which
+        made the SSR render logged-out despite a valid session — the recurring
+        "logged out after refresh" bug. Lax sends the cookie on top-level GET
+        navigations while still blocking cross-site POST/PUT/DELETE, so CSRF
+        protection for state-changing requests is preserved.
+        """
+        user = Users(
+            username="samesiteuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="samesite@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "samesiteuser", "password": "TestPassword123!"},
+        )
+        assert response.status_code == 200
+
+        set_cookies = response.headers.get_list("set-cookie")
+        auth_cookies = [
+            c for c in set_cookies if c.startswith(("refresh_token=", "access_token="))
+        ]
+        assert len(auth_cookies) == 2, f"expected both auth cookies, got: {set_cookies}"
+        for cookie in auth_cookies:
+            lowered = cookie.lower()
+            assert "samesite=lax" in lowered, f"auth cookie is not SameSite=Lax: {cookie}"
+            assert "samesite=strict" not in lowered
+
     async def test_login_wrong_password(self, client: AsyncClient, db_session: AsyncSession):
         """Test login with incorrect password."""
         user = Users(
