@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "YOU MUST CHANGE THIS TO A SECURE RANDOM VALUE"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10
+    # 30 min (was 10): a short access token forces the SSR to refresh on nearly
+    # every page load, which churns refresh-token rotation and amplifies any
+    # rotation desync. 30 min cuts that refresh frequency ~3x.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     # bcrypt cost factor (gensalt accepts 4-31); tests override to 4 for
     # speed (see tests/conftest.py)

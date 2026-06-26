@@ -470,13 +470,12 @@ class TestRefresh:
     async def test_refresh_race_condition_does_not_nuke_family(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that concurrent refresh requests don't nuke the token family.
+        """Concurrent refresh requests recover instead of logging the user out.
 
-        Simulates a race condition where multiple requests try to refresh
-        simultaneously: the first one succeeds and revokes the old token,
-        then subsequent requests using the old token should get 401 but
-        NOT trigger the family deletion (since it was just revoked and
-        a child token exists).
+        A race: the first refresh succeeds and revokes the old token; a
+        concurrent request using the OLD token (revoked <10s ago, with a child)
+        must recover with a fresh session (200) rather than 401, and must NOT
+        nuke the family.
         """
         # Create user and login
         user = Users(
@@ -508,19 +507,43 @@ class TestRefresh:
         assert new_refresh_token is not None
         assert new_refresh_token != original_refresh_token
 
-        # Simulate concurrent request using the OLD token (race condition)
-        # Manually set the old token cookie
+        # Simulate a concurrent request using the OLD token (race condition):
+        # revoked <10s ago with a child, so refresh recovers with a fresh session
+        # instead of logging the user out.
         client.cookies.set("refresh_token", original_refresh_token)
         refresh2_response = await client.post("/api/v1/auth/refresh")
 
-        # Should get 401 but with "already refreshed" message (not "reuse detected")
-        assert refresh2_response.status_code == 401
-        assert "already refreshed" in refresh2_response.json()["detail"].lower()
+        assert refresh2_response.status_code == 200
+        recovered_token = refresh2_response.cookies.get("refresh_token")
+        assert recovered_token is not None
 
-        # The new token should still work - family was NOT nuked
+        # The sibling token from the first refresh still works - family not nuked.
         client.cookies.set("refresh_token", new_refresh_token)
         refresh3_response = await client.post("/api/v1/auth/refresh")
         assert refresh3_response.status_code == 200
+
+    async def test_refresh_dead_token_clears_cookies(self, client: AsyncClient):
+        """An unknown/dead refresh token returns 401 AND clears the auth cookies.
+
+        Without this, a browser holding a dead token (e.g. after a family-nuke or
+        logout) re-presents it on every SSR page load, and the server retries the
+        same dead token indefinitely. Clearing the cookies breaks that loop.
+        """
+        client.cookies.set("refresh_token", "this-token-does-not-exist-in-the-db")
+        response = await client.post("/api/v1/auth/refresh")
+
+        assert response.status_code == 401
+        cleared = [
+            c
+            for c in response.headers.get_list("set-cookie")
+            if c.startswith(("refresh_token=", "access_token="))
+        ]
+        names = {c.split("=", 1)[0] for c in cleared}
+        assert names == {"refresh_token", "access_token"}, cleared
+        # Both must be expired (Max-Age=0 or a past Expires).
+        for cookie in cleared:
+            lowered = cookie.lower()
+            assert "max-age=0" in lowered or "expires=" in lowered, cookie
 
     async def test_refresh_reuse_detection_nukes_family_after_grace_period(
         self, client: AsyncClient, db_session: AsyncSession
