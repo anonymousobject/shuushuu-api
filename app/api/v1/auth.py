@@ -177,13 +177,24 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         access_token: JWT access token
         refresh_token: Refresh token
     """
+    # SameSite=Lax (NOT Strict). This is a server-rendered app, so the SSR needs
+    # the auth cookie on the *top-level document request*. SameSite=Strict
+    # withholds cookies from top-level navigations the browser doesn't treat as
+    # same-site-initiated — reloads, links from other sites, or a tab first opened
+    # cross-site — so the server renders logged-out even though the session is
+    # valid (this caused the recurring "logged out after refresh" reports). Lax
+    # sends cookies on top-level GET navigations while still withholding them from
+    # cross-site POST/PUT/DELETE, so CSRF protection for state-changing requests is
+    # preserved (and the API has no state-changing GET endpoints). Do NOT change
+    # this back to Strict without first fixing SSR auth.
+
     # Set refresh token as HTTPOnly cookie
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,  # Prevent JavaScript access (XSS protection)
         secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
-        samesite="strict",  # CSRF protection
+        samesite="lax",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,  # seconds
     )
 
@@ -197,7 +208,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         value=access_token,
         httponly=True,  # Prevent JavaScript access (XSS protection)
         secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
-        samesite="strict",  # CSRF protection
+        samesite="lax",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
     )
 
@@ -209,22 +220,22 @@ def _clear_auth_cookies(response: Response) -> None:
     Args:
         response: FastAPI response object
     """
-    # Clear refresh token (match set_cookie params)
+    # Clear refresh token (match set_cookie params, incl. SameSite=Lax)
     response.delete_cookie(
         key="refresh_token",
         path="/",
         httponly=True,
         secure=settings.ENVIRONMENT != "development",
-        samesite="strict",
+        samesite="lax",
     )
 
-    # Clear access token (match set_cookie params)
+    # Clear access token (match set_cookie params, incl. SameSite=Lax)
     response.delete_cookie(
         key="access_token",
         path="/",
         httponly=True,
         secure=settings.ENVIRONMENT != "development",
-        samesite="strict",
+        samesite="lax",
     )
 
 

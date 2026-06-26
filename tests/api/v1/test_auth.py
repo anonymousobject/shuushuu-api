@@ -82,6 +82,47 @@ class TestLogin:
         # Security: refresh token must NOT be in response body (HTTPOnly cookie only)
         assert "refresh_token" not in data
 
+    async def test_login_cookies_are_samesite_lax(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Auth cookies must be SameSite=Lax, never Strict.
+
+        This is a server-rendered app: the SSR needs the auth cookie on the
+        top-level document request. SameSite=Strict withholds cookies from
+        top-level navigations the browser doesn't treat as same-site-initiated
+        (reloads, links from other sites, a tab first opened cross-site), which
+        made the SSR render logged-out despite a valid session — the recurring
+        "logged out after refresh" bug. Lax sends the cookie on top-level GET
+        navigations while still blocking cross-site POST/PUT/DELETE, so CSRF
+        protection for state-changing requests is preserved.
+        """
+        user = Users(
+            username="samesiteuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="samesite@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "samesiteuser", "password": "TestPassword123!"},
+        )
+        assert response.status_code == 200
+
+        set_cookies = response.headers.get_list("set-cookie")
+        auth_cookies = [
+            c for c in set_cookies if c.startswith(("refresh_token=", "access_token="))
+        ]
+        assert len(auth_cookies) == 2, f"expected both auth cookies, got: {set_cookies}"
+        for cookie in auth_cookies:
+            lowered = cookie.lower()
+            assert "samesite=lax" in lowered, f"auth cookie is not SameSite=Lax: {cookie}"
+            assert "samesite=strict" not in lowered
+
     async def test_login_wrong_password(self, client: AsyncClient, db_session: AsyncSession):
         """Test login with incorrect password."""
         user = Users(
@@ -340,6 +381,45 @@ class TestLogin:
 @pytest.mark.api
 class TestRefresh:
     """Tests for POST /api/v1/auth/refresh endpoint."""
+
+    async def test_refresh_cookies_are_samesite_lax(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Rotated cookies from /auth/refresh must also be SameSite=Lax.
+
+        _set_auth_cookies is shared with login, but refresh rotates both cookies
+        on every call, so guard the SameSite policy on this path too (see
+        test_login_cookies_are_samesite_lax for the rationale).
+        """
+        user = Users(
+            username="refreshsamesiteuser",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="refreshsamesite@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "refreshsamesiteuser", "password": "TestPassword123!"},
+        )
+        assert login_response.status_code == 200
+
+        refresh_response = await client.post("/api/v1/auth/refresh")
+        assert refresh_response.status_code == 200
+
+        set_cookies = refresh_response.headers.get_list("set-cookie")
+        auth_cookies = [
+            c for c in set_cookies if c.startswith(("refresh_token=", "access_token="))
+        ]
+        assert len(auth_cookies) == 2, f"expected both rotated cookies, got: {set_cookies}"
+        for cookie in auth_cookies:
+            lowered = cookie.lower()
+            assert "samesite=lax" in lowered, f"rotated cookie is not SameSite=Lax: {cookie}"
+            assert "samesite=strict" not in lowered
 
     async def test_refresh_token_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test successful token refresh."""
