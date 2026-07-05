@@ -83,12 +83,19 @@ class TestCheckSimilarityRateLimit:
         mock_pipe.expire.assert_not_called()
 
     async def test_uses_correct_redis_key(self, mock_redis):
-        """Should use key 'similarity_check_rate:{user_id}'."""
-        mock_redis.get.return_value = None
+        """Should read the count from key 'similarity_check_rate:{user_id}'.
 
-        await check_similarity_rate_limit(user_id=42, redis_client=mock_redis)
+        A count stored under any other key must be invisible to the check, so
+        if the implementation used the wrong key the request would incorrectly
+        be allowed instead of raising 429.
+        """
+        redis_state = {"similarity_check_rate:42": b"5"}
+        mock_redis.get.side_effect = lambda key: redis_state.get(key)
 
-        mock_redis.get.assert_called_once_with("similarity_check_rate:42")
+        with pytest.raises(HTTPException) as exc_info:
+            await check_similarity_rate_limit(user_id=42, redis_client=mock_redis)
+
+        assert exc_info.value.status_code == 429
 
     async def test_allows_request_when_redis_unavailable(self, mock_redis):
         """Should allow request (not raise) when Redis is down."""
@@ -175,15 +182,22 @@ class TestCheckAnalyzeRateLimit:
         mock_pipe.expire.assert_not_called()
 
     async def test_uses_correct_redis_key(self, mock_redis, monkeypatch):
-        """Should use key 'ml_analyze_rate:{user_id}'."""
+        """Should read the count from key 'ml_analyze_rate:{user_id}'.
+
+        A count stored under any other key must be invisible to the check, so
+        if the implementation used the wrong key the request would incorrectly
+        be allowed instead of raising 429.
+        """
         from app.config import settings
 
         monkeypatch.setattr(settings, "ML_ANALYZE_RATE_LIMIT", 2)
-        mock_redis.get.return_value = None
+        redis_state = {"ml_analyze_rate:42": b"2"}
+        mock_redis.get.side_effect = lambda key: redis_state.get(key)
 
-        await check_analyze_rate_limit(user_id=42, redis_client=mock_redis)
+        with pytest.raises(HTTPException) as exc_info:
+            await check_analyze_rate_limit(user_id=42, redis_client=mock_redis)
 
-        mock_redis.get.assert_called_once_with("ml_analyze_rate:42")
+        assert exc_info.value.status_code == 429
 
     async def test_allows_request_when_redis_unavailable(self, mock_redis, monkeypatch):
         """Should allow request (not raise) when Redis is down."""
