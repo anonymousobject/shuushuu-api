@@ -31,6 +31,7 @@ from app.services.ml_backfill import (
     variant_relpath,
     write_results,
 )
+from app.services.ml_categories import SUGGESTION_CATEGORIES
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -71,8 +72,10 @@ async def run(args: argparse.Namespace) -> None:
 
             # A corrupt/unreadable image must not abort the whole run.
             try:
-                predictions = await service.generate_suggestions(
-                    str(path), min_confidence=settings.ML_MIN_CONFIDENCE
+                predictions = await service.generate_raw_predictions(
+                    str(path),
+                    include_categories=SUGGESTION_CATEGORIES,
+                    min_confidence=settings.ML_MIN_CONFIDENCE,
                 )
             except Exception as exc:
                 failed += 1
