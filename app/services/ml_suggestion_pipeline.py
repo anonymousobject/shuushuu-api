@@ -323,15 +323,18 @@ async def compute_implied_suggestions(
         resolved_count=len(resolved),
     )
 
-    # 2b. Drop a suggested parent when a confident suggested child supersedes it.
+    # 2b. Character gate: when disabled, drop character-type suggestions here —
+    # after alias resolution (so aliases of character tags are caught). This
+    # MUST run before parent-supersede so a gated character child can't first
+    # supersede a theme parent (nothing in the schema stops cross-type
+    # inheritedfrom chains, so a dropped child would otherwise take its parent
+    # down with it).
+    resolved = await filter_character_suggestions(db, resolved)
+
+    # 2c. Drop a suggested parent when a confident suggested child supersedes it.
     resolved = await filter_superseded_parents(
         db, resolved, settings.ML_PARENT_SUPERSEDE_MIN_CONFIDENCE
     )
-
-    # 2c. Character gate: when disabled, drop character-type suggestions here —
-    # after alias resolution (so aliases of character tags are caught), before
-    # any further filtering work is spent on them.
-    resolved = await filter_character_suggestions(db, resolved)
 
     # 3. Get ALL existing tags on the image (for redundancy filtering).
     applied = {

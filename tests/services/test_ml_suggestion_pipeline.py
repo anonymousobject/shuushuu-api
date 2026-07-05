@@ -908,3 +908,53 @@ async def test_character_suggestions_stored_when_flag_on(db_session, tmp_path, m
         select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
     )
     assert {s.tag_id for s in result.scalars().all()} == {311, 312}
+
+
+async def test_character_child_does_not_supersede_theme_parent_when_gated(
+    db_session, tmp_path, monkeypatch
+):
+    """Gate ordering regression: with the flag off, a confident character-type
+    child must be dropped BEFORE parent-supersede runs — otherwise it first
+    supersedes its theme parent and is then dropped itself, losing both.
+    Nothing in the schema forbids cross-type inheritedfrom chains, so this is
+    enforced by ordering, not by data convention."""
+    monkeypatch.setattr(settings, "ML_CHARACTER_SUGGESTIONS_ENABLED", False)
+
+    theme_parent = Tags(tag_id=401, title="vocaloid outfit", type=TagType.THEME)
+    db_session.add(theme_parent)
+    await db_session.flush()
+    character_child = Tags(
+        tag_id=402,
+        title="hatsune miku",
+        type=TagType.CHARACTER,
+        inheritedfrom_id=401,
+    )
+    db_session.add(character_child)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "gate_order")
+    image = await _make_image(db_session, user, "gate_order", tmp_path)
+    await db_session.commit()
+
+    predictions = [
+        {"external_tag": "vocaloid_outfit", "confidence": 0.7, "model_version": "v3"},
+        {"external_tag": "hatsune_miku", "confidence": 0.95, "model_version": "v3"},
+    ]
+    mapped = [
+        {"tag_id": 401, "confidence": 0.7, "model_version": "v3"},
+        {"tag_id": 402, "confidence": 0.95, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await store_predictions(db_session, image.image_id, predictions)
+
+    # The character child is gated out BEFORE it can supersede its theme parent,
+    # so the parent survives as the sole stored suggestion.
+    assert created == 1
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    assert {s.tag_id for s in result.scalars().all()} == {401}
