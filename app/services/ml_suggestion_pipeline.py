@@ -12,6 +12,7 @@ from pathlib import Path as FilePath
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
     from app.services.ml_service import MLTagSuggestionService
@@ -451,7 +452,19 @@ async def store_predictions(
         suggestions_created += 1
 
     # Commit all suggestions (same transactional shape as the original job).
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # A concurrent regeneration (arq job vs sync generate, or overlapping
+        # retries) can insert the same (image_id, tag_id) between the read above
+        # and this commit, tripping the UNIQUE(image_id, tag_id) constraint.
+        # Regeneration is idempotent and the other writer's rows ARE the desired
+        # state, so roll back and report 0 new rather than surfacing a 500 —
+        # mirrors batch_tag's IntegrityError guard shape but degrades gracefully
+        # instead of re-raising.
+        await db.rollback()
+        logger.info("ml_suggestion_store_duplicate_race", image_id=image_id)
+        return 0
 
     logger.info(
         "ml_suggestion_pipeline_completed",

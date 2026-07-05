@@ -639,6 +639,81 @@ async def test_store_predictions_persists_without_inference(db_session, tmp_path
     assert all(s.status == "pending" for s in suggestions)
 
 
+@pytest.mark.needs_commit
+async def test_store_predictions_swallows_duplicate_race(db_session, tmp_path, monkeypatch):
+    """Two concurrent regenerations of the same image (arq job vs sync generate,
+    or overlapping retries) can insert the same (image_id, tag_id) between this
+    call's read and its commit, tripping the UNIQUE(image_id, tag_id) constraint.
+    Regeneration is idempotent and the other writer's rows ARE the desired state,
+    so store_predictions must roll back, log the race, and return 0 new — never
+    let the IntegrityError surface as a 500.
+
+    Testing approach (noted honestly): the read-then-insert race window is not
+    deterministically reproducible in-process, so a single IntegrityError is
+    injected at the real commit boundary (db.commit). The assertions are on the
+    service's real handling of it: no exception escapes, it returns 0, and it
+    rolls the session back (the action that un-poisons the session in the real
+    race). needs_commit is used for real transaction semantics; the follow-up
+    query confirms the session is reusable afterward.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    tags = [Tags(tag_id=46, title="long hair")]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "dup_race")
+    image = await _make_image(db_session, user, "dup_race", tmp_path)
+    await db_session.commit()
+    image_id = image.image_id  # capture before the rollback below expires `image`
+
+    predictions = [{"external_tag": "long_hair", "confidence": 0.92, "model_version": "v3"}]
+    mapped = [{"tag_id": 46, "confidence": 0.92, "model_version": "v3"}]
+
+    real_commit = db_session.commit
+    real_rollback = db_session.rollback
+    commit_calls = {"n": 0}
+    rollback_calls = {"n": 0}
+
+    async def _commit_raises_once() -> None:
+        commit_calls["n"] += 1
+        if commit_calls["n"] == 1:
+            raise IntegrityError(
+                "INSERT INTO ml_tag_suggestions ...",
+                {},
+                Exception("Duplicate entry for key 'unique_ml_suggestion_image_tag'"),
+            )
+        await real_commit()
+
+    async def _rollback_spy() -> None:
+        rollback_calls["n"] += 1
+        await real_rollback()
+
+    monkeypatch.setattr(db_session, "commit", _commit_raises_once)
+    monkeypatch.setattr(db_session, "rollback", _rollback_spy)
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await store_predictions(db_session, image_id, predictions)
+
+    # Degraded gracefully: no raise, 0 new, and it rolled back the failed unit.
+    assert created == 0
+    assert commit_calls["n"] == 1
+    assert rollback_calls["n"] == 1
+
+    # Session is reusable afterward (rollback cleared the aborted work).
+    monkeypatch.setattr(db_session, "commit", real_commit)
+    monkeypatch.setattr(db_session, "rollback", real_rollback)
+    rows = (
+        await db_session.execute(
+            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)
+        )
+    ).scalars().all()
+    assert rows == []  # our aborted attempt persisted nothing
+
+
 async def test_filters_redundant_grandparent(db_session, tmp_path, monkeypatch):
     """A suggestion that is a grandparent of an existing tag is also filtered.
 
