@@ -522,6 +522,11 @@ class TestRefresh:
         refresh3_response = await client.post("/api/v1/auth/refresh")
         assert refresh3_response.status_code == 200
 
+        # The recovered token itself is a usable session token going forward.
+        client.cookies.set("refresh_token", recovered_token)
+        refresh4_response = await client.post("/api/v1/auth/refresh")
+        assert refresh4_response.status_code == 200
+
     async def test_refresh_dead_token_clears_cookies(self, client: AsyncClient):
         """An unknown/dead refresh token returns 401 AND clears the auth cookies.
 

@@ -471,16 +471,19 @@ async def login(
     )
 
 
-def _refresh_failure(detail: str) -> JSONResponse:
-    """401 response for a failed refresh that ALSO clears the auth cookies.
+def _refresh_failure(
+    detail: str, status_code: int = status.HTTP_401_UNAUTHORIZED
+) -> JSONResponse:
+    """Failure response for a refresh that ALSO clears the auth cookies.
 
-    A dead refresh token (its DB row is gone, expired, or the family was revoked
-    for theft) is otherwise re-presented by the browser on every page load — the
-    SSR retries the same dead token indefinitely. Clearing the cookies resets the
-    session to a clean logged-out state so that retry loop stops.
+    A refresh that can't succeed for a session-terminal reason — a dead token
+    (row gone / expired / theft-revoked family) or a suspended/inactive account —
+    is otherwise retried by the browser on every SSR page load, since the cookie
+    is left in place. Clearing the cookies resets the session to a clean
+    logged-out state so that retry loop stops.
     """
     failure = JSONResponse(
-        status_code=status.HTTP_401_UNAUTHORIZED,
+        status_code=status_code,
         content={"detail": detail},
     )
     _clear_auth_cookies(failure)
@@ -638,8 +641,15 @@ async def refresh_token(
     if not user:
         return _refresh_failure("User not found")
 
-    # Check if user is active and handle suspension
-    await _check_and_handle_suspension(user, db)
+    # Check if user is active and handle suspension. An active suspension /
+    # inactive account raises; convert it to a cookie-clearing response so a
+    # suspended user doesn't re-present the cookie and hammer /auth/refresh (403)
+    # on every SSR page load.
+    try:
+        await _check_and_handle_suspension(user, db)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Account is not active"
+        return _refresh_failure(detail, status_code=exc.status_code)
     # If auto-reactivated, commit immediately (refresh needs this)
     if user.active:
         await db.commit()
