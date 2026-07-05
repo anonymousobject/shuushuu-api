@@ -73,7 +73,7 @@ def apply_test_pipeline(
     for op in pipeline:
         kind = op["type"]
         if kind == "pad_to_size":
-            target_w, target_h = op["size"]
+            target_h, target_w = op["size"]  # [h, w] (timm convention, as resize/center_crop)
             bg = (255, 255, 255) if op.get("background_color") == "white" else (0, 0, 0)
             scale = min(target_w / img.width, target_h / img.height)
             new = (int(img.width * scale), int(img.height * scale))

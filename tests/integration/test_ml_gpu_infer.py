@@ -55,6 +55,27 @@ def test_standalone_preprocess_matches_canonical(tmp_path):
     assert mine.shape == want.shape == (1, 3, 448, 448)
     assert np.allclose(mine, want, atol=1e-7)
 
+    # A NON-SQUARE pipeline: the default pipeline is square, which hides any
+    # [h, w] vs [w, h] disagreement in pad_to_size/resize/center_crop. Drive a
+    # non-square pipeline through both copies so the twin cannot diverge on the
+    # width/height axis silently.
+    nonsquare_pipeline = [
+        {"type": "pad_to_size", "size": [400, 512], "background_color": "white",
+         "interpolation": "bilinear"},
+        {"type": "resize", "size": [200, 256], "interpolation": "bicubic"},
+        {"type": "center_crop", "size": [128, 192]},
+        {"type": "maybe_to_tensor"},
+        {"type": "normalize", "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+    ]
+    mine_ns = ml_gpu_infer.apply_test_pipeline(
+        ml_gpu_infer.load_rgb(str(img_path)), nonsquare_pipeline
+    )
+    want_ns = canonical.apply_test_pipeline(
+        canonical.load_rgb(str(img_path)), nonsquare_pipeline
+    )
+    assert mine_ns.shape == want_ns.shape == (1, 3, 128, 192)  # H=128, W=192
+    assert np.allclose(mine_ns, want_ns, atol=1e-7)
+
 
 @pytest.mark.skipif(
     not (_MODEL_DIR / "model.onnx").exists(),

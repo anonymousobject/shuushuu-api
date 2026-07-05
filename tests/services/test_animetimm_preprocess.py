@@ -71,3 +71,33 @@ def test_respects_pipeline_resolution(tmp_path):
     ]
     out = apply_test_pipeline(img, pipeline)
     assert out.shape == (1, 3, 384, 384)
+
+
+def test_pad_to_size_non_square_is_h_w():
+    """pad_to_size ``size`` is [h, w] (timm convention, matching resize/center_crop).
+    A non-square [384, 512] pad must produce a 512-wide x 384-tall canvas, i.e. a
+    (1, C, H=384, W=512) tensor. This is latent today because every shipped
+    pipeline is square; the swapped [w, h] unpack would give (1, 3, 512, 384).
+    """
+    img = Image.new("RGB", (200, 100), (10, 20, 30))  # non-square input
+    pipeline = [
+        {"type": "pad_to_size", "size": [384, 512], "background_color": "white",
+         "interpolation": "bilinear"},
+        {"type": "maybe_to_tensor"},
+    ]
+    out = apply_test_pipeline(img, pipeline)
+    assert out.shape == (1, 3, 384, 512)
+
+
+def test_center_crop_non_square_is_h_w():
+    """center_crop ``size`` is [h, w]: a [128, 192] crop yields a 192-wide x
+    128-tall region, i.e. (1, C, H=128, W=192). Locks the convention against a
+    regression that would swap it to match a mis-fixed pad_to_size.
+    """
+    img = Image.new("RGB", (600, 600), (10, 20, 30))
+    pipeline = [
+        {"type": "center_crop", "size": [128, 192]},
+        {"type": "maybe_to_tensor"},
+    ]
+    out = apply_test_pipeline(img, pipeline)
+    assert out.shape == (1, 3, 128, 192)
