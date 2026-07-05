@@ -122,6 +122,16 @@ class Settings(BaseSettings):
             "generate endpoint is available."
         ),
     )
+    ML_CHARACTER_SUGGESTIONS_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "Gate for character-type tag suggestions at the mapping step. When "
+            "false (default), raw character predictions are still stored but no "
+            "character MlTagSuggestions rows are created and /analyze returns "
+            "no character chips. To re-enable: set true and run "
+            "scripts/ml_remap.py to backfill suggestions from the raw store."
+        ),
+    )
     ML_MODELS_PATH: str = Field(
         default="ml_models",
         description=(
