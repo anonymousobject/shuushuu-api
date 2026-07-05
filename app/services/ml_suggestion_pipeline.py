@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from app.services.ml_service import MLTagSuggestionService
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import TagType, settings
 from app.core.logging import get_logger
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
@@ -191,6 +191,38 @@ async def filter_superseded_parents(
     return [s for s in suggestions if s["tag_id"] not in superseded]
 
 
+async def filter_character_suggestions(
+    db: AsyncSession, suggestions: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Drop suggestions that resolve to character-type tags when
+    ML_CHARACTER_SUGGESTIONS_ENABLED is off.
+
+    The gate sits at the mapping step on purpose: raw predictions (including
+    character-category ones) keep accumulating in ml_raw_predictions, so
+    re-enabling is `flag on + scripts/ml_remap.py` — never re-inference.
+    """
+    if settings.ML_CHARACTER_SUGGESTIONS_ENABLED or not suggestions:
+        return suggestions
+
+    tag_ids = {s["tag_id"] for s in suggestions}
+    result = await db.execute(
+        select(Tags.tag_id).where(  # type: ignore[call-overload]
+            Tags.tag_id.in_(tag_ids),  # type: ignore[union-attr]
+            Tags.type == TagType.CHARACTER,
+        )
+    )
+    character_ids = {row[0] for row in result.all()}
+    if not character_ids:
+        return suggestions
+
+    kept = [s for s in suggestions if s["tag_id"] not in character_ids]
+    logger.info(
+        "ml_suggestion_pipeline_character_gate",
+        dropped_count=len(suggestions) - len(kept),
+    )
+    return kept
+
+
 async def generate_and_store_suggestions(
     db: AsyncSession,
     image: Images,
@@ -295,6 +327,11 @@ async def compute_implied_suggestions(
     resolved = await filter_superseded_parents(
         db, resolved, settings.ML_PARENT_SUPERSEDE_MIN_CONFIDENCE
     )
+
+    # 2c. Character gate: when disabled, drop character-type suggestions here —
+    # after alias resolution (so aliases of character tags are caught), before
+    # any further filtering work is spent on them.
+    resolved = await filter_character_suggestions(db, resolved)
 
     # 3. Get ALL existing tags on the image (for redundancy filtering).
     applied = {

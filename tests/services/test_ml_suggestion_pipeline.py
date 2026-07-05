@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 
-from app.config import settings
+from app.config import TagType, settings
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
@@ -836,3 +836,75 @@ async def test_filter_superseded_parents_parent_not_suggested_kept(db_session):
     result = await filter_superseded_parents(db_session, suggestions, 0.6)
 
     assert {s["tag_id"] for s in result} == {651, 652}
+
+
+async def test_character_suggestions_dropped_when_flag_off(db_session, tmp_path, monkeypatch):
+    """Flag off: suggestions resolving to character-type tags are not stored;
+    theme suggestions are unaffected. Raw inference/ingest is untouched by this
+    gate (it lives in compute_implied_suggestions, not the raw-store path)."""
+    monkeypatch.setattr(settings, "ML_CHARACTER_SUGGESTIONS_ENABLED", False)
+
+    theme = Tags(tag_id=301, title="smile", type=TagType.THEME)
+    character = Tags(tag_id=302, title="hatsune miku", type=TagType.CHARACTER)
+    db_session.add_all([theme, character])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "charflag_off")
+    image = await _make_image(db_session, user, "charflag_off", tmp_path)
+    await db_session.commit()
+
+    predictions = [
+        {"external_tag": "smile", "confidence": 0.9, "model_version": "v3"},
+        {"external_tag": "hatsune_miku", "confidence": 0.95, "model_version": "v3"},
+    ]
+    mapped = [
+        {"tag_id": 301, "confidence": 0.9, "model_version": "v3"},
+        {"tag_id": 302, "confidence": 0.95, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await store_predictions(db_session, image.image_id, predictions)
+
+    assert created == 1
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    assert {s.tag_id for s in result.scalars().all()} == {301}
+
+
+async def test_character_suggestions_stored_when_flag_on(db_session, tmp_path, monkeypatch):
+    """Flag on: current behavior preserved — character suggestions stored."""
+    monkeypatch.setattr(settings, "ML_CHARACTER_SUGGESTIONS_ENABLED", True)
+
+    theme = Tags(tag_id=311, title="smile", type=TagType.THEME)
+    character = Tags(tag_id=312, title="hatsune miku", type=TagType.CHARACTER)
+    db_session.add_all([theme, character])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "charflag_on")
+    image = await _make_image(db_session, user, "charflag_on", tmp_path)
+    await db_session.commit()
+
+    predictions = [
+        {"external_tag": "smile", "confidence": 0.9, "model_version": "v3"},
+        {"external_tag": "hatsune_miku", "confidence": 0.95, "model_version": "v3"},
+    ]
+    mapped = [
+        {"tag_id": 311, "confidence": 0.9, "model_version": "v3"},
+        {"tag_id": 312, "confidence": 0.95, "model_version": "v3"},
+    ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await store_predictions(db_session, image.image_id, predictions)
+
+    assert created == 2
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    assert {s.tag_id for s in result.scalars().all()} == {311, 312}
