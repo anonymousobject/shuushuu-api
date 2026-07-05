@@ -398,6 +398,44 @@ async def test_filters_redundant_substring_title(db_session, tmp_path, monkeypat
     assert created == 0
 
 
+async def test_keeps_substring_inside_word(db_session, tmp_path, monkeypatch):
+    """A suggestion whose title only appears mid-word in an existing tag is kept.
+
+    Redundancy filtering is whole-word aware: existing "catgirl" must NOT silently
+    drop suggested "cat" (raw substring containment would have wrongly dropped it).
+    """
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    existing = Tags(tag_id=210, title="catgirl")
+    suggested = Tags(tag_id=211, title="cat")
+    db_session.add_all([existing, suggested])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "wordboundary")
+    image = await _make_image(db_session, user, "wordboundary", tmp_path)
+    await db_session.flush()
+
+    db_session.add(TagLinks(image_id=image.image_id, tag_id=210, user_id=user.user_id))
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("cat"))
+    mapped = [{"tag_id": 211, "confidence": 0.9, "model_version": "v3"}]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    # "cat" only appears mid-word in "catgirl" → NOT redundant, suggestion kept.
+    assert created == 1
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    suggestions = result.scalars().all()
+    assert {s.tag_id for s in suggestions} == {211}
+
+
 async def test_no_mappings_creates_nothing(db_session, tmp_path, monkeypatch):
     """When nothing maps to an internal tag, the pipeline completes with 0 created."""
     monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))

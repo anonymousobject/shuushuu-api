@@ -7,6 +7,7 @@ synchronous generate endpoint call generate_and_store_suggestions — the
 generation logic is not duplicated.
 """
 
+import re
 from pathlib import Path as FilePath
 from typing import TYPE_CHECKING, Any
 
@@ -113,10 +114,13 @@ async def filter_redundant_suggestions(
         # Skip if tag title is contained in an existing tag's title
         if tag and tag.title:
             tag_title_lower = tag.title.lower()
-            # Check if this tag's title is a substring of any existing tag
-            # Only filter if it's a proper substring (not exact match)
+            # Check if this tag's title appears as a whole word (or contiguous
+            # word phrase) inside any existing tag's title. Only filter if it's a
+            # proper substring (not exact match). Word-boundary matching keeps
+            # "kimono" ⊂ "short kimono" while sparing "cat" from "catgirl".
+            word_pattern = re.compile(rf"\b{re.escape(tag_title_lower)}\b")
             is_substring = any(
-                tag_title_lower in existing_title and tag_title_lower != existing_title
+                tag_title_lower != existing_title and word_pattern.search(existing_title)
                 for existing_title in existing_titles
             )
             if is_substring:
