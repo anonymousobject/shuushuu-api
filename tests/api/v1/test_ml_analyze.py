@@ -95,6 +95,7 @@ async def test_analyze_returns_theme_and_character_tags(
 ):
     """Happy path: a theme and a character tag are resolved and returned with correct types."""
     monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+    monkeypatch.setattr(settings, "ML_CHARACTER_SUGGESTIONS_ENABLED", True)
 
     theme_tag = Tags(title="smile", type=TagType.THEME)  # type=1
     character_tag = Tags(title="hatsune miku", type=TagType.CHARACTER)  # type=4
@@ -135,6 +136,99 @@ async def test_analyze_returns_theme_and_character_tags(
     # confidence is surfaced for evaluation (mapping-scaled; mapping.confidence=1.0 in this fake)
     assert by_title["smile"]["confidence"] == 0.9
     assert by_title["hatsune miku"]["confidence"] == 0.95
+
+
+async def test_analyze_omits_character_tags_when_flag_off(
+    analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """Flag off (the default): character-type tags never reach the upload form."""
+    monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+    monkeypatch.setattr(settings, "ML_CHARACTER_SUGGESTIONS_ENABLED", False)
+
+    theme_tag = Tags(title="smile", type=TagType.THEME)
+    character_tag = Tags(title="hatsune miku", type=TagType.CHARACTER)
+    db_session.add_all([theme_tag, character_tag])
+    await db_session.commit()
+    await db_session.refresh(theme_tag)
+    await db_session.refresh(character_tag)
+
+    raw_preds = [
+        {"external_tag": "smile", "confidence": 0.9, "category": 0, "model_version": "v1"},
+        {"external_tag": "hatsune_miku", "confidence": 0.95, "category": 4, "model_version": "v1"},
+    ]
+    resolved = [
+        {"tag_id": theme_tag.tag_id, "confidence": 0.9, "model_version": "v1"},
+        {"tag_id": character_tag.tag_id, "confidence": 0.95, "model_version": "v1"},
+    ]
+
+    with (
+        patch(
+            "app.api.v1.ml_analyze.get_ml_service",
+            new_callable=AsyncMock,
+            return_value=_fake_ml_service(raw_preds),
+        ),
+        patch(
+            "app.api.v1.ml_analyze.resolve_external_tags",
+            new_callable=AsyncMock,
+            return_value=resolved,
+        ),
+    ):
+        response = await analyze_client.post("/api/v1/ml-tag-suggestions/analyze", files=_files())
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    titles = {s["title"] for s in data["suggestions"]}
+    types = {s["type"] for s in data["suggestions"]}
+    assert titles == {"smile"}
+    assert TagType.CHARACTER not in types
+
+
+async def test_analyze_character_child_does_not_supersede_theme_parent_when_flag_off(
+    analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """Ordering regression (analyze path): with the flag off, a confident
+    character child must be gated BEFORE parent-supersede — otherwise it first
+    supersedes its theme parent and is then dropped, losing both chips."""
+    monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+    monkeypatch.setattr(settings, "ML_CHARACTER_SUGGESTIONS_ENABLED", False)
+
+    theme_parent = Tags(title="vocaloid outfit", type=TagType.THEME)
+    db_session.add(theme_parent)
+    await db_session.commit()
+    await db_session.refresh(theme_parent)
+    character_child = Tags(
+        title="hatsune miku", type=TagType.CHARACTER, inheritedfrom_id=theme_parent.tag_id
+    )
+    db_session.add(character_child)
+    await db_session.commit()
+    await db_session.refresh(character_child)
+
+    raw_preds = [
+        {"external_tag": "vocaloid_outfit", "confidence": 0.7, "category": 0, "model_version": "v1"},
+        {"external_tag": "hatsune_miku", "confidence": 0.95, "category": 4, "model_version": "v1"},
+    ]
+    resolved = [
+        {"tag_id": theme_parent.tag_id, "confidence": 0.7, "model_version": "v1"},
+        {"tag_id": character_child.tag_id, "confidence": 0.95, "model_version": "v1"},
+    ]
+
+    with (
+        patch(
+            "app.api.v1.ml_analyze.get_ml_service",
+            new_callable=AsyncMock,
+            return_value=_fake_ml_service(raw_preds),
+        ),
+        patch(
+            "app.api.v1.ml_analyze.resolve_external_tags",
+            new_callable=AsyncMock,
+            return_value=resolved,
+        ),
+    ):
+        response = await analyze_client.post("/api/v1/ml-tag-suggestions/analyze", files=_files())
+
+    assert response.status_code == 200, response.text
+    titles = {s["title"] for s in response.json()["suggestions"]}
+    assert titles == {"vocaloid outfit"}
 
 
 async def test_analyze_downscales_large_image(

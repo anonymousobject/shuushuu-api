@@ -23,6 +23,7 @@ from app.schemas.ml_analyze import AnalyzedTag, AnalyzeTagsResponse
 from app.services.ml_categories import SUGGESTION_CATEGORIES  # light: no onnxruntime
 from app.services.ml_runtime import get_ml_service, inference_slot
 from app.services.ml_suggestion_pipeline import (  # light: no onnxruntime
+    filter_character_suggestions,
     filter_superseded_parents,
 )
 from app.services.rate_limit import check_analyze_rate_limit
@@ -124,6 +125,10 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> A
     resolved = await resolve_external_tags(db, raw)  # [{tag_id, confidence, model_version}]
     if not resolved:
         return AnalyzeTagsResponse(suggestions=[])
+
+    # Character gate: must run before parent-supersede so a gated character
+    # child can't first supersede a theme parent (both chips would be lost).
+    resolved = await filter_character_suggestions(db, resolved)
 
     # Drop a suggested parent when a confident suggested child supersedes it.
     resolved = await filter_superseded_parents(
