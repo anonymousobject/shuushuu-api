@@ -66,21 +66,55 @@ def load_wd_tagger_tags() -> dict[str, dict[str, object]]:
     return tags
 
 
+def build_internal_tag_index(
+    rows: list[tuple[int, str, int]],
+) -> dict[str, dict[str, object]]:
+    """Index internal tags by normalized title, keeping a deterministic winner
+    on collision.
+
+    Two internal tags whose titles normalize identically (normalize_tag strips
+    all non-[a-z0-9\\s] chars WITHOUT inserting a space, so punctuation just
+    vanishes — e.g. "Re:Zero" and "ReZero" both become "rezero") would
+    otherwise silently overwrite each other, so the draft CSV would map to
+    whichever DB row happened to be indexed last. `rows` must be pre-ordered
+    (e.g. by tag_id) so "first seen" is deterministic; the first row wins and
+    every collision is reported via a loud warning so a human curator notices
+    it — this script only produces a human-reviewed draft CSV, so a warning
+    is the right altitude, not a hard failure.
+    """
+    tags: dict[str, dict[str, object]] = {}
+    collisions: dict[str, list[str]] = {}
+    for tag_id, title, tag_type in rows:
+        normalized = normalize_tag(title)
+        if normalized in tags:
+            winner = tags[normalized]
+            collisions.setdefault(
+                normalized, [f"{winner['title']!r} (id={winner['tag_id']})"]
+            ).append(f"{title!r} (id={tag_id})")
+            continue  # keep the first-seen winner
+        tags[normalized] = {
+            "tag_id": tag_id,
+            "title": title,
+            "type": tag_type,
+        }
+    for normalized, entries in collisions.items():
+        print(
+            f"WARNING: tag titles collide after normalization ({normalized!r}): "
+            f"{', '.join(entries)} -- keeping {entries[0]}"
+        )
+    return tags
+
+
 async def load_internal_tags() -> dict[str, dict[str, object]]:
     """Load internal theme tags (type=1) from database."""
     async with get_async_session() as db:
         result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type).where(Tags.type == 1)  # type: ignore[call-overload]
+            select(Tags.tag_id, Tags.title, Tags.type)  # type: ignore[call-overload]
+            .where(Tags.type == 1)
+            .order_by(Tags.tag_id)  # deterministic first-seen for collision handling
         )
-        tags: dict[str, dict[str, object]] = {}
-        for tag_id, title, tag_type in result.all():
-            normalized = normalize_tag(title)
-            tags[normalized] = {
-                "tag_id": tag_id,
-                "title": title,
-                "type": tag_type,
-            }
-        return tags
+        rows = [(tag_id, title, tag_type) for tag_id, title, tag_type in result.all()]
+        return build_internal_tag_index(rows)
 
 
 def find_matches(
