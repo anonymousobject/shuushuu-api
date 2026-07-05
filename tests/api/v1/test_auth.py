@@ -1025,6 +1025,14 @@ class TestRefreshSuspensionCheck:
         response = await client.post("/api/v1/auth/refresh")
 
         assert response.status_code == 403
+        # The 403 must also clear the auth cookies, otherwise a suspended user's
+        # browser re-presents the cookie and hammers /auth/refresh on every load.
+        cleared = {
+            c.split("=", 1)[0]
+            for c in response.headers.get_list("set-cookie")
+            if c.startswith(("refresh_token=", "access_token="))
+        }
+        assert cleared == {"refresh_token", "access_token"}, response.headers.get_list("set-cookie")
         assert "suspended" in response.json()["detail"].lower()
 
     async def test_refresh_auto_reactivates_expired_suspension(
