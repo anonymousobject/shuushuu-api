@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -177,13 +177,24 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         access_token: JWT access token
         refresh_token: Refresh token
     """
+    # SameSite=Lax (NOT Strict). This is a server-rendered app, so the SSR needs
+    # the auth cookie on the *top-level document request*. SameSite=Strict
+    # withholds cookies from top-level navigations the browser doesn't treat as
+    # same-site-initiated — reloads, links from other sites, or a tab first opened
+    # cross-site — so the server renders logged-out even though the session is
+    # valid (this caused the recurring "logged out after refresh" reports). Lax
+    # sends cookies on top-level GET navigations while still withholding them from
+    # cross-site POST/PUT/DELETE, so CSRF protection for state-changing requests is
+    # preserved (and the API has no state-changing GET endpoints). Do NOT change
+    # this back to Strict without first fixing SSR auth.
+
     # Set refresh token as HTTPOnly cookie
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,  # Prevent JavaScript access (XSS protection)
         secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
-        samesite="strict",  # CSRF protection
+        samesite="lax",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,  # seconds
     )
 
@@ -197,7 +208,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         value=access_token,
         httponly=True,  # Prevent JavaScript access (XSS protection)
         secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
-        samesite="strict",  # CSRF protection
+        samesite="lax",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
     )
 
@@ -209,22 +220,22 @@ def _clear_auth_cookies(response: Response) -> None:
     Args:
         response: FastAPI response object
     """
-    # Clear refresh token (match set_cookie params)
+    # Clear refresh token (match set_cookie params, incl. SameSite=Lax)
     response.delete_cookie(
         key="refresh_token",
         path="/",
         httponly=True,
         secure=settings.ENVIRONMENT != "development",
-        samesite="strict",
+        samesite="lax",
     )
 
-    # Clear access token (match set_cookie params)
+    # Clear access token (match set_cookie params, incl. SameSite=Lax)
     response.delete_cookie(
         key="access_token",
         path="/",
         httponly=True,
         secure=settings.ENVIRONMENT != "development",
-        samesite="strict",
+        samesite="lax",
     )
 
 
@@ -463,9 +474,10 @@ async def login(
 async def refresh_token(
     request: Request,
     response: Response,
-    refresh_token: Annotated[str, Depends(get_refresh_token_from_cookie)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+    refresh_token: Annotated[str | None, Cookie()] = None,
+    access_token: Annotated[str | None, Cookie()] = None,
 ) -> TokenResponse:
     """
     Refresh access token using refresh token.
@@ -481,6 +493,24 @@ async def refresh_token(
     If an already-used (revoked) refresh token is presented, this indicates
     potential token theft, and all tokens in the family are revoked.
     """
+    # TEMP INSTRUMENTATION (remove after capturing the prod 401-reason split):
+    # classify every refresh failure so we can confirm the dominant cause before
+    # reworking rotation/cookies. `had_access_cookie` distinguishes "cookies
+    # diverged" (access cookie present, refresh cookie gone) from a benign
+    # unauthenticated poke; `user_agent` exposes any browser-specific skew.
+    if not refresh_token:
+        logger.info(
+            "refresh_failed",
+            reason="cookie_missing",
+            had_access_cookie=bool(access_token),
+            user_agent=get_user_agent(request),
+            ip_address=get_client_ip(request),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token missing",
+        )
+
     # Hash the provided token to look up in database
     token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
 
@@ -489,6 +519,13 @@ async def refresh_token(
     db_token = result.scalar_one_or_none()
 
     if not db_token:
+        logger.info(
+            "refresh_failed",
+            reason="token_not_found",
+            had_access_cookie=bool(access_token),
+            user_agent=get_user_agent(request),
+            ip_address=get_client_ip(request),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
@@ -496,6 +533,14 @@ async def refresh_token(
 
     # Check if token is expired
     if db_token.expires_at < datetime.now(UTC):
+        logger.info(
+            "refresh_failed",
+            reason="expired",
+            user_id=db_token.user_id,
+            had_access_cookie=bool(access_token),
+            user_agent=get_user_agent(request),
+            ip_address=get_client_ip(request),
+        )
         # Clean up expired token
         await db.delete(db_token)
         await db.commit()
@@ -582,10 +627,12 @@ async def refresh_token(
     if user.active:
         await db.commit()
 
-    # Create new access token
+    # Create new access token. Named distinctly from the `access_token` cookie
+    # parameter above (which feeds the had_access_cookie diagnostic) so the two
+    # can never be confused.
     if user.user_id is None:
         raise ValueError("User ID cannot be None")
-    access_token = create_access_token(user.user_id)
+    new_access_token = create_access_token(user.user_id)
 
     # Create new refresh token (rotation)
     new_refresh_token = create_refresh_token()
@@ -613,7 +660,7 @@ async def refresh_token(
     await db.commit()
 
     # Set authentication cookies
-    _set_auth_cookies(response, access_token, new_refresh_token)
+    _set_auth_cookies(response, new_access_token, new_refresh_token)
 
     # `user` already has user_groups eager-loaded (see the SELECT earlier), so
     # the helper skips its internal DB round trip and the None branch can't
@@ -621,7 +668,7 @@ async def refresh_token(
     user_response = await build_user_private_response(db, redis_client, user=user)
 
     return TokenResponse(
-        access_token=access_token,
+        access_token=new_access_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=user_response,
