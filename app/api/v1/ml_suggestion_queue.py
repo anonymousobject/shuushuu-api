@@ -162,7 +162,7 @@ async def get_suggestions_for_tag(
         Query(description="Only include suggestions at or above this confidence"),
     ] = 0.0,
     page: Annotated[int, Query(ge=1, description="1-based page number")] = 1,
-    per_page: Annotated[int, Query(ge=1, description="Items per page")] = 50,
+    per_page: Annotated[int, Query(ge=1, le=200, description="Items per page")] = 50,
     db: AsyncSession = Depends(get_db),
 ) -> SuggestionGridResponse:
     """Return a confidence-sorted page of pending suggestions for one tag.

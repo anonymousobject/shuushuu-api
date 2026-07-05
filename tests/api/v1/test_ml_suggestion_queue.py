@@ -583,6 +583,45 @@ class TestWorklistPagination:
 
 
 @pytest.mark.api
+class TestGridPerPageLimit:
+    """GET /api/v1/ml-suggestions — per_page must be capped like the worklist endpoint."""
+
+    async def test_oversized_per_page_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """per_page above the cap is a 422, not an unbounded DB scan."""
+        user = await _make_user(db_session, "gpp1")
+        await _grant_image_tag_add(db_session, user)
+        tag = await _make_tag(db_session, user, "gpp1_tag")
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/ml-suggestions?tag_id={tag.tag_id}&per_page=9999999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_per_page_at_cap_accepted(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """per_page equal to the cap (200) is still valid."""
+        user = await _make_user(db_session, "gpp2")
+        await _grant_image_tag_add(db_session, user)
+        tag = await _make_tag(db_session, user, "gpp2_tag")
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/ml-suggestions?tag_id={tag.tag_id}&per_page=200",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+
+
+@pytest.mark.api
 class TestGridTagSummaryAndExistingTags:
     """GET /api/v1/ml-suggestions — tag summary and existing image tags."""
 
