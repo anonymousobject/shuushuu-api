@@ -471,9 +471,7 @@ async def login(
     )
 
 
-def _refresh_failure(
-    detail: str, status_code: int = status.HTTP_401_UNAUTHORIZED
-) -> JSONResponse:
+def _refresh_failure(detail: str, status_code: int = status.HTTP_401_UNAUTHORIZED) -> JSONResponse:
     """Failure response for a refresh that ALSO clears the auth cookies.
 
     A refresh that can't succeed for a session-terminal reason — a dead token
