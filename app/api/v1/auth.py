@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -166,6 +166,25 @@ async def _check_and_handle_suspension(
             )
 
 
+def _set_access_cookie(response: Response, access_token: str) -> None:
+    """Set (only) the access-token cookie.
+
+    Cookie Max-Age matches the refresh token, not the JWT expiry: the JWT's own
+    `exp` claim is what's enforced server-side, and pinning the cookie to a
+    30-minute lifetime just creates a "cookie disappeared" branch in SSR auth
+    that costs an extra round trip every page render after expiry. See
+    _set_auth_cookies for the SameSite=Lax rationale.
+    """
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,  # Prevent JavaScript access (XSS protection)
+        secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
+        samesite="lax",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+
+
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
     """
     Set authentication cookies in response.
@@ -200,18 +219,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
     )
 
     # Set access token as HTTPOnly cookie (for SSR and Swagger UI).
-    # Cookie Max-Age matches the refresh token, not the JWT expiry: the JWT's own
-    # `exp` claim is what's enforced server-side, and pinning the cookie to a
-    # 30-minute lifetime just creates a "cookie disappeared" branch in SSR auth
-    # that costs an extra round trip every page render after expiry.
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,  # Prevent JavaScript access (XSS protection)
-        secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
-        samesite="lax",
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-    )
+    _set_access_cookie(response, access_token)
 
 
 def _clear_auth_cookies(response: Response) -> None:
@@ -498,12 +506,9 @@ async def _issue_rotated_session(
     family_id: str,
     parent_token_id: int | None,
 ) -> TokenResponse:
-    """Mint a new access token + refresh token in `family_id`, set cookies, and
-    return the token response.
-
-    Shared by the normal rotation path and the benign-race recovery path. The
-    caller is responsible for revoking the presented token (normal rotation) or
-    leaving it alone (race recovery, where it is already revoked).
+    """Mint a new access token + rotated refresh token in `family_id`, set both
+    cookies, and return the token response. The caller has already revoked the
+    presented (parent) token.
     """
     if user.user_id is None:
         raise ValueError("User ID cannot be None")
@@ -539,28 +544,68 @@ async def _issue_rotated_session(
     )
 
 
+async def _issue_access_only(
+    user: Users,
+    db: AsyncSession,
+    response: Response,
+    redis_client: redis.Redis,  # type: ignore[type-arg]
+) -> TokenResponse:
+    """Issue a fresh access token WITHOUT rotating the refresh token.
+
+    Benign-race recovery: a concurrent refresh already rotated the token and
+    minted its child, so this in-flight request only needs a working access
+    token. Minting another refresh token here would create durable sibling
+    credentials (handing a session to anyone replaying a just-rotated token) and
+    unbounded rows — so we set only the access_token cookie and let the browser
+    converge on the winner's rotated refresh_token.
+    """
+    if user.user_id is None:
+        raise ValueError("User ID cannot be None")
+
+    new_access_token = create_access_token(user.user_id)
+    user.last_active = datetime.now(UTC)
+    await db.commit()
+
+    _set_access_cookie(response, new_access_token)
+
+    user_response = await build_user_private_response(db, redis_client, user=user)
+    return TokenResponse(
+        access_token=new_access_token,
+        token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=user_response,
+    )
+
+
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
     request: Request,
     response: Response,
-    refresh_token: Annotated[str, Depends(get_refresh_token_from_cookie)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+    refresh_token: Annotated[str | None, Cookie()] = None,
 ) -> TokenResponse | JSONResponse:
     """
-    Refresh access token using refresh token (with rotation).
+    Refresh access token using the refresh token (with rotation).
 
     1. Look up the presented refresh token; mint a new access token + rotated
        refresh token, revoking the old one.
-    2. A *dead* token (unknown / expired / theft-revoked family) returns 401 and
-       clears the auth cookies, so the browser stops re-presenting it on every
-       page load (the SSR would otherwise retry it indefinitely).
+    2. A *dead* or missing token (unknown / expired / theft-revoked family / no
+       cookie) returns 401 and clears the auth cookies, so the browser stops
+       re-presenting it on every page load (the SSR would otherwise retry it
+       indefinitely).
     3. A *benign race* — the presented token was rotated <10s ago and a child
        already exists (concurrent refreshes during a page load) — recovers with a
-       fresh session instead of 401, so the loser of the race stays logged in.
+       fresh *access token only* (no new refresh token), so the loser stays logged
+       in without minting durable sibling credentials.
     4. Reuse of a token revoked outside the grace window (or with no child) is
        treated as theft: the whole token family is revoked.
     """
+    # Missing refresh cookie — clear any stale access_token cookie so the diverged
+    # "access present, refresh gone" state doesn't 401-loop on every SSR load.
+    if not refresh_token:
+        return _refresh_failure("Refresh token missing")
+
     # Hash the provided token to look up in database
     token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
 
@@ -578,12 +623,9 @@ async def refresh_token(
         await db.commit()
         return _refresh_failure("Refresh token expired")
 
-    # Whether to revoke the presented token below. A benign-race token is already
-    # revoked, so we recover without touching it.
-    revoke_presented_token = True
-
     # SECURITY: token already revoked — distinguish a benign concurrent-refresh
     # race from genuine reuse/theft.
+    is_benign_race = False
     if db_token.revoked:
         is_race_condition = False
         if db_token.revoked_at:
@@ -596,14 +638,7 @@ async def refresh_token(
                     .where(RefreshTokens.parent_token_id == db_token.id)  # type: ignore[arg-type]
                     .limit(1)
                 )
-                if child_result.scalars().first() is not None:
-                    is_race_condition = True
-                    logger.info(
-                        "refresh_race_condition_detected",
-                        token_id=db_token.id,
-                        user_id=db_token.user_id,
-                        seconds_since_revoked=time_since_revoked.total_seconds(),
-                    )
+                is_race_condition = child_result.scalars().first() is not None
 
         if not is_race_condition:
             # Suspicious — likely theft. Nuke the entire family and clear cookies.
@@ -621,9 +656,7 @@ async def refresh_token(
                 "Refresh token reuse detected. All sessions revoked for security."
             )
 
-        # Benign race: the presented token is already revoked with a live child.
-        # Recover with a fresh session (don't re-revoke, don't nuke).
-        revoke_presented_token = False
+        is_benign_race = True
 
     # Load user. Eager-load groups so build_user_private_response can reuse this
     # row instead of issuing a second SELECT.
@@ -652,12 +685,20 @@ async def refresh_token(
     if user.active:
         await db.commit()
 
-    # Revoke the presented token (normal rotation); skip for benign-race recovery
-    # since that token is already revoked.
-    if revoke_presented_token:
-        db_token.revoked = True
-        db_token.revoked_at = datetime.now(UTC)
+    # Benign race: a concurrent refresh already rotated this token. Hand out a
+    # fresh access token only (no rotation) — see _issue_access_only.
+    if is_benign_race:
+        logger.info(
+            "refresh_race_recovered",
+            token_id=db_token.id,
+            user_id=db_token.user_id,
+            family_id=db_token.family_id,
+        )
+        return await _issue_access_only(user, db, response, redis_client)
 
+    # Normal rotation: revoke the presented token and mint its successor.
+    db_token.revoked = True
+    db_token.revoked_at = datetime.now(UTC)
     return await _issue_rotated_session(
         user,
         db,

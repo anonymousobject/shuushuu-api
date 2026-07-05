@@ -6,7 +6,7 @@ This document explains the JWT + Refresh Token authentication system implemented
 
 The API uses a modern **JWT + Refresh Token** authentication system with the following features:
 
-- **Short-lived access tokens** (JWT, 15 minutes) for API requests
+- **Short-lived access tokens** (JWT, 30 minutes) for API requests
 - **Long-lived refresh tokens** (30 days) stored as HTTPOnly cookies
 - **Token rotation** for enhanced security
 - **Reuse detection** to prevent token theft
@@ -45,7 +45,7 @@ Login and receive access token + refresh token.
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "bearer",
-  "expires_in": 900
+  "expires_in": 1800
 }
 ```
 
@@ -64,14 +64,23 @@ Get a new access token using refresh token.
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "bearer",
-  "expires_in": 900
+  "expires_in": 1800
 }
 ```
 
 **Notes:**
-- Old refresh token is revoked
-- New refresh token is set as cookie
-- If revoked token is reused, all session tokens are revoked
+- Old refresh token is revoked; a new one is set as a cookie.
+- **Failures clear the auth cookies** (both `refresh_token` and `access_token`
+  come back with `Max-Age=0`): a missing/unknown/expired token, a
+  suspended/inactive account (403), or a theft-revoked family (reuse) all return
+  a 4xx **and** expire the cookies, so a dead token isn't re-presented on every
+  SSR page load.
+- **Benign concurrent-refresh race** (the presented token was rotated <10s ago
+  and a child already exists): returns **200 with an access token only** — no new
+  refresh token is minted — so a page load that fanned out parallel refreshes
+  doesn't log the user out or create sibling credentials.
+- If a token revoked outside the grace window (or with no child) is reused, the
+  whole token family is revoked.
 
 ---
 
@@ -395,7 +404,7 @@ SECRET_KEY=your-very-secret-key-at-least-32-characters-long
 ALGORITHM=HS256
 
 # Access token expiration (minutes)
-ACCESS_TOKEN_EXPIRE_MINUTES=15
+ACCESS_TOKEN_EXPIRE_MINUTES=30
 
 # Refresh token expiration (days)
 REFRESH_TOKEN_EXPIRE_DAYS=30
@@ -411,7 +420,7 @@ ENVIRONMENT=development  # or 'production'
 ## Security Best Practices
 
 ### Backend
-✅ Short-lived access tokens (15 min)
+✅ Short-lived access tokens (30 min)
 ✅ Refresh tokens stored hashed in database
 ✅ HTTPOnly cookies for refresh tokens
 ✅ Token rotation on refresh
@@ -530,7 +539,7 @@ CORS_ORIGINS=["http://localhost:3000"]  # Add your frontend URL
        │  200 OK {posts}                       │
        │<──────────────────────────────────────┤
        │                                        │
-       │  (15 minutes later...)                │
+       │  (30 minutes later...)                │
        │                                        │
        │  GET /posts                           │
        │  Authorization: Bearer <expired>      │
