@@ -33,9 +33,9 @@ def assert_outcome_logged(caplog: pytest.LogCaptureFixture, event: str, outcome:
     uninterrupted token, so substring matching on them is stable.
     """
     messages = [r.getMessage() for r in caplog.records]
-    assert any(
-        event in message and outcome in message for message in messages
-    ), f"expected log event={event!r} with outcome={outcome!r}; got {messages!r}"
+    assert any(event in message and outcome in message for message in messages), (
+        f"expected log event={event!r} with outcome={outcome!r}; got {messages!r}"
+    )
 
 
 @pytest.mark.api
@@ -114,9 +114,7 @@ class TestLogin:
         assert response.status_code == 200
 
         set_cookies = response.headers.get_list("set-cookie")
-        auth_cookies = [
-            c for c in set_cookies if c.startswith(("refresh_token=", "access_token="))
-        ]
+        auth_cookies = [c for c in set_cookies if c.startswith(("refresh_token=", "access_token="))]
         assert len(auth_cookies) == 2, f"expected both auth cookies, got: {set_cookies}"
         for cookie in auth_cookies:
             lowered = cookie.lower()
@@ -412,9 +410,7 @@ class TestRefresh:
         assert refresh_response.status_code == 200
 
         set_cookies = refresh_response.headers.get_list("set-cookie")
-        auth_cookies = [
-            c for c in set_cookies if c.startswith(("refresh_token=", "access_token="))
-        ]
+        auth_cookies = [c for c in set_cookies if c.startswith(("refresh_token=", "access_token="))]
         assert len(auth_cookies) == 2, f"expected both rotated cookies, got: {set_cookies}"
         for cookie in auth_cookies:
             lowered = cookie.lower()
@@ -463,20 +459,30 @@ class TestRefresh:
         assert "refresh_token" in refresh_response.cookies
 
     async def test_refresh_without_token(self, client: AsyncClient):
-        """Test refresh without a refresh token cookie."""
+        """Refresh without a refresh cookie returns 401 AND clears the cookies.
+
+        Clearing on the missing-cookie path heals the diverged "access cookie
+        present, refresh cookie gone" state, which would otherwise 401-loop on
+        every SSR page load.
+        """
         response = await client.post("/api/v1/auth/refresh")
         assert response.status_code == 401
+        cleared = {
+            c.split("=", 1)[0]
+            for c in response.headers.get_list("set-cookie")
+            if c.startswith(("refresh_token=", "access_token="))
+        }
+        assert cleared == {"refresh_token", "access_token"}, response.headers.get_list("set-cookie")
 
     async def test_refresh_race_condition_does_not_nuke_family(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that concurrent refresh requests don't nuke the token family.
+        """Concurrent refresh requests recover instead of logging the user out.
 
-        Simulates a race condition where multiple requests try to refresh
-        simultaneously: the first one succeeds and revokes the old token,
-        then subsequent requests using the old token should get 401 but
-        NOT trigger the family deletion (since it was just revoked and
-        a child token exists).
+        A race: the first refresh succeeds and revokes the old token; a
+        concurrent request using the OLD token (revoked <10s ago, with a child)
+        must recover with an access-token-ONLY response (200, no new refresh
+        token minted) rather than 401, and must NOT nuke the family.
         """
         # Create user and login
         user = Users(
@@ -508,19 +514,49 @@ class TestRefresh:
         assert new_refresh_token is not None
         assert new_refresh_token != original_refresh_token
 
-        # Simulate concurrent request using the OLD token (race condition)
-        # Manually set the old token cookie
+        # Simulate a concurrent request using the OLD token (race condition):
+        # revoked <10s ago with a child, so refresh recovers access-only.
         client.cookies.set("refresh_token", original_refresh_token)
         refresh2_response = await client.post("/api/v1/auth/refresh")
 
-        # Should get 401 but with "already refreshed" message (not "reuse detected")
-        assert refresh2_response.status_code == 401
-        assert "already refreshed" in refresh2_response.json()["detail"].lower()
+        # Recovery is access-token-ONLY: 200 with a fresh access token, but NO new
+        # refresh token is minted (no durable sibling credential, no orphan rows).
+        assert refresh2_response.status_code == 200
+        set_cookie_names = {
+            c.split("=", 1)[0] for c in refresh2_response.headers.get_list("set-cookie")
+        }
+        assert "access_token" in set_cookie_names
+        assert "refresh_token" not in set_cookie_names, refresh2_response.headers.get_list(
+            "set-cookie"
+        )
 
-        # The new token should still work - family was NOT nuked
+        # The winner's rotated token still works - the family was NOT nuked.
         client.cookies.set("refresh_token", new_refresh_token)
         refresh3_response = await client.post("/api/v1/auth/refresh")
         assert refresh3_response.status_code == 200
+
+    async def test_refresh_dead_token_clears_cookies(self, client: AsyncClient):
+        """An unknown/dead refresh token returns 401 AND clears the auth cookies.
+
+        Without this, a browser holding a dead token (e.g. after a family-nuke or
+        logout) re-presents it on every SSR page load, and the server retries the
+        same dead token indefinitely. Clearing the cookies breaks that loop.
+        """
+        client.cookies.set("refresh_token", "this-token-does-not-exist-in-the-db")
+        response = await client.post("/api/v1/auth/refresh")
+
+        assert response.status_code == 401
+        cleared = [
+            c
+            for c in response.headers.get_list("set-cookie")
+            if c.startswith(("refresh_token=", "access_token="))
+        ]
+        names = {c.split("=", 1)[0] for c in cleared}
+        assert names == {"refresh_token", "access_token"}, cleared
+        # Both must be expired (Max-Age=0 or a past Expires).
+        for cookie in cleared:
+            lowered = cookie.lower()
+            assert "max-age=0" in lowered or "expires=" in lowered, cookie
 
     async def test_refresh_reuse_detection_nukes_family_after_grace_period(
         self, client: AsyncClient, db_session: AsyncSession
@@ -581,9 +617,7 @@ class TestRefresh:
         refresh3_response = await client.post("/api/v1/auth/refresh")
         assert refresh3_response.status_code == 401
 
-    async def test_refresh_updates_last_active(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_refresh_updates_last_active(self, client: AsyncClient, db_session: AsyncSession):
         """Test that token refresh updates the user's last_active timestamp."""
         user = Users(
             username="lastactiveuser",
@@ -991,6 +1025,14 @@ class TestRefreshSuspensionCheck:
         response = await client.post("/api/v1/auth/refresh")
 
         assert response.status_code == 403
+        # The 403 must also clear the auth cookies, otherwise a suspended user's
+        # browser re-presents the cookie and hammers /auth/refresh on every load.
+        cleared = {
+            c.split("=", 1)[0]
+            for c in response.headers.get_list("set-cookie")
+            if c.startswith(("refresh_token=", "access_token="))
+        }
+        assert cleared == {"refresh_token", "access_token"}, response.headers.get_list("set-cookie")
         assert "suspended" in response.json()["detail"].lower()
 
     async def test_refresh_auto_reactivates_expired_suspension(
@@ -1086,9 +1128,7 @@ class TestRefreshSuspensionCheck:
 class TestForgotPassword:
     """Tests for POST /api/v1/auth/forgot-password endpoint."""
 
-    async def test_forgot_password_valid_email(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_forgot_password_valid_email(self, client: AsyncClient, db_session: AsyncSession):
         """Test forgot password with valid email returns 200 and generic message."""
         user = Users(
             username="forgotuser",
@@ -1425,9 +1465,9 @@ class TestResetPassword:
         from sqlalchemy import func as sa_func
 
         count_result = await db_session.execute(
-            select(sa_func.count()).select_from(RefreshTokens).where(
-                RefreshTokens.user_id == user.user_id
-            )
+            select(sa_func.count())
+            .select_from(RefreshTokens)
+            .where(RefreshTokens.user_id == user.user_id)
         )
         assert count_result.scalar() > 0
 
@@ -1444,8 +1484,8 @@ class TestResetPassword:
 
         # Verify refresh tokens are deleted
         count_result = await db_session.execute(
-            select(sa_func.count()).select_from(RefreshTokens).where(
-                RefreshTokens.user_id == user.user_id
-            )
+            select(sa_func.count())
+            .select_from(RefreshTokens)
+            .where(RefreshTokens.user_id == user.user_id)
         )
         assert count_result.scalar() == 0

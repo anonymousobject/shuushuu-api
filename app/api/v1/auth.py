@@ -16,6 +16,7 @@ from typing import Annotated
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -165,6 +166,25 @@ async def _check_and_handle_suspension(
             )
 
 
+def _set_access_cookie(response: Response, access_token: str) -> None:
+    """Set (only) the access-token cookie.
+
+    Cookie Max-Age matches the refresh token, not the JWT expiry: the JWT's own
+    `exp` claim is what's enforced server-side, and pinning the cookie to a
+    30-minute lifetime just creates a "cookie disappeared" branch in SSR auth
+    that costs an extra round trip every page render after expiry. See
+    _set_auth_cookies for the SameSite=Lax rationale.
+    """
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,  # Prevent JavaScript access (XSS protection)
+        secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
+        samesite="lax",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+
+
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
     """
     Set authentication cookies in response.
@@ -199,18 +219,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
     )
 
     # Set access token as HTTPOnly cookie (for SSR and Swagger UI).
-    # Cookie Max-Age matches the refresh token, not the JWT expiry: the JWT's own
-    # `exp` claim is what's enforced server-side, and pinning the cookie to a
-    # 10-minute lifetime just creates a "cookie disappeared" branch in SSR auth
-    # that costs an extra round trip every page render after expiry.
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,  # Prevent JavaScript access (XSS protection)
-        secure=settings.ENVIRONMENT != "development",  # HTTPS everywhere except development
-        samesite="lax",
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-    )
+    _set_access_cookie(response, access_token)
 
 
 def _clear_auth_cookies(response: Response) -> None:
@@ -306,7 +315,7 @@ async def login(
     1. Check if account is locked
     2. Verify username/password (supports both bcrypt and legacy SHA1)
     3. Migrate SHA1 passwords to bcrypt on successful login
-    4. Generate access token (JWT, 15 min)
+    4. Generate access token (JWT, 30 min)
     5. Generate refresh token (random, 30 days)
     6. Store refresh token in database (hashed)
     7. Set refresh token as HTTPOnly cookie
@@ -470,6 +479,104 @@ async def login(
     )
 
 
+def _refresh_failure(detail: str, status_code: int = status.HTTP_401_UNAUTHORIZED) -> JSONResponse:
+    """Failure response for a refresh that ALSO clears the auth cookies.
+
+    A refresh that can't succeed for a session-terminal reason — a dead token
+    (row gone / expired / theft-revoked family) or a suspended/inactive account —
+    is otherwise retried by the browser on every SSR page load, since the cookie
+    is left in place. Clearing the cookies resets the session to a clean
+    logged-out state so that retry loop stops.
+    """
+    failure = JSONResponse(
+        status_code=status_code,
+        content={"detail": detail},
+    )
+    _clear_auth_cookies(failure)
+    return failure
+
+
+async def _issue_rotated_session(
+    user: Users,
+    db: AsyncSession,
+    request: Request,
+    response: Response,
+    redis_client: redis.Redis,  # type: ignore[type-arg]
+    *,
+    family_id: str,
+    parent_token_id: int | None,
+) -> TokenResponse:
+    """Mint a new access token + rotated refresh token in `family_id`, set both
+    cookies, and return the token response. The caller has already revoked the
+    presented (parent) token.
+    """
+    if user.user_id is None:
+        raise ValueError("User ID cannot be None")
+
+    new_access_token = create_access_token(user.user_id)
+    new_refresh_token = create_refresh_token()
+    new_token_hash = hashlib.sha256(new_refresh_token.encode()).hexdigest()
+
+    db.add(
+        RefreshTokens(
+            user_id=user.user_id,
+            token_hash=new_token_hash,
+            family_id=family_id,
+            expires_at=datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            parent_token_id=parent_token_id,
+        )
+    )
+    user.last_active = datetime.now(UTC)
+    await db.commit()
+
+    _set_auth_cookies(response, new_access_token, new_refresh_token)
+
+    # `user` already has user_groups eager-loaded by the caller, so the helper
+    # skips its internal DB round trip and the None branch can't fire here.
+    user_response = await build_user_private_response(db, redis_client, user=user)
+    return TokenResponse(
+        access_token=new_access_token,
+        token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=user_response,
+    )
+
+
+async def _issue_access_only(
+    user: Users,
+    db: AsyncSession,
+    response: Response,
+    redis_client: redis.Redis,  # type: ignore[type-arg]
+) -> TokenResponse:
+    """Issue a fresh access token WITHOUT rotating the refresh token.
+
+    Benign-race recovery: a concurrent refresh already rotated the token and
+    minted its child, so this in-flight request only needs a working access
+    token. Minting another refresh token here would create durable sibling
+    credentials (handing a session to anyone replaying a just-rotated token) and
+    unbounded rows — so we set only the access_token cookie and let the browser
+    converge on the winner's rotated refresh_token.
+    """
+    if user.user_id is None:
+        raise ValueError("User ID cannot be None")
+
+    new_access_token = create_access_token(user.user_id)
+    user.last_active = datetime.now(UTC)
+    await db.commit()
+
+    _set_access_cookie(response, new_access_token)
+
+    user_response = await build_user_private_response(db, redis_client, user=user)
+    return TokenResponse(
+        access_token=new_access_token,
+        token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=user_response,
+    )
+
+
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
     request: Request,
@@ -477,118 +584,64 @@ async def refresh_token(
     db: Annotated[AsyncSession, Depends(get_db)],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
     refresh_token: Annotated[str | None, Cookie()] = None,
-    access_token: Annotated[str | None, Cookie()] = None,
-) -> TokenResponse:
+) -> TokenResponse | JSONResponse:
     """
-    Refresh access token using refresh token.
+    Refresh access token using the refresh token (with rotation).
 
-    This endpoint implements refresh token rotation for security:
-    1. Verify refresh token exists and is valid
-    2. Generate new access token
-    3. Generate new refresh token (rotation)
-    4. Revoke old refresh token
-    5. Store new refresh token
-    6. Return new access token
-
-    If an already-used (revoked) refresh token is presented, this indicates
-    potential token theft, and all tokens in the family are revoked.
+    1. Look up the presented refresh token; mint a new access token + rotated
+       refresh token, revoking the old one.
+    2. A *dead* or missing token (unknown / expired / theft-revoked family / no
+       cookie) returns 401 and clears the auth cookies, so the browser stops
+       re-presenting it on every page load (the SSR would otherwise retry it
+       indefinitely).
+    3. A *benign race* — the presented token was rotated <10s ago and a child
+       already exists (concurrent refreshes during a page load) — recovers with a
+       fresh *access token only* (no new refresh token), so the loser stays logged
+       in without minting durable sibling credentials.
+    4. Reuse of a token revoked outside the grace window (or with no child) is
+       treated as theft: the whole token family is revoked.
     """
-    # TEMP INSTRUMENTATION (remove after capturing the prod 401-reason split):
-    # classify every refresh failure so we can confirm the dominant cause before
-    # reworking rotation/cookies. `had_access_cookie` distinguishes "cookies
-    # diverged" (access cookie present, refresh cookie gone) from a benign
-    # unauthenticated poke; `user_agent` exposes any browser-specific skew.
+    # Missing refresh cookie — clear any stale access_token cookie so the diverged
+    # "access present, refresh gone" state doesn't 401-loop on every SSR load.
     if not refresh_token:
-        logger.info(
-            "refresh_failed",
-            reason="cookie_missing",
-            had_access_cookie=bool(access_token),
-            user_agent=get_user_agent(request),
-            ip_address=get_client_ip(request),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token missing",
-        )
+        return _refresh_failure("Refresh token missing")
 
     # Hash the provided token to look up in database
     token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
 
-    # Look up token in database
     result = await db.execute(select(RefreshTokens).where(RefreshTokens.token_hash == token_hash))  # type: ignore[arg-type]
     db_token = result.scalar_one_or_none()
 
+    # Dead token — its row is gone (prior family-nuke, logout, cleanup). Clear
+    # cookies so the browser stops re-presenting it on every SSR page load.
     if not db_token:
-        logger.info(
-            "refresh_failed",
-            reason="token_not_found",
-            had_access_cookie=bool(access_token),
-            user_agent=get_user_agent(request),
-            ip_address=get_client_ip(request),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
-        )
+        return _refresh_failure("Invalid refresh token")
 
-    # Check if token is expired
+    # Expired — clean up the row and clear cookies.
     if db_token.expires_at < datetime.now(UTC):
-        logger.info(
-            "refresh_failed",
-            reason="expired",
-            user_id=db_token.user_id,
-            had_access_cookie=bool(access_token),
-            user_agent=get_user_agent(request),
-            ip_address=get_client_ip(request),
-        )
-        # Clean up expired token
         await db.delete(db_token)
         await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token expired",
-        )
+        return _refresh_failure("Refresh token expired")
 
-    # SECURITY: Check if token was already used (potential theft!)
+    # SECURITY: token already revoked — distinguish a benign concurrent-refresh
+    # race from genuine reuse/theft.
+    is_benign_race = False
     if db_token.revoked:
-        # Distinguish between race condition and actual theft:
-        # - Race condition: token revoked very recently AND child token exists
-        #   (concurrent requests during page load with expired access token)
-        # - Theft: token revoked long ago OR no child token exists
-        #   (attacker using stolen token)
         is_race_condition = False
-
         if db_token.revoked_at:
-            # Check if revoked within last 10 seconds
             time_since_revoked = datetime.now(UTC) - db_token.revoked_at
-
             if time_since_revoked.total_seconds() < 10:
-                # Check if a child token exists (legitimate refresh happened)
-                # Use limit(1) to avoid MultipleResultsFound if concurrent refreshes created multiple children
+                # A child token means a legitimate refresh already happened.
+                # limit(1) avoids MultipleResultsFound under concurrent refreshes.
                 child_result = await db.execute(
                     select(RefreshTokens)
                     .where(RefreshTokens.parent_token_id == db_token.id)  # type: ignore[arg-type]
                     .limit(1)
                 )
-                child_exists = child_result.scalars().first() is not None
+                is_race_condition = child_result.scalars().first() is not None
 
-                if child_exists:
-                    is_race_condition = True
-                    logger.info(
-                        "refresh_race_condition_detected",
-                        token_id=db_token.id,
-                        user_id=db_token.user_id,
-                        seconds_since_revoked=time_since_revoked.total_seconds(),
-                    )
-
-        if is_race_condition:
-            # Race condition from concurrent requests - just reject, don't nuke session
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token already refreshed",
-            )
-        else:
-            # Suspicious activity - could be theft. Nuke the entire token family.
+        if not is_race_condition:
+            # Suspicious — likely theft. Nuke the entire family and clear cookies.
             logger.warning(
                 "refresh_token_reuse_detected",
                 token_id=db_token.id,
@@ -599,13 +652,14 @@ async def refresh_token(
                 delete(RefreshTokens).where(RefreshTokens.family_id == db_token.family_id)  # type: ignore[arg-type]
             )
             await db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token reuse detected. All sessions revoked for security.",
+            return _refresh_failure(
+                "Refresh token reuse detected. All sessions revoked for security."
             )
 
-    # Load user. Eager-load groups so build_user_private_response below can
-    # reuse this row instead of issuing a second SELECT.
+        is_benign_race = True
+
+    # Load user. Eager-load groups so build_user_private_response can reuse this
+    # row instead of issuing a second SELECT.
     result_user = await db.execute(
         select(Users)
         .options(
@@ -616,62 +670,43 @@ async def refresh_token(
     user = result_user.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
+        return _refresh_failure("User not found")
 
-    # Check if user is active and handle suspension
-    await _check_and_handle_suspension(user, db)
+    # Check if user is active and handle suspension. An active suspension /
+    # inactive account raises; convert it to a cookie-clearing response so a
+    # suspended user doesn't re-present the cookie and hammer /auth/refresh (403)
+    # on every SSR page load.
+    try:
+        await _check_and_handle_suspension(user, db)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Account is not active"
+        return _refresh_failure(detail, status_code=exc.status_code)
     # If auto-reactivated, commit immediately (refresh needs this)
     if user.active:
         await db.commit()
 
-    # Create new access token. Named distinctly from the `access_token` cookie
-    # parameter above (which feeds the had_access_cookie diagnostic) so the two
-    # can never be confused.
-    if user.user_id is None:
-        raise ValueError("User ID cannot be None")
-    new_access_token = create_access_token(user.user_id)
+    # Benign race: a concurrent refresh already rotated this token. Hand out a
+    # fresh access token only (no rotation) — see _issue_access_only.
+    if is_benign_race:
+        logger.info(
+            "refresh_race_recovered",
+            token_id=db_token.id,
+            user_id=db_token.user_id,
+            family_id=db_token.family_id,
+        )
+        return await _issue_access_only(user, db, response, redis_client)
 
-    # Create new refresh token (rotation)
-    new_refresh_token = create_refresh_token()
-    new_token_hash = hashlib.sha256(new_refresh_token.encode()).hexdigest()
-
-    # Store new refresh token (same family_id for tracking)
-    new_db_token = RefreshTokens(
-        user_id=user.user_id,
-        token_hash=new_token_hash,
-        family_id=db_token.family_id,  # Keep same family
-        expires_at=datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-        ip_address=get_client_ip(request),
-        user_agent=get_user_agent(request),
-        parent_token_id=db_token.id,  # Track rotation chain
-    )
-    db.add(new_db_token)
-
-    # Revoke old refresh token
+    # Normal rotation: revoke the presented token and mint its successor.
     db_token.revoked = True
     db_token.revoked_at = datetime.now(UTC)
-
-    # Update last active timestamp
-    user.last_active = datetime.now(UTC)
-
-    await db.commit()
-
-    # Set authentication cookies
-    _set_auth_cookies(response, new_access_token, new_refresh_token)
-
-    # `user` already has user_groups eager-loaded (see the SELECT earlier), so
-    # the helper skips its internal DB round trip and the None branch can't
-    # fire here.
-    user_response = await build_user_private_response(db, redis_client, user=user)
-
-    return TokenResponse(
-        access_token=new_access_token,
-        token_type="bearer",
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=user_response,
+    return await _issue_rotated_session(
+        user,
+        db,
+        request,
+        response,
+        redis_client,
+        family_id=db_token.family_id,
+        parent_token_id=db_token.id,
     )
 
 
@@ -685,7 +720,7 @@ async def logout(
     Logout user by revoking their refresh token.
 
     This invalidates the current refresh token but doesn't affect the
-    access token (which will expire naturally in 15 minutes).
+    access token (which will expire naturally in 30 minutes).
     """
     # Hash the provided token
     token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
