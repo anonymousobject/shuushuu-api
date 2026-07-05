@@ -454,15 +454,20 @@ async def store_predictions(
     # Commit all suggestions (same transactional shape as the original job).
     try:
         await db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
+        await db.rollback()
         # A concurrent regeneration (arq job vs sync generate, or overlapping
         # retries) can insert the same (image_id, tag_id) between the read above
         # and this commit, tripping the UNIQUE(image_id, tag_id) constraint.
         # Regeneration is idempotent and the other writer's rows ARE the desired
-        # state, so roll back and report 0 new rather than surfacing a 500 —
-        # mirrors batch_tag's IntegrityError guard shape but degrades gracefully
-        # instead of re-raising.
-        await db.rollback()
+        # state, so report 0 new rather than surfacing a 500 — mirrors batch_tag's
+        # IntegrityError guard shape but degrades gracefully instead of re-raising.
+        # Only THAT specific constraint is swallowed: any other IntegrityError
+        # (e.g. a bad image_id violating the images FK, surfaced by a stale or
+        # deleted image in a backfill manifest) is a real data problem the
+        # caller must see, so it's re-raised rather than misreported as success.
+        if "unique_ml_suggestion_image_tag" not in str(exc.orig):
+            raise
         logger.info("ml_suggestion_store_duplicate_race", image_id=image_id)
         return 0
 
