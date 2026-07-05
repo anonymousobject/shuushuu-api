@@ -27,7 +27,7 @@ from app.schemas.ml_tag_suggestion import (
     ReviewSuggestionsResponse,
 )
 from app.schemas.tag import TagResponse
-from app.services.ml_runtime import get_ml_service
+from app.services.ml_runtime import get_ml_service, inference_slot
 from app.services.ml_suggestion_pipeline import generate_and_store_suggestions
 from app.services.ml_suggestion_review import review_ml_tag_suggestions as apply_review
 from app.tasks.queue import enqueue_job
@@ -348,9 +348,9 @@ async def generate_ml_tag_suggestions(
         # first sync call in this process).
         response.status_code = status.HTTP_200_OK
         try:
-            suggestions_created = await generate_and_store_suggestions(
-                db, image, await get_ml_service()
-            )
+            ml_service = await get_ml_service()
+            async with inference_slot():
+                suggestions_created = await generate_and_store_suggestions(db, image, ml_service)
         except FileNotFoundError as exc:
             # The pipeline already logs the absolute path; do not leak it to the client.
             raise HTTPException(

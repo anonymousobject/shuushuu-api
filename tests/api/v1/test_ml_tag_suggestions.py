@@ -8,6 +8,7 @@ These tests cover:
 - Authentication and permission checks
 """
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -25,6 +26,7 @@ from app.models.tag import Tags
 from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.user import Users
+from app.services import ml_runtime
 
 # Patch targets for the synchronous generate path. The router imports
 # get_ml_service from ml_runtime; we patch it at the router's namespace so the
@@ -1673,6 +1675,55 @@ class TestGenerateMlTagSuggestions:
 
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
+
+    async def test_generate_suggestions_sync_busy_returns_429(
+        self, client: AsyncClient, db_session: AsyncSession, monkeypatch
+    ):
+        """When no inference slot frees up within the timeout, sync generate
+        returns 429 — the sync path must respect the same process-wide
+        inference cap as /analyze, not run inference unbounded."""
+        monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+
+        user = Users(
+            username="test_generate_busy",
+            email="test_generate_busy@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="2024-01-01-busy",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="busy123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        fake_service = FakeMLService([])
+
+        # Fill a 1-slot semaphore so the request must wait, with a tiny timeout
+        # (same technique as test_analyze_busy_returns_429).
+        full_semaphore = asyncio.Semaphore(1)
+        await full_semaphore.acquire()
+        monkeypatch.setattr(ml_runtime, "_inference_semaphore", full_semaphore)
+        monkeypatch.setattr(ml_runtime.settings, "ML_ANALYZE_SEMAPHORE_TIMEOUT", 0.05)
+
+        access_token = create_access_token(user_id=user.user_id)
+        with patch(f"{ROUTER}.get_ml_service", AsyncMock(return_value=fake_service)):
+            response = await client.post(
+                f"/api/v1/images/{image.image_id}/ml-tag-suggestions/generate?sync=true",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        assert response.status_code == 429
 
     async def test_generate_suggestions_requires_auth(
         self, client: AsyncClient, db_session: AsyncSession
