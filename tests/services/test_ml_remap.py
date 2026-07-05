@@ -17,12 +17,14 @@ through, so each test fully controls the implied set and focuses on the reconcil
 logic rather than on the mapping/resolution path.
 """
 
+import argparse
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
 
+import scripts.ml_remap as ml_remap_script
 from app.config import settings
 from app.models.image import Images
 from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
@@ -542,6 +544,118 @@ async def test_remap_images_for_tag_scopes_to_mapped_images(db_session, monkeypa
         )
     ).scalars().all()
     assert rows_b == [], "image B must not receive any suggestion (unrelated raw pred)"
+
+
+@pytest.mark.needs_commit
+async def test_run_rolls_back_and_continues_after_failed_image(
+    db_session, monkeypatch, tmp_path, capsys
+):
+    """scripts.ml_remap.run must honour its skip-and-continue contract: when one
+    image's commit fails (here an FK violation from a suggestion referencing a
+    nonexistent tag), the except rolls the session back so later images still
+    process. Without the rollback the poisoned session raises PendingRollbackError
+    on every subsequent image (real commits reproduce this — hence needs_commit).
+    """
+    monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.35)
+
+    good_tag_id = 654321  # exists in Tags
+    missing_tag_id = 999999  # deliberately absent -> FK violation on commit
+
+    user = await _make_user(db_session, "runfail")
+    image_bad = await _make_image(db_session, user, "runfail-bad")
+    image_good = await _make_image(db_session, user, "runfail-good")
+    await _make_tags(db_session, good_tag_id)
+
+    model_row = MlModels(name=CAFORMER)
+    db_session.add(model_row)
+    await db_session.flush()
+
+    ext_bad = MlExternalTags(name="bad_ext", category=0)
+    ext_good = MlExternalTags(name="good_ext", category=0)
+    db_session.add_all([ext_bad, ext_good])
+    await db_session.flush()
+
+    db_session.add(
+        MlRawPredictions(
+            image_id=image_bad.image_id, model_id=model_row.id,
+            external_tag_id=ext_bad.id, confidence=0.9,
+        )
+    )
+    db_session.add(
+        MlRawPredictions(
+            image_id=image_good.image_id, model_id=model_row.id,
+            external_tag_id=ext_good.id, confidence=0.9,
+        )
+    )
+    await db_session.commit()
+
+    # Capture ids before run(): the failure's rollback expires the ORM objects.
+    bad_id = image_bad.image_id
+    good_id = image_good.image_id
+    # run() orders by image_id asc, so the failing image must sort first to prove
+    # the poison would cascade to the good one without the fix.
+    assert bad_id < good_id
+
+    async def _resolver(db, suggestions):
+        out = []
+        for s in suggestions:
+            if s["external_tag"] == "bad_ext":
+                out.append(
+                    {"tag_id": missing_tag_id, "confidence": 0.9, "model_version": CAFORMER}
+                )
+            elif s["external_tag"] == "good_ext":
+                out.append(
+                    {"tag_id": good_tag_id, "confidence": 0.9, "model_version": CAFORMER}
+                )
+        return out
+
+    class _SessionCtx:
+        """Yield the test session to run() without closing it on exit."""
+
+        async def __aenter__(self):
+            return db_session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(ml_remap_script, "get_async_session", lambda: _SessionCtx())
+
+    args = argparse.Namespace(
+        model=CAFORMER,
+        tag=None,
+        image_id=None,
+        limit=None,
+        checkpoint=str(tmp_path / "remap.done"),
+    )
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _resolver_passthrough),
+    ):
+        await ml_remap_script.run(args)
+
+    # The good image processed despite the bad one failing first.
+    rows_good = (
+        await db_session.execute(
+            select(MlTagSuggestions).where(MlTagSuggestions.image_id == good_id)
+        )
+    ).scalars().all()
+    assert len(rows_good) == 1, "later image must still be processed after a failure"
+    assert rows_good[0].tag_id == good_tag_id
+    assert rows_good[0].status == "pending"
+
+    # The bad image stored nothing (its commit was rolled back).
+    rows_bad = (
+        await db_session.execute(
+            select(MlTagSuggestions).where(MlTagSuggestions.image_id == bad_id)
+        )
+    ).scalars().all()
+    assert rows_bad == []
+
+    # The failure was counted and logged (exactly one error, for the bad image).
+    out = capsys.readouterr().out
+    assert "errors=1" in out
+    assert f"error image_id={bad_id}" in out
 
 
 async def test_remap_image_from_store_ignores_other_model(db_session, monkeypatch):

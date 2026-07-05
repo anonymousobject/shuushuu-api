@@ -83,6 +83,10 @@ async def run(args: argparse.Namespace) -> None:
                 if processed % 100 == 0:
                     print(f"  processed={processed} added_total={added_total}")
             except Exception as exc:
+                # Roll back so a failed commit doesn't poison the session and
+                # cascade PendingRollbackError onto every later image (mirrors
+                # ml_backfill.ingest_results' skip-and-continue contract).
+                await db.rollback()
                 errors.append(f"image_id={image_id}: {exc}")
                 print(f"  error image_id={image_id}: {exc}")
 
