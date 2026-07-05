@@ -34,7 +34,7 @@ class MlTagSuggestions(MlTagSuggestionBase, table=True):
 
     __table_args__ = (
         UniqueConstraint("image_id", "tag_id", name="unique_ml_suggestion_image_tag"),
-        Index("idx_ml_suggestion_status_tag", "status", "tag_id"),
+        Index("idx_ml_suggestion_status_tag", "status", "tag_id", "confidence"),
     )
 
     suggestion_id: int | None = Field(default=None, primary_key=True)
