@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _ml_service: MLTagSuggestionService | None = None
+_ml_service_lock = asyncio.Lock()
 _inference_semaphore = asyncio.Semaphore(settings.ML_ANALYZE_CONCURRENCY)
 
 
@@ -41,15 +42,26 @@ async def get_ml_service() -> MLTagSuggestionService:
     Function-local import keeps onnxruntime out of the API import chain until
     the model is actually needed. The global is only set after a successful
     load, so a failed load is retried next call (not cached half-initialised).
+
+    The load is guarded by a module-level lock with a double-checked pattern:
+    the fast path returns the already-loaded singleton without locking, and
+    only cold-start callers serialise on the lock so concurrent first requests
+    load the ONNX model exactly once instead of one model per caller.
     """
     global _ml_service
-    if _ml_service is None:
-        from app.services.ml_service import MLTagSuggestionService
+    if _ml_service is not None:
+        return _ml_service
 
-        service = MLTagSuggestionService()
-        await service.load_models()
-        _ml_service = service
-        logger.info("ml_service_loaded")
+    async with _ml_service_lock:
+        # Re-check under the lock: another caller may have loaded it while we
+        # waited to acquire the lock.
+        if _ml_service is None:
+            from app.services.ml_service import MLTagSuggestionService
+
+            service = MLTagSuggestionService()
+            await service.load_models()
+            _ml_service = service
+            logger.info("ml_service_loaded")
     return _ml_service
 
 
