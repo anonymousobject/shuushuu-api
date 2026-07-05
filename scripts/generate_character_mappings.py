@@ -41,6 +41,7 @@ from pathlib import Path
 from rapidfuzz import fuzz, process
 from sqlalchemy import select
 
+from app.config import settings
 from app.core.database import get_async_session
 from app.models.character_source_link import CharacterSourceLinks
 from app.models.tag import Tags
@@ -48,7 +49,10 @@ from scripts.generate_tag_mappings import normalize_tag  # shared theme/char nor
 
 CHARACTER_TYPE = 4  # internal Tags.type for characters
 CHARACTER_CATEGORY = 4  # model vocab category for characters
-DEFAULT_VOCAB = Path("ml_models/caformer_b36.dbv4-full/selected_tags.csv")
+# Derived from settings.ML_MODEL_NAME so this can't silently drift from the
+# production model (a stale hardcoded path would still exist on disk, so the
+# --vocab-less file-exists guard would never catch the mismatch).
+DEFAULT_VOCAB = Path(f"ml_models/{settings.ML_MODEL_NAME}/selected_tags.csv")
 DEFAULT_OUTPUT = Path("data/character_mappings_draft.csv")
 DEFAULT_FUZZY_THRESHOLD = 88  # rapidfuzz WRatio score required to propose a candidate
 

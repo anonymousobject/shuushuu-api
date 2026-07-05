@@ -5,7 +5,11 @@ match tiers: exact, qualifier-stripped exact, name-order swap, ambiguous (one
 Danbooru name -> several internal tags), fuzzy (romanization/typo), and no-match.
 """
 
+from pathlib import Path
+
+from app.config import settings
 from scripts.generate_character_mappings import (
+    DEFAULT_VOCAB,
     MatchResult,
     apply_linked_only,
     build_internal_index,
@@ -37,6 +41,13 @@ INTERNAL = [
 
 def _index():
     return build_internal_index(INTERNAL)
+
+
+def test_default_vocab_tracks_configured_model():
+    """DEFAULT_VOCAB must point at the currently-configured model's vocab, not a
+    hardcoded model name — otherwise a --vocab-less run silently uses the wrong
+    vocabulary once the production model changes (see settings.ML_MODEL_NAME)."""
+    assert DEFAULT_VOCAB == Path(f"ml_models/{settings.ML_MODEL_NAME}/selected_tags.csv")
 
 
 def test_strip_qualifier():
