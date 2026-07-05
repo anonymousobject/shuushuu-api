@@ -328,7 +328,8 @@ async def generate_ml_tag_suggestions(
         - Sync: 200 with suggestions_created count
 
     Raises:
-        HTTPException: 503 if disabled, 404 if image not found, 403 if permission denied
+        HTTPException: 503 if disabled, 404 if image not found, 403 if permission denied,
+            429 if inference slots are busy (sync mode)
     """
     if not settings.ML_TAG_SUGGESTIONS_ENABLED:
         raise HTTPException(

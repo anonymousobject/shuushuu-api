@@ -1723,7 +1723,7 @@ class TestGenerateMlTagSuggestions:
                 headers={"Authorization": f"Bearer {access_token}"},
             )
 
-        assert response.status_code == 429
+        assert response.status_code == 429, response.text
 
     async def test_generate_suggestions_requires_auth(
         self, client: AsyncClient, db_session: AsyncSession
