@@ -1725,6 +1725,110 @@ class TestGenerateMlTagSuggestions:
 
         assert response.status_code == 429, response.text
 
+    async def test_generate_suggestions_sync_rate_limited_returns_429(
+        self, client: AsyncClient, db_session: AsyncSession, monkeypatch, tmp_path
+    ):
+        """Sync generate shares the /analyze per-user rate bucket: a rate-limited
+        caller gets 429 before any inference slot is acquired, so a user can't loop
+        sync generate to monopolize the ML_ANALYZE_CONCURRENCY slots."""
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+        user = Users(
+            username="test_generate_ratelimited",
+            email="test_generate_ratelimited@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="2024-01-01-ratelimited",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="ratelimited123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        fake_service = FakeMLService([])
+        access_token = create_access_token(user_id=user.user_id)
+        with (
+            patch(
+                f"{ROUTER}.check_analyze_rate_limit",
+                new_callable=AsyncMock,
+                side_effect=HTTPException(
+                    status_code=429,
+                    detail="Too many tag-analysis requests. Please try again in 60 seconds.",
+                    headers={"Retry-After": "60"},
+                ),
+            ),
+            patch(f"{ROUTER}.get_ml_service", AsyncMock(return_value=fake_service)),
+        ):
+            response = await client.post(
+                f"/api/v1/images/{image.image_id}/ml-tag-suggestions/generate?sync=true",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        assert response.status_code == 429, response.text
+
+    async def test_generate_suggestions_async_not_rate_limited(
+        self, client: AsyncClient, db_session: AsyncSession, monkeypatch
+    ):
+        """The rate limit is applied ONLY on the sync branch: the async path just
+        enqueues a job (it holds no inference slots), so a rate-limit failure must
+        not block it — a 202 is still returned even when the bucket would raise."""
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+
+        user = Users(
+            username="test_generate_async_norl",
+            email="test_generate_async_norl@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="2024-01-01-async-norl",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="asyncnorl123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        with (
+            patch(
+                f"{ROUTER}.check_analyze_rate_limit",
+                new_callable=AsyncMock,
+                side_effect=HTTPException(status_code=429, detail="rate limited"),
+            ),
+            patch(f"{ROUTER}.enqueue_job", new_callable=AsyncMock, return_value="job-id"),
+        ):
+            response = await client.post(
+                f"/api/v1/images/{image.image_id}/ml-tag-suggestions/generate",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        assert response.status_code == 202, response.text
+
     async def test_generate_suggestions_requires_auth(
         self, client: AsyncClient, db_session: AsyncSession
     ):

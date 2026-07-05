@@ -6,6 +6,7 @@ Provides endpoints for viewing and managing ML-generated tag suggestions.
 
 from typing import Annotated, Literal
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,7 @@ from app.core.auth import CurrentUser
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
+from app.core.redis import get_redis
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
@@ -30,6 +32,7 @@ from app.schemas.tag import TagResponse
 from app.services.ml_runtime import get_ml_service, inference_slot
 from app.services.ml_suggestion_pipeline import generate_and_store_suggestions
 from app.services.ml_suggestion_review import review_ml_tag_suggestions as apply_review
+from app.services.rate_limit import check_analyze_rate_limit
 from app.tasks.queue import enqueue_job
 
 logger = get_logger(__name__)
@@ -280,6 +283,7 @@ async def generate_ml_tag_suggestions(
     image_id: int,
     response: Response,
     current_user: CurrentUser,
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
     sync: Annotated[
         bool,
         Query(description="Run synchronously instead of queueing background job"),
@@ -329,7 +333,8 @@ async def generate_ml_tag_suggestions(
 
     Raises:
         HTTPException: 503 if disabled, 404 if image not found, 403 if permission denied,
-            429 if inference slots are busy (sync mode)
+            429 if the per-user analyze rate limit is exceeded or inference slots are
+            busy (both sync mode only)
     """
     if not settings.ML_TAG_SUGGESTIONS_ENABLED:
         raise HTTPException(
@@ -345,6 +350,14 @@ async def generate_ml_tag_suggestions(
     )
 
     if sync:
+        # Share the /analyze per-user rate bucket BEFORE taking an inference slot,
+        # so a user can't loop sync generate to monopolize ML_ANALYZE_CONCURRENCY.
+        # Sharing the same bucket (rather than a dedicated prefix) also means the
+        # limit can't be dodged by alternating /analyze and sync generate. Only the
+        # sync branch is limited — the async branch below just enqueues a job and
+        # holds no inference slots.
+        await check_analyze_rate_limit(current_user.id, redis_client)
+
         # Run synchronously through the shared pipeline (loads the model on the
         # first sync call in this process).
         response.status_code = status.HTTP_200_OK
