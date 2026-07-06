@@ -26,6 +26,14 @@ class TestFixtureResolver:
         assert len(post.images) == 3
         assert len({img.full_url for img in post.images}) == 3
 
+    async def test_webp_kind_has_one_webp_image(self):
+        async with httpx.AsyncClient() as client:
+            post = await FixtureResolver().resolve(
+                "https://urlimport-fixture.local/post/webp", client
+            )
+        assert len(post.images) == 1
+        assert post.images[0].full_url.endswith(".webp")
+
     def test_registered_in_development(self):
         # tests run with ENVIRONMENT=development, so the resolver must be registered
         assert isinstance(

@@ -92,6 +92,40 @@ class TestResolve:
         assert len(post.images) == 1
         assert post.images[0].full_url.endswith("feed_fullsize/plain/did:plc:xyz/def@jpeg")
 
+    async def test_fullsize_without_suffix_gets_png_appended(self):
+        # Suffix-less fullsize URLs serve webp from Bluesky's CDN, which
+        # uploads can't accept; @png requests a sibling encode from the
+        # same master, not a transcode.
+        images = [
+            {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:xyz/abc@jpeg",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc",
+                "aspectRatio": {"width": 1600, "height": 1200},
+            }
+        ]
+        async with _client(_thread_body(images)) as client:
+            post = await BlueskyResolver().resolve(URL, client)
+        assert post.images[0].full_url == (
+            "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@png"
+        )
+        # Thumbs are display-only; browsers render webp fine, so leave untouched.
+        assert post.images[0].thumb_url == (
+            "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:xyz/abc@jpeg"
+        )
+
+    async def test_fullsize_with_existing_suffix_left_unchanged(self):
+        images = [
+            {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:xyz/abc@jpeg",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@jpeg",
+            }
+        ]
+        async with _client(_thread_body(images)) as client:
+            post = await BlueskyResolver().resolve(URL, client)
+        assert post.images[0].full_url == (
+            "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@jpeg"
+        )
+
     async def test_artist_name_falls_back_to_handle(self):
         images = [
             {

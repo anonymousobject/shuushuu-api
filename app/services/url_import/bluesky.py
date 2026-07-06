@@ -33,6 +33,22 @@ from app.services.url_import.base import (
 _URL_RE = re.compile(r"^https?://bsky\.app/profile/([^/]+)/post/([A-Za-z0-9]+)")
 
 
+def _with_png_suffix(fullsize_url: str) -> str:
+    """Request the CDN's PNG sibling encode for suffix-less fullsize URLs.
+
+    Bluesky's CDN serves webp for a fullsize URL whose final path segment
+    carries no explicit format suffix -- but uploads here only accept
+    jpg/png/gif. Appending "@png" asks the CDN for a sibling encode from
+    the same master (live-verified: bare URL -> image/webp 19KB; @png ->
+    image/png 265KB), which is not a transcode and loses no fidelity. If a
+    suffix is already present (e.g. "@jpeg"), leave it alone.
+    """
+    last_segment = fullsize_url.rsplit("/", 1)[-1]
+    if "@" in last_segment:
+        return fullsize_url
+    return f"{fullsize_url}@png"
+
+
 class BlueskyResolver:
     site = "bluesky"
 
@@ -81,7 +97,7 @@ class BlueskyResolver:
 
         images = [
             ResolvedImage(
-                full_url=view["fullsize"],
+                full_url=_with_png_suffix(view["fullsize"]),
                 thumb_url=view.get("thumb"),
                 width=(view.get("aspectRatio") or {}).get("width"),
                 height=(view.get("aspectRatio") or {}).get("height"),

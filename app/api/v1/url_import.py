@@ -41,6 +41,47 @@ def _make_http_client(timeout: float) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout, follow_redirects=False, http2=True)
 
 
+def _is_webp_magic(data: bytes) -> bool:
+    """Sniff the RIFF/WEBP container magic; upstream content-type headers
+    can lie (e.g. a CDN mislabeling webp as image/jpeg)."""
+    return data[0:4] == b"RIFF" and data[8:12] == b"WEBP"
+
+
+def _transcode_webp_to_png(data: bytes) -> bytes:
+    """Losslessly re-encode webp bytes to PNG, pixel-for-pixel.
+
+    Shuushuu only accepts jpg/png/gif uploads, but several source sites
+    (bluesky's thumbs, some CDNs) serve webp. This is a container/codec
+    swap of already-decoded pixels, not a resample -- no quality is lost.
+    """
+    try:
+        image: PILImage.Image = PILImage.open(io.BytesIO(data))
+        image.load()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Upstream returned an unreadable image",
+        ) from exc
+    if getattr(image, "is_animated", False):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Animated webp images cannot be imported — save and upload manually",
+        )
+    has_alpha = "A" in image.getbands() or (
+        image.mode == "P" and image.info.get("transparency") is not None
+    )
+    image = image.convert("RGBA") if has_alpha else image.convert("RGB")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    png_bytes = buffer.getvalue()
+    if len(png_bytes) > settings.MAX_IMAGE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Image exceeds the maximum upload size",
+        )
+    return png_bytes
+
+
 @router.post("/resolve-url", response_model=UrlResolveResponse)
 async def resolve_url(
     payload: UrlResolveRequest,
@@ -146,8 +187,12 @@ async def fetch_external(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to fetch image from upstream",
         ) from exc
+    body = b"".join(chunks)
+    if content_type == "image/webp" or _is_webp_magic(body):
+        body = _transcode_webp_to_png(body)
+        content_type = "image/png"
     return Response(
-        content=b"".join(chunks),
+        content=body,
         media_type=content_type,
         headers={"Cache-Control": "private, max-age=300"},
     )
@@ -157,8 +202,17 @@ if settings.ENVIRONMENT == "development":
 
     @router.get("/url-import-fixture/{name}")
     async def url_import_fixture_image(name: str) -> Response:
-        """Dev-only: random-noise PNG so e2e imports never MD5-collide."""
+        """Dev-only: random-noise image so e2e imports never MD5-collide.
+
+        Serves real webp (so e2e can drive the fetch-external transcode
+        path end-to-end) when the requested name ends ".webp"; PNG otherwise.
+        """
         image = PILImage.frombytes("RGB", (64, 64), os.urandom(64 * 64 * 3))
         buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        return Response(content=buffer.getvalue(), media_type="image/png")
+        if name.endswith(".webp"):
+            image.save(buffer, format="WEBP")
+            media_type = "image/webp"
+        else:
+            image.save(buffer, format="PNG")
+            media_type = "image/png"
+        return Response(content=buffer.getvalue(), media_type=media_type)

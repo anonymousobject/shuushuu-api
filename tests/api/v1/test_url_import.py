@@ -1,5 +1,7 @@
 """API tests for POST /images/resolve-url (uses the dev fixture resolver — no network)."""
 
+import io
+
 import pytest
 
 from app.core.security import create_access_token
@@ -217,6 +219,148 @@ class TestFetchExternal:
             )
         assert response.status_code == 413
 
+    async def test_webp_is_transcoded_to_png(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from PIL import Image as PILImage
+
+        from app.services.url_import.tokens import mint_token
+
+        buffer = io.BytesIO()
+        PILImage.new("RGB", (8, 8), color=(200, 50, 100)).save(buffer, format="WEBP")
+        webp_bytes = buffer.getvalue()
+
+        def handler(request):
+            return httpx.Response(
+                200, content=webp_bytes, headers={"content-type": "image/webp"}
+            )
+
+        token = mint_token("https://cdn.bsky.app/img/feed_fullsize/plain/x/abc")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    async def test_webp_transcoded_despite_lying_content_type(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from PIL import Image as PILImage
+
+        from app.services.url_import.tokens import mint_token
+
+        buffer = io.BytesIO()
+        PILImage.new("RGB", (8, 8), color=(10, 20, 30)).save(buffer, format="WEBP")
+        webp_bytes = buffer.getvalue()
+
+        def handler(request):
+            # Upstream claims jpeg but actually serves webp bytes -- the
+            # proxy must sniff the magic, not trust the header.
+            return httpx.Response(
+                200, content=webp_bytes, headers={"content-type": "image/jpeg"}
+            )
+
+        token = mint_token("https://example.test/lying.jpg")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    async def test_non_webp_passes_through_unchanged(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from app.services.url_import.tokens import mint_token
+
+        real_png = b"\x89PNG\r\n\x1a\n" + b"not-really-png-data-but-not-webp-either"
+
+        def handler(request):
+            return httpx.Response(
+                200, content=real_png, headers={"content-type": "image/png"}
+            )
+
+        token = mint_token("https://example.test/real.png")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content == real_png
+
+    async def test_animated_webp_rejected(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from PIL import Image as PILImage
+
+        from app.services.url_import.tokens import mint_token
+
+        frame1 = PILImage.new("RGB", (8, 8), color=(255, 0, 0))
+        frame2 = PILImage.new("RGB", (8, 8), color=(0, 255, 0))
+        buffer = io.BytesIO()
+        frame1.save(
+            buffer, format="WEBP", save_all=True, append_images=[frame2], duration=100, loop=0
+        )
+        webp_bytes = buffer.getvalue()
+
+        def handler(request):
+            return httpx.Response(
+                200, content=webp_bytes, headers={"content-type": "image/webp"}
+            )
+
+        token = mint_token("https://example.test/animated.webp")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 422
+        assert "Animated" in response.json()["detail"]
+
+    async def test_transcoded_png_too_large_413(self, resolve_client, monkeypatch):
+        import os
+
+        import httpx
+        from unittest.mock import patch
+
+        from app.config import settings
+        from PIL import Image as PILImage
+
+        from app.services.url_import.tokens import mint_token
+
+        # Random noise barely compresses under lossy webp (quality=1) but
+        # decodes back to full incompressible noise, so its PNG re-encode is
+        # ~15x bigger than the webp bytes -- empirically verified via a
+        # throwaway script (webp ~800B, PNG roundtrip ~12KB for 64x64).
+        # A cap between those sizes exercises the *post-transcode* size
+        # check specifically, distinct from the pre-existing raw-download
+        # size cap covered by test_oversize_streaming_without_content_length_413.
+        monkeypatch.setattr(settings, "MAX_IMAGE_SIZE", 2000)
+        image = PILImage.frombytes("RGB", (64, 64), os.urandom(64 * 64 * 3))
+        buffer = io.BytesIO()
+        image.save(buffer, format="WEBP", quality=1)
+        webp_bytes = buffer.getvalue()
+        assert len(webp_bytes) < 2000  # sanity: raw bytes must clear the cap
+
+        def handler(request):
+            return httpx.Response(
+                200, content=webp_bytes, headers={"content-type": "image/webp"}
+            )
+
+        token = mint_token("https://example.test/noise.webp")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 413
+
     async def test_upstream_500_becomes_502(self, resolve_client):
         import httpx
         from unittest.mock import patch
@@ -242,3 +386,10 @@ class TestFixtureImageEndpoint:
         assert first.headers["content-type"] == "image/png"
         assert first.content[:8] == b"\x89PNG\r\n\x1a\n"
         assert first.content != second.content  # unique MD5 per request
+
+    async def test_serves_webp_for_dot_webp_name(self, client):
+        response = await client.get("/api/v1/images/url-import-fixture/webp-0.webp")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/webp"
+        assert response.content[0:4] == b"RIFF"
+        assert response.content[8:12] == b"WEBP"

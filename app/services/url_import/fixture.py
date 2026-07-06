@@ -8,7 +8,7 @@ import httpx
 from app.config import settings
 from app.services.url_import.base import ResolvedImage, ResolvedPost
 
-_URL_RE = re.compile(r"^https?://urlimport-fixture\.local/post/(single|multi)$")
+_URL_RE = re.compile(r"^https?://urlimport-fixture\.local/post/(single|multi|webp)$")
 
 
 class FixtureResolver:
@@ -22,10 +22,14 @@ class FixtureResolver:
         assert match is not None
         kind = match.group(1)
         count = 3 if kind == "multi" else 1
+        # "webp" kind's full image is served as real webp (so e2e can drive
+        # the fetch-external transcode path end-to-end); thumbs stay PNG,
+        # they're display-only and never pass through the transcode.
+        ext = "webp" if kind == "webp" else "png"
         base = settings.URL_IMPORT_FIXTURE_BASE_URL.rstrip("/")
         images = [
             ResolvedImage(
-                full_url=f"{base}/api/v1/images/url-import-fixture/{kind}-{i}.png",
+                full_url=f"{base}/api/v1/images/url-import-fixture/{kind}-{i}.{ext}",
                 thumb_url=f"{base}/api/v1/images/url-import-fixture/{kind}-{i}-thumb.png",
             )
             for i in range(count)
