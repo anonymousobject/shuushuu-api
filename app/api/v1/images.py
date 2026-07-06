@@ -836,7 +836,16 @@ async def list_images(
     if is_bare_default_feed:
         total = await _default_feed_total(db, current_user, redis_client)
     else:
-        count_query = select(func.count()).select_from(query.subquery())
+        # When comment filters JOIN Comments, one image can match multiple
+        # comment rows — count distinct images to match the page subquery's
+        # distinct() below, or the pagination total is inflated.
+        if commenter is not None or commentsearch is not None:
+            distinct_ids = query.with_only_columns(
+                Images.image_id.label("image_id")  # type: ignore[union-attr]
+            ).distinct()
+            count_query = select(func.count()).select_from(distinct_ids.subquery())
+        else:
+            count_query = select(func.count()).select_from(query.subquery())
         total = (await db.execute(count_query)).scalar() or 0
 
     # Performance optimization: Two-stage query for fast filtering and sorting

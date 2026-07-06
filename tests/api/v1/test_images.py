@@ -3035,6 +3035,44 @@ class TestCommentFilters:
         filenames = {img["filename"] for img in data["images"]}
         assert filenames == {"no_comment", "also_no_comment"}
 
+    async def test_commenter_total_counts_distinct_images(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """An image with several comments by one user counts once in total.
+
+        The Comments JOIN produces one row per comment; the pagination total
+        must count distinct images (the page path already dedupes).
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="multicommenter",
+            email="multi@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000201",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image_data = sample_image_data.copy()
+        image_data.update({"filename": "multi-comment", "md5_hash": "multicommenthash0001"})
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        for text in ["First!", "Also this.", "And one more."]:
+            db_session.add(
+                Comments(image_id=image.image_id, user_id=user.id, post_text=text)
+            )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?commenter={user.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["images"]) == 1
+
 
 @pytest.mark.api
 class TestShowAllImagesFilter:
