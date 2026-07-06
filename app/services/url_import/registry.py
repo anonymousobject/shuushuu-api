@@ -1,6 +1,7 @@
 """Ordered resolver registry; first match wins."""
 
 from app.services.url_import.base import Resolver
+from app.services.url_import.bluesky import BlueskyResolver
 from app.services.url_import.danbooru import DanbooruResolver
 from app.services.url_import.gelbooru import GelbooruResolver
 from app.services.url_import.moebooru import MoebooruResolver
@@ -13,6 +14,7 @@ _RESOLVERS: list[Resolver] = [
     GelbooruResolver(),
     MoebooruResolver(),
     TwitterResolver(),
+    BlueskyResolver(),
 ]
 
 
