@@ -18,6 +18,8 @@ from app.services.url_import.base import (
     source_or,
 )
 
+_REFERER = {"Referer": "https://gelbooru.com/"}
+
 
 class GelbooruResolver:
     site = "gelbooru"
@@ -56,6 +58,7 @@ class GelbooruResolver:
                     thumb_url=post.get("preview_url"),
                     width=post.get("width"),
                     height=post.get("height"),
+                    headers=dict(_REFERER),
                 )
             ],
         )

@@ -102,16 +102,32 @@ class TestGelbooru:
         assert resolver.match(self.URL)
         assert not resolver.match("https://gelbooru.com/index.php?page=post&s=list&tags=x")
 
-    def test_not_registered_when_api_key_unconfigured(self):
-        # Default test env has no GELBOORU_API_KEY/USER_ID configured, so the
-        # resolver must not be advertised (dapi 401s without credentials).
-        assert get_resolver(self.URL) is None
+    def test_registration_follows_credential_config(self, monkeypatch):
+        import importlib
+
+        from app.config import settings
+        from app.services.url_import import registry as registry_module
+
+        url = "https://gelbooru.com/index.php?page=post&s=view&id=1"
+        try:
+            monkeypatch.setattr(settings, "GELBOORU_API_KEY", "")
+            monkeypatch.setattr(settings, "GELBOORU_USER_ID", "")
+            importlib.reload(registry_module)
+            assert registry_module.get_resolver(url) is None
+            monkeypatch.setattr(settings, "GELBOORU_API_KEY", "k")
+            monkeypatch.setattr(settings, "GELBOORU_USER_ID", "1")
+            importlib.reload(registry_module)
+            assert registry_module.get_resolver(url) is not None
+        finally:
+            monkeypatch.undo()
+            importlib.reload(registry_module)
 
     async def test_resolve(self):
         async with _client(self.BODY) as client:
             post = await GelbooruResolver().resolve(self.URL, client)
         assert post.canonical_url == self.URL
         assert post.images[0].full_url == self.BODY["post"][0]["file_url"]
+        assert post.images[0].headers == {"Referer": "https://gelbooru.com/"}
 
     async def test_empty_post_list_not_found(self):
         async with _client({"post": []}) as client:

@@ -40,7 +40,7 @@ async def check(site: str, url: str) -> bool:
         print(f"[FAIL] {site}: no resolver matched {url}")
         return False
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, http2=True) as client:
             post = await resolver.resolve(url, client)
             image = post.images[0]
             response = await client.get(

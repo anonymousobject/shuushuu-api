@@ -33,8 +33,12 @@ FETCH_TIMEOUT_SECONDS = 30.0
 
 
 def _make_http_client(timeout: float) -> httpx.AsyncClient:
-    """Factory indirection so tests can substitute a MockTransport client."""
-    return httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    """Factory indirection so tests can substitute a MockTransport client.
+
+    HTTP/2 is required because danbooru's Cloudflare front door challenges
+    HTTP/1.1 requests from non-browser TLS stacks (e.g. Python's httpx).
+    """
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=False, http2=True)
 
 
 @router.post("/resolve-url", response_model=UrlResolveResponse)
