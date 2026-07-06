@@ -63,6 +63,13 @@ class Resolver(Protocol):
     async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost: ...
 
 
+def source_or(default_url: str, source: str | None) -> str:
+    """Prefer a post's upstream http(s) source as provenance; else the post URL."""
+    if source and source.startswith(("http://", "https://")):
+        return source
+    return default_url
+
+
 async def fetch_json(
     client: httpx.AsyncClient,
     url: str,
