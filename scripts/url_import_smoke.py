@@ -70,6 +70,9 @@ async def main() -> int:
             site, url = arg.split("=", 1)
             targets = {site: url}
         else:
+            if arg not in SAMPLES:
+                print(f"[FAIL] {arg}: unknown site (known: {', '.join(SAMPLES)})")
+                return 1
             targets = {arg: SAMPLES[arg]}
     results = [await check(site, url) for site, url in targets.items()]
     return 0 if all(results) else 1

@@ -117,18 +117,23 @@ async def fetch_external(
                         detail="Upstream did not return an image",
                     )
                 declared = upstream.headers.get("content-length")
-                if declared and int(declared) > settings.MAX_IMAGE_SIZE:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail="Image exceeds the maximum upload size",
-                    )
+                if declared:
+                    try:
+                        declared_size = int(declared)
+                    except ValueError:
+                        declared_size = None
+                    if declared_size is not None and declared_size > settings.MAX_IMAGE_SIZE:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail="Image exceeds the maximum upload size",
+                        )
                 chunks: list[bytes] = []
                 total = 0
                 async for chunk in upstream.aiter_bytes():
                     total += len(chunk)
                     if total > settings.MAX_IMAGE_SIZE:
                         raise HTTPException(
-                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                             detail="Image exceeds the maximum upload size",
                         )
                     chunks.append(chunk)

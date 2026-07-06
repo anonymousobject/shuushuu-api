@@ -169,6 +169,54 @@ class TestFetchExternal:
             )
         assert response.status_code == 413
 
+    async def test_malformed_content_length_ignored(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from app.services.url_import.tokens import mint_token
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                content=b"\x89PNG-fake-bytes",
+                headers={"content-type": "image/png", "content-length": "banana"},
+            )
+
+        token = mint_token("https://example.test/small.png")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 200
+        assert response.content == b"\x89PNG-fake-bytes"
+
+    async def test_oversize_streaming_without_content_length_413(
+        self, resolve_client, monkeypatch
+    ):
+        import httpx
+        from unittest.mock import patch
+
+        from app.config import settings
+        from app.services.url_import.tokens import mint_token
+
+        monkeypatch.setattr(settings, "MAX_IMAGE_SIZE", 1024)
+
+        def handler(request):
+            response = httpx.Response(
+                200,
+                stream=httpx.ByteStream(b"x" * 4096),
+                headers={"content-type": "image/png"},
+            )
+            assert "content-length" not in response.headers
+            return response
+
+        token = mint_token("https://example.test/no-content-length.png")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 413
+
     async def test_upstream_500_becomes_502(self, resolve_client):
         import httpx
         from unittest.mock import patch
