@@ -295,6 +295,7 @@ class _FeedFilters:
     user_id: int | None = None
     favorited_by_user_id: int | None = None
     exclude_user_id: str | None = None
+    exclude_favorited_by_user_id: str | None = None
     tags: str | None = None
     exclude_tags: str | None = None
     missing_tag_types: str | None = None
@@ -397,6 +398,10 @@ async def list_images(
     exclude_user_id: Annotated[
         str | None,
         Query(description="Comma-separated user IDs whose uploads to exclude (e.g., '5,6')"),
+    ] = None,
+    exclude_favorited_by_user_id: Annotated[
+        str | None,
+        Query(description="Comma-separated user IDs; exclude images any of them favorited"),
     ] = None,
     image_status: Annotated[
         list[int] | None,
@@ -534,6 +539,17 @@ async def list_images(
     if favorited_by_user_id is not None:
         # Join with Favorites table to filter by user who favorited
         query = query.join(Favorites).where(Favorites.user_id == favorited_by_user_id)  # type: ignore[arg-type]
+    exclude_favorited_ids = _parse_user_id_list(
+        exclude_favorited_by_user_id, "exclude_favorited_by_user_id"
+    )
+    if exclude_favorited_ids:
+        query = query.where(
+            Images.image_id.notin_(  # type: ignore[union-attr]
+                select(Favorites.image_id).where(  # type: ignore[call-overload]
+                    Favorites.user_id.in_(exclude_favorited_ids)  # type: ignore[attr-defined]
+                )
+            )
+        )
     # Status filtering: explicit param overrides, otherwise use user's show_all_images setting
     if image_status is not None:
         # Explicit status filter - always honor it (supports single or multiple values)
@@ -776,6 +792,7 @@ async def list_images(
         user_id=user_id,
         favorited_by_user_id=favorited_by_user_id,
         exclude_user_id=exclude_user_id or None,
+        exclude_favorited_by_user_id=exclude_favorited_by_user_id or None,
         tags=tags or None,
         exclude_tags=exclude_tags or None,
         missing_tag_types=missing_tag_types or None,

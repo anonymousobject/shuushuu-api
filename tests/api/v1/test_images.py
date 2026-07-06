@@ -4306,6 +4306,104 @@ class TestHideReposts:
 
 
 @pytest.mark.api
+class TestExcludeFavoritedByUserId:
+    """Tests for the exclude_favorited_by_user_id parameter."""
+
+    async def _setup(self, db_session, sample_image_data):
+        """Two users; 4 images; user1 favorites 0,1; user2 favorites 1,2. Image 3 unfavorited.
+
+        Returns (user1, user2, images).
+        """
+        user1 = Users(
+            username="exclfav1",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345salt01",
+            email="exclfav1@example.com",
+        )
+        user2 = Users(
+            username="exclfav2",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345salt02",
+            email="exclfav2@example.com",
+        )
+        db_session.add_all([user1, user2])
+        await db_session.flush()
+
+        images = []
+        for i in range(4):
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"exclfav-{i}"
+            image_data["md5_hash"] = f"exclfavhash{i:018d}"
+            image = Images(**image_data)
+            db_session.add(image)
+            images.append(image)
+        await db_session.flush()
+
+        for i in [0, 1]:
+            db_session.add(Favorites(user_id=user1.user_id, image_id=images[i].image_id))
+        for i in [1, 2]:
+            db_session.add(Favorites(user_id=user2.user_id, image_id=images[i].image_id))
+        await db_session.commit()
+        return user1, user2, images
+
+    async def test_exclude_single_favoriter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Excluding user1 drops images 0 and 1, keeps 2 and 3."""
+        user1, _user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(
+            f"/api/v1/images?exclude_favorited_by_user_id={user1.user_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        kept = {img["filename"] for img in data["images"]}
+        assert kept == {"exclfav-2", "exclfav-3"}
+
+    async def test_exclude_multiple_favoriters(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Excluding both users leaves only the unfavorited image."""
+        user1, user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(
+            f"/api/v1/images?exclude_favorited_by_user_id={user1.user_id},{user2.user_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "exclfav-3"
+
+    async def test_exclude_composes_with_favorited_by_include(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """favorited_by user1 minus favorited_by user2 = image 0 only."""
+        user1, user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(
+            f"/api/v1/images?favorited_by_user_id={user1.user_id}"
+            f"&exclude_favorited_by_user_id={user2.user_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "exclfav-0"
+
+    async def test_exclude_favorited_over_cap_is_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        too_many = ",".join(str(i) for i in range(1, settings.MAX_SEARCH_USERS + 2))
+        response = await client.get(
+            f"/api/v1/images?exclude_favorited_by_user_id={too_many}"
+        )
+        assert response.status_code == 400
+        assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]
+
+
+@pytest.mark.api
 class TestExcludeUserId:
     """Tests for the exclude_user_id parameter on image search."""
 
