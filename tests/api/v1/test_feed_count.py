@@ -266,6 +266,7 @@ class TestFeedFilters:
             {"hascomments": False},
             {"exclude_user_id": "5"},
             {"exclude_favorited_by_user_id": "5"},
+            {"exclude_commenter": "5"},
         ]
         for kwargs in non_bare:
             assert _FeedFilters(**kwargs) != _FeedFilters(), kwargs
@@ -299,4 +300,5 @@ class TestFeedFilters:
             "reported",
             "exclude_user_id",
             "exclude_favorited_by_user_id",
+            "exclude_commenter",
         }

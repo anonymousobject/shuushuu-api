@@ -310,6 +310,7 @@ class _FeedFilters:
     min_num_ratings: int | None = None
     commenter: int | None = None
     commentsearch: str | None = None
+    exclude_commenter: str | None = None
     hascomments: bool | None = None
     reported: bool | None = None
 
@@ -467,6 +468,10 @@ async def list_images(
     commenter: Annotated[
         int | None, Query(description="Filter by user who commented on the image")
     ] = None,
+    exclude_commenter: Annotated[
+        str | None,
+        Query(description="Comma-separated user IDs; exclude images any of them commented on"),
+    ] = None,
     commentsearch: Annotated[
         str | None, Query(description="Full-text search in comment text")
     ] = None,
@@ -526,6 +531,8 @@ async def list_images(
     - `/images?commentsearch=+great -bad&commentsearch_mode=boolean` - Boolean fulltext
     - `/images?hascomments=true` - Images that have comments
     - `/images?hascomments=false` - Images with no comments
+    - `/images?exclude_user_id=5,6` - Hide uploads by users 5 and 6
+    - `/images?exclude_commenter=10` - Hide images user 10 commented on
     """
     # Build base query
     query = select(Images)
@@ -764,6 +771,17 @@ async def list_images(
         # Filter to images WITHOUT comments using posts counter
         query = query.where(Images.posts == 0)  # type: ignore[arg-type]
 
+    # Exclude commenter filter: anti-join to exclude images commented on by specified users
+    exclude_commenter_ids = _parse_user_id_list(exclude_commenter, "exclude_commenter")
+    if exclude_commenter_ids:
+        query = query.where(
+            Images.image_id.notin_(  # type: ignore[union-attr]
+                select(Comments.image_id).where(  # type: ignore[call-overload]
+                    Comments.user_id.in_(exclude_commenter_ids)  # type: ignore[attr-defined]
+                )
+            )
+        )
+
     # Reported filtering: restrict to images that have a PENDING report. Mods only
     # (REPORT_VIEW) so it never leaks the triage queue — silently a no-op for everyone else.
     apply_reported = (
@@ -807,6 +825,7 @@ async def list_images(
         min_num_ratings=min_num_ratings,
         commenter=commenter,
         commentsearch=commentsearch,
+        exclude_commenter=exclude_commenter or None,
         hascomments=hascomments,
         reported=apply_reported or None,
     )

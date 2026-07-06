@@ -4404,6 +4404,91 @@ class TestExcludeFavoritedByUserId:
 
 
 @pytest.mark.api
+class TestExcludeCommenter:
+    """Tests for the exclude_commenter parameter."""
+
+    async def _setup(self, db_session, sample_image_data):
+        """Two users; 3 images; user1 comments on image 0, user2 on images 0 and 1.
+
+        Image 2 has no comments. Returns (user1, user2, images).
+        """
+        from app.models import Comments
+
+        user1 = Users(
+            username="exclcom1",
+            email="exclcom1@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000101",
+        )
+        user2 = Users(
+            username="exclcom2",
+            email="exclcom2@test.com",
+            password="testpass2",
+            password_type="bcrypt",
+            salt="testsalt0000102",
+        )
+        db_session.add_all([user1, user2])
+        await db_session.flush()
+
+        images = []
+        for i in range(3):
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"exclcom-{i}"
+            image_data["md5_hash"] = f"exclcomhash{i:018d}"
+            image = Images(**image_data)
+            db_session.add(image)
+            images.append(image)
+        await db_session.flush()
+
+        db_session.add(
+            Comments(image_id=images[0].image_id, user_id=user1.id, post_text="First!")
+        )
+        db_session.add(
+            Comments(image_id=images[0].image_id, user_id=user2.id, post_text="Second!")
+        )
+        db_session.add(
+            Comments(image_id=images[1].image_id, user_id=user2.id, post_text="Nice!")
+        )
+        await db_session.commit()
+        return user1, user2, images
+
+    async def test_exclude_single_commenter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Excluding user2 drops images 0 and 1, keeps the uncommented image 2."""
+        _user1, user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(f"/api/v1/images?exclude_commenter={user2.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "exclcom-2"
+
+    async def test_exclude_commenter_composes_with_commenter_include(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Commented-by user2 minus commented-by user1 = image 1 only."""
+        user1, user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(
+            f"/api/v1/images?commenter={user2.id}&exclude_commenter={user1.id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "exclcom-1"
+
+    async def test_exclude_commenter_over_cap_is_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        too_many = ",".join(str(i) for i in range(1, settings.MAX_SEARCH_USERS + 2))
+        response = await client.get(f"/api/v1/images?exclude_commenter={too_many}")
+        assert response.status_code == 400
+        assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]
+
+
+@pytest.mark.api
 class TestExcludeUserId:
     """Tests for the exclude_user_id parameter on image search."""
 
