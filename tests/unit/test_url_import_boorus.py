@@ -5,7 +5,7 @@ import pytest
 
 from app.config import settings
 from app.services.url_import.base import PostNotFoundError, RestrictedContentError
-from app.services.url_import.danbooru import DanbooruResolver
+from app.services.url_import.danbooru import _TOOL_USER_AGENT, DanbooruResolver
 from app.services.url_import.gelbooru import GelbooruResolver
 from app.services.url_import.moebooru import MoebooruResolver
 from app.services.url_import.registry import get_resolver
@@ -81,6 +81,22 @@ class TestDanbooru:
             await DanbooruResolver().resolve(self.URL, client)
         assert "login" not in seen["url"]
         assert "api_key" not in seen["url"]
+
+    async def test_resolve_uses_tool_user_agent_for_api_request(self):
+        seen = {}
+
+        def handler(request):
+            seen["user_agent"] = request.headers.get("user-agent")
+            return httpx.Response(200, json=self.POST)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await DanbooruResolver().resolve(self.URL, client)
+        assert seen["user_agent"] == _TOOL_USER_AGENT
+
+    async def test_resolve_sets_tool_user_agent_on_image_headers(self):
+        async with _client(self.POST) as client:
+            post = await DanbooruResolver().resolve(self.URL, client)
+        assert post.images[0].headers == {"User-Agent": _TOOL_USER_AGENT}
 
 
 class TestGelbooru:

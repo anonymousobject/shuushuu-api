@@ -15,6 +15,13 @@ from app.services.url_import.base import (
 
 _URL_RE = re.compile(r"^https?://danbooru\.donmai\.us/posts/(\d+)")
 
+# Cloudflare challenges requests that claim a browser User-Agent but arrive
+# over Python's TLS stack (UA/TLS mismatch reads as impersonation). An honest,
+# self-identifying tool UA passes cleanly, so danbooru is the sanctioned path
+# here rather than a spoofed browser UA.
+_TOOL_USER_AGENT = "shuushuu-url-import/1.0 (+https://e-shuushuu.net)"
+_TOOL_UA_HEADER = {"User-Agent": _TOOL_USER_AGENT}
+
 
 class DanbooruResolver:
     site = "danbooru"
@@ -30,7 +37,7 @@ class DanbooruResolver:
         json_url = f"{post_url}.json"
         if settings.DANBOORU_LOGIN and settings.DANBOORU_API_KEY:
             json_url += f"?login={settings.DANBOORU_LOGIN}&api_key={settings.DANBOORU_API_KEY}"
-        data = await fetch_json(client, json_url, site=self.site)
+        data = await fetch_json(client, json_url, site=self.site, headers=dict(_TOOL_UA_HEADER))
         file_url = data.get("file_url")
         if not file_url:
             raise RestrictedContentError("danbooru post has no publicly accessible file")
@@ -44,6 +51,7 @@ class DanbooruResolver:
                     thumb_url=data.get("preview_file_url"),
                     width=data.get("image_width"),
                     height=data.get("image_height"),
+                    headers=dict(_TOOL_UA_HEADER),
                 )
             ],
             artist_name=artist.replace("_", " ") if artist else None,
