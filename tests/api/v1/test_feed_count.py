@@ -264,6 +264,7 @@ class TestFeedFilters:
             {"commenter": 5},
             {"commentsearch": "x"},
             {"hascomments": False},
+            {"exclude_user_id": "5"},
         ]
         for kwargs in non_bare:
             assert _FeedFilters(**kwargs) != _FeedFilters(), kwargs
@@ -295,4 +296,5 @@ class TestFeedFilters:
             "commentsearch",
             "hascomments",
             "reported",
+            "exclude_user_id",
         }

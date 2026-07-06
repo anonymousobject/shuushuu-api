@@ -294,6 +294,7 @@ class _FeedFilters:
     image_status: list[int] | None = None
     user_id: int | None = None
     favorited_by_user_id: int | None = None
+    exclude_user_id: str | None = None
     tags: str | None = None
     exclude_tags: str | None = None
     missing_tag_types: str | None = None
@@ -310,6 +311,24 @@ class _FeedFilters:
     commentsearch: str | None = None
     hascomments: bool | None = None
     reported: bool | None = None
+
+
+def _parse_user_id_list(raw: str | None, param: str) -> list[int]:
+    """Parse a comma-separated user-id list param (``exclude_user_id`` etc.).
+
+    isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
+    Capped at MAX_SEARCH_USERS to bound the NOT IN list, mirroring the tags cap.
+    """
+    if not raw:
+        return []
+    ids = [int(tok.strip()) for tok in raw.split(",") if tok.strip().isdecimal()]
+    if len(ids) > settings.MAX_SEARCH_USERS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You can only exclude up to {settings.MAX_SEARCH_USERS} users at a time"
+            f" ({param}).",
+        )
+    return ids
 
 
 async def _default_feed_total(
@@ -374,6 +393,10 @@ async def list_images(
     user_id: Annotated[int | None, Query(description="Filter by uploader user ID")] = None,
     favorited_by_user_id: Annotated[
         int | None, Query(description="Filter by user who favorited the image")
+    ] = None,
+    exclude_user_id: Annotated[
+        str | None,
+        Query(description="Comma-separated user IDs whose uploads to exclude (e.g., '5,6')"),
     ] = None,
     image_status: Annotated[
         list[int] | None,
@@ -505,6 +528,9 @@ async def list_images(
     # Apply basic filters
     if user_id is not None:
         query = query.where(Images.user_id == user_id)  # type: ignore[arg-type]
+    exclude_user_ids = _parse_user_id_list(exclude_user_id, "exclude_user_id")
+    if exclude_user_ids:
+        query = query.where(Images.user_id.notin_(exclude_user_ids))  # type: ignore[attr-defined]
     if favorited_by_user_id is not None:
         # Join with Favorites table to filter by user who favorited
         query = query.join(Favorites).where(Favorites.user_id == favorited_by_user_id)  # type: ignore[arg-type]
@@ -749,6 +775,7 @@ async def list_images(
         image_status=image_status,
         user_id=user_id,
         favorited_by_user_id=favorited_by_user_id,
+        exclude_user_id=exclude_user_id or None,
         tags=tags or None,
         exclude_tags=exclude_tags or None,
         missing_tag_types=missing_tag_types or None,

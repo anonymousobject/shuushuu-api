@@ -4303,3 +4303,74 @@ class TestHideReposts:
         # Control: reposts counted -> 3 before bm -> position 3 -> page ceil(4/2)=2.
         data = (await client.get("/api/v1/images/bookmark/page", headers=self._hdr(viewer))).json()
         assert data["page"] == 2
+
+
+@pytest.mark.api
+class TestExcludeUserId:
+    """Tests for the exclude_user_id parameter on image search."""
+
+    async def _create_images_for_users(self, db_session, sample_image_data, counts):
+        """counts: {user_id: n_images}. Users 1-3 pre-exist via conftest."""
+        for user_id, n in counts.items():
+            for i in range(n):
+                image_data = sample_image_data.copy()
+                image_data["filename"] = f"exclu{user_id}-{i}"
+                image_data["md5_hash"] = f"exclu{user_id}hash{i:018d}"
+                image_data["user_id"] = user_id
+                db_session.add(Images(**image_data))
+        await db_session.commit()
+
+    async def test_exclude_single_uploader(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """exclude_user_id drops that user's uploads and keeps everyone else's."""
+        await self._create_images_for_users(db_session, sample_image_data, {1: 2, 2: 3, 3: 1})
+
+        response = await client.get("/api/v1/images?exclude_user_id=2")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3
+        assert all(img["user_id"] != 2 for img in data["images"])
+
+    async def test_exclude_multiple_uploaders(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A comma-separated list excludes every listed uploader."""
+        await self._create_images_for_users(db_session, sample_image_data, {1: 2, 2: 3, 3: 1})
+
+        response = await client.get("/api/v1/images?exclude_user_id=1,2")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["user_id"] == 3
+
+    async def test_exclude_user_id_composes_with_include(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Including and excluding the same uploader honestly returns nothing."""
+        await self._create_images_for_users(db_session, sample_image_data, {2: 3})
+
+        response = await client.get("/api/v1/images?user_id=2&exclude_user_id=2")
+        assert response.status_code == 200
+        assert response.json()["total"] == 0
+
+    async def test_exclude_user_id_garbage_tokens_ignored(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Non-decimal tokens (incl. unicode digits like ²) are dropped, not a 500."""
+        await self._create_images_for_users(db_session, sample_image_data, {1: 1, 2: 1})
+
+        response = await client.get("/api/v1/images?exclude_user_id=²,abc,,2")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["user_id"] == 1
+
+    async def test_exclude_user_id_over_cap_is_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """More than MAX_SEARCH_USERS ids is rejected with a 400."""
+        too_many = ",".join(str(i) for i in range(1, settings.MAX_SEARCH_USERS + 2))
+        response = await client.get(f"/api/v1/images?exclude_user_id={too_many}")
+        assert response.status_code == 400
+        assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]
