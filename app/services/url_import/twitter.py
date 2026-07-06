@@ -6,6 +6,7 @@ to a clear 'unavailable' error, never to a broken upload.
 """
 
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -21,8 +22,14 @@ _URL_RE = re.compile(r"^https?://(?:www\.)?(?:twitter\.com|x\.com)/([A-Za-z0-9_]
 
 
 def _variant(photo_url: str, name: str) -> str:
-    separator = "&" if "?" in photo_url else "?"
-    return f"{photo_url}{separator}name={name}"
+    # fxtwitter's photos[].url already carries its own ?name=... variant
+    # (confirmed live 2026-07-06); replace it instead of appending, or
+    # pbs.twimg.com 404s on the resulting duplicate `name` param.
+    parts = urlsplit(photo_url)
+    params = [(key, value) for key, value in parse_qsl(parts.query) if key != "name"]
+    params.append(("name", name))
+    query = urlencode(params)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 class TwitterResolver:

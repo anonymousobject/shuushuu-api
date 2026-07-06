@@ -45,6 +45,15 @@ class TestVariant:
             == "https://pbs.twimg.com/media/AAA.jpg?format=jpg&name=orig"
         )
 
+    def test_replaces_existing_name_param_instead_of_duplicating(self):
+        # fxtwitter's real photos[].url already includes ?name=orig (confirmed
+        # live 2026-07-06 against api.fxtwitter.com) -- appending blindly
+        # produced ...jpg?name=orig&name=orig, which pbs.twimg.com 404s on.
+        assert (
+            _variant("https://pbs.twimg.com/media/AAA.jpg?name=orig", "small")
+            == "https://pbs.twimg.com/media/AAA.jpg?name=small"
+        )
+
 
 class TestResolve:
     async def test_photos_get_orig_variant(self):

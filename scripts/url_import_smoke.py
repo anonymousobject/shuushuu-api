@@ -23,11 +23,11 @@ SAMPLES = {
     "pixiv": "https://www.pixiv.net/en/artworks/138823691",
     "danbooru": "https://danbooru.donmai.us/posts/1",
     "gelbooru": "https://gelbooru.com/index.php?page=post&s=view&id=1",
-    "yande.re": "https://yande.re/post/show/1",
-    "twitter": "",  # fill at implementation time with a live SFW art tweet
-    "bluesky": "",  # fill at implementation time with a live image post
-    "zerochan": "",  # fill at implementation time with a live entry
-    "ko-fi": "",  # fill at implementation time with a live gallery post
+    "yande.re": "https://yande.re/post/show/1265298",  # post id 1 was deleted upstream
+    "twitter": "https://x.com/AnimeTwtX/status/2070016638653747400",
+    "bluesky": "https://bsky.app/profile/bsky.app/post/3mpok7nkjtc2o",
+    "zerochan": "https://www.zerochan.net/4706056",
+    "ko-fi": "https://ko-fi.com/post/FanartD-L3L225PI1",
 }
 
 
