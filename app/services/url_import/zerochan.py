@@ -1,17 +1,25 @@
-"""Zerochan resolver via OpenGraph tags on the entry page."""
+"""Zerochan resolver via the entry's sanctioned ?json endpoint.
+
+The HTML page's og:image lies about the file extension for PNG entries
+(always claims .jpg), so we use the JSON API instead, which also provides
+dimensions, a thumbnail, and upstream provenance. Zerochan's API terms ask
+for a self-identifying User-Agent naming the project and username —
+anonymous projects risk bans — so ZEROCHAN_USERNAME should be configured.
+"""
 
 import re
 
 import httpx
 
+from app.config import settings
 from app.services.url_import.base import (
     TOOL_USER_AGENT,
-    PostNotFoundError,
     ResolvedImage,
     ResolvedPost,
     UpstreamError,
+    fetch_json,
+    source_or,
 )
-from app.services.url_import.og import fetch_og_page
 
 _URL_RE = re.compile(r"^https?://(?:www\.)?zerochan\.net/(\d+)")
 
@@ -19,6 +27,13 @@ _URL_RE = re.compile(r"^https?://(?:www\.)?zerochan\.net/(\d+)")
 def _is_zerochan_host(image_url: str) -> bool:
     host = httpx.URL(image_url).host or ""
     return host == "zerochan.net" or host.endswith(".zerochan.net")
+
+
+def _user_agent() -> str:
+    """Zerochan's documented UA convention is "project name - username"."""
+    if settings.ZEROCHAN_USERNAME:
+        return f"shuushuu-url-import/1.0 - {settings.ZEROCHAN_USERNAME}"
+    return TOOL_USER_AGENT
 
 
 class ZerochanResolver:
@@ -31,30 +46,30 @@ class ZerochanResolver:
         match = _URL_RE.match(url)
         assert match is not None
         entry_id = match.group(1)
-        canonical = f"https://www.zerochan.net/{entry_id}"
-        # zerochan 503s the browser UA but returns 200 for a self-identifying
-        # tool UA, per their API terms; the static image host may filter the
-        # same way, so the resolved image carries the same header.
-        tags = await fetch_og_page(
+        entry_url = f"https://www.zerochan.net/{entry_id}"
+        user_agent = _user_agent()
+        data = await fetch_json(
             client,
-            canonical,
+            f"{entry_url}?json",
             site=self.site,
-            allowed_hosts={"www.zerochan.net", "zerochan.net"},
-            user_agent=TOOL_USER_AGENT,
+            headers={"User-Agent": user_agent},
         )
-        image_url = tags.get("image")
-        if not image_url:
-            raise PostNotFoundError("zerochan entry has no image")
-        if not _is_zerochan_host(image_url):
-            raise UpstreamError("zerochan og:image points off-site")
+        full_url = data.get("full")
+        if not full_url:
+            raise UpstreamError("zerochan response missing expected fields")
+        if not _is_zerochan_host(full_url):
+            raise UpstreamError("zerochan full image points off-site")
         return ResolvedPost(
             site=self.site,
-            canonical_url=canonical,
+            canonical_url=source_or(entry_url, data.get("source")),
             images=[
                 ResolvedImage(
-                    full_url=image_url,
-                    headers={"User-Agent": TOOL_USER_AGENT},
+                    full_url=full_url,
+                    thumb_url=data.get("large") or data.get("small"),
+                    width=data.get("width"),
+                    height=data.get("height"),
+                    headers={"User-Agent": user_agent},
                 )
             ],
-            title=tags.get("title"),
+            title=data.get("primary"),
         )

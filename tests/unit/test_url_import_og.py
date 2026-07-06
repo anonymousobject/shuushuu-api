@@ -3,10 +3,10 @@
 import httpx
 import pytest
 
+from app.config import settings
 from app.services.url_import.base import (
     BROWSER_USER_AGENT,
     TOOL_USER_AGENT,
-    PostNotFoundError,
     UpstreamError,
 )
 from app.services.url_import.kofi import KofiResolver
@@ -115,6 +115,25 @@ class TestFetchOgPage:
 
 class TestZerochan:
     URL = "https://www.zerochan.net/4321"
+    ENTRY = {
+        "id": 4321,
+        "small": "https://s1.zerochan.net/75/06/21/4321.jpg",
+        "large": "https://s1.zerochan.net/Miyo.600.4321.jpg",
+        "full": "https://static.zerochan.net/Miyo.full.4321.png",
+        "width": 2382,
+        "height": 5033,
+        "source": "https://www.pixiv.net/en/artworks/999",
+        "primary": "Miyo (Artist X)",
+    }
+
+    def _client(self, entry, seen=None):
+        def handler(request):
+            if seen is not None:
+                seen["url"] = str(request.url)
+                seen["user_agent"] = request.headers.get("user-agent")
+            return httpx.Response(200, json=entry)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
     def test_match(self):
         assert ZerochanResolver().match(self.URL)
@@ -122,50 +141,50 @@ class TestZerochan:
         assert not ZerochanResolver().match("https://www.zerochan.net/Original")
         assert isinstance(get_resolver(self.URL), ZerochanResolver)
 
-    async def test_resolve(self):
-        def handler(request):
-            return httpx.Response(200, text=_page("https://static.zerochan.net/Full.4321.jpg", "Miyo (Artist X)"))
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async def test_resolve(self, monkeypatch):
+        monkeypatch.setattr(settings, "ZEROCHAN_USERNAME", "")
+        seen = {}
+        async with self._client(self.ENTRY, seen) as client:
             post = await ZerochanResolver().resolve(self.URL, client)
-        assert post.images[0].full_url == "https://static.zerochan.net/Full.4321.jpg"
+        assert seen["url"] == "https://www.zerochan.net/4321?json"
+        assert seen["user_agent"] == TOOL_USER_AGENT
+        image = post.images[0]
+        assert image.full_url == "https://static.zerochan.net/Miyo.full.4321.png"
+        assert image.thumb_url == "https://s1.zerochan.net/Miyo.600.4321.jpg"
+        assert image.width == 2382
+        assert image.height == 5033
+        assert image.headers == {"User-Agent": TOOL_USER_AGENT}
         assert post.title == "Miyo (Artist X)"
+
+    async def test_resolve_prefers_upstream_source_as_canonical(self):
+        async with self._client(self.ENTRY) as client:
+            post = await ZerochanResolver().resolve(self.URL, client)
+        assert post.canonical_url == "https://www.pixiv.net/en/artworks/999"
+
+    async def test_missing_source_falls_back_to_entry_page(self):
+        entry = {k: v for k, v in self.ENTRY.items() if k != "source"}
+        async with self._client(entry) as client:
+            post = await ZerochanResolver().resolve(self.URL, client)
         assert post.canonical_url == "https://www.zerochan.net/4321"
 
-    async def test_off_site_og_image_refused(self):
-        def handler(request):
-            return httpx.Response(200, text=_page("https://evil.example/a.jpg"))
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async def test_off_site_full_image_refused(self):
+        async with self._client({**self.ENTRY, "full": "https://evil.example/a.png"}) as client:
             with pytest.raises(UpstreamError):
                 await ZerochanResolver().resolve(self.URL, client)
 
-    async def test_missing_og_image_not_found(self):
-        def handler(request):
-            return httpx.Response(200, text="<html><head></head></html>")
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            with pytest.raises(PostNotFoundError):
+    async def test_missing_full_is_upstream_error(self):
+        entry = {k: v for k, v in self.ENTRY.items() if k != "full"}
+        async with self._client(entry) as client:
+            with pytest.raises(UpstreamError):
                 await ZerochanResolver().resolve(self.URL, client)
 
-    async def test_resolve_uses_tool_user_agent_for_page_request(self):
+    async def test_configured_username_builds_documented_ua(self, monkeypatch):
+        monkeypatch.setattr(settings, "ZEROCHAN_USERNAME", "shuu_admin")
         seen = {}
-
-        def handler(request):
-            seen["user_agent"] = request.headers.get("user-agent")
-            return httpx.Response(200, text=_page("https://static.zerochan.net/Full.4321.jpg"))
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            await ZerochanResolver().resolve(self.URL, client)
-        assert seen["user_agent"] == TOOL_USER_AGENT
-
-    async def test_resolve_sets_tool_user_agent_on_image_headers(self):
-        def handler(request):
-            return httpx.Response(200, text=_page("https://static.zerochan.net/Full.4321.jpg"))
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        async with self._client(self.ENTRY, seen) as client:
             post = await ZerochanResolver().resolve(self.URL, client)
-        assert post.images[0].headers == {"User-Agent": TOOL_USER_AGENT}
+        assert seen["user_agent"] == "shuushuu-url-import/1.0 - shuu_admin"
+        assert post.images[0].headers == {"User-Agent": "shuushuu-url-import/1.0 - shuu_admin"}
 
 
 class TestKofi:

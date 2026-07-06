@@ -148,6 +148,7 @@ class Settings(BaseSettings):
     GELBOORU_USER_ID: str = ""
     DANBOORU_LOGIN: str = ""
     DANBOORU_API_KEY: str = ""
+    ZEROCHAN_USERNAME: str = ""
 
     # Pagination
     DEFAULT_PAGE_SIZE: int = 15
