@@ -53,12 +53,13 @@ async def fetch_og_page(
     *,
     site: str,
     allowed_hosts: set[str],
+    user_agent: str = BROWSER_USER_AGENT,
 ) -> dict[str, str]:
     """Fetch an allowlisted page and return its OG tags; refuse off-host redirects."""
     current = url
     for _ in range(_MAX_REDIRECTS):
         try:
-            response = await client.get(current, headers={"User-Agent": BROWSER_USER_AGENT})
+            response = await client.get(current, headers={"User-Agent": user_agent})
         except httpx.HTTPError as exc:
             raise UpstreamError(f"{site} request failed") from exc
         if response.status_code in (301, 302, 303, 307, 308):

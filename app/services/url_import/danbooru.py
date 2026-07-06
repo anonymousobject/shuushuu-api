@@ -6,6 +6,7 @@ import httpx
 
 from app.config import settings
 from app.services.url_import.base import (
+    TOOL_USER_AGENT,
     ResolvedImage,
     ResolvedPost,
     RestrictedContentError,
@@ -19,7 +20,7 @@ _URL_RE = re.compile(r"^https?://danbooru\.donmai\.us/posts/(\d+)")
 # over Python's TLS stack (UA/TLS mismatch reads as impersonation). An honest,
 # self-identifying tool UA passes cleanly, so danbooru is the sanctioned path
 # here rather than a spoofed browser UA.
-_TOOL_USER_AGENT = "shuushuu-url-import/1.0 (+https://e-shuushuu.net)"
+_TOOL_USER_AGENT = TOOL_USER_AGENT
 _TOOL_UA_HEADER = {"User-Agent": _TOOL_USER_AGENT}
 
 

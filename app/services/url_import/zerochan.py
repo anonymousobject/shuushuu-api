@@ -5,6 +5,7 @@ import re
 import httpx
 
 from app.services.url_import.base import (
+    TOOL_USER_AGENT,
     PostNotFoundError,
     ResolvedImage,
     ResolvedPost,
@@ -31,11 +32,15 @@ class ZerochanResolver:
         assert match is not None
         entry_id = match.group(1)
         canonical = f"https://www.zerochan.net/{entry_id}"
+        # zerochan 503s the browser UA but returns 200 for a self-identifying
+        # tool UA, per their API terms; the static image host may filter the
+        # same way, so the resolved image carries the same header.
         tags = await fetch_og_page(
             client,
             canonical,
             site=self.site,
             allowed_hosts={"www.zerochan.net", "zerochan.net"},
+            user_agent=TOOL_USER_AGENT,
         )
         image_url = tags.get("image")
         if not image_url:
@@ -45,6 +50,11 @@ class ZerochanResolver:
         return ResolvedPost(
             site=self.site,
             canonical_url=canonical,
-            images=[ResolvedImage(full_url=image_url)],
+            images=[
+                ResolvedImage(
+                    full_url=image_url,
+                    headers={"User-Agent": TOOL_USER_AGENT},
+                )
+            ],
             title=tags.get("title"),
         )

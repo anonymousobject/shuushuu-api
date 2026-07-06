@@ -3,7 +3,12 @@
 import httpx
 import pytest
 
-from app.services.url_import.base import PostNotFoundError, UpstreamError
+from app.services.url_import.base import (
+    BROWSER_USER_AGENT,
+    TOOL_USER_AGENT,
+    PostNotFoundError,
+    UpstreamError,
+)
 from app.services.url_import.kofi import KofiResolver
 from app.services.url_import.og import extract_og_tags, fetch_og_page
 from app.services.url_import.registry import get_resolver
@@ -65,6 +70,35 @@ class TestFetchOgPage:
         assert tags["image"].endswith("/full/1.jpg")
         assert len(calls) == 2
 
+    async def test_default_user_agent_is_browser_ua(self):
+        seen = {}
+
+        def handler(request):
+            seen["user_agent"] = request.headers.get("user-agent")
+            return httpx.Response(200, text=_page("https://static.zerochan.net/full/1.jpg"))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await fetch_og_page(
+                client, "https://www.zerochan.net/123", site="zerochan",
+                allowed_hosts={"www.zerochan.net", "zerochan.net"},
+            )
+        assert seen["user_agent"] == BROWSER_USER_AGENT
+
+    async def test_custom_user_agent_is_used_when_provided(self):
+        seen = {}
+
+        def handler(request):
+            seen["user_agent"] = request.headers.get("user-agent")
+            return httpx.Response(200, text=_page("https://static.zerochan.net/full/1.jpg"))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await fetch_og_page(
+                client, "https://www.zerochan.net/123", site="zerochan",
+                allowed_hosts={"www.zerochan.net", "zerochan.net"},
+                user_agent=TOOL_USER_AGENT,
+            )
+        assert seen["user_agent"] == TOOL_USER_AGENT
+
 
 class TestZerochan:
     URL = "https://www.zerochan.net/4321"
@@ -100,6 +134,25 @@ class TestZerochan:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             with pytest.raises(PostNotFoundError):
                 await ZerochanResolver().resolve(self.URL, client)
+
+    async def test_resolve_uses_tool_user_agent_for_page_request(self):
+        seen = {}
+
+        def handler(request):
+            seen["user_agent"] = request.headers.get("user-agent")
+            return httpx.Response(200, text=_page("https://static.zerochan.net/Full.4321.jpg"))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await ZerochanResolver().resolve(self.URL, client)
+        assert seen["user_agent"] == TOOL_USER_AGENT
+
+    async def test_resolve_sets_tool_user_agent_on_image_headers(self):
+        def handler(request):
+            return httpx.Response(200, text=_page("https://static.zerochan.net/Full.4321.jpg"))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            post = await ZerochanResolver().resolve(self.URL, client)
+        assert post.images[0].headers == {"User-Agent": TOOL_USER_AGENT}
 
 
 class TestKofi:

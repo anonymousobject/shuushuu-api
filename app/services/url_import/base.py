@@ -15,6 +15,11 @@ BROWSER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
 
+# Some upstream sites (danbooru, zerochan) filter or challenge requests that
+# claim a browser User-Agent but arrive over Python's TLS stack, and their
+# API terms ask for a self-identifying UA instead of a spoofed browser one.
+TOOL_USER_AGENT = "shuushuu-url-import/1.0 (+https://e-shuushuu.net)"
+
 
 class UrlImportError(Exception):
     """Base error for URL-import failures."""
