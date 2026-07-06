@@ -3,6 +3,7 @@
 import pytest
 from fastapi import HTTPException
 
+from app.config import settings
 from app.services.rate_limit import (
     check_external_fetch_rate_limit,
     check_url_resolve_rate_limit,
@@ -52,19 +53,22 @@ class TestResolveRateLimit:
         assert redis.ttls["url_resolve_rate:1"] == 60
         assert redis.ttls["url_resolve_rate:global"] == 60
 
-    async def test_user_limit_breach_raises_429(self):
+    async def test_user_limit_breach_raises_429(self, monkeypatch):
+        monkeypatch.setattr(settings, "URL_RESOLVE_RATE_PER_MINUTE", 5)
         redis = FakeRedis({"url_resolve_rate:1": 5})
         with pytest.raises(HTTPException) as exc_info:
             await check_url_resolve_rate_limit(1, redis)
         assert exc_info.value.status_code == 429
 
-    async def test_global_limit_breach_raises_429(self):
+    async def test_global_limit_breach_raises_429(self, monkeypatch):
+        monkeypatch.setattr(settings, "URL_RESOLVE_GLOBAL_RATE_PER_MINUTE", 60)
         redis = FakeRedis({"url_resolve_rate:global": 60})
         with pytest.raises(HTTPException) as exc_info:
             await check_url_resolve_rate_limit(1, redis)
         assert exc_info.value.status_code == 429
 
-    async def test_other_users_do_not_consume_my_user_budget(self):
+    async def test_other_users_do_not_consume_my_user_budget(self, monkeypatch):
+        monkeypatch.setattr(settings, "URL_RESOLVE_RATE_PER_MINUTE", 5)
         redis = FakeRedis({"url_resolve_rate:2": 5})
         await check_url_resolve_rate_limit(1, redis)  # must not raise
 
@@ -77,13 +81,15 @@ class TestResolveRateLimit:
 
 
 class TestFetchRateLimit:
-    async def test_allows_under_limit(self):
+    async def test_allows_under_limit(self, monkeypatch):
+        monkeypatch.setattr(settings, "EXTERNAL_FETCH_RATE_PER_MINUTE", 40)
         redis = FakeRedis({"external_fetch_rate:1": 39})
         await check_external_fetch_rate_limit(1, redis)
         assert redis.store["external_fetch_rate:1"] == 40
         assert redis.ttls["external_fetch_rate:1"] == 60
 
-    async def test_breach_raises_429(self):
+    async def test_breach_raises_429(self, monkeypatch):
+        monkeypatch.setattr(settings, "EXTERNAL_FETCH_RATE_PER_MINUTE", 40)
         redis = FakeRedis({"external_fetch_rate:1": 40})
         with pytest.raises(HTTPException) as exc_info:
             await check_external_fetch_rate_limit(1, redis)
