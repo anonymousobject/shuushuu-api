@@ -2689,7 +2689,7 @@ async def upload_image(
             source_url = source_url.strip() or None
         if source_url and not source_url.startswith(("http://", "https://")):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="source_url must start with http:// or https://",
             )
 
