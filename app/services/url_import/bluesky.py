@@ -1,34 +1,36 @@
-"""Bluesky (AT Protocol) resolver: uses the public Bluesky API without authentication.
+"""Bluesky resolver via the public AT Protocol XRPC API (no auth required).
 
 The Bluesky post URL pattern is:
   https://bsky.app/profile/{handle}/post/{rkey}
 
-To resolve:
-1. Extract handle and rkey from the URL
-2. Call getProfile to resolve handle -> DID
-3. Call getPostThread with the full AT URI (at://did/app.bsky.feed.post/{rkey})
-4. Extract images from the embed.images array in the post record
+getPostThread accepts a handle directly in the at-uri (no separate
+resolveHandle round-trip needed) and returns a hydrated view where the
+author and embed live under thread.post, not thread itself -- the raw
+record (thread.post.record) still carries unresolved blob refs, so images
+must be read off thread.post.embed's hydrated fullsize/thumb/aspectRatio
+fields, not fabricated from a cid.
 
-Bluesky images are CID-based blobs served from cdn.bsky.app with URLs like:
-  https://cdn.bsky.app/img/feed_fullsize/{did}/{cid}
-  https://cdn.bsky.app/img/feed_thumbnail/{did}/{cid}
+AT Protocol represents a "post not found" outcome as an XRPC-level error --
+HTTP 400 with a JSON body of {"error": "NotFound", ...} -- rather than a
+plain HTTP 404, so this resolver makes its own request instead of routing
+through the shared fetch_json helper (whose 404-only mapping doesn't fit
+this API); spike-verified 2026-07-06 against public.api.bsky.app.
 """
 
 import re
-from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from app.services.url_import.base import (
+    BROWSER_USER_AGENT,
     PostNotFoundError,
     ResolvedImage,
     ResolvedPost,
-    fetch_json,
+    UpstreamError,
 )
 
-# Match: bsky.app/profile/{handle}/post/{rkey}
-_URL_RE = re.compile(r"^https?://bsky\.app/profile/([^/]+)/post/([^/?]+)")
-_XRPC_BASE = "https://public.api.bsky.app/xrpc"
+_URL_RE = re.compile(r"^https?://bsky\.app/profile/([^/]+)/post/([A-Za-z0-9]+)")
 
 
 class BlueskyResolver:
@@ -41,72 +43,56 @@ class BlueskyResolver:
         match = _URL_RE.match(url)
         assert match is not None  # caller guarantees match()
         handle, rkey = match.group(1), match.group(2)
-
-        # Step 1: Resolve handle to DID
-        profile_data = await fetch_json(
-            client,
-            f"{_XRPC_BASE}/com.atproto.identity.resolveHandle?handle={handle}",
-            site=self.site,
+        at_uri = f"at://{handle}/app.bsky.feed.post/{rkey}"
+        api_url = (
+            "https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread"
+            f"?uri={quote(at_uri, safe='')}&depth=0"
         )
-        did = profile_data.get("did")
-        if not did:
-            raise PostNotFoundError(f"Could not resolve Bluesky handle: {handle}")
+        try:
+            response = await client.get(api_url, headers={"User-Agent": BROWSER_USER_AGENT})
+        except httpx.HTTPError as exc:
+            raise UpstreamError(f"{self.site} request failed") from exc
+        if response.status_code != 200:
+            try:
+                error_name = response.json().get("error")
+            except ValueError:
+                error_name = None
+            if response.status_code == 404 or error_name == "NotFound":
+                raise PostNotFoundError("bluesky post not found")
+            raise UpstreamError(f"{self.site} returned HTTP {response.status_code}")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise UpstreamError(f"{self.site} returned invalid JSON") from exc
 
-        # Step 2: Fetch the post thread
-        at_uri = f"at://{did}/app.bsky.feed.post/{rkey}"
-        thread_data = await fetch_json(
-            client,
-            f"{_XRPC_BASE}/app.bsky.feed.getPostThread?uri={at_uri}&depth=0",
-            site=self.site,
-        )
+        thread = data.get("thread") or {}
+        post = thread.get("post")
+        if not post:
+            raise PostNotFoundError("bluesky post not found")
 
-        # Step 3: Extract post and author info
-        thread = thread_data.get("thread", {})
-        author = thread.get("author", {})
-        record = thread.get("record", {})
-        embed = record.get("embed", {})
+        embed = post.get("embed") or {}
+        image_views = embed.get("images") or []
+        if not image_views and isinstance(embed.get("media"), dict):
+            # record-with-media embeds (quote posts with attached photos)
+            # nest the images one level down.
+            image_views = embed["media"].get("images") or []
+        if not image_views:
+            raise PostNotFoundError("bluesky post has no images")
 
-        # Step 4: Extract images
-        images = self._extract_images(embed, author.get("did"))
-        if not images:
-            raise PostNotFoundError("Bluesky post has no images")
-
+        images = [
+            ResolvedImage(
+                full_url=view["fullsize"],
+                thumb_url=view.get("thumb"),
+                width=(view.get("aspectRatio") or {}).get("width"),
+                height=(view.get("aspectRatio") or {}).get("height"),
+            )
+            for view in image_views
+        ]
+        author = post.get("author") or {}
         return ResolvedPost(
             site=self.site,
-            canonical_url=url,
+            canonical_url=f"https://bsky.app/profile/{handle}/post/{rkey}",
             images=images,
-            title=record.get("text"),
-            artist_name=author.get("displayName"),
+            artist_name=author.get("displayName") or author.get("handle"),
             artist_id=author.get("handle"),
         )
-
-    def _extract_images(self, embed: dict[str, Any], author_did: str | None) -> list[ResolvedImage]:
-        """Extract ResolvedImage objects from an AT Protocol embed.images structure."""
-        if embed.get("type") != "app.bsky.embed.images":
-            return []
-
-        images_data = embed.get("images", [])
-        if not images_data:
-            return []
-
-        resolved = []
-        for img_data in images_data:
-            # The image blob is in img_data["image"]
-            image_blob = img_data.get("image", {})
-            cid = image_blob.get("cid")
-            if not cid or not author_did:
-                continue
-
-            # Bluesky CDN URLs for images
-            full_url = f"https://cdn.bsky.app/img/feed_fullsize/{author_did}/{cid}"
-            thumb_url = f"https://cdn.bsky.app/img/feed_thumbnail/{author_did}/{cid}"
-
-            resolved.append(
-                ResolvedImage(
-                    full_url=full_url,
-                    thumb_url=thumb_url,
-                    headers={},  # Bluesky CDN doesn't require special headers
-                )
-            )
-
-        return resolved

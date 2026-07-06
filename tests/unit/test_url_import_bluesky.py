@@ -1,7 +1,13 @@
-"""Tests for the Bluesky (AT Protocol) resolver.
+"""Tests for the bluesky resolver (public AT Protocol API).
 
-Fixtures mirror the live Bluesky API (xrpc endpoints) spike-verified 2026-07-06.
-The resolver fetches from public.api.bsky.app without authentication.
+Fixtures mirror the live public.api.bsky.app `getPostThread` response shape,
+spike-verified 2026-07-06 against a real post (see task-8-report.md for the
+raw commands/output). One material finding from that spike: AT Protocol
+reports "post not found" as an XRPC-level error -- HTTP 400 with a JSON body
+of `{"error": "NotFound", ...}` -- rather than a plain HTTP 404. That doesn't
+fit the shared `fetch_json` helper's 404-only "not found" mapping, so this
+resolver does its own request/response handling instead of delegating to it
+(the same pattern `og.py`'s `fetch_og_page` uses for its own reasons).
 """
 
 import httpx
@@ -11,171 +17,140 @@ from app.services.url_import.base import PostNotFoundError, UpstreamError
 from app.services.url_import.bluesky import BlueskyResolver
 from app.services.url_import.registry import get_resolver
 
-PROFILE_URL = "https://bsky.app/profile/artist.bsky.social/post/3kwjf2rlbih23"
+URL = "https://bsky.app/profile/artist.bsky.social/post/3kabc123xyz"
 
 
-def _post_record(handle="artist.bsky.social", did="did:plc:example123", image_count=1, **overrides):
-    """Fixture for a minimal valid post record from app.bsky.feed.post."""
-    images = [
-        {
-            "image": {
-                "mime": "image/png",
-                "size": 12345,
-                "cid": f"bafyreif{i:06d}",  # Synthetic CID for testing
-            },
-            "alt": f"Image description {i}",
-        }
-        for i in range(image_count)
-    ]
-    post = {
-        "uri": f"at://{did}/app.bsky.feed.post/3kwjf2rlbih23",
-        "cid": "bafyreiafakepost",
-        "author": {
-            "did": did,
-            "handle": handle,
-            "displayName": "Example Artist",
-            "avatar": "https://cdn.bsky.app/img/avatar/plain/abcd/efgh.jpeg",
-        },
-        "record": {
-            "text": "Check out my new artwork!",
-            "createdAt": "2024-07-06T12:34:56.000Z",
-            "embed": {
-                "type": "app.bsky.embed.images",
-                "images": images,
-            },
-        },
-        "indexedAt": "2024-07-06T12:35:00.000Z",
-    }
-    post.update(overrides)
-    return post
-
-
-def _getPostThread_response(post=None, **overrides):
-    """Fixture for a full getPostThread response with thread structure."""
-    if post is None:
-        post = _post_record()
-    response = {
+def _thread_body(images):
+    return {
         "thread": {
-            "uri": post["uri"],
-            "cid": post["cid"],
-            "author": post["author"],
-            "record": post["record"],
-            "indexedAt": post["indexedAt"],
-            "viewer": {"muted": False, "blocked": False},
+            "$type": "app.bsky.feed.defs#threadViewPost",
+            "post": {
+                "uri": "at://did:plc:xyz/app.bsky.feed.post/3kabc123xyz",
+                "author": {"handle": "artist.bsky.social", "displayName": "The Artist"},
+                "embed": {
+                    "$type": "app.bsky.embed.images#view",
+                    "images": images,
+                },
+            },
         }
     }
-    response.update(overrides)
-    return response
 
 
-def _client(thread_response=None, status=200, not_found=False):
-    """Create a mock httpx.AsyncClient with Bluesky API responses.
-
-    Handles both resolveHandle and getPostThread endpoints.
-    """
-
+def _client(json_body, status=200):
     def handler(request):
-        # All Bluesky XRPC calls go through public.api.bsky.app
         assert request.url.host == "public.api.bsky.app"
-
-        if not_found:
-            return httpx.Response(404)
-
-        if status != 200:
-            return httpx.Response(status, json={"error": "some_error"})
-
-        # Route to appropriate endpoint
-        path = request.url.path
-        if "resolveHandle" in str(request.url):
-            # Return the DID for the handle
-            return httpx.Response(200, json={"did": "did:plc:example123"})
-
-        if "getPostThread" in str(request.url):
-            # Return the post thread
-            return httpx.Response(200, json=thread_response or _getPostThread_response())
-
-        return httpx.Response(404)
+        assert "app.bsky.feed.getPostThread" in request.url.path
+        return httpx.Response(status, json=json_body)
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
 class TestMatch:
-    def test_matches_bsky_app_profile_post_urls(self):
+    def test_matches_post_urls(self):
         resolver = BlueskyResolver()
-        assert resolver.match("https://bsky.app/profile/artist.bsky.social/post/3kwjf2rlbih23")
-        assert resolver.match("http://bsky.app/profile/someone/post/abc123xyz")
-        assert resolver.match("https://bsky.app/profile/handle.bsky.social/post/3kwjf2rlbih23")
-
-    def test_rejects_other_bsky_urls(self):
-        resolver = BlueskyResolver()
+        assert resolver.match(URL)
         assert not resolver.match("https://bsky.app/profile/artist.bsky.social")
-        assert not resolver.match("https://bsky.app/feed/timeline")
-        assert not resolver.match("https://example.com/profile/someone/post/abc123")
-
-    def test_registered(self):
-        assert isinstance(get_resolver(PROFILE_URL), BlueskyResolver)
+        assert isinstance(get_resolver(URL), BlueskyResolver)
 
 
 class TestResolve:
-    async def test_single_image_extraction(self):
-        post = _post_record(image_count=1)
-        async with _client(_getPostThread_response(post=post)) as client:
-            result = await BlueskyResolver().resolve(PROFILE_URL, client)
+    async def test_resolves_image_embeds(self):
+        images = [
+            {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:xyz/abc@jpeg",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@jpeg",
+                "aspectRatio": {"width": 1600, "height": 1200},
+            }
+        ]
+        async with _client(_thread_body(images)) as client:
+            post = await BlueskyResolver().resolve(URL, client)
+        assert post.images[0].full_url.endswith("feed_fullsize/plain/did:plc:xyz/abc@jpeg")
+        assert post.images[0].width == 1600
+        assert post.images[0].height == 1200
+        assert post.artist_name == "The Artist"
+        assert post.artist_id == "artist.bsky.social"
+        assert post.canonical_url == URL
 
-        assert result.site == "bluesky"
-        assert result.canonical_url == PROFILE_URL
-        assert result.artist_name == "Example Artist"
-        assert result.artist_id == "artist.bsky.social"
-        assert len(result.images) == 1
-        assert "cdn.bsky.app" in result.images[0].full_url
-        assert "feed_fullsize" in result.images[0].full_url
-        assert "feed_thumbnail" in result.images[0].thumb_url
+    async def test_record_with_media_embed_fallback(self):
+        # Quote-posts with attached media nest images under embed.media
+        # (app.bsky.embed.recordWithMedia#view) rather than embed.images.
+        images = [
+            {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:xyz/def@jpeg",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/def@jpeg",
+                "aspectRatio": {"width": 800, "height": 600},
+            }
+        ]
+        body = _thread_body([])
+        body["thread"]["post"]["embed"] = {
+            "$type": "app.bsky.embed.recordWithMedia#view",
+            "media": {"$type": "app.bsky.embed.images#view", "images": images},
+            "record": {"record": {"$type": "app.bsky.embed.record#viewRecord"}},
+        }
+        async with _client(body) as client:
+            post = await BlueskyResolver().resolve(URL, client)
+        assert len(post.images) == 1
+        assert post.images[0].full_url.endswith("feed_fullsize/plain/did:plc:xyz/def@jpeg")
 
-    async def test_multi_image_extraction(self):
-        post = _post_record(image_count=3)
-        async with _client(_getPostThread_response(post=post)) as client:
-            result = await BlueskyResolver().resolve(PROFILE_URL, client)
-
-        assert len(result.images) == 3
-        assert all("cdn.bsky.app" in img.full_url for img in result.images)
-        # Verify all images have proper CDN structure
-        for img in result.images:
-            assert "feed_fullsize" in img.full_url
-            assert "feed_thumbnail" in img.thumb_url
-
-    async def test_post_not_found(self):
-        async with _client(not_found=True) as client:
-            with pytest.raises(PostNotFoundError):
-                await BlueskyResolver().resolve(PROFILE_URL, client)
-
-    async def test_upstream_error_on_http_error(self):
-        async with _client(status=500) as client:
-            with pytest.raises(UpstreamError):
-                await BlueskyResolver().resolve(PROFILE_URL, client)
+    async def test_artist_name_falls_back_to_handle(self):
+        images = [
+            {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:xyz/abc@jpeg",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@jpeg",
+            }
+        ]
+        body = _thread_body(images)
+        body["thread"]["post"]["author"] = {"handle": "artist.bsky.social"}
+        async with _client(body) as client:
+            post = await BlueskyResolver().resolve(URL, client)
+        assert post.artist_name == "artist.bsky.social"
 
     async def test_no_images_raises_not_found(self):
-        # Post with no embed or empty images array
-        post = _post_record(image_count=0)
-        post["record"]["embed"] = {"type": "app.bsky.embed.images", "images": []}
-        async with _client(_getPostThread_response(post=post)) as client:
+        body = _thread_body([])
+        body["thread"]["post"]["embed"] = None
+        async with _client(body) as client:
             with pytest.raises(PostNotFoundError):
-                await BlueskyResolver().resolve(PROFILE_URL, client)
+                await BlueskyResolver().resolve(URL, client)
 
-    async def test_post_without_images_embed_raises_not_found(self):
-        # Post with text-only embed (no images)
-        post = _post_record()
-        post["record"]["embed"] = {"type": "app.bsky.embed.text"}  # No images
-        async with _client(_getPostThread_response(post=post)) as client:
+    async def test_not_found_thread(self):
+        # Lexicon-documented union member for a post referenced within a
+        # thread that no longer exists. Not reproducible live for a root
+        # lookup (see test_not_found_via_xrpc_error below for what the real
+        # API actually returns in that case) but kept as defensive coverage
+        # since it's a valid `thread` shape per the app.bsky.feed.defs lexicon.
+        body = {"thread": {"$type": "app.bsky.feed.defs#notFoundPost", "notFound": True}}
+        async with _client(body) as client:
             with pytest.raises(PostNotFoundError):
-                await BlueskyResolver().resolve(PROFILE_URL, client)
+                await BlueskyResolver().resolve(URL, client)
 
-    async def test_missing_author_fields(self):
-        # Handle graceful degradation when author fields are missing
-        post = _post_record()
-        post["author"]["displayName"] = None  # Missing artist_name
-        async with _client(_getPostThread_response(post=post)) as client:
-            result = await BlueskyResolver().resolve(PROFILE_URL, client)
+    async def test_not_found_via_xrpc_error(self):
+        # Real, spike-verified behavior: a genuinely nonexistent/deleted post
+        # returns HTTP 400 with {"error": "NotFound", ...}, not a plain 404.
+        body = {
+            "error": "NotFound",
+            "message": "Post not found: at://did:plc:xyz/app.bsky.feed.post/3kabc123xyz",
+        }
+        async with _client(body, status=400) as client:
+            with pytest.raises(PostNotFoundError):
+                await BlueskyResolver().resolve(URL, client)
 
-        assert result.artist_id == "artist.bsky.social"
-        assert result.artist_name is None  # Gracefully None
-        assert len(result.images) == 1
+    async def test_other_xrpc_errors_raise_upstream_error(self):
+        # A different XRPC error name (e.g. malformed at-uri) must not be
+        # mistaken for "not found".
+        body = {"error": "InvalidRequest", "message": "Invalid at-uri"}
+        async with _client(body, status=400) as client:
+            with pytest.raises(UpstreamError):
+                await BlueskyResolver().resolve(URL, client)
+
+    async def test_server_error_raises_upstream_error(self):
+        async with _client({}, status=500) as client:
+            with pytest.raises(UpstreamError):
+                await BlueskyResolver().resolve(URL, client)
+
+    async def test_network_error_raises_upstream_error(self):
+        def handler(request):
+            raise httpx.ConnectError("boom")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(UpstreamError):
+                await BlueskyResolver().resolve(URL, client)
