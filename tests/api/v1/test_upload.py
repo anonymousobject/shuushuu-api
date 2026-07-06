@@ -252,6 +252,31 @@ class TestUploadIQDBDuplicateDetection:
 
         assert response.status_code == 422, response.text
 
+    @pytest.mark.asyncio
+    async def test_upload_whitespace_source_url_normalizes_to_none(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Upload with whitespace-only source_url normalizes it to None."""
+        with (
+            _mock_save_uploaded_image("abc123unique6"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "source_url": "   "},
+            )
+
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["image"]["source_url"] is None
+
 
 class TestUploadMD5DuplicateDetection:
     """Tests for exact-duplicate (MD5) detection during upload."""
