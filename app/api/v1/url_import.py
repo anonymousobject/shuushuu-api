@@ -56,7 +56,6 @@ def _transcode_webp_to_png(data: bytes) -> bytes:
     """
     try:
         image: PILImage.Image = PILImage.open(io.BytesIO(data))
-        image.load()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -67,6 +66,13 @@ def _transcode_webp_to_png(data: bytes) -> bytes:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Animated webp images cannot be imported — save and upload manually",
         )
+    try:
+        image.load()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Upstream returned an unreadable image",
+        ) from exc
     has_alpha = "A" in image.getbands() or (
         image.mode == "P" and image.info.get("transparency") is not None
     )

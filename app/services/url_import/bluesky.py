@@ -41,10 +41,12 @@ def _with_png_suffix(fullsize_url: str) -> str:
     jpg/png/gif. Appending "@png" asks the CDN for a sibling encode from
     the same master (live-verified: bare URL -> image/webp 19KB; @png ->
     image/png 265KB), which is not a transcode and loses no fidelity. If a
-    suffix is already present (e.g. "@jpeg"), leave it alone.
+    suffix is already present (e.g. "@jpeg"), leave it alone. A URL ending
+    in "/" (empty last segment) is left unchanged too -- defensive only,
+    since real bluesky fullsize URLs are always CID-terminated.
     """
     last_segment = fullsize_url.rsplit("/", 1)[-1]
-    if "@" in last_segment:
+    if not last_segment or "@" in last_segment:
         return fullsize_url
     return f"{fullsize_url}@png"
 

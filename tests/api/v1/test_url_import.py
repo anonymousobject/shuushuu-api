@@ -361,6 +361,30 @@ class TestFetchExternal:
             )
         assert response.status_code == 413
 
+    async def test_webp_decode_failure_502(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from app.services.url_import.tokens import mint_token
+
+        # Passes the RIFF/WEBP magic sniff (and the content-type header)
+        # so the proxy routes it into the transcode branch, but the payload
+        # isn't a real webp bitstream -- PIL can't decode it.
+        garbage = b"RIFFxxxxWEBPnot-a-real-webp"
+
+        def handler(request):
+            return httpx.Response(
+                200, content=garbage, headers={"content-type": "image/webp"}
+            )
+
+        token = mint_token("https://example.test/garbage.webp")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 502
+        assert "unreadable" in response.json()["detail"]
+
     async def test_upstream_500_becomes_502(self, resolve_client):
         import httpx
         from unittest.mock import patch

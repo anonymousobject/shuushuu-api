@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from app.services.url_import.base import PostNotFoundError, UpstreamError
-from app.services.url_import.bluesky import BlueskyResolver
+from app.services.url_import.bluesky import BlueskyResolver, _with_png_suffix
 from app.services.url_import.registry import get_resolver
 
 URL = "https://bsky.app/profile/artist.bsky.social/post/3kabc123xyz"
@@ -125,6 +125,10 @@ class TestResolve:
         assert post.images[0].full_url == (
             "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@jpeg"
         )
+
+    def test_with_png_suffix_trailing_slash_left_unchanged(self):
+        url = "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/"
+        assert _with_png_suffix(url) == url
 
     async def test_artist_name_falls_back_to_handle(self):
         images = [
