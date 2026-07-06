@@ -294,6 +294,8 @@ class _FeedFilters:
     image_status: list[int] | None = None
     user_id: int | None = None
     favorited_by_user_id: int | None = None
+    exclude_user_id: str | None = None
+    exclude_favorited_by_user_id: str | None = None
     tags: str | None = None
     exclude_tags: str | None = None
     missing_tag_types: str | None = None
@@ -308,8 +310,27 @@ class _FeedFilters:
     min_num_ratings: int | None = None
     commenter: int | None = None
     commentsearch: str | None = None
+    exclude_commenter: str | None = None
     hascomments: bool | None = None
     reported: bool | None = None
+
+
+def _parse_user_id_list(raw: str | None, param: str) -> list[int]:
+    """Parse a comma-separated user-id list param (``exclude_user_id`` etc.).
+
+    isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
+    Capped at MAX_SEARCH_USERS to bound the NOT IN list, mirroring the tags cap.
+    """
+    if not raw:
+        return []
+    ids = [int(tok.strip()) for tok in raw.split(",") if tok.strip().isdecimal()]
+    if len(ids) > settings.MAX_SEARCH_USERS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You can only exclude up to {settings.MAX_SEARCH_USERS} users at a time"
+            f" ({param}).",
+        )
+    return ids
 
 
 async def _default_feed_total(
@@ -375,6 +396,14 @@ async def list_images(
     favorited_by_user_id: Annotated[
         int | None, Query(description="Filter by user who favorited the image")
     ] = None,
+    exclude_user_id: Annotated[
+        str | None,
+        Query(description="Comma-separated user IDs whose uploads to exclude (e.g., '5,6')"),
+    ] = None,
+    exclude_favorited_by_user_id: Annotated[
+        str | None,
+        Query(description="Comma-separated user IDs; exclude images any of them favorited"),
+    ] = None,
     image_status: Annotated[
         list[int] | None,
         Query(
@@ -439,6 +468,10 @@ async def list_images(
     commenter: Annotated[
         int | None, Query(description="Filter by user who commented on the image")
     ] = None,
+    exclude_commenter: Annotated[
+        str | None,
+        Query(description="Comma-separated user IDs; exclude images any of them commented on"),
+    ] = None,
     commentsearch: Annotated[
         str | None, Query(description="Full-text search in comment text")
     ] = None,
@@ -498,6 +531,9 @@ async def list_images(
     - `/images?commentsearch=+great -bad&commentsearch_mode=boolean` - Boolean fulltext
     - `/images?hascomments=true` - Images that have comments
     - `/images?hascomments=false` - Images with no comments
+    - `/images?exclude_user_id=5,6` - Hide uploads by users 5 and 6
+    - `/images?exclude_commenter=10` - Hide images user 10 commented on
+    - `/images?exclude_favorited_by_user_id=7` - Hide images user 7 favorited
     """
     # Build base query
     query = select(Images)
@@ -505,9 +541,23 @@ async def list_images(
     # Apply basic filters
     if user_id is not None:
         query = query.where(Images.user_id == user_id)  # type: ignore[arg-type]
+    exclude_user_ids = _parse_user_id_list(exclude_user_id, "exclude_user_id")
+    if exclude_user_ids:
+        query = query.where(Images.user_id.notin_(exclude_user_ids))  # type: ignore[attr-defined]
     if favorited_by_user_id is not None:
         # Join with Favorites table to filter by user who favorited
         query = query.join(Favorites).where(Favorites.user_id == favorited_by_user_id)  # type: ignore[arg-type]
+    exclude_favorited_ids = _parse_user_id_list(
+        exclude_favorited_by_user_id, "exclude_favorited_by_user_id"
+    )
+    if exclude_favorited_ids:
+        query = query.where(
+            Images.image_id.notin_(  # type: ignore[union-attr]
+                select(Favorites.image_id).where(  # type: ignore[call-overload]
+                    Favorites.user_id.in_(exclude_favorited_ids)  # type: ignore[attr-defined]
+                )
+            )
+        )
     # Status filtering: explicit param overrides, otherwise use user's show_all_images setting
     if image_status is not None:
         # Explicit status filter - always honor it (supports single or multiple values)
@@ -722,6 +772,21 @@ async def list_images(
         # Filter to images WITHOUT comments using posts counter
         query = query.where(Images.posts == 0)  # type: ignore[arg-type]
 
+    # Exclude commenter filter: anti-join to exclude images commented on by specified users.
+    # The legacy posts table's image_id is nullable, so the subquery must exclude NULL
+    # rows explicitly — SQL's NOT IN returns UNKNOWN (not TRUE) for every row when the
+    # subquery yields a NULL, which would silently empty the whole search.
+    exclude_commenter_ids = _parse_user_id_list(exclude_commenter, "exclude_commenter")
+    if exclude_commenter_ids:
+        query = query.where(
+            Images.image_id.notin_(  # type: ignore[union-attr]
+                select(Comments.image_id).where(  # type: ignore[call-overload]
+                    Comments.user_id.in_(exclude_commenter_ids),  # type: ignore[attr-defined]
+                    Comments.image_id.is_not(None),  # type: ignore[union-attr]
+                )
+            )
+        )
+
     # Reported filtering: restrict to images that have a PENDING report. Mods only
     # (REPORT_VIEW) so it never leaks the triage queue — silently a no-op for everyone else.
     apply_reported = (
@@ -749,6 +814,8 @@ async def list_images(
         image_status=image_status,
         user_id=user_id,
         favorited_by_user_id=favorited_by_user_id,
+        exclude_user_id=exclude_user_id or None,
+        exclude_favorited_by_user_id=exclude_favorited_by_user_id or None,
         tags=tags or None,
         exclude_tags=exclude_tags or None,
         missing_tag_types=missing_tag_types or None,
@@ -763,6 +830,7 @@ async def list_images(
         min_num_ratings=min_num_ratings,
         commenter=commenter,
         commentsearch=commentsearch,
+        exclude_commenter=exclude_commenter or None,
         hascomments=hascomments,
         reported=apply_reported or None,
     )
@@ -773,7 +841,16 @@ async def list_images(
     if is_bare_default_feed:
         total = await _default_feed_total(db, current_user, redis_client)
     else:
-        count_query = select(func.count()).select_from(query.subquery())
+        # When comment filters JOIN Comments, one image can match multiple
+        # comment rows — count distinct images to match the page subquery's
+        # distinct() below, or the pagination total is inflated.
+        if commenter is not None or commentsearch is not None:
+            distinct_ids = query.with_only_columns(
+                Images.image_id.label("image_id")  # type: ignore[union-attr]
+            ).distinct()
+            count_query = select(func.count()).select_from(distinct_ids.subquery())
+        else:
+            count_query = select(func.count()).select_from(query.subquery())
         total = (await db.execute(count_query)).scalar() or 0
 
     # Performance optimization: Two-stage query for fast filtering and sorting
