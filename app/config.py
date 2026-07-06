@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     )
     REGISTRATION_RATE_WINDOW_HOURS: int = Field(default=1, description="Rate limit window in hours")
 
+    # URL Import (see docs/plans/2026-07-06-url-import-design.md)
+    URL_RESOLVE_RATE_PER_MINUTE: int = 5
+    URL_RESOLVE_GLOBAL_RATE_PER_MINUTE: int = 60
+    EXTERNAL_FETCH_RATE_PER_MINUTE: int = 40
+
     # Pagination
     DEFAULT_PAGE_SIZE: int = 15
     MAX_PAGE_SIZE: int = 100
