@@ -533,6 +533,7 @@ async def list_images(
     - `/images?hascomments=false` - Images with no comments
     - `/images?exclude_user_id=5,6` - Hide uploads by users 5 and 6
     - `/images?exclude_commenter=10` - Hide images user 10 commented on
+    - `/images?exclude_favorited_by_user_id=7` - Hide images user 7 favorited
     """
     # Build base query
     query = select(Images)
@@ -771,13 +772,17 @@ async def list_images(
         # Filter to images WITHOUT comments using posts counter
         query = query.where(Images.posts == 0)  # type: ignore[arg-type]
 
-    # Exclude commenter filter: anti-join to exclude images commented on by specified users
+    # Exclude commenter filter: anti-join to exclude images commented on by specified users.
+    # The legacy posts table's image_id is nullable, so the subquery must exclude NULL
+    # rows explicitly — SQL's NOT IN returns UNKNOWN (not TRUE) for every row when the
+    # subquery yields a NULL, which would silently empty the whole search.
     exclude_commenter_ids = _parse_user_id_list(exclude_commenter, "exclude_commenter")
     if exclude_commenter_ids:
         query = query.where(
             Images.image_id.notin_(  # type: ignore[union-attr]
                 select(Comments.image_id).where(  # type: ignore[call-overload]
-                    Comments.user_id.in_(exclude_commenter_ids)  # type: ignore[attr-defined]
+                    Comments.user_id.in_(exclude_commenter_ids),  # type: ignore[attr-defined]
+                    Comments.image_id.is_not(None),  # type: ignore[union-attr]
                 )
             )
         )

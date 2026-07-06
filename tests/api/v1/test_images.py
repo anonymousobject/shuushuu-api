@@ -4525,6 +4525,37 @@ class TestExcludeCommenter:
         assert response.status_code == 400
         assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]
 
+    async def test_exclude_commenter_ignores_null_image_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A NULL-image_id comment row must not poison the NOT IN subquery.
+
+        SQL's NOT IN returns UNKNOWN for every row if the subquery yields a
+        NULL, silently emptying the whole search.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="nullcommenter",
+            email="nullc@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000301",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "filename": "null-safe", "md5_hash": "n" * 32})
+        db_session.add(image)
+        await db_session.flush()
+
+        db_session.add(Comments(image_id=None, user_id=user.id, post_text="orphaned"))
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?exclude_commenter={user.id}")
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+
 
 @pytest.mark.api
 class TestExcludeUserId:
