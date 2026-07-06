@@ -4,9 +4,11 @@ from app.services.url_import.base import Resolver
 from app.services.url_import.bluesky import BlueskyResolver
 from app.services.url_import.danbooru import DanbooruResolver
 from app.services.url_import.gelbooru import GelbooruResolver
+from app.services.url_import.kofi import KofiResolver
 from app.services.url_import.moebooru import MoebooruResolver
 from app.services.url_import.pixiv import PixivResolver
 from app.services.url_import.twitter import TwitterResolver
+from app.services.url_import.zerochan import ZerochanResolver
 
 _RESOLVERS: list[Resolver] = [
     PixivResolver(),
@@ -15,6 +17,8 @@ _RESOLVERS: list[Resolver] = [
     MoebooruResolver(),
     TwitterResolver(),
     BlueskyResolver(),
+    ZerochanResolver(),
+    KofiResolver(),
 ]
 
 
