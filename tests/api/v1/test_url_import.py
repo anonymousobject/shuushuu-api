@@ -81,3 +81,116 @@ class TestResolveUrl:
         token = response.json()["images"][0]["token"]
         ref = verify_token(token)
         assert "/api/v1/images/url-import-fixture/" in ref.url
+
+
+class TestFetchExternal:
+    def _factory(self, handler):
+        import httpx
+
+        def make(timeout):
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
+
+        return make
+
+    async def test_requires_auth(self, client):
+        response = await client.get("/api/v1/images/fetch-external", params={"token": "x"})
+        assert response.status_code == 401
+
+    async def test_invalid_token_403(self, resolve_client):
+        response = await resolve_client.get(
+            "/api/v1/images/fetch-external", params={"token": "not-a-token"}
+        )
+        assert response.status_code == 403
+
+    async def test_streams_image_with_baked_headers(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from app.services.url_import.tokens import mint_token
+
+        seen = {}
+
+        def handler(request):
+            seen["referer"] = request.headers.get("referer")
+            return httpx.Response(
+                200, content=b"\x89PNG-fake-bytes", headers={"content-type": "image/png"}
+            )
+
+        token = mint_token(
+            "https://i.pximg.net/img-original/img/x_p0.png",
+            {"Referer": "https://www.pixiv.net/"},
+        )
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content == b"\x89PNG-fake-bytes"
+        assert seen["referer"] == "https://www.pixiv.net/"
+
+    async def test_non_image_content_type_502(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from app.services.url_import.tokens import mint_token
+
+        def handler(request):
+            return httpx.Response(200, text="<html>", headers={"content-type": "text/html"})
+
+        token = mint_token("https://example.test/a.png")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 502
+
+    async def test_oversize_content_length_413(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from app.config import settings
+        from app.services.url_import.tokens import mint_token
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                content=b"x",
+                headers={
+                    "content-type": "image/png",
+                    "content-length": str(settings.MAX_IMAGE_SIZE + 1),
+                },
+            )
+
+        token = mint_token("https://example.test/big.png")
+        with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 413
+
+    async def test_upstream_500_becomes_502(self, resolve_client):
+        import httpx
+        from unittest.mock import patch
+
+        from app.services.url_import.tokens import mint_token
+
+        token = mint_token("https://example.test/gone.png")
+        with patch(
+            "app.api.v1.url_import._make_http_client",
+            self._factory(lambda r: httpx.Response(500)),
+        ):
+            response = await resolve_client.get(
+                "/api/v1/images/fetch-external", params={"token": token}
+            )
+        assert response.status_code == 502
+
+
+class TestFixtureImageEndpoint:
+    async def test_serves_unique_pngs(self, client):
+        first = await client.get("/api/v1/images/url-import-fixture/single-0.png")
+        second = await client.get("/api/v1/images/url-import-fixture/single-0.png")
+        assert first.status_code == 200
+        assert first.headers["content-type"] == "image/png"
+        assert first.content[:8] == b"\x89PNG\r\n\x1a\n"
+        assert first.content != second.content  # unique MD5 per request
