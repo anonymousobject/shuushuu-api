@@ -21,6 +21,11 @@ from app.services.url_import.base import (
 _URL_RE = re.compile(r"^https?://(?:www\.)?(?:twitter\.com|x\.com)/([A-Za-z0-9_]+)/status/(\d+)")
 
 
+def _is_twimg_host(photo_url: str) -> bool:
+    host = httpx.URL(photo_url).host or ""
+    return host == "pbs.twimg.com" or host.endswith(".twimg.com")
+
+
 def _variant(photo_url: str, name: str) -> str:
     # fxtwitter's photos[].url already carries its own ?name=... variant
     # (confirmed live 2026-07-06); replace it instead of appending, or
@@ -56,6 +61,8 @@ class TwitterResolver:
         photos = (tweet.get("media") or {}).get("photos") or []
         if not photos:
             raise PostNotFoundError("tweet has no photos")
+        if any(not _is_twimg_host(photo["url"]) for photo in photos):
+            raise UpstreamError("fxtwitter returned an unexpected image host")
         images = [
             ResolvedImage(
                 full_url=_variant(photo["url"], "orig"),

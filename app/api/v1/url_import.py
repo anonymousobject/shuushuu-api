@@ -34,7 +34,7 @@ FETCH_TIMEOUT_SECONDS = 30.0
 
 def _make_http_client(timeout: float) -> httpx.AsyncClient:
     """Factory indirection so tests can substitute a MockTransport client."""
-    return httpx.AsyncClient(timeout=timeout)
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=False)
 
 
 @router.post("/resolve-url", response_model=UrlResolveResponse)

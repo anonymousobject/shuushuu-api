@@ -121,3 +121,18 @@ class TestResolve:
         async with _client({"code": 500, "message": "API_FAIL"}) as client:
             with pytest.raises(UpstreamError):
                 await TwitterResolver().resolve(URL, client)
+
+    async def test_off_host_photo_url_rejects_whole_post(self):
+        photos = [{"url": "https://evil.example/a.jpg", "width": 1200, "height": 900}]
+        async with _client(_tweet_body(photos)) as client:
+            with pytest.raises(UpstreamError):
+                await TwitterResolver().resolve(URL, client)
+
+    async def test_one_off_host_photo_rejects_whole_post_even_if_others_are_pinned(self):
+        photos = [
+            {"url": "https://pbs.twimg.com/media/AAA.jpg", "width": 1200, "height": 900},
+            {"url": "https://evil.example/b.jpg", "width": 800, "height": 600},
+        ]
+        async with _client(_tweet_body(photos)) as client:
+            with pytest.raises(UpstreamError):
+                await TwitterResolver().resolve(URL, client)

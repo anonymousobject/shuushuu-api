@@ -1,9 +1,15 @@
-"""Gelbooru resolver (dapi JSON API)."""
+"""Gelbooru resolver (dapi JSON API).
+
+Gelbooru's dapi returns HTTP 401 without an api_key/user_id pair, so the
+registry (registry.py) only advertises this resolver when both are configured
+(app.config.settings.GELBOORU_API_KEY / GELBOORU_USER_ID).
+"""
 
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from app.config import settings
 from app.services.url_import.base import (
     PostNotFoundError,
     ResolvedImage,
@@ -32,11 +38,10 @@ class GelbooruResolver:
     async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:
         post_id = self._post_id(url)
         assert post_id is not None
-        data = await fetch_json(
-            client,
-            f"https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&id={post_id}",
-            site=self.site,
-        )
+        dapi_url = f"https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&id={post_id}"
+        if settings.GELBOORU_API_KEY and settings.GELBOORU_USER_ID:
+            dapi_url += f"&api_key={settings.GELBOORU_API_KEY}&user_id={settings.GELBOORU_USER_ID}"
+        data = await fetch_json(client, dapi_url, site=self.site)
         posts = data.get("post") or []
         if not posts:
             raise PostNotFoundError("gelbooru post not found")

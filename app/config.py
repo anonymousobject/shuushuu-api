@@ -144,6 +144,8 @@ class Settings(BaseSettings):
     URL_RESOLVE_GLOBAL_RATE_PER_MINUTE: int = 60
     EXTERNAL_FETCH_RATE_PER_MINUTE: int = 40
     URL_IMPORT_FIXTURE_BASE_URL: str = "http://localhost:8000"
+    GELBOORU_API_KEY: str = ""
+    GELBOORU_USER_ID: str = ""
 
     # Pagination
     DEFAULT_PAGE_SIZE: int = 15

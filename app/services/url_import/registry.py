@@ -14,7 +14,14 @@ from app.services.url_import.zerochan import ZerochanResolver
 _RESOLVERS: list[Resolver] = [
     PixivResolver(),
     DanbooruResolver(),
-    GelbooruResolver(),
+]
+
+if settings.GELBOORU_API_KEY and settings.GELBOORU_USER_ID:
+    # Gelbooru's dapi returns 401 without credentials; don't advertise a
+    # resolver that would always fail (see gelbooru.py module docstring).
+    _RESOLVERS.append(GelbooruResolver())
+
+_RESOLVERS += [
     MoebooruResolver(),
     TwitterResolver(),
     BlueskyResolver(),

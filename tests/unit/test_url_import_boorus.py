@@ -3,6 +3,7 @@
 import httpx
 import pytest
 
+from app.config import settings
 from app.services.url_import.base import PostNotFoundError, RestrictedContentError
 from app.services.url_import.danbooru import DanbooruResolver
 from app.services.url_import.gelbooru import GelbooruResolver
@@ -72,7 +73,11 @@ class TestGelbooru:
         resolver = GelbooruResolver()
         assert resolver.match(self.URL)
         assert not resolver.match("https://gelbooru.com/index.php?page=post&s=list&tags=x")
-        assert isinstance(get_resolver(self.URL), GelbooruResolver)
+
+    def test_not_registered_when_api_key_unconfigured(self):
+        # Default test env has no GELBOORU_API_KEY/USER_ID configured, so the
+        # resolver must not be advertised (dapi 401s without credentials).
+        assert get_resolver(self.URL) is None
 
     async def test_resolve(self):
         async with _client(self.BODY) as client:
@@ -84,6 +89,32 @@ class TestGelbooru:
         async with _client({"post": []}) as client:
             with pytest.raises(PostNotFoundError):
                 await GelbooruResolver().resolve(self.URL, client)
+
+    async def test_resolve_appends_credentials_when_configured(self, monkeypatch):
+        monkeypatch.setattr(settings, "GELBOORU_API_KEY", "abc123")
+        monkeypatch.setattr(settings, "GELBOORU_USER_ID", "42")
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json=self.BODY)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await GelbooruResolver().resolve(self.URL, client)
+        assert "api_key=abc123" in seen["url"]
+        assert "user_id=42" in seen["url"]
+
+    async def test_resolve_omits_credentials_when_unconfigured(self):
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json=self.BODY)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await GelbooruResolver().resolve(self.URL, client)
+        assert "api_key" not in seen["url"]
+        assert "user_id" not in seen["url"]
 
 
 class TestMoebooru:
