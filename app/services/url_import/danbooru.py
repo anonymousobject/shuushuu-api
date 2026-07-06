@@ -4,6 +4,7 @@ import re
 
 import httpx
 
+from app.config import settings
 from app.services.url_import.base import (
     ResolvedImage,
     ResolvedPost,
@@ -26,7 +27,10 @@ class DanbooruResolver:
         assert match is not None
         post_id = match.group(1)
         post_url = f"https://danbooru.donmai.us/posts/{post_id}"
-        data = await fetch_json(client, f"{post_url}.json", site=self.site)
+        json_url = f"{post_url}.json"
+        if settings.DANBOORU_LOGIN and settings.DANBOORU_API_KEY:
+            json_url += f"?login={settings.DANBOORU_LOGIN}&api_key={settings.DANBOORU_API_KEY}"
+        data = await fetch_json(client, json_url, site=self.site)
         file_url = data.get("file_url")
         if not file_url:
             raise RestrictedContentError("danbooru post has no publicly accessible file")

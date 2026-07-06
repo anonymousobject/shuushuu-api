@@ -54,6 +54,34 @@ class TestDanbooru:
             with pytest.raises(RestrictedContentError):
                 await DanbooruResolver().resolve(self.URL, client)
 
+    async def test_resolve_appends_credentials_when_configured(self, monkeypatch):
+        monkeypatch.setattr(settings, "DANBOORU_LOGIN", "fakeuser")
+        monkeypatch.setattr(settings, "DANBOORU_API_KEY", "fakekey123")
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json=self.POST)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await DanbooruResolver().resolve(self.URL, client)
+        assert "login=fakeuser" in seen["url"]
+        assert "api_key=fakekey123" in seen["url"]
+
+    async def test_resolve_omits_credentials_when_unconfigured(self, monkeypatch):
+        monkeypatch.setattr(settings, "DANBOORU_LOGIN", "")
+        monkeypatch.setattr(settings, "DANBOORU_API_KEY", "")
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json=self.POST)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await DanbooruResolver().resolve(self.URL, client)
+        assert "login" not in seen["url"]
+        assert "api_key" not in seen["url"]
+
 
 class TestGelbooru:
     URL = "https://gelbooru.com/index.php?page=post&s=view&id=987"
@@ -104,7 +132,9 @@ class TestGelbooru:
         assert "api_key=abc123" in seen["url"]
         assert "user_id=42" in seen["url"]
 
-    async def test_resolve_omits_credentials_when_unconfigured(self):
+    async def test_resolve_omits_credentials_when_unconfigured(self, monkeypatch):
+        monkeypatch.setattr(settings, "GELBOORU_API_KEY", "")
+        monkeypatch.setattr(settings, "GELBOORU_USER_ID", "")
         seen = {}
 
         def handler(request):

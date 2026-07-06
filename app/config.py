@@ -146,6 +146,8 @@ class Settings(BaseSettings):
     URL_IMPORT_FIXTURE_BASE_URL: str = "http://localhost:8000"
     GELBOORU_API_KEY: str = ""
     GELBOORU_USER_ID: str = ""
+    DANBOORU_LOGIN: str = ""
+    DANBOORU_API_KEY: str = ""
 
     # Pagination
     DEFAULT_PAGE_SIZE: int = 15
