@@ -276,3 +276,22 @@ class TestUploadClientIPHandling:
             )
 
         assert response.status_code == 201, response.text
+
+
+@pytest.mark.asyncio
+async def test_images_source_url_roundtrip(db_session: AsyncSession):
+    """source_url column persists and reads back."""
+    from app.models.image import Images
+
+    image = Images(
+        filename="source-url-roundtrip.jpg",
+        ext="jpg",
+        md5_hash="d41d8cd98f00b204e9800998ecf8427e",
+        filesize=123,
+        user_id=1,
+        source_url="https://www.pixiv.net/artworks/138823691",
+    )
+    db_session.add(image)
+    await db_session.commit()
+    await db_session.refresh(image)
+    assert image.source_url == "https://www.pixiv.net/artworks/138823691"
