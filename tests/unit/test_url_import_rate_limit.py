@@ -10,8 +10,9 @@ from app.services.rate_limit import (
 
 
 class FakePipeline:
-    def __init__(self, store):
+    def __init__(self, store, ttls):
         self.store = store
+        self.ttls = ttls
         self.ops = []
 
     def incr(self, key):
@@ -24,19 +25,22 @@ class FakePipeline:
         for op in self.ops:
             if op[0] == "incr":
                 self.store[op[1]] = int(self.store.get(op[1], 0)) + 1
+            elif op[0] == "expire":
+                self.ttls[op[1]] = op[2]
         self.ops = []
 
 
 class FakeRedis:
     def __init__(self, initial=None):
         self.store = dict(initial or {})
+        self.ttls: dict[str, int] = {}
 
     async def get(self, key):
         value = self.store.get(key)
         return None if value is None else str(value)
 
     def pipeline(self):
-        return FakePipeline(self.store)
+        return FakePipeline(self.store, self.ttls)
 
 
 class TestResolveRateLimit:
@@ -45,6 +49,8 @@ class TestResolveRateLimit:
         await check_url_resolve_rate_limit(1, redis)
         assert redis.store["url_resolve_rate:1"] == 1
         assert redis.store["url_resolve_rate:global"] == 1
+        assert redis.ttls["url_resolve_rate:1"] == 60
+        assert redis.ttls["url_resolve_rate:global"] == 60
 
     async def test_user_limit_breach_raises_429(self):
         redis = FakeRedis({"url_resolve_rate:1": 5})
@@ -75,6 +81,7 @@ class TestFetchRateLimit:
         redis = FakeRedis({"external_fetch_rate:1": 39})
         await check_external_fetch_rate_limit(1, redis)
         assert redis.store["external_fetch_rate:1"] == 40
+        assert redis.ttls["external_fetch_rate:1"] == 60
 
     async def test_breach_raises_429(self):
         redis = FakeRedis({"external_fetch_rate:1": 40})

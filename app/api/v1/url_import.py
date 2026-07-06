@@ -48,7 +48,7 @@ async def resolve_url(
     resolver = get_resolver(payload.url)
     if resolver is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "Unsupported site. Supported: "
                 + ", ".join(site for site in supported_sites() if site != "fixture")

@@ -13,6 +13,7 @@ from app.services.url_import.base import (
     ResolvedImage,
     ResolvedPost,
     RestrictedContentError,
+    UpstreamError,
     fetch_json,
 )
 
@@ -38,7 +39,9 @@ class PixivResolver:
         )
         if data.get("error"):
             raise PostNotFoundError(data.get("message") or "pixiv artwork not available")
-        body = data["body"]
+        body = data.get("body")
+        if not body:
+            raise UpstreamError("pixiv response missing expected fields")
         if body.get("xRestrict", 0) != 0:
             raise RestrictedContentError("Restricted (R-18) pixiv works cannot be imported")
         if body.get("illustType") == 2:
@@ -51,21 +54,32 @@ class PixivResolver:
                 site=self.site,
                 headers=_REFERER,
             )
-            images = [
-                ResolvedImage(
-                    full_url=page["urls"]["original"],
-                    thumb_url=page["urls"].get("small"),
-                    width=page.get("width"),
-                    height=page.get("height"),
-                    headers=dict(_REFERER),
+            if pages.get("error"):
+                raise PostNotFoundError(pages.get("message") or "pixiv artwork not available")
+            images = []
+            for page in pages.get("body") or []:
+                urls = page.get("urls") or {}
+                original = urls.get("original")
+                if not original:
+                    raise UpstreamError("pixiv response missing expected fields")
+                images.append(
+                    ResolvedImage(
+                        full_url=original,
+                        thumb_url=urls.get("small"),
+                        width=page.get("width"),
+                        height=page.get("height"),
+                        headers=dict(_REFERER),
+                    )
                 )
-                for page in pages["body"]
-            ]
         else:
+            urls = body.get("urls") or {}
+            original = urls.get("original")
+            if not original:
+                raise UpstreamError("pixiv response missing expected fields")
             images = [
                 ResolvedImage(
-                    full_url=body["urls"]["original"],
-                    thumb_url=body["urls"].get("small"),
+                    full_url=original,
+                    thumb_url=urls.get("small"),
                     width=body.get("width"),
                     height=body.get("height"),
                     headers=dict(_REFERER),

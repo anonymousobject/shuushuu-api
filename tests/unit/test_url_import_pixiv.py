@@ -3,7 +3,11 @@
 import httpx
 import pytest
 
-from app.services.url_import.base import PostNotFoundError, RestrictedContentError
+from app.services.url_import.base import (
+    PostNotFoundError,
+    RestrictedContentError,
+    UpstreamError,
+)
 from app.services.url_import.pixiv import PixivResolver
 from app.services.url_import.registry import get_resolver
 
@@ -57,7 +61,15 @@ class TestMatch:
 
 class TestResolve:
     async def test_single_page(self):
-        async with _client(_illust_body()) as client:
+        seen_referers = []
+
+        def handler(request):
+            if request.url.path == "/ajax/illust/138823691":
+                seen_referers.append(request.headers.get("referer"))
+                return httpx.Response(200, json={"error": False, "body": _illust_body()})
+            return httpx.Response(404)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             post = await PixivResolver().resolve(
                 "https://www.pixiv.net/en/artworks/138823691", client
             )
@@ -69,6 +81,7 @@ class TestResolve:
         assert len(post.images) == 1
         assert post.images[0].full_url.endswith("_p0.png")
         assert post.images[0].headers == {"Referer": "https://www.pixiv.net/"}
+        assert seen_referers == ["https://www.pixiv.net/"]
 
     async def test_multi_page_uses_pages_endpoint(self):
         pages = [
@@ -100,4 +113,26 @@ class TestResolve:
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             with pytest.raises(PostNotFoundError):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+
+    async def test_pages_error_payload_raises_not_found(self):
+        def handler(request):
+            path = request.url.path
+            if path == "/ajax/illust/138823691":
+                return httpx.Response(200, json={"error": False, "body": _illust_body(pageCount=3)})
+            if path == "/ajax/illust/138823691/pages":
+                return httpx.Response(
+                    200, json={"error": True, "message": "該当作品は削除されたか、存在しない作品IDです。", "body": []}
+                )
+            return httpx.Response(404)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(PostNotFoundError):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+
+    async def test_illust_body_missing_urls_raises_upstream_error(self):
+        body = _illust_body()
+        del body["urls"]
+        async with _client(body) as client:
+            with pytest.raises(UpstreamError):
                 await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)

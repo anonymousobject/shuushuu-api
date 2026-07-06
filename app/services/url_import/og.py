@@ -17,12 +17,19 @@ from app.services.url_import.base import (
 
 _MAX_REDIRECTS = 3
 
+# Each attribute value must be matched by paired alternation ("..." or '...')
+# rather than a single character class that excludes both quote chars —
+# otherwise a double-quoted value containing an apostrophe (e.g.
+# content="Fan's OC") gets truncated at the apostrophe, since [^"']* stops on
+# either quote char regardless of which one actually opened the attribute.
 _OG_PROP_FIRST = re.compile(
-    r'<meta[^>]+property=["\']og:([\w:]+)["\'][^>]+content=["\']([^"\']*)["\']',
+    r"""<meta[^>]+property=(?:"og:([\w:]+)"|'og:([\w:]+)')"""
+    r"""[^>]+content=(?:"([^"]*)"|'([^']*)')""",
     re.IGNORECASE,
 )
 _OG_CONTENT_FIRST = re.compile(
-    r'<meta[^>]+content=["\']([^"\']*)["\'][^>]+property=["\']og:([\w:]+)["\']',
+    r"""<meta[^>]+content=(?:"([^"]*)"|'([^']*)')"""
+    r"""[^>]+property=(?:"og:([\w:]+)"|'og:([\w:]+)')""",
     re.IGNORECASE,
 )
 
@@ -30,9 +37,13 @@ _OG_CONTENT_FIRST = re.compile(
 def extract_og_tags(page_html: str) -> dict[str, str]:
     tags: dict[str, str] = {}
     for match in _OG_PROP_FIRST.finditer(page_html):
-        tags.setdefault(match.group(1).lower(), html.unescape(match.group(2)))
+        prop = match.group(1) if match.group(1) is not None else match.group(2)
+        content = match.group(3) if match.group(3) is not None else match.group(4)
+        tags.setdefault(prop.lower(), html.unescape(content))
     for match in _OG_CONTENT_FIRST.finditer(page_html):
-        tags.setdefault(match.group(2).lower(), html.unescape(match.group(1)))
+        content = match.group(1) if match.group(1) is not None else match.group(2)
+        prop = match.group(3) if match.group(3) is not None else match.group(4)
+        tags.setdefault(prop.lower(), html.unescape(content))
     return tags
 
 

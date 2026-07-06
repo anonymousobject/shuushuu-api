@@ -1,8 +1,16 @@
 """Tests for HMAC-signed external-fetch tokens."""
 
+import json
+
 import pytest
 
-from app.services.url_import.tokens import InvalidTokenError, mint_token, verify_token
+from app.services.url_import.tokens import (
+    InvalidTokenError,
+    _b64encode,
+    _sign,
+    mint_token,
+    verify_token,
+)
 
 
 def test_roundtrip_preserves_url_and_headers():
@@ -46,3 +54,16 @@ def test_expired_token_rejected():
 def test_malformed_tokens_rejected(garbage):
     with pytest.raises(InvalidTokenError):
         verify_token(garbage)
+
+
+def test_valid_signature_payload_missing_expiry_field_rejected():
+    # Hand-craft a payload with a valid signature but no "e" (expires_at) key,
+    # simulating a payload shape that predates or otherwise omits the field.
+    payload = json.dumps(
+        {"u": "https://example.test/a.png", "h": {}},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    token = f"{_b64encode(payload)}.{_b64encode(_sign(payload))}"
+    with pytest.raises(InvalidTokenError):
+        verify_token(token)

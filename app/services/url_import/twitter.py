@@ -43,7 +43,9 @@ class TwitterResolver:
             raise PostNotFoundError("tweet not found")
         if code != 200:
             raise UpstreamError(f"twitter resolution unavailable (fxtwitter code {code})")
-        tweet = data["tweet"]
+        tweet = data.get("tweet")
+        if not tweet:
+            raise UpstreamError("twitter resolution unavailable (malformed fxtwitter response)")
         photos = (tweet.get("media") or {}).get("photos") or []
         if not photos:
             raise PostNotFoundError("tweet has no photos")

@@ -31,6 +31,10 @@ class TestExtractOgTags:
         html = '<meta property="og:image" content="https://x.test/a.png?a=1&amp;b=2">'
         assert extract_og_tags(html)["image"] == "https://x.test/a.png?a=1&b=2"
 
+    def test_double_quoted_content_with_apostrophe_extracted_fully(self):
+        html = '<meta property="og:title" content="Fan\'s OC">'
+        assert extract_og_tags(html)["title"] == "Fan's OC"
+
 
 class TestFetchOgPage:
     async def test_off_host_redirect_refused(self):
@@ -115,3 +119,20 @@ class TestKofi:
             post = await KofiResolver().resolve(self.URL, client)
         assert post.images[0].full_url == "https://storage.ko-fi.com/cdn/useruploads/post/x.png"
         assert post.title == "Fanart!"
+        assert post.canonical_url == "https://ko-fi.com/i/IX8X0ABC12"
+
+    async def test_www_and_bare_forms_resolve_to_same_canonical_url(self):
+        fetched_urls = []
+
+        def handler(request):
+            fetched_urls.append(str(request.url))
+            return httpx.Response(200, text=_page("https://storage.ko-fi.com/cdn/useruploads/post/x.png"))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            bare_post = await KofiResolver().resolve("https://ko-fi.com/i/IX8X0ABC12", client)
+            www_post = await KofiResolver().resolve("https://www.ko-fi.com/i/IX8X0ABC12", client)
+        assert bare_post.canonical_url == www_post.canonical_url == "https://ko-fi.com/i/IX8X0ABC12"
+        assert fetched_urls == [
+            "https://ko-fi.com/i/IX8X0ABC12",
+            "https://ko-fi.com/i/IX8X0ABC12",
+        ]

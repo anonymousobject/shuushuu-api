@@ -5,7 +5,7 @@ import pytest
 
 from app.services.url_import.base import PostNotFoundError, UpstreamError
 from app.services.url_import.registry import get_resolver
-from app.services.url_import.twitter import TwitterResolver
+from app.services.url_import.twitter import TwitterResolver, _variant
 
 URL = "https://x.com/someartist/status/1234567890"
 
@@ -38,6 +38,14 @@ class TestMatch:
         assert isinstance(get_resolver(URL), TwitterResolver)
 
 
+class TestVariant:
+    def test_ampersand_when_query_already_present(self):
+        assert (
+            _variant("https://pbs.twimg.com/media/AAA.jpg?format=jpg", "orig")
+            == "https://pbs.twimg.com/media/AAA.jpg?format=jpg&name=orig"
+        )
+
+
 class TestResolve:
     async def test_photos_get_orig_variant(self):
         photos = [
@@ -58,8 +66,45 @@ class TestResolve:
             with pytest.raises(PostNotFoundError):
                 await TwitterResolver().resolve(URL, client)
 
+    async def test_media_key_absent_raises_not_found(self):
+        body = _tweet_body([])
+        del body["tweet"]["media"]
+        async with _client(body) as client:
+            with pytest.raises(PostNotFoundError):
+                await TwitterResolver().resolve(URL, client)
+
+    async def test_author_absent_resolves_with_none_artist(self):
+        body = _tweet_body(
+            [{"url": "https://pbs.twimg.com/media/AAA.jpg", "width": 1200, "height": 900}]
+        )
+        del body["tweet"]["author"]
+        async with _client(body) as client:
+            post = await TwitterResolver().resolve(URL, client)
+        assert post.artist_name is None
+        assert post.artist_id is None
+
+    async def test_tweet_url_absent_canonical_falls_back(self):
+        body = _tweet_body(
+            [{"url": "https://pbs.twimg.com/media/AAA.jpg", "width": 1200, "height": 900}]
+        )
+        del body["tweet"]["url"]
+        async with _client(body) as client:
+            post = await TwitterResolver().resolve(URL, client)
+        assert post.canonical_url == "https://twitter.com/someartist/status/1234567890"
+
+    async def test_missing_tweet_key_raises_upstream_error(self):
+        async with _client({"code": 200}) as client:
+            with pytest.raises(UpstreamError):
+                await TwitterResolver().resolve(URL, client)
+
     async def test_fxtwitter_404_code(self):
-        async with _client({"code": 404, "message": "NOT_FOUND"}) as client:
+        # fetch_json's HTTP-status mapping (base.py) already turns a real HTTP 404
+        # into PostNotFoundError before this resolver inspects the JSON body at
+        # all; fxtwitter mirrors its JSON `code` to the HTTP status, so this test
+        # exercises that first layer. The `code == 404` check in resolve() below
+        # is a second layer that only matters if the JSON code and HTTP status
+        # ever disagree.
+        async with _client({"code": 404, "message": "NOT_FOUND"}, status=404) as client:
             with pytest.raises(PostNotFoundError):
                 await TwitterResolver().resolve(URL, client)
 

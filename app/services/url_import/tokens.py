@@ -65,6 +65,10 @@ def verify_token(token: str) -> ExternalFetchRef:
         data = json.loads(payload)
     except ValueError as exc:
         raise InvalidTokenError("malformed payload") from exc
-    if data["e"] < time.time():
+    try:
+        url, headers, expires_at = data["u"], data["h"], data["e"]
+    except (KeyError, TypeError) as exc:
+        raise InvalidTokenError("malformed payload") from exc
+    if expires_at < time.time():
         raise InvalidTokenError("expired")
-    return ExternalFetchRef(url=data["u"], headers=data["h"], expires_at=data["e"])
+    return ExternalFetchRef(url=url, headers=headers, expires_at=expires_at)
