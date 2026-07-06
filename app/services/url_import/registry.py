@@ -5,12 +5,14 @@ from app.services.url_import.danbooru import DanbooruResolver
 from app.services.url_import.gelbooru import GelbooruResolver
 from app.services.url_import.moebooru import MoebooruResolver
 from app.services.url_import.pixiv import PixivResolver
+from app.services.url_import.twitter import TwitterResolver
 
 _RESOLVERS: list[Resolver] = [
     PixivResolver(),
     DanbooruResolver(),
     GelbooruResolver(),
     MoebooruResolver(),
+    TwitterResolver(),
 ]
 
 
