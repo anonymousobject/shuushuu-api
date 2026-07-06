@@ -1,5 +1,6 @@
 """Ordered resolver registry; first match wins."""
 
+from app.config import settings
 from app.services.url_import.base import Resolver
 from app.services.url_import.bluesky import BlueskyResolver
 from app.services.url_import.danbooru import DanbooruResolver
@@ -20,6 +21,11 @@ _RESOLVERS: list[Resolver] = [
     ZerochanResolver(),
     KofiResolver(),
 ]
+
+if settings.ENVIRONMENT == "development":
+    from app.services.url_import.fixture import FixtureResolver
+
+    _RESOLVERS.append(FixtureResolver())
 
 
 def get_resolver(url: str) -> Resolver | None:
