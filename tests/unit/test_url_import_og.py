@@ -40,6 +40,19 @@ class TestExtractOgTags:
         html = '<meta property="og:title" content="Fan\'s OC">'
         assert extract_og_tags(html)["title"] == "Fan's OC"
 
+    def test_name_attribute_form_extracted(self):
+        # zerochan uses <meta name="og:..."> rather than property=
+        tags = extract_og_tags(
+            '<meta name="og:title" content="Lilith #4706056">\n'
+            '<meta name="og:image" content="https://static.zerochan.net/Lilith.full.4706056.jpg">'
+        )
+        assert tags["image"] == "https://static.zerochan.net/Lilith.full.4706056.jpg"
+        assert tags["title"] == "Lilith #4706056"
+
+    def test_name_attribute_form_content_before_name_order(self):
+        html = '<meta content="https://x.test/a.png" name="og:image">'
+        assert extract_og_tags(html)["image"] == "https://x.test/a.png"
+
 
 class TestFetchOgPage:
     async def test_off_host_redirect_refused(self):

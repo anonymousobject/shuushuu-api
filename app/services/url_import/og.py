@@ -23,13 +23,13 @@ _MAX_REDIRECTS = 3
 # content="Fan's OC") gets truncated at the apostrophe, since [^"']* stops on
 # either quote char regardless of which one actually opened the attribute.
 _OG_PROP_FIRST = re.compile(
-    r"""<meta[^>]+property=(?:"og:([\w:]+)"|'og:([\w:]+)')"""
+    r"""<meta[^>]+(?:property|name)=(?:"og:([\w:]+)"|'og:([\w:]+)')"""
     r"""[^>]+content=(?:"([^"]*)"|'([^']*)')""",
     re.IGNORECASE,
 )
 _OG_CONTENT_FIRST = re.compile(
     r"""<meta[^>]+content=(?:"([^"]*)"|'([^']*)')"""
-    r"""[^>]+property=(?:"og:([\w:]+)"|'og:([\w:]+)')""",
+    r"""[^>]+(?:property|name)=(?:"og:([\w:]+)"|'og:([\w:]+)')""",
     re.IGNORECASE,
 )
 
