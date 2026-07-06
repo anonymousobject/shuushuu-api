@@ -33,22 +33,23 @@ from app.services.url_import.base import (
 _URL_RE = re.compile(r"^https?://bsky\.app/profile/([^/]+)/post/([A-Za-z0-9]+)")
 
 
-def _with_png_suffix(fullsize_url: str) -> str:
-    """Request the CDN's PNG sibling encode for suffix-less fullsize URLs.
+def _with_jpeg_suffix(fullsize_url: str) -> str:
+    """Request the CDN's JPEG sibling encode for suffix-less fullsize URLs.
 
-    Bluesky's CDN serves webp for a fullsize URL whose final path segment
-    carries no explicit format suffix -- but uploads here only accept
-    jpg/png/gif. Appending "@png" asks the CDN for a sibling encode from
-    the same master (live-verified: bare URL -> image/webp 19KB; @png ->
-    image/png 265KB), which is not a transcode and loses no fidelity. If a
-    suffix is already present (e.g. "@jpeg"), leave it alone. A URL ending
-    in "/" (empty last segment) is left unchanged too -- defensive only,
-    since real bluesky fullsize URLs are always CID-terminated.
+    Bluesky's "fullsize" is already a downscaled, lossy render served by
+    their CDN -- not the original upload -- so there's no original fidelity
+    left to preserve. Given that, "@jpeg" (~34KB, live-verified) is
+    preferable to "@png" (~266KB): paying 8x the bytes for pixel-perfection
+    of an already-lossy render isn't worth it. jpeg is also one of
+    shuushuu's accepted upload types, so no transcode is needed either. If
+    a suffix is already present (e.g. "@jpeg"), leave it alone. A URL
+    ending in "/" (empty last segment) is left unchanged too -- defensive
+    only, since real bluesky fullsize URLs are always CID-terminated.
     """
     last_segment = fullsize_url.rsplit("/", 1)[-1]
     if not last_segment or "@" in last_segment:
         return fullsize_url
-    return f"{fullsize_url}@png"
+    return f"{fullsize_url}@jpeg"
 
 
 class BlueskyResolver:
@@ -99,7 +100,7 @@ class BlueskyResolver:
 
         images = [
             ResolvedImage(
-                full_url=_with_png_suffix(view["fullsize"]),
+                full_url=_with_jpeg_suffix(view["fullsize"]),
                 thumb_url=view.get("thumb"),
                 width=(view.get("aspectRatio") or {}).get("width"),
                 height=(view.get("aspectRatio") or {}).get("height"),

@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from app.services.url_import.base import PostNotFoundError, UpstreamError
-from app.services.url_import.bluesky import BlueskyResolver, _with_png_suffix
+from app.services.url_import.bluesky import BlueskyResolver, _with_jpeg_suffix
 from app.services.url_import.registry import get_resolver
 
 URL = "https://bsky.app/profile/artist.bsky.social/post/3kabc123xyz"
@@ -92,10 +92,11 @@ class TestResolve:
         assert len(post.images) == 1
         assert post.images[0].full_url.endswith("feed_fullsize/plain/did:plc:xyz/def@jpeg")
 
-    async def test_fullsize_without_suffix_gets_png_appended(self):
-        # Suffix-less fullsize URLs serve webp from Bluesky's CDN, which
-        # uploads can't accept; @png requests a sibling encode from the
-        # same master, not a transcode.
+    async def test_fullsize_without_suffix_gets_jpeg_appended(self):
+        # Bluesky's plain fullsize is already a downscaled, lossy render (not
+        # the original) -- so @jpeg (small, directly uploadable, no transcode
+        # needed) beats @png (8x the bytes for pixel-perfection of a render
+        # that was never the original anyway).
         images = [
             {
                 "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:xyz/abc@jpeg",
@@ -106,7 +107,7 @@ class TestResolve:
         async with _client(_thread_body(images)) as client:
             post = await BlueskyResolver().resolve(URL, client)
         assert post.images[0].full_url == (
-            "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@png"
+            "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@jpeg"
         )
         # Thumbs are display-only; browsers render webp fine, so leave untouched.
         assert post.images[0].thumb_url == (
@@ -126,9 +127,9 @@ class TestResolve:
             "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@jpeg"
         )
 
-    def test_with_png_suffix_trailing_slash_left_unchanged(self):
+    def test_with_jpeg_suffix_trailing_slash_left_unchanged(self):
         url = "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/"
-        assert _with_png_suffix(url) == url
+        assert _with_jpeg_suffix(url) == url
 
     async def test_artist_name_falls_back_to_handle(self):
         images = [
