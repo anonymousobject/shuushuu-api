@@ -103,22 +103,25 @@ Expected: FAIL — `ImportError` on `app.core.archived_user` / unknown `legacy_*
 
 - [ ] **Step 3: Add model fields**
 
-In `app/models/forum.py`, add to `ForumCategories`:
+In `app/models/forum.py`, add to `ForumCategories` (the `unique=True`/`index=True`
+flags mirror the migration's DB indexes so the model documents the real schema —
+the migration remains the source of truth; the flags are declarative only, since
+the test/prod schema is built by Alembic, not `create_all`):
 
 ```python
-    legacy_forum_id: int | None = Field(default=None)
+    legacy_forum_id: int | None = Field(default=None, unique=True)
 ```
 
 to `ForumThreads`:
 
 ```python
-    legacy_topic_id: int | None = Field(default=None)
+    legacy_topic_id: int | None = Field(default=None, unique=True)
 ```
 
 to `ForumPosts`:
 
 ```python
-    legacy_post_id: int | None = Field(default=None)
+    legacy_post_id: int | None = Field(default=None, unique=True)
     legacy_poster_id: int | None = Field(default=None, index=True)
     legacy_username: str | None = Field(default=None, max_length=255)
 ```
@@ -143,37 +146,27 @@ from app.models.user import Users
 
 ARCHIVED_USERNAME = "Archived User"
 
-# Cached for the app request path (get_thread). The id is stable once created;
-# a stale value only ever makes an override not fire (never a wrong override),
-# so it is safe under test rollback isolation. ensure_archived_user always
-# re-checks the DB and never trusts this cache.
-_archived_user_id: int | None = None
 
+async def get_archived_user_id(db: AsyncSession) -> int | None:
+    """Return the Archived User's user_id, or None if the account doesn't exist.
 
-async def _lookup(db: AsyncSession) -> int | None:
+    Deliberately NOT cached: the lookup is a single indexed query, and caching a
+    user_id in a module global is unsafe under the test suite's rollback isolation
+    (a stale id from a rolled-back test could leak into a later one and mis-fire
+    the display override).
+    """
     result = await db.execute(
         select(Users.user_id).where(Users.username == ARCHIVED_USERNAME)  # type: ignore[call-overload]
     )
     return result.scalar_one_or_none()
 
 
-async def get_archived_user_id(db: AsyncSession) -> int | None:
-    """Return the Archived User's user_id (cached), or None if it doesn't exist."""
-    global _archived_user_id
-    if _archived_user_id is None:
-        _archived_user_id = await _lookup(db)
-    return _archived_user_id
-
-
 async def ensure_archived_user(db: AsyncSession) -> int:
-    """Create the Archived User if absent (idempotent); return its user_id.
+    """Create the Archived User if absent (idempotent); return its user_id. Commits.
 
-    Verifies against the DB directly (not the cache), so it is correct even under
-    test rollback isolation where a prior test's row was rolled back. Commits.
     gender is NOT NULL without a default; '' is an existing valid value.
     """
-    global _archived_user_id
-    existing = await _lookup(db)
+    existing = await get_archived_user_id(db)
     if existing is None:
         await db.execute(
             text(
@@ -185,9 +178,8 @@ async def ensure_archived_user(db: AsyncSession) -> int:
             {"u": ARCHIVED_USERNAME},
         )
         await db.commit()
-        existing = await _lookup(db)
+        existing = await get_archived_user_id(db)
     assert existing is not None
-    _archived_user_id = existing
     return existing
 ```
 
@@ -258,7 +250,7 @@ def downgrade() -> None:
 Run: `uv run pytest tests/api/v1/test_forum_import_schema.py -v`
 Expected: PASS (2 tests). The conftest detects the new alembic head and rebuilds the test DB through the migration — if the migration is broken, this is where it surfaces.
 
-Note: `ensure_archived_user` always re-checks the DB (never trusts the module cache), so it is correct under rollback isolation. `get_archived_user_id`'s cache is only a request-path optimization; a stale value at worst makes an override not fire (never a wrong override), so no conftest changes are needed. The migration adds columns only — it does NOT seed the account (that would collide with conftest's hardcoded user_id 1-3).
+Note: `get_archived_user_id` is uncached (a plain indexed lookup each call), so it is correct under test rollback isolation with no conftest changes. The migration adds columns only — it does NOT seed the account (that would collide with conftest's hardcoded user_id 1-3).
 
 - [ ] **Step 7: Lint and commit**
 
