@@ -26,11 +26,24 @@ async def recompute_thread_stats(db: AsyncSession, thread: ForumThreads) -> None
     Always recompute — never increment — so the counters cannot drift.
     Caller must hold the thread row lock (SELECT ... FOR UPDATE) when other
     writers may race, and is responsible for committing.
+
+    The reads below use locking selects (FOR UPDATE) rather than plain reads.
+    InnoDB's default REPEATABLE READ isolation (unmodified in
+    app.core.database) gives every transaction a consistent snapshot fixed at
+    its *first* read — typically get_current_user's SELECT, long before the
+    caller acquires the thread-row lock. A plain COUNT/MAX here would be
+    evaluated against that stale snapshot and could miss a sibling post
+    committed by a concurrent transaction after the snapshot was taken but
+    before this one locked the thread, silently under-counting posts and
+    leaving last_post_at/last_post_user_id stale. Locking reads bypass the
+    snapshot and always see the latest committed rows, so they're safe to run
+    under the thread-row lock the caller already holds.
     """
     result = await db.execute(
         select(func.count(), func.max(ForumPosts.post_id))
         .where(ForumPosts.thread_id == thread.thread_id)  # type: ignore[arg-type]
         .where(ForumPosts.deleted == False)  # type: ignore[arg-type]  # noqa: E712
+        .with_for_update()
     )
     count, last_post_id = result.one()
     thread.post_count = count or 0
@@ -38,8 +51,13 @@ async def recompute_thread_stats(db: AsyncSession, thread: ForumThreads) -> None
         thread.last_post_at = None
         thread.last_post_user_id = None
     else:
-        last_post = await db.get(ForumPosts, last_post_id)
-        assert last_post is not None
+        # Not db.get(): that can return a snapshot-cached instance from the
+        # identity map instead of issuing a fresh locking read.
+        last_post = (
+            await db.execute(
+                select(ForumPosts).where(ForumPosts.post_id == last_post_id).with_for_update()
+            )
+        ).scalar_one()
         thread.last_post_at = last_post.date
         thread.last_post_user_id = last_post.user_id
 
