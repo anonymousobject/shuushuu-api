@@ -122,6 +122,8 @@ async def run_import(
 ) -> ImportStats:
     stats = ImportStats()
     resolution = await _build_resolution(target, phpbb_url, legacy_url)
+    # NOTE: even under --dry-run this may create+commit the Archived User account
+    # (harmless, idempotent) so attribution inserts have a valid FK target.
     archived_id = await ensure_archived_user(target)
 
     def author_of(poster_id: int) -> tuple[int, str]:
@@ -136,17 +138,31 @@ async def run_import(
         for phpbb_id, res in resolution.items():
             uid = res.site_user_id if res.site_user_id is not None else archived_id
             r = await target.execute(
-                text("UPDATE forum_posts SET user_id=:u WHERE legacy_poster_id=:p"),
+                text("UPDATE forum_posts SET user_id=:u WHERE legacy_poster_id=:p AND user_id<>:u"),
                 {"u": uid, "p": phpbb_id},
             )
             stats.remapped += r.rowcount or 0  # type: ignore[attr-defined]
-            await target.execute(
-                text("UPDATE forum_threads SET user_id=:u WHERE legacy_topic_id IN "
-                     "(SELECT DISTINCT thread_id FROM forum_posts WHERE legacy_poster_id=:p) "
-                     "AND user_id<>:u"),
-                {"u": uid, "p": phpbb_id},
+        # Re-derive each imported thread's author (opening = min post_id) and
+        # last_post_user_id (latest live post) from the remapped posts.
+        await target.execute(
+            text(
+                "UPDATE forum_threads t JOIN forum_posts op "
+                "ON op.post_id = (SELECT MIN(p.post_id) FROM forum_posts p "
+                "WHERE p.thread_id = t.thread_id) "
+                "SET t.user_id = op.user_id WHERE t.legacy_topic_id IS NOT NULL"
             )
-        if not dry_run:
+        )
+        await target.execute(
+            text(
+                "UPDATE forum_threads t JOIN forum_posts lp "
+                "ON lp.post_id = (SELECT MAX(p.post_id) FROM forum_posts p "
+                "WHERE p.thread_id = t.thread_id AND p.deleted = 0) "
+                "SET t.last_post_user_id = lp.user_id WHERE t.legacy_topic_id IS NOT NULL"
+            )
+        )
+        if dry_run:
+            await target.rollback()
+        else:
             await target.commit()
         return stats
 
@@ -224,6 +240,8 @@ async def _upsert_category(
     target.add(cat)
     await target.flush()
     stats.categories += 1
+    if not dry_run:
+        await target.commit()  # persist even forums that have no importable topics
     return cat
 
 
