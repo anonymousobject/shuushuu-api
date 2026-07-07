@@ -13,46 +13,38 @@ from app.models.user import Users
 
 ARCHIVED_USERNAME = "Archived User"
 
-# Cached across the process; the account never changes once created.
-_archived_user_id: int | None = None
 
+async def get_archived_user_id(db: AsyncSession) -> int | None:
+    """Return the Archived User's user_id, or None if the account doesn't exist.
 
-async def _lookup(db: AsyncSession) -> int | None:
-    """Read the Archived User's user_id straight from the DB (uncached)."""
+    Deliberately NOT cached: the lookup is a single indexed query, and caching a
+    user_id in a module global is unsafe under the test suite's rollback isolation
+    (a stale id from a rolled-back test could leak into a later one and mis-fire
+    the display override).
+    """
     result = await db.execute(
         select(Users.user_id).where(Users.username == ARCHIVED_USERNAME)  # type: ignore[call-overload]
     )
     return result.scalar_one_or_none()
 
 
-async def get_archived_user_id(db: AsyncSession) -> int | None:
-    """Return the Archived User's user_id (cached), or None if not created."""
-    global _archived_user_id
-    if _archived_user_id is None:
-        _archived_user_id = await _lookup(db)
-    return _archived_user_id
-
-
 async def ensure_archived_user(db: AsyncSession) -> int:
-    """Create the Archived User if absent (idempotent) and return its user_id.
+    """Create the Archived User if absent (idempotent); return its user_id. Commits.
 
-    The direct INSERT bypasses app validation by design; the account is inactive
-    ('active' = 0) and cannot log in. ``gender`` is NOT NULL without a default,
-    so '' (an existing valid value) is supplied. The row is re-read from the DB
-    after committing rather than trusting the module cache, so the result is
-    correct even under the test suite's transaction-rollback isolation.
+    gender is NOT NULL without a default; '' is an existing valid value.
     """
-    await db.execute(
-        text(
-            "INSERT INTO users (username, password, password_type, salt, email, "
-            "active, admin, gender, date_joined) "
-            "SELECT :username, '!', 'bcrypt', '!', 'archived@localhost', 0, 0, '', NOW() "
-            "FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = :username)"
-        ),
-        {"username": ARCHIVED_USERNAME},
-    )
-    await db.commit()
-    user_id = await _lookup(db)
-    if user_id is None:  # the INSERT above guarantees a row exists
-        raise RuntimeError("Archived User could not be created")
-    return user_id
+    existing = await get_archived_user_id(db)
+    if existing is None:
+        await db.execute(
+            text(
+                "INSERT INTO users (username, password, password_type, salt, email, active, "
+                "admin, gender, date_joined) "
+                "SELECT :u, '!', 'bcrypt', '!', 'archived@localhost', 0, 0, '', NOW() FROM DUAL "
+                "WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = :u)"
+            ),
+            {"u": ARCHIVED_USERNAME},
+        )
+        await db.commit()
+        existing = await get_archived_user_id(db)
+    assert existing is not None
+    return existing
