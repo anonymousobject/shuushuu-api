@@ -7,7 +7,9 @@ from app.schemas.forum import (
     ForumCategoryCreate,
     ForumCategoryUpdate,
     ForumPostCreate,
+    ForumPostUpdate,
     ForumThreadCreate,
+    ForumThreadUpdate,
 )
 
 
@@ -43,6 +45,26 @@ class TestForumTextValidation:
     def test_title_max_length(self):
         with pytest.raises(ValidationError):
             ForumThreadCreate(title="x" * 256, post_text="body")
+
+    def test_whitespace_only_title_rejected(self):
+        with pytest.raises(ValidationError):
+            ForumThreadCreate(title="   ", post_text="body")
+
+    def test_whitespace_only_post_text_rejected(self):
+        with pytest.raises(ValidationError):
+            ForumPostCreate(post_text="   ")
+
+    def test_whitespace_only_category_title_rejected(self):
+        with pytest.raises(ValidationError):
+            ForumCategoryCreate(title="   ")
+
+    def test_whitespace_only_update_post_text_rejected(self):
+        with pytest.raises(ValidationError):
+            ForumPostUpdate(post_text="   ")
+
+    def test_update_titles_are_stripped(self):
+        assert ForumThreadUpdate(title="  Hi  ").title == "Hi"
+        assert ForumCategoryUpdate(title="  Hi  ").title == "Hi"
 
 
 class TestForumPostHtml:
