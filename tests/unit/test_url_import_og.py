@@ -226,3 +226,11 @@ class TestKofi:
             "https://ko-fi.com/i/IX8X0ABC12",
             "https://ko-fi.com/i/IX8X0ABC12",
         ]
+
+    async def test_off_host_og_image_refused(self):
+        def handler(request):
+            return httpx.Response(200, text=_page("https://evil.example/x.png"))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(UpstreamError):
+                await KofiResolver().resolve(self.URL, client)
