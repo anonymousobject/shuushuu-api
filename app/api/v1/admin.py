@@ -20,7 +20,6 @@ import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.config import (
     AdminActionType,
@@ -38,6 +37,7 @@ from app.core.permission_cache import invalidate_group_permissions, invalidate_u
 from app.core.permission_deps import require_all_permissions, require_permission
 from app.core.permissions import Permission
 from app.core.redis import get_redis
+from app.core.user_loader import build_user_summaries
 from app.models.admin_action import AdminActions
 from app.models.comment import Comments
 from app.models.comment_report import CommentReports
@@ -81,7 +81,7 @@ from app.schemas.comment_report import (
     CommentReportDismissRequest,
     CommentReportListItem,
 )
-from app.schemas.common import MessageResponse, UserSummary
+from app.schemas.common import MessageResponse
 from app.schemas.report import (
     ApplyTagSuggestionsRequest,
     ApplyTagSuggestionsResponse,
@@ -112,31 +112,6 @@ from app.services.review_jobs import check_early_close
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-
-async def _build_user_summaries(db: AsyncSession, user_ids: set[int]) -> dict[int, UserSummary]:
-    """Batch-fetch Users with groups and build UserSummary objects by user_id."""
-    if not user_ids:
-        return {}
-    result = await db.execute(
-        select(Users)
-        .options(
-            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
-        .where(Users.user_id.in_(user_ids))  # type: ignore[union-attr]
-    )
-    users = result.scalars().all()
-    return {
-        user.id: UserSummary(
-            user_id=user.id,
-            username=user.username,
-            avatar=user.avatar,
-            avatar_in_r2=user.avatar_in_r2,
-            user_title=user.user_title,
-            groups=user.groups,
-        )
-        for user in users
-    }
 
 
 # ===== Group CRUD =====
@@ -896,7 +871,7 @@ async def list_reports(
             report_user_ids.add(report.user_id)
             if report.reviewed_by:
                 report_user_ids.add(report.reviewed_by)
-        user_summaries = await _build_user_summaries(db, report_user_ids)
+        user_summaries = await build_user_summaries(db, report_user_ids)
 
         # Fetch tag suggestions for all reports in one query
         suggestions_by_report: dict[int, list[TagSuggestion]] = {}
@@ -987,7 +962,7 @@ async def list_reports(
                 cr_user_ids.add(row[0].reviewed_by)
             if row.comment_user_id:
                 cr_user_ids.add(row.comment_user_id)
-        cr_summaries = await _build_user_summaries(db, cr_user_ids)
+        cr_summaries = await build_user_summaries(db, cr_user_ids)
 
         for row in comment_rows:
             report = row[0]  # CommentReports object
@@ -1132,7 +1107,7 @@ async def get_report(
     report_user_ids = {report.user_id}
     if report.reviewed_by:
         report_user_ids.add(report.reviewed_by)
-    summaries = await _build_user_summaries(db, report_user_ids)
+    summaries = await build_user_summaries(db, report_user_ids)
 
     response = ReportResponse(
         report_id=report.report_id,  # type: ignore[arg-type]
@@ -1217,7 +1192,7 @@ async def get_comment_report(
         cr_user_ids.add(report.reviewed_by)
     if comment_user_id:
         cr_user_ids.add(comment_user_id)
-    summaries = await _build_user_summaries(db, cr_user_ids)
+    summaries = await build_user_summaries(db, cr_user_ids)
 
     return CommentReportListItem(
         report_id=report.report_id,
@@ -1811,7 +1786,7 @@ async def escalate_report(
         new_status=ImageStatus.REVIEW,
     )
 
-    summaries = await _build_user_summaries(db, {current_user.id})
+    summaries = await build_user_summaries(db, {current_user.id})
     response = ReviewResponse.model_validate(review)
     response.initiated_by_user = summaries.get(current_user.id)
     return response
@@ -1863,7 +1838,7 @@ async def list_reviews(
             review_user_ids.add(review.initiated_by)
         if review.closed_by:
             review_user_ids.add(review.closed_by)
-    review_summaries = await _build_user_summaries(db, review_user_ids)
+    review_summaries = await build_user_summaries(db, review_user_ids)
 
     # Build responses with vote counts
     items = []
@@ -1950,7 +1925,7 @@ async def get_review(
     for v in vote_rows:
         if v.user_id:
             review_user_ids.add(v.user_id)
-    review_summaries = await _build_user_summaries(db, review_user_ids)
+    review_summaries = await build_user_summaries(db, review_user_ids)
 
     votes = []
     keep_votes = 0
@@ -2059,7 +2034,7 @@ async def create_review(
         new_status=ImageStatus.REVIEW,
     )
 
-    summaries = await _build_user_summaries(db, {current_user.id})
+    summaries = await build_user_summaries(db, {current_user.id})
     response = ReviewResponse.model_validate(review)
     response.initiated_by_user = summaries.get(current_user.id)
     return response
@@ -2141,7 +2116,7 @@ async def vote_on_review(
             image_id=image_id, old_status=old_status, new_status=new_status
         )
 
-    summaries = await _build_user_summaries(db, {current_user.id})
+    summaries = await build_user_summaries(db, {current_user.id})
     response = VoteResponse.model_validate(vote)
     response.user = summaries.get(current_user.id)
     return response
@@ -2238,7 +2213,7 @@ async def close_review(
     close_user_ids: set[int] = {current_user.id}
     if review.initiated_by:
         close_user_ids.add(review.initiated_by)
-    close_summaries = await _build_user_summaries(db, close_user_ids)
+    close_summaries = await build_user_summaries(db, close_user_ids)
 
     response = ReviewResponse.model_validate(review)
     response.initiated_by_user = (
@@ -2306,7 +2281,7 @@ async def extend_review(
     extend_user_ids: set[int] = set()
     if review.initiated_by:
         extend_user_ids.add(review.initiated_by)
-    extend_summaries = await _build_user_summaries(db, extend_user_ids)
+    extend_summaries = await build_user_summaries(db, extend_user_ids)
 
     response = ReviewResponse.model_validate(review)
     response.initiated_by_user = (
