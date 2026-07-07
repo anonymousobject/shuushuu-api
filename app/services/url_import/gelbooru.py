@@ -14,7 +14,9 @@ from app.services.url_import.base import (
     PostNotFoundError,
     ResolvedImage,
     ResolvedPost,
+    UpstreamError,
     fetch_json,
+    host_allowed,
     source_or,
 )
 
@@ -48,6 +50,11 @@ class GelbooruResolver:
         if not posts:
             raise PostNotFoundError("gelbooru post not found")
         post = posts[0]
+        preview_url = post.get("preview_url")
+        if not host_allowed(post["file_url"], "gelbooru.com") or (
+            preview_url is not None and not host_allowed(preview_url, "gelbooru.com")
+        ):
+            raise UpstreamError("gelbooru returned an unexpected image host")
         post_url = f"https://gelbooru.com/index.php?page=post&s=view&id={post_id}"
         return ResolvedPost(
             site=self.site,

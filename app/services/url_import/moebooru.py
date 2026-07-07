@@ -8,7 +8,9 @@ from app.services.url_import.base import (
     PostNotFoundError,
     ResolvedImage,
     ResolvedPost,
+    UpstreamError,
     fetch_json,
+    host_allowed,
     source_or,
 )
 
@@ -31,6 +33,11 @@ class MoebooruResolver:
         if not data:
             raise PostNotFoundError("yande.re post not found")
         post = data[0]
+        preview_url = post.get("preview_url")
+        if not host_allowed(post["file_url"], "yande.re") or (
+            preview_url is not None and not host_allowed(preview_url, "yande.re")
+        ):
+            raise UpstreamError("yande.re returned an unexpected image host")
         post_url = f"https://yande.re/post/show/{post_id}"
         return ResolvedPost(
             site=self.site,

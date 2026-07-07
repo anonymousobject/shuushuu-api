@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.config import settings
-from app.services.url_import.base import PostNotFoundError, RestrictedContentError
+from app.services.url_import.base import PostNotFoundError, RestrictedContentError, UpstreamError
 from app.services.url_import.danbooru import _TOOL_USER_AGENT, DanbooruResolver
 from app.services.url_import.gelbooru import GelbooruResolver
 from app.services.url_import.moebooru import MoebooruResolver
@@ -98,6 +98,16 @@ class TestDanbooru:
             post = await DanbooruResolver().resolve(self.URL, client)
         assert post.images[0].headers == {"User-Agent": _TOOL_USER_AGENT}
 
+    async def test_off_host_file_url_rejects_whole_post(self):
+        async with _client({**self.POST, "file_url": "https://evil.example/a.jpg"}) as client:
+            with pytest.raises(UpstreamError):
+                await DanbooruResolver().resolve(self.URL, client)
+
+    async def test_off_host_preview_url_rejects_whole_post(self):
+        async with _client({**self.POST, "preview_file_url": "https://evil.example/a.jpg"}) as client:
+            with pytest.raises(UpstreamError):
+                await DanbooruResolver().resolve(self.URL, client)
+
 
 class TestGelbooru:
     URL = "https://gelbooru.com/index.php?page=post&s=view&id=987"
@@ -148,6 +158,18 @@ class TestGelbooru:
     async def test_empty_post_list_not_found(self):
         async with _client({"post": []}) as client:
             with pytest.raises(PostNotFoundError):
+                await GelbooruResolver().resolve(self.URL, client)
+
+    async def test_off_host_file_url_rejects_whole_post(self):
+        body = {"post": [{**self.BODY["post"][0], "file_url": "https://evil.example/a.jpg"}]}
+        async with _client(body) as client:
+            with pytest.raises(UpstreamError):
+                await GelbooruResolver().resolve(self.URL, client)
+
+    async def test_off_host_preview_url_rejects_whole_post(self):
+        body = {"post": [{**self.BODY["post"][0], "preview_url": "https://evil.example/a.jpg"}]}
+        async with _client(body) as client:
+            with pytest.raises(UpstreamError):
                 await GelbooruResolver().resolve(self.URL, client)
 
     async def test_resolve_appends_credentials_when_configured(self, monkeypatch):
@@ -206,4 +228,16 @@ class TestMoebooru:
     async def test_empty_list_not_found(self):
         async with _client([]) as client:
             with pytest.raises(PostNotFoundError):
+                await MoebooruResolver().resolve(self.URL, client)
+
+    async def test_off_host_file_url_rejects_whole_post(self):
+        body = [{**self.BODY[0], "file_url": "https://evil.example/a.jpg"}]
+        async with _client(body) as client:
+            with pytest.raises(UpstreamError):
+                await MoebooruResolver().resolve(self.URL, client)
+
+    async def test_off_host_preview_url_rejects_whole_post(self):
+        body = [{**self.BODY[0], "preview_url": "https://evil.example/a.jpg"}]
+        async with _client(body) as client:
+            with pytest.raises(UpstreamError):
                 await MoebooruResolver().resolve(self.URL, client)

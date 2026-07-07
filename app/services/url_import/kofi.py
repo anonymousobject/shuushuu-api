@@ -9,6 +9,7 @@ from app.services.url_import.base import (
     ResolvedImage,
     ResolvedPost,
     UpstreamError,
+    host_allowed,
 )
 from app.services.url_import.og import fetch_og_page
 
@@ -16,8 +17,7 @@ _URL_RE = re.compile(r"^https?://(?:www\.)?ko-fi\.com/(i|post)/([A-Za-z0-9_-]+)"
 
 
 def _is_kofi_host(image_url: str) -> bool:
-    host = httpx.URL(image_url).host or ""
-    return host == "ko-fi.com" or host.endswith(".ko-fi.com")
+    return host_allowed(image_url, "ko-fi.com")
 
 
 class KofiResolver:

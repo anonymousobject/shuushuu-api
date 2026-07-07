@@ -10,7 +10,9 @@ from app.services.url_import.base import (
     ResolvedImage,
     ResolvedPost,
     RestrictedContentError,
+    UpstreamError,
     fetch_json,
+    host_allowed,
     source_or,
 )
 
@@ -42,6 +44,11 @@ class DanbooruResolver:
         file_url = data.get("file_url")
         if not file_url:
             raise RestrictedContentError("danbooru post has no publicly accessible file")
+        preview_url = data.get("preview_file_url")
+        if not host_allowed(file_url, "donmai.us") or (
+            preview_url is not None and not host_allowed(preview_url, "donmai.us")
+        ):
+            raise UpstreamError("danbooru returned an unexpected image host")
         artist = (data.get("tag_string_artist") or "").split(" ")[0]
         return ResolvedPost(
             site=self.site,

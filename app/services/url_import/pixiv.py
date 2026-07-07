@@ -15,6 +15,7 @@ from app.services.url_import.base import (
     RestrictedContentError,
     UpstreamError,
     fetch_json,
+    host_allowed,
 )
 
 _URL_RE = re.compile(r"^https?://(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?artworks/(\d+)")
@@ -85,6 +86,11 @@ class PixivResolver:
                     headers=dict(_REFERER),
                 )
             ]
+        for image in images:
+            if not host_allowed(image.full_url, "pximg.net") or (
+                image.thumb_url is not None and not host_allowed(image.thumb_url, "pximg.net")
+            ):
+                raise UpstreamError("pixiv returned an unexpected image host")
         return ResolvedPost(
             site=self.site,
             canonical_url=f"https://www.pixiv.net/artworks/{illust_id}",

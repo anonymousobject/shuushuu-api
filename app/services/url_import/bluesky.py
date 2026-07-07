@@ -28,6 +28,7 @@ from app.services.url_import.base import (
     ResolvedImage,
     ResolvedPost,
     UpstreamError,
+    host_allowed,
 )
 
 _URL_RE = re.compile(r"^https?://bsky\.app/profile/([^/]+)/post/([A-Za-z0-9]+)")
@@ -107,6 +108,11 @@ class BlueskyResolver:
             )
             for view in image_views
         ]
+        for image in images:
+            if not host_allowed(image.full_url, "bsky.app") or (
+                image.thumb_url is not None and not host_allowed(image.thumb_url, "bsky.app")
+            ):
+                raise UpstreamError("bluesky returned an unexpected image host")
         author = post.get("author") or {}
         return ResolvedPost(
             site=self.site,

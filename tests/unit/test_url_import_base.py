@@ -10,6 +10,7 @@ from app.services.url_import.base import (
     ResolvedPost,
     UpstreamError,
     fetch_json,
+    host_allowed,
 )
 from app.services.url_import.registry import get_resolver, supported_sites
 
@@ -67,6 +68,26 @@ class TestFetchJson:
         async with _client(lambda r: httpx.Response(200, text="<html>")) as client:
             with pytest.raises(UpstreamError):
                 await fetch_json(client, "https://example.test/api", site="example")
+
+
+class TestHostAllowed:
+    def test_exact_match(self):
+        assert host_allowed("https://gelbooru.com/index.php", "gelbooru.com")
+
+    def test_subdomain_match(self):
+        assert host_allowed("https://cdn.donmai.us/original/x.jpg", "donmai.us")
+
+    def test_leading_dot_rejects_lookalike_domain(self):
+        # "evilgelbooru.com" ends with "gelbooru.com" as a raw string, but not
+        # as a subdomain -- the check must require a "." boundary.
+        assert not host_allowed("https://evilgelbooru.com/x.jpg", "gelbooru.com")
+
+    def test_empty_host_rejected(self):
+        assert not host_allowed("not-a-url", "gelbooru.com")
+
+    def test_checks_multiple_allowed_hosts(self):
+        assert host_allowed("https://i.pximg.net/x.png", "donmai.us", "pximg.net")
+        assert not host_allowed("https://evil.example/x.png", "donmai.us", "pximg.net")
 
 
 class TestRegistry:

@@ -18,6 +18,7 @@ from app.services.url_import.base import (
     ResolvedPost,
     UpstreamError,
     fetch_json,
+    host_allowed,
     source_or,
 )
 
@@ -25,8 +26,7 @@ _URL_RE = re.compile(r"^https?://(?:www\.)?zerochan\.net/(\d+)")
 
 
 def _is_zerochan_host(image_url: str) -> bool:
-    host = httpx.URL(image_url).host or ""
-    return host == "zerochan.net" or host.endswith(".zerochan.net")
+    return host_allowed(image_url, "zerochan.net")
 
 
 def _user_agent() -> str:

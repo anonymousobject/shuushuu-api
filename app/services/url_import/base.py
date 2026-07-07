@@ -68,6 +68,12 @@ class Resolver(Protocol):
     async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost: ...
 
 
+def host_allowed(url: str, *allowed_hosts: str) -> bool:
+    """True if url's host equals one of allowed_hosts or is a subdomain of one."""
+    host = httpx.URL(url).host or ""
+    return any(host == h or host.endswith(f".{h}") for h in allowed_hosts)
+
+
 def source_or(default_url: str, source: str | None) -> str:
     """Prefer a post's upstream http(s) source as provenance; else the post URL."""
     if source and source.startswith(("http://", "https://")):

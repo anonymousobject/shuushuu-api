@@ -193,3 +193,25 @@ class TestResolve:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             with pytest.raises(UpstreamError):
                 await BlueskyResolver().resolve(URL, client)
+
+    async def test_off_host_fullsize_rejects_whole_post(self):
+        images = [
+            {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:xyz/abc@jpeg",
+                "fullsize": "https://evil.example/a.jpg",
+            }
+        ]
+        async with _client(_thread_body(images)) as client:
+            with pytest.raises(UpstreamError):
+                await BlueskyResolver().resolve(URL, client)
+
+    async def test_off_host_thumb_rejects_whole_post(self):
+        images = [
+            {
+                "thumb": "https://evil.example/thumb.jpg",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:xyz/abc@jpeg",
+            }
+        ]
+        async with _client(_thread_body(images)) as client:
+            with pytest.raises(UpstreamError):
+                await BlueskyResolver().resolve(URL, client)

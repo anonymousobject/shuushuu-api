@@ -16,14 +16,14 @@ from app.services.url_import.base import (
     ResolvedPost,
     UpstreamError,
     fetch_json,
+    host_allowed,
 )
 
 _URL_RE = re.compile(r"^https?://(?:www\.)?(?:twitter\.com|x\.com)/([A-Za-z0-9_]+)/status/(\d+)")
 
 
 def _is_twimg_host(photo_url: str) -> bool:
-    host = httpx.URL(photo_url).host or ""
-    return host == "pbs.twimg.com" or host.endswith(".twimg.com")
+    return host_allowed(photo_url, "twimg.com")
 
 
 def _variant(photo_url: str, name: str) -> str:

@@ -136,3 +136,34 @@ class TestResolve:
         async with _client(body) as client:
             with pytest.raises(UpstreamError):
                 await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+
+    async def test_off_host_original_url_rejects_whole_post(self):
+        body = _illust_body(urls={
+            "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p0_master1200.jpg",
+            "original": "https://evil.example/a.png",
+        })
+        async with _client(body) as client:
+            with pytest.raises(UpstreamError):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+
+    async def test_off_host_thumb_url_rejects_whole_post(self):
+        body = _illust_body(urls={
+            "small": "https://evil.example/thumb.jpg",
+            "original": "https://i.pximg.net/img-original/img/x/138823691_p0.png",
+        })
+        async with _client(body) as client:
+            with pytest.raises(UpstreamError):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+
+    async def test_off_host_page_url_rejects_whole_post(self):
+        pages = [
+            {"urls": {"original": "https://i.pximg.net/img-original/img/x/138823691_p0.png",
+                      "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p0_master1200.jpg"},
+             "width": 100, "height": 200},
+            {"urls": {"original": "https://evil.example/p1.png",
+                      "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p1_master1200.jpg"},
+             "width": 100, "height": 200},
+        ]
+        async with _client(_illust_body(pageCount=2), pages) as client:
+            with pytest.raises(UpstreamError):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
