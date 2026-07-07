@@ -34,10 +34,11 @@ class ForumCategoryCreate(BaseModel):
         _validate_access_perm
     )
 
-    @field_validator("title")
+    @field_validator("title", mode="before")
     @classmethod
-    def strip_title(cls, v: str) -> str:
-        return v.strip()
+    def strip_title(cls, v: object) -> object:
+        # mode="before" so whitespace-only input fails min_length after stripping
+        return v.strip() if isinstance(v, str) else v
 
 
 class ForumCategoryUpdate(BaseModel):
@@ -53,6 +54,11 @@ class ForumCategoryUpdate(BaseModel):
     _check_perms = field_validator("view_perm", "thread_create_perm", "reply_perm")(
         _validate_access_perm
     )
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
 
 
 class ForumCategoryResponse(BaseModel):
@@ -88,10 +94,11 @@ class ForumThreadCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     post_text: str = Field(min_length=1)
 
-    @field_validator("title", "post_text")
+    @field_validator("title", "post_text", mode="before")
     @classmethod
-    def strip_text(cls, v: str) -> str:
-        return v.strip()
+    def strip_text(cls, v: object) -> object:
+        # mode="before" so whitespace-only input fails min_length after stripping
+        return v.strip() if isinstance(v, str) else v
 
 
 class ForumThreadUpdate(BaseModel):
@@ -103,6 +110,11 @@ class ForumThreadUpdate(BaseModel):
     locked: bool | None = None
     category_id: int | None = None
     deleted: bool | None = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
 
 
 class ForumThreadSummary(BaseModel):
@@ -135,10 +147,11 @@ class ForumThreadListResponse(BaseModel):
 class ForumPostCreate(BaseModel):
     post_text: str = Field(min_length=1, description="Post text (markdown supported)")
 
-    @field_validator("post_text")
+    @field_validator("post_text", mode="before")
     @classmethod
-    def strip_text(cls, v: str) -> str:
-        return v.strip()
+    def strip_text(cls, v: object) -> object:
+        # mode="before" so whitespace-only input fails min_length after stripping
+        return v.strip() if isinstance(v, str) else v
 
 
 class ForumPostUpdate(BaseModel):
@@ -147,10 +160,10 @@ class ForumPostUpdate(BaseModel):
     post_text: str | None = Field(default=None, min_length=1)
     deleted: bool | None = None
 
-    @field_validator("post_text")
+    @field_validator("post_text", mode="before")
     @classmethod
-    def strip_text(cls, v: str | None) -> str | None:
-        return v.strip() if v is not None else None
+    def strip_text(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
 
 
 class ForumPostResponse(BaseModel):
