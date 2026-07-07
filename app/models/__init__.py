@@ -23,6 +23,9 @@ from app.models.comment_report import CommentReports
 # Junction/relationship tables
 from app.models.favorite import Favorites
 
+# Forum models
+from app.models.forum import ForumCategories, ForumPosts, ForumThreadReads, ForumThreads
+
 # Core entity models
 from app.models.image import Images
 from app.models.image_rating import ImageRatings
@@ -68,6 +71,10 @@ __all__ = [
     "Images",
     "Tags",
     "Comments",
+    "ForumCategories",
+    "ForumThreads",
+    "ForumPosts",
+    "ForumThreadReads",
     # Junction/relationship tables
     "Favorites",
     "TagLinks",
