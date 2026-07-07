@@ -1,9 +1,12 @@
 """add_forum_tables
 
-Revision ID: 55bd585c1d8a
+Revision ID: f565e631d8c2
 Revises: ee16c4f335b0
 Create Date: 2026-07-07 06:39:25.595816
 
+Forum timestamps use DATETIME(6) (microsecond precision): unread tracking
+compares last_read_at < last_post_at, and second-precision DATETIME cannot
+order events that land within the same wall-clock second.
 """
 from typing import Sequence
 
@@ -13,7 +16,7 @@ from sqlalchemy.dialects import mysql
 
 
 # revision identifiers, used by Alembic.
-revision: str = '55bd585c1d8a'
+revision: str = 'f565e631d8c2'
 down_revision: str | Sequence[str] | None = 'ee16c4f335b0'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -57,15 +60,15 @@ def upgrade() -> None:
         sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
         sa.Column(
             "date",
-            sa.DateTime(),
-            server_default=sa.text("current_timestamp()"),
+            mysql.DATETIME(fsp=6),
+            server_default=sa.text("current_timestamp(6)"),
             nullable=False,
         ),
         sa.Column("pinned", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column("locked", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column("deleted", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column("post_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("last_post_at", sa.DateTime(), nullable=True),
+        sa.Column("last_post_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("last_post_user_id", mysql.INTEGER(unsigned=True), nullable=True),
         sa.PrimaryKeyConstraint("thread_id"),
         sa.ForeignKeyConstraint(
@@ -107,14 +110,14 @@ def upgrade() -> None:
         sa.Column("post_text", sa.Text(), nullable=False),
         sa.Column(
             "date",
-            sa.DateTime(),
-            server_default=sa.text("current_timestamp()"),
+            mysql.DATETIME(fsp=6),
+            server_default=sa.text("current_timestamp(6)"),
             nullable=False,
         ),
         sa.Column("deleted", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column("update_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("ip", sa.String(45), nullable=False, server_default=""),
-        sa.Column("last_updated", sa.DateTime(), nullable=True),
+        sa.Column("last_updated", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("last_updated_user_id", mysql.INTEGER(unsigned=True), nullable=True),
         sa.PrimaryKeyConstraint("post_id"),
         sa.ForeignKeyConstraint(
@@ -150,7 +153,7 @@ def upgrade() -> None:
         "forum_thread_reads",
         sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
         sa.Column("thread_id", mysql.INTEGER(unsigned=True), nullable=False),
-        sa.Column("last_read_at", sa.DateTime(), nullable=False),
+        sa.Column("last_read_at", mysql.DATETIME(fsp=6), nullable=False),
         sa.PrimaryKeyConstraint("user_id", "thread_id"),
         sa.ForeignKeyConstraint(
             ["user_id"],
