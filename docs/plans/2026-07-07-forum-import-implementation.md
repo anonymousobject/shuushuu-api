@@ -33,7 +33,7 @@
 | `app/services/forum_import/s9e_convert.py` (new) | pure `s9e_to_markdown(xml) -> str` |
 | `app/services/forum_import/user_map.py` (new) | `build_user_map(...)` phpBB poster → resolution |
 | `app/services/forum_import/attachments.py` (new) | `forum_attachment_url(...)` + `rehost_attachment(...)` |
-| `app/core/archived_user.py` (new) | `ARCHIVED_USERNAME` const + cached `get_archived_user_id(db)` |
+| `app/core/archived_user.py` (new) | `ARCHIVED_USERNAME` + `get_archived_user_id` + `ensure_archived_user` |
 | `app/api/v1/forum.py` (modify) | `_post_response` shows `legacy_username` for archived-user posts |
 | `scripts/import_forum_archive.py` (new) | orchestration; modes `--dry-run` / `--remap` |
 | `tests/services/test_s9e_convert.py` (new) | converter unit tests (real samples) |
@@ -51,19 +51,18 @@
 - Test: `tests/api/v1/test_forum_import_schema.py`
 
 **Interfaces:**
-- Produces: columns `forum_categories.legacy_forum_id`, `forum_threads.legacy_topic_id`, `forum_posts.legacy_post_id`/`legacy_poster_id`/`legacy_username`; `ARCHIVED_USERNAME: str`, `async def get_archived_user_id(db: AsyncSession) -> int | None`.
+- Produces: columns `forum_categories.legacy_forum_id`, `forum_threads.legacy_topic_id`, `forum_posts.legacy_post_id`/`legacy_poster_id`/`legacy_username`; `ARCHIVED_USERNAME: str`, `async def get_archived_user_id(db) -> int | None` (cached, None if absent), `async def ensure_archived_user(db) -> int` (creates on demand; the migration does NOT seed it).
 
 - [ ] **Step 1: Write the failing test**
 
 Create `tests/api/v1/test_forum_import_schema.py`:
 
 ```python
-"""Provenance columns exist and the Archived User is seeded."""
+"""Provenance columns exist; the Archived User is created on demand."""
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.archived_user import ARCHIVED_USERNAME, get_archived_user_id
+from app.core.archived_user import ARCHIVED_USERNAME, ensure_archived_user, get_archived_user_id
 from app.models.forum import ForumCategories, ForumPosts, ForumThreads
 from app.models.user import Users
 
@@ -87,11 +86,14 @@ async def test_legacy_columns_round_trip(db_session: AsyncSession):
     assert fetched.legacy_username == "OldName"
 
 
-async def test_archived_user_seeded(db_session: AsyncSession):
-    result = await db_session.execute(select(Users).where(Users.username == ARCHIVED_USERNAME))
-    user = result.scalar_one()
+async def test_ensure_archived_user_creates_and_is_idempotent(db_session: AsyncSession):
+    uid = await ensure_archived_user(db_session)
+    user = await db_session.get(Users, uid)
+    assert user.username == ARCHIVED_USERNAME
     assert user.active == 0
-    assert await get_archived_user_id(db_session) == user.id
+    # Second call returns the same id (no duplicate row) and get_ agrees.
+    assert await ensure_archived_user(db_session) == uid
+    assert await get_archived_user_id(db_session) == uid
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -126,26 +128,67 @@ to `ForumPosts`:
 Create `app/core/archived_user.py`:
 
 ```python
-"""The shared 'Archived User' system account used for unmapped phpBB posters."""
+"""The shared 'Archived User' system account used for unmapped phpBB posters.
 
-from sqlalchemy import select
+Import infrastructure, not schema: created on demand by ensure_archived_user()
+when the import runs — NOT seeded by a migration (which would collide with the
+test harness's hardcoded user_id 1-3). get_archived_user_id() returns None on a
+site where the import never ran, and the display path treats None as "no override".
+"""
+
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import Users
 
 ARCHIVED_USERNAME = "Archived User"
 
-# Cached across the process; the account never changes once seeded.
+# Cached for the app request path (get_thread). The id is stable once created;
+# a stale value only ever makes an override not fire (never a wrong override),
+# so it is safe under test rollback isolation. ensure_archived_user always
+# re-checks the DB and never trusts this cache.
 _archived_user_id: int | None = None
 
 
+async def _lookup(db: AsyncSession) -> int | None:
+    result = await db.execute(
+        select(Users.user_id).where(Users.username == ARCHIVED_USERNAME)  # type: ignore[call-overload]
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_archived_user_id(db: AsyncSession) -> int | None:
-    """Return the Archived User's user_id (cached), or None if not seeded."""
+    """Return the Archived User's user_id (cached), or None if it doesn't exist."""
     global _archived_user_id
     if _archived_user_id is None:
-        result = await db.execute(select(Users.user_id).where(Users.username == ARCHIVED_USERNAME))
-        _archived_user_id = result.scalar_one_or_none()
+        _archived_user_id = await _lookup(db)
     return _archived_user_id
+
+
+async def ensure_archived_user(db: AsyncSession) -> int:
+    """Create the Archived User if absent (idempotent); return its user_id.
+
+    Verifies against the DB directly (not the cache), so it is correct even under
+    test rollback isolation where a prior test's row was rolled back. Commits.
+    gender is NOT NULL without a default; '' is an existing valid value.
+    """
+    global _archived_user_id
+    existing = await _lookup(db)
+    if existing is None:
+        await db.execute(
+            text(
+                "INSERT INTO users (username, password, password_type, salt, email, active, "
+                "admin, gender, date_joined) "
+                "SELECT :u, '!', 'bcrypt', '!', 'archived@localhost', 0, 0, '', NOW() FROM DUAL "
+                "WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = :u)"
+            ),
+            {"u": ARCHIVED_USERNAME},
+        )
+        await db.commit()
+        existing = await _lookup(db)
+    assert existing is not None
+    _archived_user_id = existing
+    return existing
 ```
 
 - [ ] **Step 5: Author the migration**
@@ -189,20 +232,16 @@ def upgrade() -> None:
         "uq_forum_posts_legacy_post_id", "forum_posts", ["legacy_post_id"], unique=True
     )
     op.create_index("ix_forum_posts_legacy_poster_id", "forum_posts", ["legacy_poster_id"])
-
-    # Seed the Archived User (idempotent). Direct insert bypasses app validation
-    # by design; the account is inactive and cannot log in.
-    # gender is NOT NULL without a default; '' is an existing valid value.
-    op.execute(
-        "INSERT INTO users (username, password, password_type, salt, email, active, admin, "
-        "gender, date_joined) "
-        "SELECT 'Archived User', '!', 'bcrypt', '!', 'archived@localhost', 0, 0, '', NOW() "
-        "FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'Archived User')"
-    )
+    # NOTE: the Archived User is deliberately NOT seeded in this migration.
+    # Seeding a users row here collides with the test harness — conftest's
+    # _create_test_users hardcodes user_id 1-3, so a fresh-schema auto-increment
+    # seed lands on id 1 (breaking the whole DB suite, and CI always rebuilds
+    # fresh), and the truncate-reuse fast path wipes it afterward. The Archived
+    # User is import infrastructure: it is created at run time by
+    # ensure_archived_user() and only needs to exist where the import runs.
 
 
 def downgrade() -> None:
-    op.execute("DELETE FROM users WHERE username = 'Archived User'")
     op.drop_index("ix_forum_posts_legacy_poster_id", table_name="forum_posts")
     op.drop_index("uq_forum_posts_legacy_post_id", table_name="forum_posts")
     op.drop_column("forum_posts", "legacy_username")
@@ -219,7 +258,7 @@ def downgrade() -> None:
 Run: `uv run pytest tests/api/v1/test_forum_import_schema.py -v`
 Expected: PASS (2 tests). The conftest detects the new alembic head and rebuilds the test DB through the migration — if the migration is broken, this is where it surfaces.
 
-Note: `get_archived_user_id` memoizes in a module global. If a later test in the same process seeds a *different* archived user id, that would be stale — acceptable here (the id is stable), but if flakiness appears, reset `app.core.archived_user._archived_user_id = None` in a fixture.
+Note: `ensure_archived_user` always re-checks the DB (never trusts the module cache), so it is correct under rollback isolation. `get_archived_user_id`'s cache is only a request-path optimization; a stale value at worst makes an override not fire (never a wrong override), so no conftest changes are needed. The migration adds columns only — it does NOT seed the account (that would collide with conftest's hardcoded user_id 1-3).
 
 - [ ] **Step 7: Lint and commit**
 
@@ -800,7 +839,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
-from app.core.archived_user import get_archived_user_id
+from app.core.archived_user import ensure_archived_user
 from app.core.database import AsyncSessionLocal
 from app.models.forum import ForumCategories, ForumPosts, ForumThreads
 from app.services.forum_import.attachments import forum_attachment_url, rehost_attachment
@@ -900,9 +939,7 @@ async def run_import(
 ) -> ImportStats:
     stats = ImportStats()
     resolution = await _build_resolution(target, phpbb_url, legacy_url)
-    archived_id = await get_archived_user_id(target)
-    if archived_id is None:
-        raise RuntimeError("Archived User not seeded — run the migration first.")
+    archived_id = await ensure_archived_user(target)
 
     def author_of(poster_id: int) -> tuple[int, str]:
         res = resolution.get(poster_id)
@@ -1120,18 +1157,15 @@ Create `tests/api/v1/test_forum_archived_user.py`:
 """Imported posts attributed to the Archived User display the original name."""
 
 from httpx import AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.archived_user import ARCHIVED_USERNAME, get_archived_user_id
+from app.core.archived_user import ensure_archived_user
 from app.models.forum import ForumCategories, ForumPosts, ForumThreads
-from app.models.user import Users
 
 
 async def test_archived_post_shows_legacy_username(client: AsyncClient, db_session: AsyncSession):
-    # Archived User is seeded by the migration.
-    archived_id = await get_archived_user_id(db_session)
-    assert archived_id is not None
+    # The import creates the Archived User at run time; create it here for the test.
+    archived_id = await ensure_archived_user(db_session)
 
     cat = ForumCategories(title="Imported")
     db_session.add(cat)
