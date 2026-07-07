@@ -2,7 +2,6 @@
 
 from datetime import UTC, datetime
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,8 +44,6 @@ class TestRecomputeThreadStats:
     async def test_ignores_soft_deleted_posts(self, db_session: AsyncSession):
         thread = await _make_thread_with_posts(db_session)
         # Soft-delete the newest post (user 3's)
-        from sqlalchemy import select
-
         newest = (
             await db_session.execute(
                 select(ForumPosts)
@@ -61,9 +58,28 @@ class TestRecomputeThreadStats:
         assert thread.post_count == 2
         assert thread.last_post_user_id == 2
 
+    async def test_nulls_fields_when_all_posts_deleted(self, db_session: AsyncSession):
+        thread = await _make_thread_with_posts(db_session)
+        posts = (
+            (
+                await db_session.execute(
+                    select(ForumPosts).where(ForumPosts.thread_id == thread.thread_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for post in posts:
+            post.deleted = True
+        await db_session.flush()
+
+        await recompute_thread_stats(db_session, thread)
+        assert thread.post_count == 0
+        assert thread.last_post_at is None
+        assert thread.last_post_user_id is None
+
 
 class TestUpsertThreadRead:
-    @pytest.mark.needs_commit
     async def test_insert_then_update(self, db_session: AsyncSession):
         thread = await _make_thread_with_posts(db_session)
         thread_id = thread.thread_id  # Save before any expire
