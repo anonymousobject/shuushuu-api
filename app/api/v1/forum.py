@@ -581,10 +581,13 @@ async def create_post(
         .with_for_update()
     )
     thread = result.scalar_one_or_none()
-    if thread is None:
+    if thread is None or (thread.deleted and not is_moderator):
+        # Non-moderators can't distinguish a deleted thread from a missing one,
+        # matching get_thread/update_thread/delete_thread — no existence leak.
         raise HTTPException(status_code=404, detail="Thread not found")
     category = await _visible_category(db, thread.category_id, perms)
     if thread.deleted:
+        # Moderator path: the thread exists but must be restored before posting.
         raise HTTPException(status_code=403, detail="Thread is deleted")
     if thread.locked:
         raise HTTPException(status_code=403, detail="Thread is locked")

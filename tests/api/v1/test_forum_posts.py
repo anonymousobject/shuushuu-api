@@ -88,9 +88,11 @@ class TestCreatePost:
         )
         assert response.status_code == 403
 
-    async def test_deleted_thread_403(
+    async def test_deleted_thread_403_for_moderator(
         self, client: AsyncClient, db_session: AsyncSession, public_thread, staff_token
     ):
+        # A moderator sees the deleted thread exists (403 "restore first"),
+        # rather than a 404 — parity with get_thread's moderator visibility.
         public_thread.deleted = True
         await db_session.commit()
         response = await client.post(
@@ -99,6 +101,20 @@ class TestCreatePost:
             headers=_auth(staff_token),
         )
         assert response.status_code == 403
+
+    async def test_deleted_thread_404_for_non_moderator(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token
+    ):
+        # Non-moderators must not be able to tell a deleted thread apart from a
+        # missing one via the reply endpoint (no existence leak).
+        public_thread.deleted = True
+        await db_session.commit()
+        response = await client.post(
+            f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
+            json={"post_text": "hi"},
+            headers=_auth(user_token),
+        )
+        assert response.status_code == 404
 
     async def test_view_gated_thread_404(
         self, client: AsyncClient, db_session: AsyncSession, staff_category, user_token
