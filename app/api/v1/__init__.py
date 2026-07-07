@@ -20,6 +20,7 @@ from app.api.v1 import (
     privmsgs,
     search,
     tags,
+    url_import,
     users,
 )
 from app.api.v1.tags import character_source_links_router
@@ -32,6 +33,9 @@ router.include_router(auth.router)
 router.include_router(banners.router)
 router.include_router(donations.router)
 router.include_router(feeds.router)
+# url_import must precede images: its literal /images/* paths would otherwise
+# be captured by the /images/{image_id} int path param and 422.
+router.include_router(url_import.router)
 router.include_router(images.router)
 router.include_router(tags.router)
 router.include_router(character_source_links_router)

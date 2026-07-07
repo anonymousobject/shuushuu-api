@@ -2610,6 +2610,7 @@ async def upload_image(
     file: Annotated[UploadFile, File(description="Image file to upload")],
     caption: Annotated[str, Form(max_length=35)] = "",
     miscmeta: Annotated[str | None, Form(max_length=255)] = None,
+    source_url: Annotated[str | None, Form(max_length=2000)] = None,
     tag_ids: Annotated[str, Form(description="Comma-separated tag IDs (e.g., '1,2,3')")] = "",
     confirm_similar: Annotated[
         bool, Form(description="Set to true to bypass IQDB similarity check")
@@ -2682,6 +2683,16 @@ async def upload_image(
 
     file_path: FilePath | None = None  # Initialize to track if file was saved
     try:
+        # Validate source_url before touching storage: only http(s) URLs are
+        # accepted (blocks javascript:/data: schemes and similar).
+        if source_url is not None:
+            source_url = source_url.strip() or None
+        if source_url and not source_url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="source_url must start with http:// or https://",
+            )
+
         # Save image to storage (validates and calculates hash)
         # If validation fails, this will raise HTTPException
         file_path, ext, md5_hash = await save_uploaded_image(file, settings.STORAGE_PATH, image_id)
@@ -2774,6 +2785,7 @@ async def upload_image(
         temp_image.large = large_status
         temp_image.caption = caption
         temp_image.miscmeta = miscmeta
+        temp_image.source_url = source_url
 
         # Link tags if provided
         if tag_ids.strip():
@@ -2865,6 +2877,7 @@ async def upload_image(
             height=temp_image.height,
             caption=temp_image.caption,
             miscmeta=temp_image.miscmeta,
+            source_url=temp_image.source_url,
             rating=temp_image.rating,
             user_id=temp_image.user_id,  # user_id is guaranteed from database
             date_added=temp_image.date_added,

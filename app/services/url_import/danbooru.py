@@ -1,0 +1,66 @@
+"""Danbooru resolver (official JSON API)."""
+
+import re
+
+import httpx
+
+from app.config import settings
+from app.services.url_import.base import (
+    TOOL_USER_AGENT,
+    ResolvedImage,
+    ResolvedPost,
+    RestrictedContentError,
+    UpstreamError,
+    fetch_json,
+    host_allowed,
+    source_or,
+)
+
+_URL_RE = re.compile(r"^https?://danbooru\.donmai\.us/posts/(\d+)")
+
+# Cloudflare challenges requests that claim a browser User-Agent but arrive
+# over Python's TLS stack (UA/TLS mismatch reads as impersonation). An honest,
+# self-identifying tool UA passes cleanly, so danbooru is the sanctioned path
+# here rather than a spoofed browser UA.
+_TOOL_USER_AGENT = TOOL_USER_AGENT
+_TOOL_UA_HEADER = {"User-Agent": _TOOL_USER_AGENT}
+
+
+class DanbooruResolver:
+    site = "danbooru"
+
+    def match(self, url: str) -> bool:
+        return _URL_RE.match(url) is not None
+
+    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:
+        match = _URL_RE.match(url)
+        assert match is not None
+        post_id = match.group(1)
+        post_url = f"https://danbooru.donmai.us/posts/{post_id}"
+        json_url = f"{post_url}.json"
+        if settings.DANBOORU_LOGIN and settings.DANBOORU_API_KEY:
+            json_url += f"?login={settings.DANBOORU_LOGIN}&api_key={settings.DANBOORU_API_KEY}"
+        data = await fetch_json(client, json_url, site=self.site, headers=dict(_TOOL_UA_HEADER))
+        file_url = data.get("file_url")
+        if not file_url:
+            raise RestrictedContentError("danbooru post has no publicly accessible file")
+        preview_url = data.get("preview_file_url")
+        if not host_allowed(file_url, "donmai.us") or (
+            preview_url is not None and not host_allowed(preview_url, "donmai.us")
+        ):
+            raise UpstreamError("danbooru returned an unexpected image host")
+        artist = (data.get("tag_string_artist") or "").split(" ")[0]
+        return ResolvedPost(
+            site=self.site,
+            canonical_url=source_or(post_url, data.get("source")),
+            images=[
+                ResolvedImage(
+                    full_url=file_url,
+                    thumb_url=data.get("preview_file_url"),
+                    width=data.get("image_width"),
+                    height=data.get("image_height"),
+                    headers=dict(_TOOL_UA_HEADER),
+                )
+            ],
+            artist_name=artist.replace("_", " ") if artist else None,
+        )

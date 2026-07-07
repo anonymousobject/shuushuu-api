@@ -118,6 +118,7 @@ class ImageBase(SQLModel):
     # Metadata
     caption: str = Field(default="", max_length=35)
     miscmeta: str | None = Field(default=None, max_length=255)
+    source_url: str | None = Field(default=None, max_length=2000)
 
     # Status
     status: int = Field(
