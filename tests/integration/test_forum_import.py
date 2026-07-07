@@ -160,3 +160,58 @@ async def test_remap_recovers_thread_author(db_session: AsyncSession, monkeypatc
     await db_session.refresh(thread)
     assert opening_post.user_id == archived_id
     assert thread.user_id == opening_post.user_id
+
+
+@pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
+async def test_empty_forum_keeps_category(db_session: AsyncSession, monkeypatch, tmp_path):
+    from app.config import settings
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+    monkeypatch.setattr(settings, "R2_ENABLED", False)
+    from scripts.import_forum_archive import run_import
+
+    # forum_id 17 "Bug Reports": forum_type=1, 0 approved/unapproved/soft-deleted
+    # topics -- exercises _upsert_category committing even with no importable topics.
+    EMPTY_FORUM_ID = 17
+    stats = await run_import(
+        db_session, PHPBB_URL, LEGACY_URL, BACKUP, only_forum_ids={EMPTY_FORUM_ID}
+    )
+    assert stats.categories == 1
+    assert stats.threads == 0
+
+    cat = (
+        await db_session.execute(
+            select(ForumCategories).where(ForumCategories.legacy_forum_id == EMPTY_FORUM_ID)
+        )
+    ).scalar_one()  # category persisted despite no topics
+    assert cat.title == "Bug Reports"
+
+
+@pytest.mark.needs_commit
+@pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
+async def test_remap_dry_run_does_not_persist(db_session: AsyncSession, monkeypatch, tmp_path):
+    # Needs real commit/rollback semantics: the default savepoint fixture emulates
+    # commits with nested SAVEPOINTs, which can't distinguish a real in-run
+    # rollback (--dry-run) from that emulation.
+    from app.config import settings
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+    monkeypatch.setattr(settings, "R2_ENABLED", False)
+    from scripts.import_forum_archive import run_import
+
+    await run_import(db_session, PHPBB_URL, LEGACY_URL, BACKUP, only_forum_ids={GAMING_FORUM_ID})
+
+    post = (await db_session.execute(select(ForumPosts).limit(1))).scalar_one()
+    post_id = post.post_id  # captured before expire_all() below invalidates `post`
+    await db_session.execute(
+        text("UPDATE forum_posts SET user_id=:u WHERE post_id=:pid"),
+        {"u": 2, "pid": post_id},
+    )
+    await db_session.commit()
+
+    await run_import(
+        db_session, PHPBB_URL, LEGACY_URL, BACKUP,
+        only_forum_ids={GAMING_FORUM_ID}, remap_only=True, dry_run=True,
+    )
+
+    db_session.expire_all()
+    reread = await db_session.get(ForumPosts, post_id)
+    assert reread.user_id == 2  # remap's re-attribution was rolled back by dry-run
