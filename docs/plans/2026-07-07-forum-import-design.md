@@ -97,6 +97,8 @@ Every imported thread and post stores `legacy_poster_id` and `legacy_username` *
 
 In the forum post serialization (`_post_response` / the `UserSummary` build), when a post's `user_id` is the Archived User account **and** `legacy_username` is set, build the `UserSummary` with `username = legacy_username`. The name links to the single Archived-User profile. Real-account posts are unchanged — they show the current username (rename-aware) and link to the real profile. No frontend change: the frontend renders whatever `UserSummary.username` it receives.
 
+The thread view (`get_thread`) applies the same override to the thread **header** (the opening poster) so the header and the first post never disagree for an archived-authored thread. The **list** endpoints (category index, thread lists) deliberately keep the generic "Archived User" label for archived authors/last-posters — showing original names there would require denormalizing the opening/last post's `legacy_username` onto the thread row (two extra columns) and is out of scope; a generic archive label in lists is acceptable.
+
 ## s9e XML → markdown converter
 
 Deterministic tree-walk over post `post_text` (`<t>plain</t>` or `<r>rich</r>`). Element mapping:
