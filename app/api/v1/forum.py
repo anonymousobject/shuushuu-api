@@ -1,13 +1,14 @@
 """Forum API endpoints: categories, threads, posts."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import PaginationParams
 from app.core.auth import CurrentUser, OptionalCurrentUser
 from app.core.database import get_db
 from app.core.permission_cache import get_cached_user_permissions
@@ -15,7 +16,7 @@ from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
 from app.core.redis import get_redis
 from app.core.user_loader import build_user_summaries
-from app.models.forum import ForumCategories, ForumPosts, ForumThreads
+from app.models.forum import ForumCategories, ForumPosts, ForumThreadReads, ForumThreads
 from app.models.user import Users
 from app.schemas.common import UserSummary
 from app.schemas.forum import (
@@ -24,9 +25,13 @@ from app.schemas.forum import (
     ForumCategoryResponse,
     ForumCategoryUpdate,
     ForumPostResponse,
+    ForumThreadCreate,
+    ForumThreadDetailResponse,
+    ForumThreadListResponse,
     ForumThreadSummary,
+    ForumThreadUpdate,
 )
-from app.services.forum import can_access
+from app.services.forum import can_access, upsert_thread_read
 
 router = APIRouter(prefix="/forum", tags=["forum"])
 
@@ -301,4 +306,245 @@ async def delete_category(
     if thread_count:
         raise HTTPException(status_code=409, detail="Category has threads and cannot be deleted")
     await db.delete(category)
+    await db.commit()
+
+
+# ===== Threads =====
+
+
+@router.get("/categories/{category_id}/threads", response_model=ForumThreadListResponse)
+async def list_threads(
+    category_id: int,
+    pagination: Annotated[PaginationParams, Depends()],
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+    current_user: OptionalCurrentUser,
+) -> ForumThreadListResponse:
+    """List live threads in a category: pinned first, then by last activity."""
+    perms = await _effective_perms(db, redis_client, current_user)
+    await _visible_category(db, category_id, perms)
+
+    base = (
+        select(ForumThreads)
+        .where(ForumThreads.category_id == category_id)  # type: ignore[arg-type]
+        .where(ForumThreads.deleted == False)  # type: ignore[arg-type]  # noqa: E712
+    )
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+    rows = await db.execute(
+        base.order_by(
+            ForumThreads.pinned.desc(),  # type: ignore[attr-defined]
+            ForumThreads.last_post_at.desc(),  # type: ignore[union-attr]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+    threads = list(rows.scalars().all())
+
+    user_ids = {t.user_id for t in threads} | {
+        t.last_post_user_id for t in threads if t.last_post_user_id
+    }
+    summaries = await build_user_summaries(db, user_ids)
+
+    read_map: dict[int, datetime] = {}
+    if current_user is not None and threads:
+        read_rows = await db.execute(
+            select(  # type: ignore[call-overload]
+                ForumThreadReads.thread_id, ForumThreadReads.last_read_at
+            )
+            .where(ForumThreadReads.user_id == current_user.user_id)
+            .where(ForumThreadReads.thread_id.in_([t.thread_id for t in threads]))  # type: ignore[union-attr]
+        )
+        read_map = dict(read_rows.all())  # type: ignore[arg-type]
+
+    def is_unread(t: ForumThreads) -> bool:
+        if current_user is None or t.last_post_at is None:
+            return False
+        last_read = read_map.get(t.thread_id or 0)
+        return last_read is None or last_read < t.last_post_at
+
+    return ForumThreadListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        threads=[_thread_summary(t, summaries, is_unread(t)) for t in threads],
+    )
+
+
+@router.post(
+    "/categories/{category_id}/threads",
+    response_model=ForumThreadSummary,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_thread(
+    category_id: int,
+    body: ForumThreadCreate,
+    request: Request,
+    current_user: CurrentUser,
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+) -> ForumThreadSummary:
+    """Create a thread with its opening post in one transaction."""
+    assert current_user.user_id is not None
+    perms = await _effective_perms(db, redis_client, current_user)
+    category = await _visible_category(db, category_id, perms)
+    if not can_access(perms, category.thread_create_perm):
+        raise HTTPException(status_code=403, detail="You cannot create threads in this category")
+
+    thread = ForumThreads(
+        category_id=category.category_id, title=body.title, user_id=current_user.user_id
+    )
+    db.add(thread)
+    await db.flush()
+    post = ForumPosts(
+        thread_id=thread.thread_id,
+        user_id=current_user.user_id,
+        post_text=body.post_text,
+        ip=request.client.host if request.client else "",
+    )
+    db.add(post)
+    await db.flush()
+    await db.refresh(post)
+    thread.post_count = 1
+    thread.last_post_at = post.date
+    thread.last_post_user_id = current_user.user_id
+    # The author has obviously read their own thread
+    await upsert_thread_read(db, current_user.user_id, thread.thread_id or 0, post.date)
+    await db.commit()
+    await db.refresh(thread)
+
+    summaries = await build_user_summaries(db, {current_user.user_id})
+    return _thread_summary(thread, summaries, unread=False)
+
+
+@router.get("/threads/{thread_id}", response_model=ForumThreadDetailResponse)
+async def get_thread(
+    thread_id: int,
+    pagination: Annotated[PaginationParams, Depends()],
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+    current_user: OptionalCurrentUser,
+) -> ForumThreadDetailResponse:
+    """Thread meta + one page of posts (chronological). Marks the thread read
+    for authenticated callers."""
+    perms = await _effective_perms(db, redis_client, current_user)
+    is_moderator = Permission.FORUM_MODERATE.value in perms
+
+    thread = await db.get(ForumThreads, thread_id)
+    if thread is None or (thread.deleted and not is_moderator):
+        raise HTTPException(status_code=404, detail="Thread not found")
+    category = await _visible_category(db, thread.category_id, perms)
+
+    total = (
+        await db.execute(
+            select(func.count()).select_from(ForumPosts).where(ForumPosts.thread_id == thread_id)  # type: ignore[arg-type]
+        )
+    ).scalar() or 0
+    posts = (
+        (
+            await db.execute(
+                select(ForumPosts)
+                .where(ForumPosts.thread_id == thread_id)  # type: ignore[arg-type]
+                .order_by(ForumPosts.post_id)  # type: ignore[arg-type]
+                .offset(pagination.offset)
+                .limit(pagination.per_page)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    user_ids = {p.user_id for p in posts} | {thread.user_id}
+    if thread.last_post_user_id:
+        user_ids.add(thread.last_post_user_id)
+    summaries = await build_user_summaries(db, user_ids)
+
+    if current_user is not None and current_user.user_id is not None:
+        await upsert_thread_read(db, current_user.user_id, thread_id, datetime.now(UTC))
+        await db.commit()
+
+    return ForumThreadDetailResponse(
+        thread=_thread_summary(thread, summaries, unread=False),
+        can_reply=current_user is not None and can_access(perms, category.reply_perm),
+        can_moderate=is_moderator,
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        posts=[_post_response(p, summaries[p.user_id], is_moderator) for p in posts],
+    )
+
+
+@router.patch("/threads/{thread_id}", response_model=ForumThreadSummary)
+async def update_thread(
+    thread_id: int,
+    body: ForumThreadUpdate,
+    current_user: CurrentUser,
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+) -> ForumThreadSummary:
+    """title: author or FORUM_MODERATE. pinned/locked/category_id/deleted:
+    FORUM_MODERATE only."""
+    assert current_user.user_id is not None
+    perms = await _effective_perms(db, redis_client, current_user)
+    is_moderator = Permission.FORUM_MODERATE.value in perms
+
+    thread = await db.get(ForumThreads, thread_id)
+    if thread is None or (thread.deleted and not is_moderator):
+        raise HTTPException(status_code=404, detail="Thread not found")
+    await _visible_category(db, thread.category_id, perms)
+
+    updates = body.model_dump(exclude_unset=True)
+    mod_fields = {"pinned", "locked", "category_id", "deleted"} & updates.keys()
+    if mod_fields and not is_moderator:
+        raise HTTPException(status_code=403, detail="FORUM_MODERATE permission required")
+    if "title" in updates and not (is_moderator or thread.user_id == current_user.user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the thread author or a moderator can edit the title",
+        )
+    if "category_id" in updates:
+        target = await db.get(ForumCategories, updates["category_id"])
+        if target is None:
+            raise HTTPException(status_code=400, detail="Target category does not exist")
+
+    for field, value in updates.items():
+        setattr(thread, field, value)
+    await db.commit()
+    await db.refresh(thread)
+
+    user_ids = {thread.user_id}
+    if thread.last_post_user_id:
+        user_ids.add(thread.last_post_user_id)
+    summaries = await build_user_summaries(db, user_ids)
+    return _thread_summary(thread, summaries, unread=False)
+
+
+@router.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thread(
+    thread_id: int,
+    current_user: CurrentUser,
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+) -> None:
+    """Soft-delete. Author allowed only while the thread has no replies;
+    otherwise FORUM_MODERATE."""
+    assert current_user.user_id is not None
+    perms = await _effective_perms(db, redis_client, current_user)
+    is_moderator = Permission.FORUM_MODERATE.value in perms
+
+    thread = await db.get(ForumThreads, thread_id)
+    if thread is None or (thread.deleted and not is_moderator):
+        raise HTTPException(status_code=404, detail="Thread not found")
+    await _visible_category(db, thread.category_id, perms)
+
+    if not is_moderator:
+        if thread.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=403, detail="Only the author or a moderator can delete this thread"
+            )
+        if thread.post_count > 1:
+            raise HTTPException(
+                status_code=403,
+                detail="Threads with replies can only be deleted by moderators",
+            )
+    thread.deleted = True
     await db.commit()
