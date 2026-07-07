@@ -62,6 +62,12 @@ Units, each independently testable:
 
 The converter is a pure function (XML string → markdown string) so it is unit-testable in isolation from any database.
 
+### Source access
+
+The script reads from **live MariaDB databases over a connection**, never by parsing `.sql` files (a mysqldump is a stream of SQL statements; parsing it in Python would reinvent a SQL parser and is out of scope). The two source databases are supplied as connection parameters — `--phpbb-url` (default the dev `shuushuuphpbb3`) and `--site-url` (default the dev `php_shuu`) — so the same script serves any environment.
+
+Loading each `.sql` backup into a scratch database is therefore a one-command prerequisite (`mysql <scratch_db> < dump.sql`), run per environment before the import. The script only needs read access, and only to a handful of tables (`phpbb_forums`, `phpbb_topics`, `phpbb_posts`, `phpbb_users`, `phpbb_attachments`, and `php_shuu.users`).
+
 ## Schema changes
 
 New Alembic migration (on the forum-import branch, after the forum tables exist):
