@@ -122,8 +122,15 @@ Deterministic tree-walk over post `post_text` (`<t>plain</t>` or `<r>rich</r>`).
 
 ## Attachments
 
-- Upload the 357 files from `/sakura/backups/forums-2026-02-20/files/` to R2 under a **dedicated prefix distinct from board images** (e.g. `forum-archive/`), reusing the app's existing R2 client. Key each object by `physical_filename` (already content-addressed), so re-runs skip already-uploaded files.
-- `phpbb_attachments` joins to posts via `post_msg_id = post_id`. For each imported post, append its attachments (ordered by `attach_id`) as text-link lines at the end of the converted body: `📎 <real_filename>` → the R2 URL. Inline `[attachment=N]` placeholders in the body are removed (the appended list is the canonical presentation). `is_orphan=1` / PM attachments (`in_message=1`) are skipped.
+Reuse the app's existing storage layer — do **not** hardcode an R2 client. Board images and avatars already go through an `R2_ENABLED`-aware path (`app/services/r2_storage.py`, plus a no-op storage class when `R2_ENABLED=false`) with a local-filesystem fallback, and generate URLs via a helper like `avatar_url` (`app/services/avatar.py:46`) that branches on `settings.R2_ENABLED`. Attachments follow that pattern exactly, under a **dedicated `forum-archive/` key prefix** in the public bucket (distinct from board images and the `avatars/` prefix — satisfies "separate from main-site images").
+
+- Storage, per environment (decided by `settings.R2_ENABLED`):
+  - **`R2_ENABLED=true` (test / shuu server, prod):** upload each file to `settings.R2_PUBLIC_BUCKET` under key `forum-archive/<physical_filename>` via `r2_storage`; URL = `{settings.R2_PUBLIC_CDN_URL}/forum-archive/<physical_filename>`. The bucket comes from that environment's config, so test and prod land in their own buckets automatically.
+  - **`R2_ENABLED=false` (dev — this environment):** copy files into the local image-storage root under `forum-archive/`; URL = the local media path. No R2 on dev.
+  - A small `forum_attachment_url(physical_filename)` helper mirrors `avatar_url` so URL generation stays in one env-aware place. Uploads/copies are keyed by `physical_filename` (content-addressed), so re-runs skip files already present.
+- `phpbb_attachments` joins to posts via `post_msg_id = post_id`. For each imported post, append its attachments (ordered by `attach_id`) as text-link lines at the end of the converted body: `📎 <real_filename>` → the resolved URL. Inline `[attachment=N]` placeholders in the body are removed (the appended list is the canonical presentation). `is_orphan=1` and PM attachments (`in_message=1`) are skipped.
+
+Because the import runs per environment against that environment's forum tables and storage, each run bakes environment-correct URLs into the post text. **Minor consequence:** attachment URLs are literal in the post body (a property of the text-link choice), so they are environment-specific and would need re-baking only if the CDN domain itself changed — not a concern for the initial import.
 
 ## Import mechanics
 
@@ -142,8 +149,13 @@ Deterministic tree-walk over post `post_text` (`<t>plain</t>` or `<r>rich</r>`).
 
 ## Rollout
 
-1. **Dev:** apply the migration; run against the restored `shuushuuphpbb3` + `php_shuu` with a dev R2 prefix. Verify in the forum UI — browse imported threads, confirm Mod Forum is hidden from a non-staff account, spot-check rendering, attachment links, and author names (real vs Archived-User).
-2. **Prod:** restore the two source DBs on/reachable from the prod DB host; confirm the `php_shuu.user_id == site user_id` assumption with one query; upload attachments to the prod R2 prefix; run the import; verify. The script is the deliverable, run once per environment.
+The script is the deliverable, run once per environment. Each environment first restores the two source dumps into scratch databases (see Source access), then runs the import against its own forum tables and storage. Three environments, in order:
+
+1. **Dev (this env, `R2_ENABLED=false`):** apply the migration; run against the restored `shuushuuphpbb3` + `php_shuu`. Attachments land on local disk. Verify the logic in the forum UI — browse imported threads, confirm Mod Forum is hidden from a non-staff account, spot-check rendering, attachment links, and author names (real vs Archived-User with original name). Dev cannot exercise the R2 upload path.
+2. **Test / shuu server (`R2_ENABLED=true`, test bucket):** first real run of the R2 upload path and CDN-URL rendering. Restore the dumps to scratch DBs there, run, verify attachments resolve via the CDN.
+3. **Prod (`R2_ENABLED=true`, prod bucket):** confirm the `php_shuu.user_id == site user_id` assumption with one query first; run; verify. Uses the prod bucket automatically via config.
+
+Scratch source databases can be dropped after each environment's run.
 
 ## Scope boundaries (YAGNI)
 
