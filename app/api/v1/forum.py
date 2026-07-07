@@ -24,14 +24,16 @@ from app.schemas.forum import (
     ForumCategoryListResponse,
     ForumCategoryResponse,
     ForumCategoryUpdate,
+    ForumPostCreate,
     ForumPostResponse,
+    ForumPostUpdate,
     ForumThreadCreate,
     ForumThreadDetailResponse,
     ForumThreadListResponse,
     ForumThreadSummary,
     ForumThreadUpdate,
 )
-from app.services.forum import can_access, upsert_thread_read
+from app.services.forum import can_access, recompute_thread_stats, upsert_thread_read
 
 router = APIRouter(prefix="/forum", tags=["forum"])
 
@@ -547,4 +549,157 @@ async def delete_thread(
                 detail="Threads with replies can only be deleted by moderators",
             )
     thread.deleted = True
+    await db.commit()
+
+
+# ===== Posts =====
+
+
+@router.post(
+    "/threads/{thread_id}/posts",
+    response_model=ForumPostResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_post(
+    thread_id: int,
+    body: ForumPostCreate,
+    request: Request,
+    current_user: CurrentUser,
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+) -> ForumPostResponse:
+    """Reply to a thread. Locked blocks everyone (moderators unlock first)."""
+    assert current_user.user_id is not None
+    perms = await _effective_perms(db, redis_client, current_user)
+    is_moderator = Permission.FORUM_MODERATE.value in perms
+
+    # Lock the thread row: the denormalized stats recompute below must not
+    # race a concurrent reply/delete.
+    result = await db.execute(
+        select(ForumThreads)
+        .where(ForumThreads.thread_id == thread_id)  # type: ignore[arg-type]
+        .with_for_update()
+    )
+    thread = result.scalar_one_or_none()
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    category = await _visible_category(db, thread.category_id, perms)
+    if thread.deleted:
+        raise HTTPException(status_code=403, detail="Thread is deleted")
+    if thread.locked:
+        raise HTTPException(status_code=403, detail="Thread is locked")
+    if not can_access(perms, category.reply_perm):
+        raise HTTPException(status_code=403, detail="You cannot reply in this category")
+
+    post = ForumPosts(
+        thread_id=thread_id,
+        user_id=current_user.user_id,
+        post_text=body.post_text,
+        ip=request.client.host if request.client else "",
+    )
+    db.add(post)
+    await db.flush()
+    await db.refresh(post)
+    await recompute_thread_stats(db, thread)
+    # The author has read their own reply
+    await upsert_thread_read(db, current_user.user_id, thread_id, post.date)
+    await db.commit()
+
+    summaries = await build_user_summaries(db, {current_user.user_id})
+    return _post_response(post, summaries[current_user.user_id], is_moderator)
+
+
+@router.patch("/posts/{post_id}", response_model=ForumPostResponse)
+async def update_post(
+    post_id: int,
+    body: ForumPostUpdate,
+    current_user: CurrentUser,
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+) -> ForumPostResponse:
+    """post_text: owner or FORUM_MODERATE (post must not be deleted).
+    deleted: FORUM_MODERATE only (restore or delete; recomputes thread stats)."""
+    assert current_user.user_id is not None
+    perms = await _effective_perms(db, redis_client, current_user)
+    is_moderator = Permission.FORUM_MODERATE.value in perms
+
+    post = await db.get(ForumPosts, post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    result = await db.execute(
+        select(ForumThreads)
+        .where(ForumThreads.thread_id == post.thread_id)  # type: ignore[arg-type]
+        .with_for_update()
+    )
+    thread = result.scalar_one()
+    if thread.deleted and not is_moderator:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    await _visible_category(db, thread.category_id, perms)
+
+    updates = body.model_dump(exclude_unset=True)
+    if "deleted" in updates and not is_moderator:
+        raise HTTPException(status_code=403, detail="FORUM_MODERATE permission required")
+    if "post_text" in updates:
+        if not (is_moderator or post.user_id == current_user.user_id):
+            raise HTTPException(
+                status_code=403, detail="Only the author or a moderator can edit this post"
+            )
+        will_be_deleted = updates.get("deleted", post.deleted)
+        if will_be_deleted:
+            raise HTTPException(status_code=400, detail="Restore the post before editing it")
+        post.post_text = updates["post_text"]
+        post.update_count += 1
+        post.last_updated = datetime.now(UTC)
+        post.last_updated_user_id = current_user.user_id
+    if "deleted" in updates:
+        if updates["deleted"] and post.post_id == await _first_post_id(db, thread.thread_id or 0):
+            raise HTTPException(
+                status_code=400,
+                detail="The opening post cannot be deleted; delete the thread instead",
+            )
+        post.deleted = updates["deleted"]
+        await recompute_thread_stats(db, thread)
+    await db.commit()
+
+    summaries = await build_user_summaries(db, {post.user_id})
+    return _post_response(post, summaries[post.user_id], is_moderator)
+
+
+@router.delete("/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_post(
+    post_id: int,
+    current_user: CurrentUser,
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+) -> None:
+    """Soft-delete a post (owner or FORUM_MODERATE). The opening post cannot
+    be deleted alone — delete the thread instead."""
+    assert current_user.user_id is not None
+    perms = await _effective_perms(db, redis_client, current_user)
+    is_moderator = Permission.FORUM_MODERATE.value in perms
+
+    post = await db.get(ForumPosts, post_id)
+    if post is None or (post.deleted and not is_moderator):
+        raise HTTPException(status_code=404, detail="Post not found")
+    result = await db.execute(
+        select(ForumThreads)
+        .where(ForumThreads.thread_id == post.thread_id)  # type: ignore[arg-type]
+        .with_for_update()
+    )
+    thread = result.scalar_one()
+    if thread.deleted and not is_moderator:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    await _visible_category(db, thread.category_id, perms)
+
+    if not (is_moderator or post.user_id == current_user.user_id):
+        raise HTTPException(
+            status_code=403, detail="Only the author or a moderator can delete this post"
+        )
+    if post.post_id == await _first_post_id(db, thread.thread_id or 0):
+        raise HTTPException(
+            status_code=400,
+            detail="The opening post cannot be deleted; delete the thread instead",
+        )
+    post.deleted = True
+    await recompute_thread_stats(db, thread)
     await db.commit()
