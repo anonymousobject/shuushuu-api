@@ -471,8 +471,22 @@ async def get_thread(
         await db.commit()
 
     archived_user_id = await get_archived_user_id(db)
+    thread_summary = _thread_summary(thread, summaries, unread=False)
+    if archived_user_id is not None and thread.user_id == archived_user_id:
+        opening_legacy = (
+            await db.execute(
+                select(ForumPosts.legacy_username)  # type: ignore[call-overload]
+                .where(ForumPosts.thread_id == thread.thread_id)
+                .order_by(ForumPosts.post_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if opening_legacy:
+            thread_summary.user = thread_summary.user.model_copy(
+                update={"username": opening_legacy}
+            )
     return ForumThreadDetailResponse(
-        thread=_thread_summary(thread, summaries, unread=False),
+        thread=thread_summary,
         can_reply=current_user is not None and can_access(perms, category.reply_perm),
         can_moderate=is_moderator,
         total=total,
