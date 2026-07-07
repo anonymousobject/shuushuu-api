@@ -25,10 +25,6 @@ from app.services.url_import.base import (
 _URL_RE = re.compile(r"^https?://(?:www\.)?zerochan\.net/(\d+)")
 
 
-def _is_zerochan_host(image_url: str) -> bool:
-    return host_allowed(image_url, "zerochan.net")
-
-
 def _user_agent() -> str:
     """Zerochan's documented UA convention is "project name - username"."""
     if settings.ZEROCHAN_USERNAME:
@@ -57,8 +53,11 @@ class ZerochanResolver:
         full_url = data.get("full")
         if not full_url:
             raise UpstreamError("zerochan response missing expected fields")
-        if not _is_zerochan_host(full_url):
-            raise UpstreamError("zerochan full image points off-site")
+        thumb_url = data.get("large") or data.get("small")
+        if not host_allowed(full_url, "zerochan.net") or (
+            thumb_url is not None and not host_allowed(thumb_url, "zerochan.net")
+        ):
+            raise UpstreamError("zerochan returned an unexpected image host")
         return ResolvedPost(
             site=self.site,
             canonical_url=source_or(entry_url, data.get("source")),

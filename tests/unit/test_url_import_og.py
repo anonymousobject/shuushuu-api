@@ -172,6 +172,11 @@ class TestZerochan:
             with pytest.raises(UpstreamError):
                 await ZerochanResolver().resolve(self.URL, client)
 
+    async def test_off_site_thumb_image_refused(self):
+        async with self._client({**self.ENTRY, "large": "https://evil.example/t.jpg"}) as client:
+            with pytest.raises(UpstreamError):
+                await ZerochanResolver().resolve(self.URL, client)
+
     async def test_missing_full_is_upstream_error(self):
         entry = {k: v for k, v in self.ENTRY.items() if k != "full"}
         async with self._client(entry) as client:
