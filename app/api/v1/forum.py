@@ -42,6 +42,12 @@ router = APIRouter(prefix="/forum", tags=["forum"])
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 RedisDep = Annotated[redis.Redis, Depends(get_redis)]
 
+# The permalink resolver computes a post's page with this; it MUST equal the
+# frontend thread page's per-page size (shuushuu-frontend:
+# src/routes/forum/threads/[thread_id]/+page.server.ts, `perPage`). If that
+# page size changes, change this too.
+FORUM_POSTS_PER_PAGE = 20
+
 
 # ===== Shared helpers =====
 
@@ -781,5 +787,40 @@ async def legacy_viewtopic(
     await _visible_category(db, thread.category_id, perms)
     return RedirectResponse(
         url=f"/forum/threads/{thread.thread_id}",
+        status_code=status.HTTP_301_MOVED_PERMANENTLY,
+    )
+
+
+@router.get("/posts/{post_id}/redirect", include_in_schema=False)
+async def post_permalink(
+    post_id: int,
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+    current_user: OptionalCurrentUser,
+) -> RedirectResponse:
+    """301 a stable /forum/posts/{post_id} permalink to the post's thread, page,
+    and anchor. Page math matches get_thread's pagination: posts ordered by
+    post_id, FORUM_POSTS_PER_PAGE per page, deleted posts counted (they render
+    inline as tombstones)."""
+    perms = await _effective_perms(db, redis_client, current_user)
+    post = await db.get(ForumPosts, post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    thread = await db.get(ForumThreads, post.thread_id)
+    if thread is None:  # FK guarantees a parent thread; guard defensively anyway.
+        raise HTTPException(status_code=404, detail="Post not found")
+    # 404 if the destination category is gated and not visible to the caller.
+    await _visible_category(db, thread.category_id, perms)
+    rank = (
+        await db.execute(
+            select(func.count())
+            .select_from(ForumPosts)
+            .where(ForumPosts.thread_id == post.thread_id)  # type: ignore[arg-type]
+            .where(ForumPosts.post_id < post_id)  # type: ignore[arg-type, operator]
+        )
+    ).scalar() or 0
+    page = rank // FORUM_POSTS_PER_PAGE + 1
+    return RedirectResponse(
+        url=f"/forum/threads/{thread.thread_id}?page={page}#post-{post_id}",
         status_code=status.HTTP_301_MOVED_PERMANENTLY,
     )
