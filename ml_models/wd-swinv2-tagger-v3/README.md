@@ -1,16 +1,20 @@
 # WD-Tagger v3 (SwinV2) Model
 
-Download the model from HuggingFace:
+Both files below are provisioned here from HuggingFace — neither is committed to
+the repo (`model.onnx` is large; `selected_tags.csv` is the full danbooru tag
+vocabulary, including explicit tag names we never map). Fetch both onto each host
+that runs this model:
 
 ```bash
 cd ml_models/wd-swinv2-tagger-v3
 wget https://huggingface.co/SmilingWolf/wd-swinv2-tagger-v3/resolve/main/model.onnx
+wget https://huggingface.co/SmilingWolf/wd-swinv2-tagger-v3/resolve/main/selected_tags.csv
 ```
 
 Or use the HuggingFace CLI:
 
 ```bash
-huggingface-cli download SmilingWolf/wd-swinv2-tagger-v3 model.onnx --local-dir ml_models/wd-swinv2-tagger-v3
+huggingface-cli download SmilingWolf/wd-swinv2-tagger-v3 model.onnx selected_tags.csv --local-dir ml_models/wd-swinv2-tagger-v3
 ```
 
 ## Model Info

@@ -131,6 +131,10 @@ CLAUDE.md
 /mediawiki/
 /secrets/
 
-# ML models (large binary files - download separately)
-ml_models/*.onnx
-ml_models/**/*.onnx
+# ML model data (weights + tag-vocab CSVs) is provisioned on hosts from
+# HuggingFace, not committed — the vocab CSV also carries the full danbooru tag
+# list (incl. explicit tag names we never map). Track only the READMEs that
+# document how to fetch each model.
+ml_models/**
+!ml_models/**/
+!ml_models/**/README.md
