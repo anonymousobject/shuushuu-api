@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -729,3 +730,56 @@ async def delete_post(
     post.deleted = True
     await recompute_thread_stats(db, thread)
     await db.commit()
+
+
+# ===== Legacy phpBB URL redirects & post permalinks =====
+# Resolve retired forum URLs (and the /forum/posts/{id} permalink) to their new
+# equivalents. Permission-aware: 404 (never 301) when the destination category
+# isn't visible to the caller, so gated categories stay hidden. nginx maps the
+# legacy/permalink paths onto these endpoints; they are not part of the public
+# JSON API (include_in_schema=False).
+
+
+@router.get("/legacy/viewforum", include_in_schema=False)
+async def legacy_viewforum(
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+    current_user: OptionalCurrentUser,
+    f: Annotated[int, Query(description="Legacy phpBB forum id")],
+) -> RedirectResponse:
+    """301 an old forums/viewforum.php?f=… to the new category page."""
+    perms = await _effective_perms(db, redis_client, current_user)
+    result = await db.execute(
+        select(ForumCategories).where(ForumCategories.legacy_forum_id == f)  # type: ignore[arg-type]
+    )
+    category = result.scalars().first()
+    if category is None or not can_access(perms, category.view_perm):
+        raise HTTPException(status_code=404, detail="Forum not found")
+    return RedirectResponse(
+        url=f"/forum/{category.category_id}",
+        status_code=status.HTTP_301_MOVED_PERMANENTLY,
+    )
+
+
+@router.get("/legacy/viewtopic", include_in_schema=False)
+async def legacy_viewtopic(
+    db: DbDep,
+    redis_client: RedisDep,  # type: ignore[type-arg]
+    current_user: OptionalCurrentUser,
+    t: Annotated[int, Query(description="Legacy phpBB topic id")],
+    f: Annotated[int | None, Query(description="Legacy forum id (ignored)")] = None,
+) -> RedirectResponse:
+    """301 an old forums/viewtopic.php?f=…&t=… to the new thread page."""
+    perms = await _effective_perms(db, redis_client, current_user)
+    result = await db.execute(
+        select(ForumThreads).where(ForumThreads.legacy_topic_id == t)  # type: ignore[arg-type]
+    )
+    thread = result.scalars().first()
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    # 404 if the destination category is gated and not visible to the caller.
+    await _visible_category(db, thread.category_id, perms)
+    return RedirectResponse(
+        url=f"/forum/threads/{thread.thread_id}",
+        status_code=status.HTTP_301_MOVED_PERMANENTLY,
+    )
