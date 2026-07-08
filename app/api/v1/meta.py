@@ -14,6 +14,7 @@ class PublicConfig(BaseModel):
     """Public configuration exposed to frontend"""
 
     max_search_tags: int
+    max_search_users: int
     max_image_size: int
     max_avatar_size: int
     upload_delay_seconds: int
@@ -30,6 +31,7 @@ async def get_public_config() -> PublicConfig:
     """
     return PublicConfig(
         max_search_tags=settings.MAX_SEARCH_TAGS,
+        max_search_users=settings.MAX_SEARCH_USERS,
         max_image_size=settings.MAX_IMAGE_SIZE,
         max_avatar_size=settings.MAX_AVATAR_SIZE,
         upload_delay_seconds=settings.UPLOAD_DELAY_SECONDS,

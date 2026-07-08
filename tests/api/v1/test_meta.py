@@ -24,6 +24,7 @@ class TestGetPublicConfig:
 
         # Verify all expected fields are present
         assert "max_search_tags" in data
+        assert "max_search_users" in data
         assert "max_image_size" in data
         assert "max_avatar_size" in data
         assert "upload_delay_seconds" in data
@@ -38,6 +39,7 @@ class TestGetPublicConfig:
 
         # Verify values match settings
         assert data["max_search_tags"] == settings.MAX_SEARCH_TAGS
+        assert data["max_search_users"] == settings.MAX_SEARCH_USERS
         assert data["max_image_size"] == settings.MAX_IMAGE_SIZE
         assert data["max_avatar_size"] == settings.MAX_AVATAR_SIZE
         assert data["upload_delay_seconds"] == settings.UPLOAD_DELAY_SECONDS
@@ -52,6 +54,7 @@ class TestGetPublicConfig:
 
         # Verify data types
         assert isinstance(data["max_search_tags"], int)
+        assert isinstance(data["max_search_users"], int)
         assert isinstance(data["max_image_size"], int)
         assert isinstance(data["max_avatar_size"], int)
         assert isinstance(data["upload_delay_seconds"], int)
@@ -59,6 +62,7 @@ class TestGetPublicConfig:
 
         # Verify positive values
         assert data["max_search_tags"] > 0
+        assert data["max_search_users"] > 0
         assert data["max_image_size"] > 0
         assert data["max_avatar_size"] > 0
         assert data["upload_delay_seconds"] >= 0

@@ -3035,6 +3035,44 @@ class TestCommentFilters:
         filenames = {img["filename"] for img in data["images"]}
         assert filenames == {"no_comment", "also_no_comment"}
 
+    async def test_commenter_total_counts_distinct_images(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """An image with several comments by one user counts once in total.
+
+        The Comments JOIN produces one row per comment; the pagination total
+        must count distinct images (the page path already dedupes).
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="multicommenter",
+            email="multi@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000201",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image_data = sample_image_data.copy()
+        image_data.update({"filename": "multi-comment", "md5_hash": "multicommenthash0001"})
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.flush()
+
+        for text in ["First!", "Also this.", "And one more."]:
+            db_session.add(
+                Comments(image_id=image.image_id, user_id=user.id, post_text=text)
+            )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?commenter={user.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["images"]) == 1
+
 
 @pytest.mark.api
 class TestShowAllImagesFilter:
@@ -4303,3 +4341,288 @@ class TestHideReposts:
         # Control: reposts counted -> 3 before bm -> position 3 -> page ceil(4/2)=2.
         data = (await client.get("/api/v1/images/bookmark/page", headers=self._hdr(viewer))).json()
         assert data["page"] == 2
+
+
+@pytest.mark.api
+class TestExcludeFavoritedByUserId:
+    """Tests for the exclude_favorited_by_user_id parameter."""
+
+    async def _setup(self, db_session, sample_image_data):
+        """Two users; 4 images; user1 favorites 0,1; user2 favorites 1,2. Image 3 unfavorited.
+
+        Returns (user1, user2, images).
+        """
+        user1 = Users(
+            username="exclfav1",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345salt01",
+            email="exclfav1@example.com",
+        )
+        user2 = Users(
+            username="exclfav2",
+            password="testpass",
+            password_type="bcrypt",
+            salt="salt12345salt02",
+            email="exclfav2@example.com",
+        )
+        db_session.add_all([user1, user2])
+        await db_session.flush()
+
+        images = []
+        for i in range(4):
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"exclfav-{i}"
+            image_data["md5_hash"] = f"exclfavhash{i:018d}"
+            image = Images(**image_data)
+            db_session.add(image)
+            images.append(image)
+        await db_session.flush()
+
+        for i in [0, 1]:
+            db_session.add(Favorites(user_id=user1.user_id, image_id=images[i].image_id))
+        for i in [1, 2]:
+            db_session.add(Favorites(user_id=user2.user_id, image_id=images[i].image_id))
+        await db_session.commit()
+        return user1, user2, images
+
+    async def test_exclude_single_favoriter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Excluding user1 drops images 0 and 1, keeps 2 and 3."""
+        user1, _user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(
+            f"/api/v1/images?exclude_favorited_by_user_id={user1.user_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        kept = {img["filename"] for img in data["images"]}
+        assert kept == {"exclfav-2", "exclfav-3"}
+
+    async def test_exclude_multiple_favoriters(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Excluding both users leaves only the unfavorited image."""
+        user1, user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(
+            f"/api/v1/images?exclude_favorited_by_user_id={user1.user_id},{user2.user_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "exclfav-3"
+
+    async def test_exclude_composes_with_favorited_by_include(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """favorited_by user1 minus favorited_by user2 = image 0 only."""
+        user1, user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(
+            f"/api/v1/images?favorited_by_user_id={user1.user_id}"
+            f"&exclude_favorited_by_user_id={user2.user_id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "exclfav-0"
+
+    async def test_exclude_favorited_over_cap_is_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        too_many = ",".join(str(i) for i in range(1, settings.MAX_SEARCH_USERS + 2))
+        response = await client.get(
+            f"/api/v1/images?exclude_favorited_by_user_id={too_many}"
+        )
+        assert response.status_code == 400
+        assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]
+
+
+@pytest.mark.api
+class TestExcludeCommenter:
+    """Tests for the exclude_commenter parameter."""
+
+    async def _setup(self, db_session, sample_image_data):
+        """Two users; 3 images; user1 comments on image 0, user2 on images 0 and 1.
+
+        Image 2 has no comments. Returns (user1, user2, images).
+        """
+        from app.models import Comments
+
+        user1 = Users(
+            username="exclcom1",
+            email="exclcom1@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000101",
+        )
+        user2 = Users(
+            username="exclcom2",
+            email="exclcom2@test.com",
+            password="testpass2",
+            password_type="bcrypt",
+            salt="testsalt0000102",
+        )
+        db_session.add_all([user1, user2])
+        await db_session.flush()
+
+        images = []
+        for i in range(3):
+            image_data = sample_image_data.copy()
+            image_data["filename"] = f"exclcom-{i}"
+            image_data["md5_hash"] = f"exclcomhash{i:018d}"
+            image = Images(**image_data)
+            db_session.add(image)
+            images.append(image)
+        await db_session.flush()
+
+        db_session.add(
+            Comments(image_id=images[0].image_id, user_id=user1.id, post_text="First!")
+        )
+        db_session.add(
+            Comments(image_id=images[0].image_id, user_id=user2.id, post_text="Second!")
+        )
+        db_session.add(
+            Comments(image_id=images[1].image_id, user_id=user2.id, post_text="Nice!")
+        )
+        await db_session.commit()
+        return user1, user2, images
+
+    async def test_exclude_single_commenter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Excluding user2 drops images 0 and 1, keeps the uncommented image 2."""
+        _user1, user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(f"/api/v1/images?exclude_commenter={user2.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "exclcom-2"
+
+    async def test_exclude_commenter_composes_with_commenter_include(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Commented-by user2 minus commented-by user1 = image 1 only."""
+        user1, user2, images = await self._setup(db_session, sample_image_data)
+
+        response = await client.get(
+            f"/api/v1/images?commenter={user2.id}&exclude_commenter={user1.id}"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "exclcom-1"
+
+    async def test_exclude_commenter_over_cap_is_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        too_many = ",".join(str(i) for i in range(1, settings.MAX_SEARCH_USERS + 2))
+        response = await client.get(f"/api/v1/images?exclude_commenter={too_many}")
+        assert response.status_code == 400
+        assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]
+
+    async def test_exclude_commenter_ignores_null_image_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A NULL-image_id comment row must not poison the NOT IN subquery.
+
+        SQL's NOT IN returns UNKNOWN for every row if the subquery yields a
+        NULL, silently emptying the whole search.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="nullcommenter",
+            email="nullc@test.com",
+            password="testpass1",
+            password_type="bcrypt",
+            salt="testsalt0000301",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "filename": "null-safe", "md5_hash": "n" * 32})
+        db_session.add(image)
+        await db_session.flush()
+
+        db_session.add(Comments(image_id=None, user_id=user.id, post_text="orphaned"))
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?exclude_commenter={user.id}")
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+
+
+@pytest.mark.api
+class TestExcludeUserId:
+    """Tests for the exclude_user_id parameter on image search."""
+
+    async def _create_images_for_users(self, db_session, sample_image_data, counts):
+        """counts: {user_id: n_images}. Users 1-3 pre-exist via conftest."""
+        for user_id, n in counts.items():
+            for i in range(n):
+                image_data = sample_image_data.copy()
+                image_data["filename"] = f"exclu{user_id}-{i}"
+                image_data["md5_hash"] = f"exclu{user_id}hash{i:018d}"
+                image_data["user_id"] = user_id
+                db_session.add(Images(**image_data))
+        await db_session.commit()
+
+    async def test_exclude_single_uploader(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """exclude_user_id drops that user's uploads and keeps everyone else's."""
+        await self._create_images_for_users(db_session, sample_image_data, {1: 2, 2: 3, 3: 1})
+
+        response = await client.get("/api/v1/images?exclude_user_id=2")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3
+        assert all(img["user_id"] != 2 for img in data["images"])
+
+    async def test_exclude_multiple_uploaders(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A comma-separated list excludes every listed uploader."""
+        await self._create_images_for_users(db_session, sample_image_data, {1: 2, 2: 3, 3: 1})
+
+        response = await client.get("/api/v1/images?exclude_user_id=1,2")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["user_id"] == 3
+
+    async def test_exclude_user_id_composes_with_include(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Including and excluding the same uploader honestly returns nothing."""
+        await self._create_images_for_users(db_session, sample_image_data, {2: 3})
+
+        response = await client.get("/api/v1/images?user_id=2&exclude_user_id=2")
+        assert response.status_code == 200
+        assert response.json()["total"] == 0
+
+    async def test_exclude_user_id_garbage_tokens_ignored(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Non-decimal tokens (incl. unicode digits like ²) are dropped, not a 500."""
+        await self._create_images_for_users(db_session, sample_image_data, {1: 1, 2: 1})
+
+        response = await client.get("/api/v1/images?exclude_user_id=²,abc,,2")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["user_id"] == 1
+
+    async def test_exclude_user_id_over_cap_is_400(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """More than MAX_SEARCH_USERS ids is rejected with a 400."""
+        too_many = ",".join(str(i) for i in range(1, settings.MAX_SEARCH_USERS + 2))
+        response = await client.get(f"/api/v1/images?exclude_user_id={too_many}")
+        assert response.status_code == 400
+        assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]

@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "YOU MUST CHANGE THIS TO A SECURE RANDOM VALUE"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10
+    # 30 min (was 10): a short access token forces the SSR to refresh on nearly
+    # every page load, which churns refresh-token rotation and amplifies any
+    # rotation desync. 30 min cuts that refresh frequency ~3x.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     # bcrypt cost factor (gensalt accepts 4-31); tests override to 4 for
     # speed (see tests/conftest.py)
@@ -225,11 +228,23 @@ class Settings(BaseSettings):
     UPLOAD_DELAY_SECONDS: int = 30
     SEARCH_DELAY_SECONDS: int = 2
     MAX_SEARCH_TAGS: int = 5
+    MAX_SEARCH_USERS: int = 5
     SIMILARITY_CHECK_RATE_LIMIT: int = 5  # Max similarity checks per user per minute
     REGISTRATION_RATE_LIMIT: int = Field(
         default=5, description="Max registrations per IP per window"
     )
     REGISTRATION_RATE_WINDOW_HOURS: int = Field(default=1, description="Rate limit window in hours")
+
+    # URL Import (see docs/plans/2026-07-06-url-import-design.md)
+    URL_RESOLVE_RATE_PER_MINUTE: int = 5
+    URL_RESOLVE_GLOBAL_RATE_PER_MINUTE: int = 60
+    EXTERNAL_FETCH_RATE_PER_MINUTE: int = 40
+    URL_IMPORT_FIXTURE_BASE_URL: str = "http://localhost:8000"
+    GELBOORU_API_KEY: str = ""
+    GELBOORU_USER_ID: str = ""
+    DANBOORU_LOGIN: str = ""
+    DANBOORU_API_KEY: str = ""
+    ZEROCHAN_USERNAME: str = ""
 
     # Pagination
     DEFAULT_PAGE_SIZE: int = 15
