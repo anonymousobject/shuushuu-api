@@ -111,6 +111,12 @@ docker/nginx/e-shuushuu.net.conf
 # Redis dumps
 dump.rdb
 
+# Tag-mapping data is environment-bound (carries real internal_tag_ids) — the DB
+# (tag_mappings table) is the source of truth. Kept outside git; back up separately.
+data/tag_mappings.csv
+data/character_mappings_draft.csv
+data/character_mappings_launchable.csv
+
 # PHP codebase
 shuu-php/
 .worktrees/
@@ -124,3 +130,11 @@ CLAUDE.md
 # Not tracked — rendered fresh from vault each apply.
 /mediawiki/
 /secrets/
+
+# ML model data (weights + tag-vocab CSVs) is provisioned on hosts from
+# HuggingFace, not committed — the vocab CSV also carries the full danbooru tag
+# list (incl. explicit tag names we never map). Track only the READMEs that
+# document how to fetch each model.
+ml_models/**
+!ml_models/**/
+!ml_models/**/README.md

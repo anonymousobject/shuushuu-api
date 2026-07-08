@@ -24,6 +24,7 @@ from app.core.logging import (
 )
 from app.core.permission_sync import sync_permissions
 from app.core.security import verify_access_token
+from app.services.ml_runtime import warm_load_if_enabled
 from app.tasks.queue import close_queue
 
 # Configure logging on module import
@@ -129,6 +130,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             url=settings.MEILISEARCH_URL,
             exc_info=True,
         )
+
+    await warm_load_if_enabled()
 
     yield
 

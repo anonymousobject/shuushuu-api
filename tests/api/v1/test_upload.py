@@ -278,6 +278,122 @@ class TestUploadIQDBDuplicateDetection:
         assert data["image"]["source_url"] is None
 
 
+class TestUploadMLTagSuggestions:
+    """Tests for ML tag suggestion job enqueueing on upload."""
+
+    @pytest.mark.asyncio
+    async def test_upload_enqueues_ml_job_when_flag_enabled(
+        self, upload_client: AsyncClient, verified_user: Users, monkeypatch
+    ):
+        """When ML_TAG_SUGGESTIONS_ENABLED=True, upload enqueues generate_ml_tag_suggestions."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+
+        enqueue_mock = AsyncMock()
+
+        with (
+            _mock_save_uploaded_image("ml_enqueue_on"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", enqueue_mock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 201
+        ml_calls = [
+            call
+            for call in enqueue_mock.call_args_list
+            if call.args and call.args[0] == "generate_ml_tag_suggestions"
+        ]
+        assert len(ml_calls) == 1, f"Expected 1 ml job call, got {len(ml_calls)}: {enqueue_mock.call_args_list}"
+        image_id = response.json()["image"]["image_id"]
+        assert ml_calls[0].kwargs.get("image_id") == image_id
+        assert ml_calls[0].kwargs.get("_defer_by") is None  # runs immediately, no defer
+
+    @pytest.mark.asyncio
+    async def test_upload_does_not_enqueue_ml_job_when_flag_disabled(
+        self, upload_client: AsyncClient, verified_user: Users, monkeypatch
+    ):
+        """When ML_TAG_SUGGESTIONS_ENABLED=False (default), upload does not enqueue the ml job."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", False)
+
+        enqueue_mock = AsyncMock()
+
+        with (
+            _mock_save_uploaded_image("ml_enqueue_off"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", enqueue_mock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 201
+        ml_calls = [
+            call
+            for call in enqueue_mock.call_args_list
+            if call.args and call.args[0] == "generate_ml_tag_suggestions"
+        ]
+        assert len(ml_calls) == 0, f"Expected no ml job calls, got: {enqueue_mock.call_args_list}"
+
+    @pytest.mark.asyncio
+    async def test_upload_succeeds_when_ml_enqueue_fails(
+        self, upload_client: AsyncClient, verified_user: Users, monkeypatch
+    ):
+        """Upload still succeeds (201) when the ml tag suggestion enqueue raises an exception."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+
+        def _side_effect(job_name, **kwargs):
+            if job_name == "generate_ml_tag_suggestions":
+                raise RuntimeError("arq unavailable")
+            return None
+
+        enqueue_mock = AsyncMock(side_effect=_side_effect)
+
+        with (
+            _mock_save_uploaded_image("ml_enqueue_fail"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", enqueue_mock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 201
+        non_ml_calls = [
+            c for c in enqueue_mock.call_args_list
+            if not (c.args and c.args[0] == "generate_ml_tag_suggestions")
+        ]
+        assert non_ml_calls, "other enqueue jobs should still have been called"
+
+
 class TestUploadMD5DuplicateDetection:
     """Tests for exact-duplicate (MD5) detection during upload."""
 

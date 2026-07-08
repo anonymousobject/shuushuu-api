@@ -67,3 +67,21 @@ class TestGetPublicConfig:
         assert data["max_avatar_size"] > 0
         assert data["upload_delay_seconds"] >= 0
         assert data["search_delay_seconds"] >= 0
+
+
+@pytest.mark.api
+class TestPublicConfigMlFlag:
+    """Tests for ml_tag_suggestions_enabled field in /api/v1/meta/config."""
+
+    async def test_public_config_exposes_ml_flag(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+        r = await client.get("/api/v1/meta/config")
+        assert r.status_code == 200
+        assert r.json()["ml_tag_suggestions_enabled"] is True
+
+    async def test_config_exposes_ml_character_suggestions_flag(self, client: AsyncClient):
+        """The character-suggestions gate is public config, default off."""
+        response = await client.get("/api/v1/meta/config")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ml_character_suggestions_enabled"] is False

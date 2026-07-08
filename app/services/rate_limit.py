@@ -60,6 +60,82 @@ async def check_registration_rate_limit(ip_address: str, redis_client: redis.Red
     )
 
 
+async def _check_user_rate_limit(
+    redis_client: redis.Redis,  # type: ignore[type-arg]
+    user_id: int,
+    *,
+    key_prefix: str,
+    limit: int,
+    window_seconds: int,
+    detail: str,
+) -> None:
+    """
+    Shared implementation for per-user Redis rate limits.
+
+    The Redis key and the log event names are both derived from ``key_prefix``,
+    so this must only be reused by callers that are happy with
+    ``f"{key_prefix}:{user_id}"`` as their key and
+    ``f"{key_prefix}_limit_exceeded"`` / ``f"{key_prefix}_check"`` /
+    ``f"{key_prefix}_limit_redis_error"`` as their log events.
+
+    Uses Redis for fast lookups and automatic expiration.
+    Gracefully degrades if Redis is unavailable (allows the request).
+
+    Args:
+        redis_client: Redis client instance
+        user_id: ID of the user making the request
+        key_prefix: Redis key / log event prefix, e.g. "similarity_check_rate"
+        limit: Maximum requests allowed within the window
+        window_seconds: Rate limit window, in seconds
+        detail: HTTPException detail message when the limit is exceeded
+
+    Raises:
+        HTTPException: 429 if rate limit exceeded
+    """
+    try:
+        key = f"{key_prefix}:{user_id}"
+
+        # Get current count
+        count_bytes = await redis_client.get(key)
+        count = int(count_bytes) if count_bytes else 0
+
+        if count >= limit:
+            logger.warning(
+                f"{key_prefix}_limit_exceeded",
+                user_id=user_id,
+                count=count,
+                limit=limit,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=detail,
+                headers={"Retry-After": str(window_seconds)},
+            )
+
+        # Increment counter with expiration
+        pipe = redis_client.pipeline()
+        pipe.incr(key)
+        if count == 0:
+            # First request from this user in this window - set expiration
+            pipe.expire(key, window_seconds)
+        await pipe.execute()
+
+        logger.debug(
+            f"{key_prefix}_check",
+            user_id=user_id,
+            count=count + 1,
+            limit=limit,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning(
+            f"{key_prefix}_limit_redis_error",
+            user_id=user_id,
+            exc_info=True,
+        )
+
+
 async def check_similarity_rate_limit(user_id: int, redis_client: redis.Redis) -> None:  # type: ignore[type-arg]
     """
     Enforce similarity check rate limit per user.
@@ -76,48 +152,40 @@ async def check_similarity_rate_limit(user_id: int, redis_client: redis.Redis) -
     Raises:
         HTTPException: 429 if rate limit exceeded
     """
-    try:
-        key = f"similarity_check_rate:{user_id}"
+    await _check_user_rate_limit(
+        redis_client,
+        user_id,
+        key_prefix="similarity_check_rate",
+        limit=settings.SIMILARITY_CHECK_RATE_LIMIT,
+        window_seconds=60,
+        detail="Too many similarity checks. Please try again in 60 seconds.",
+    )
 
-        # Get current count
-        count_bytes = await redis_client.get(key)
-        count = int(count_bytes) if count_bytes else 0
 
-        if count >= settings.SIMILARITY_CHECK_RATE_LIMIT:
-            logger.warning(
-                "similarity_check_rate_limit_exceeded",
-                user_id=user_id,
-                count=count,
-                limit=settings.SIMILARITY_CHECK_RATE_LIMIT,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many similarity checks. Please try again in 60 seconds.",
-                headers={"Retry-After": "60"},
-            )
+async def check_analyze_rate_limit(user_id: int, redis_client: redis.Redis) -> None:  # type: ignore[type-arg]
+    """
+    Enforce tag-analysis rate limit per user.
 
-        # Increment counter with expiration
-        pipe = redis_client.pipeline()
-        pipe.incr(key)
-        if count == 0:
-            # First check from this user in this window - set expiration
-            pipe.expire(key, 60)
-        await pipe.execute()
+    Limit: 20 requests per user per 60 seconds (configurable via ML_ANALYZE_RATE_LIMIT).
 
-        logger.debug(
-            "similarity_check_rate_check",
-            user_id=user_id,
-            count=count + 1,
-            limit=settings.SIMILARITY_CHECK_RATE_LIMIT,
-        )
-    except HTTPException:
-        raise
-    except Exception:
-        logger.warning(
-            "similarity_check_rate_limit_redis_error",
-            user_id=user_id,
-            exc_info=True,
-        )
+    Uses Redis for fast lookups and automatic expiration.
+    Gracefully degrades if Redis is unavailable (allows the request).
+
+    Args:
+        user_id: ID of the user making the request
+        redis_client: Redis client instance
+
+    Raises:
+        HTTPException: 429 if rate limit exceeded
+    """
+    await _check_user_rate_limit(
+        redis_client,
+        user_id,
+        key_prefix="ml_analyze_rate",
+        limit=settings.ML_ANALYZE_RATE_LIMIT,
+        window_seconds=60,
+        detail="Too many tag-analysis requests. Please try again in 60 seconds.",
+    )
 
 
 async def check_url_resolve_rate_limit(user_id: int, redis_client: redis.Redis) -> None:  # type: ignore[type-arg]

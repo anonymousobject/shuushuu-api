@@ -82,6 +82,44 @@ def require_permission(
     return permission_checker
 
 
+async def require_image_tag_add(
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+) -> Users:
+    """Require the caller to be an admin OR hold IMAGE_TAG_ADD.
+
+    This is the shared gate for the cross-image suggestion review queue, which
+    has no per-row owner to fall back on. The check is deliberately
+    ``admin OR has_permission`` — NOT permission alone — because
+    ``has_permission`` resolves only group/user permission grants and does not
+    honor the standalone ``Users.admin`` flag (see ``get_user_permissions`` in
+    ``app/core/permissions.py``, which has no admin short-circuit). Gating on
+    permission alone would therefore 403 an admin whose group does not
+    explicitly carry ``image_tag_add``, contradicting the admin-inclusive
+    intent of every other tag-mutation gate in the codebase.
+
+    Returns the authenticated user so endpoints can read ``current_user`` from
+    this dependency directly.
+
+    Raises:
+        HTTPException: 403 Forbidden if the user is neither an admin nor holds
+            IMAGE_TAG_ADD.
+    """
+    if not (
+        current_user.admin
+        or await has_permission(db, current_user.id, Permission.IMAGE_TAG_ADD, redis_client)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Insufficient permissions. Requires admin or permission: "
+                f"{Permission.IMAGE_TAG_ADD.value}"
+            ),
+        )
+    return current_user
+
+
 def require_any_permission(
     permissions: list[str | Permission],
 ) -> Callable[[Users, AsyncSession, redis.Redis], Coroutine[Any, Any, None]]:  # type: ignore[type-arg]

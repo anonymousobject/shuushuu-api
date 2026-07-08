@@ -115,6 +115,102 @@ class Settings(BaseSettings):
     THUMBNAIL_QUALITY: int = 75  # WebP quality (75 is sweet spot for thumbnails)
     LARGE_QUALITY: int = 90
 
+    # ML Tag Suggestions
+    ML_TAG_SUGGESTIONS_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "Master switch for ML tag suggestions. When true the arq worker "
+            "loads the ONNX model at startup (and fails to start if model "
+            "files are missing), uploads enqueue generation jobs, and the "
+            "generate endpoint is available."
+        ),
+    )
+    ML_CHARACTER_SUGGESTIONS_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "Gate for character-type tag suggestions at the mapping step. When "
+            "false (default), raw character predictions are still stored but no "
+            "character MlTagSuggestions rows are created and /analyze returns "
+            "no character chips. To re-enable: set true and run "
+            "scripts/ml_remap.py to backfill suggestions from the raw store."
+        ),
+    )
+    ML_SUGGESTION_BADGE_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "Gate for the per-image pending-suggestion count shown as a thumbnail "
+            "badge. When false (default), GET /images skips the grouped count query "
+            "and ml_suggestion_count is left null, so the frontend badge does not "
+            "render. Suggestions and the review queue are unaffected; flip to true "
+            "to show the badge again."
+        ),
+    )
+    ML_MODELS_PATH: str = Field(
+        default="ml_models",
+        description=(
+            "Directory holding ONNX model subdirectories; relative paths"
+            " resolve against the project root"
+        ),
+    )
+    ML_MODEL_NAME: str = Field(
+        default="wd-swinv2-tagger-v3",
+        description=(
+            "Model subdirectory to load: wd-swinv2-tagger-v3 or an animetimm"
+            " name like swinv2_base_window8_256.dbv4-full"
+        ),
+    )
+    ML_MIN_CONFIDENCE: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="Minimum model probability for a prediction to become a suggestion",
+    )
+    ML_PARENT_SUPERSEDE_MIN_CONFIDENCE: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "A suggested child tag supersedes (drops) its suggested parent tags "
+            "only when the child's confidence is at least this; a weaker child "
+            "leaves the parent in place"
+        ),
+    )
+
+    # ML suggestions on upload (analyze endpoint)
+    ML_ANALYZE_RATE_LIMIT: int = Field(
+        default=20, description="Max /analyze calls per user per minute"
+    )
+    ML_ANALYZE_CONCURRENCY: int = Field(
+        default=2, description="Max concurrent inferences process-wide (global semaphore)"
+    )
+    ML_ANALYZE_SEMAPHORE_TIMEOUT: float = Field(
+        default=8.0,
+        description="Seconds to wait for an inference slot before returning 429",
+    )
+    ML_ANALYZE_MIN_CONFIDENCE: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Display floor for upload-form suggestions (separate from ML_MIN_CONFIDENCE used for stored suggestions)",
+    )
+    ML_ANALYZE_MAX_SUGGESTIONS: int = Field(
+        default=12, description="Max suggestions returned per tag type from /analyze"
+    )
+    ML_ANALYZE_DOWNSCALE_EDGE: int = Field(
+        default=2048,
+        description=(
+            "Longest edge images are downscaled to before inference (the model "
+            "resizes to ~448 internally); larger images are scaled down, not rejected"
+        ),
+    )
+    ML_INTRA_OP_THREADS: int = Field(
+        default=0,
+        description="onnxruntime intra-op thread cap per inference; 0 = library default (all cores)",
+    )
+    ML_ANALYZE_CACHE_TTL_SECONDS: int = Field(
+        default=3600, description="TTL for the md5 -> raw-predictions analyze cache"
+    )
+
     # Avatar Settings
     AVATAR_STORAGE_PATH: str = ""  # Derived from STORAGE_PATH if not set
     BANNER_STORAGE_PATH: str = ""  # Derived from STORAGE_PATH if not set

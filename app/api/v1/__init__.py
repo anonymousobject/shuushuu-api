@@ -15,6 +15,9 @@ from app.api.v1 import (
     history,
     images,
     meta,
+    ml_analyze,
+    ml_suggestion_queue,
+    ml_tag_suggestions,
     news,
     permissions,
     privmsgs,
@@ -37,6 +40,9 @@ router.include_router(feeds.router)
 # be captured by the /images/{image_id} int path param and 422.
 router.include_router(url_import.router)
 router.include_router(images.router)
+router.include_router(ml_analyze.router)
+router.include_router(ml_suggestion_queue.router)
+router.include_router(ml_tag_suggestions.router)
 router.include_router(tags.router)
 router.include_router(character_source_links_router)
 router.include_router(users.router)

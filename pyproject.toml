@@ -43,7 +43,9 @@ dependencies = [
     # "python-magic>=0.4.27",  # File type detection - for validating image uploads
     # "slowapi>=0.1.9",  # Rate limiting - for API throttling
     # "python-multipart>=0.0.20",  # Multipart form data - needed for image uploads
-    "aiosmtplib>=5.0.0",
+    "aiosmtplib>=5.1.1",
+    "onnxruntime>=1.26.0",  # 1.26.0 is the first release with Python 3.14 wheels
+    "numpy>=2.4.1",
 ]
 
 [dependency-groups]
@@ -64,6 +66,7 @@ dev = [
     "moto[s3,server]>=5.0.0",  # Mock S3 for R2 adapter tests
     "types-aioboto3>=13.0.0",  # Type stubs
     "pytest-xdist>=3.8.0",
+    "rapidfuzz>=3.14.5",
 ]
 
 [build-system]
