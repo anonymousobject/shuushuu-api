@@ -44,6 +44,8 @@ async def test_import_one_forum(db_session: AsyncSession, monkeypatch, tmp_path)
     ).scalar_one()
     assert cat.title == "Gaming"
     assert cat.view_perm is None  # public forum
+    assert cat.description == "Console, PC, MMO games"   # forum_desc converted, no <t> wrapper
+    assert "<t>" not in (cat.description or "")
 
     threads = (
         await db_session.execute(
@@ -51,6 +53,7 @@ async def test_import_one_forum(db_session: AsyncSession, monkeypatch, tmp_path)
         )
     ).scalars().all()
     assert len(threads) == 3
+    assert all("<t>" not in t.title and "<r>" not in t.title for t in threads)
     assert all(t.locked for t in threads)
     assert all(not t.pinned for t in threads)
     # denorm set

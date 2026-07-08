@@ -83,6 +83,14 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    # Forum-archive attachments (imported phpBB forum) - dev serves from local FS;
+    # test/prod serve these from R2 via the CDN instead.
+    location /images/forum-archive/ {
+        alias ${STORAGE_PATH}/forum-archive/;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
     # Frontend - proxy to Vite dev server running on host (including SvelteKit routes)
     location / {
         proxy_pass http://host.docker.internal:5173;
