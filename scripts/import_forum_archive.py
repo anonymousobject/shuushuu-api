@@ -102,8 +102,8 @@ async def _post_attachment_links(
     for physical, real, mime in rows:
         src = backup_dir / physical
         if src.exists():
-            await rehost_attachment(physical, src, mime or "application/octet-stream")
-            lines.append(f"\U0001F4CE [{real}]({forum_attachment_url(physical)})")
+            await rehost_attachment(physical, real, src, mime or "application/octet-stream")
+            lines.append(f"\U0001F4CE [{real}]({forum_attachment_url(physical, real)})")
             stats.attachments += 1
         else:
             stats.notes.append(f"missing attachment file {physical} (post {post_id})")
