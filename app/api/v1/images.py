@@ -873,13 +873,16 @@ async def list_images(
         )
     )
 
-    # ML suggestion counts: one grouped query for the page, only for users who
-    # hold IMAGE_TAG_ADD or are admins (same predicate as the review queue gate).
-    # Anonymous users and plain users always get None (field default).
-    # None means "not computed" (no permission); {} means "computed, all zero".
+    # ML suggestion counts: one grouped query for the page, only when the thumbnail
+    # badge is enabled AND for users who hold IMAGE_TAG_ADD or are admins (same
+    # predicate as the review queue gate). When ML_SUGGESTION_BADGE_ENABLED is off
+    # (default) the query is skipped entirely and the field stays None, so the
+    # frontend badge does not render. Anonymous users and plain users always get None.
+    # None means "not computed"; {} means "computed, all zero".
     pending_counts: dict[int, int] | None = None
     if (
-        current_user is not None
+        settings.ML_SUGGESTION_BADGE_ENABLED
+        and current_user is not None
         and current_user.user_id is not None
         and images
         and (

@@ -132,6 +132,16 @@ class Settings(BaseSettings):
             "scripts/ml_remap.py to backfill suggestions from the raw store."
         ),
     )
+    ML_SUGGESTION_BADGE_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "Gate for the per-image pending-suggestion count shown as a thumbnail "
+            "badge. When false (default), GET /images skips the grouped count query "
+            "and ml_suggestion_count is left null, so the frontend badge does not "
+            "render. Suggestions and the review queue are unaffected; flip to true "
+            "to show the badge again."
+        ),
+    )
     ML_MODELS_PATH: str = Field(
         default="ml_models",
         description=(

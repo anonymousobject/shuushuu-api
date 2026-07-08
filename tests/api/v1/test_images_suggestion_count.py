@@ -11,7 +11,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import TagType
+from app.config import TagType, settings
 from app.core.security import create_access_token
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
@@ -107,7 +107,16 @@ async def _list_images(client: AsyncClient, headers: dict | None = None) -> list
 
 @pytest.mark.api
 class TestMlSuggestionCountOnImageList:
-    """ml_suggestion_count is populated for permitted users only."""
+    """ml_suggestion_count is populated for permitted users only.
+
+    These tests exercise the count computation and its permission gate, which live
+    behind ML_SUGGESTION_BADGE_ENABLED, so they run with the flag on. The flag's own
+    on/off behavior is covered separately by TestMlSuggestionBadgeFlag.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _enable_badge(self, monkeypatch):
+        monkeypatch.setattr(settings, "ML_SUGGESTION_BADGE_ENABLED", True)
 
     async def test_tagger_sees_pending_count(
         self, client: AsyncClient, db_session: AsyncSession
@@ -215,3 +224,58 @@ class TestMlSuggestionCountOnImageList:
         matching = [i for i in items if i["image_id"] == image.image_id]
         assert matching, "Seeded image not found in list"
         assert matching[0]["ml_suggestion_count"] == 0
+
+
+@pytest.mark.api
+class TestMlSuggestionBadgeFlag:
+    """ML_SUGGESTION_BADGE_ENABLED gates whether the per-image pending count is
+    computed at all. When off (the default), GET /images skips the count query and
+    every item's ml_suggestion_count is None even for a permitted user, so the
+    frontend thumbnail badge disappears with no frontend change. The
+    computation/permission logic itself is unchanged and stays covered by
+    TestMlSuggestionCountOnImageList (which runs with the flag on)."""
+
+    async def test_flag_off_suppresses_count_for_tagger(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Flag off (default): a tagger who would otherwise see a count gets None."""
+        owner = await _make_user(db_session, "badge_off_owner")
+        tagger = await _make_user(db_session, "badge_off_tagger")
+        await _grant_image_tag_add(db_session, tagger)
+
+        image = await _make_image(db_session, owner, "badge_off_img")
+        tag = await _make_tag(db_session, owner, "badge_off_t")
+        await _make_suggestion(db_session, image, tag, status="pending")
+        await db_session.commit()
+
+        token = create_access_token(user_id=tagger.user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        items = await _list_images(client, headers)
+
+        matching = [i for i in items if i["image_id"] == image.image_id]
+        assert matching, "Seeded image not found in list"
+        assert matching[0]["ml_suggestion_count"] is None
+
+    async def test_flag_on_computes_count_for_tagger(
+        self, client: AsyncClient, db_session: AsyncSession, monkeypatch
+    ):
+        """Flag on: the count is computed as before for a permitted user."""
+        monkeypatch.setattr(settings, "ML_SUGGESTION_BADGE_ENABLED", True)
+        owner = await _make_user(db_session, "badge_on_owner")
+        tagger = await _make_user(db_session, "badge_on_tagger")
+        await _grant_image_tag_add(db_session, tagger)
+
+        image = await _make_image(db_session, owner, "badge_on_img")
+        tag1 = await _make_tag(db_session, owner, "badge_on_t1")
+        tag2 = await _make_tag(db_session, owner, "badge_on_t2")
+        await _make_suggestion(db_session, image, tag1, status="pending")
+        await _make_suggestion(db_session, image, tag2, status="pending")
+        await db_session.commit()
+
+        token = create_access_token(user_id=tagger.user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        items = await _list_images(client, headers)
+
+        matching = [i for i in items if i["image_id"] == image.image_id]
+        assert matching, "Seeded image not found in list"
+        assert matching[0]["ml_suggestion_count"] == 2
