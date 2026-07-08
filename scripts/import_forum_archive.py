@@ -230,7 +230,7 @@ async def _upsert_category(
     tier = TIER_BY_FORUM_ID.get(fid)
     cat = ForumCategories(
         title=fname,
-        description=fdesc or None,
+        description=s9e_to_markdown(fdesc) if fdesc else None,
         sort_order=int(left_id),
         legacy_forum_id=fid,
         view_perm=tier,
