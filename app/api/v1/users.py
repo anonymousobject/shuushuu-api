@@ -35,6 +35,7 @@ from app.core.auth import (
     get_optional_current_user,
 )
 from app.core.database import get_db
+from app.core.db_retry import retry_on_snapshot_conflict
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
 from app.core.r2_client import get_r2_storage
@@ -547,79 +548,88 @@ async def _update_user_profile(
     Returns:
         Updated user response (as UserResponse; caller may wrap as UserPrivateResponse)
     """
-    user_result = await db.execute(
-        select(Users)
-        .options(
-            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+
+    # Concurrent PATCHes of the same users row can hit a snapshot conflict at
+    # commit (see app/core/db_retry.py), so the whole fetch-apply-commit unit
+    # is retried. Everything below re-derives its state per attempt — notably
+    # update_data, which the password branch pops from and must not be shared
+    # across attempts.
+    async def _apply() -> Users:
+        user_result = await db.execute(
+            select(Users)
+            .options(
+                selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+            )
+            .where(Users.user_id == user_id)  # type: ignore[arg-type]
         )
-        .where(Users.user_id == user_id)  # type: ignore[arg-type]
-    )
-    user = user_result.scalar_one_or_none()
+        user = user_result.scalar_one_or_none()
 
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    # Update only provided fields
-    update_data = user_data.model_dump(exclude_unset=True)
+        # Update only provided fields
+        update_data = user_data.model_dump(exclude_unset=True)
 
-    # user_title can only be updated by users with USER_EDIT_PROFILE permission
-    if "user_title" in update_data and not has_edit_permission:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only moderators can update user titles",
-        )
-
-    # maximgperday can only be updated by users with USER_EDIT_PROFILE permission
-    if "maximgperday" in update_data and not has_edit_permission:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only moderators can update user upload limits",
-        )
-
-    # Handle password separately with validation and hashing.
-    # Self-service password changes must go through POST /auth/change-password,
-    # which verifies the current password and revokes existing sessions; PATCH
-    # would silently bypass both. Moderators may still set passwords here.
-    if "password" in update_data:
-        if not has_edit_permission:
+        # user_title can only be updated by users with USER_EDIT_PROFILE permission
+        if "user_title" in update_data and not has_edit_permission:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Use /api/v1/auth/change-password to change your own password",
+                detail="Only moderators can update user titles",
             )
-        password = update_data.pop("password")
-        is_valid, error_message = validate_password_strength(password)
-        if not is_valid:
-            raise HTTPException(status_code=400, detail=error_message)
-        user.password = get_password_hash(password)
-        user.password_type = "bcrypt"
-        # A forced reset usually responds to a compromised account: revoke the
-        # target's sessions so holders of the old credentials are logged out.
-        await db.execute(
-            delete(RefreshTokens).where(RefreshTokens.user_id == user.user_id)  # type: ignore[arg-type]
-        )
 
-    # Handle email validation
-    if "email" in update_data:
-        email = update_data["email"]
-        # Check if email is already taken by another user
-        existing_email = await db.execute(
-            select(Users).where(Users.email == email, Users.user_id != user_id)  # type: ignore[arg-type]
-        )
-        if existing_email.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="Email already in use")
+        # maximgperday can only be updated by users with USER_EDIT_PROFILE permission
+        if "maximgperday" in update_data and not has_edit_permission:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only moderators can update user upload limits",
+            )
 
-    # Update user fields
-    # NOTE: Input sanitization is now handled by schema validators (UserUpdate)
-    # which escape HTML to prevent XSS attacks. We no longer normalize here.
-    for field, value in update_data.items():
-        setattr(user, field, value)
+        # Handle password separately with validation and hashing.
+        # Self-service password changes must go through POST /auth/change-password,
+        # which verifies the current password and revokes existing sessions; PATCH
+        # would silently bypass both. Moderators may still set passwords here.
+        if "password" in update_data:
+            if not has_edit_permission:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Use /api/v1/auth/change-password to change your own password",
+                )
+            password = update_data.pop("password")
+            is_valid, error_message = validate_password_strength(password)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error_message)
+            user.password = get_password_hash(password)
+            user.password_type = "bcrypt"
+            # A forced reset usually responds to a compromised account: revoke the
+            # target's sessions so holders of the old credentials are logged out.
+            await db.execute(
+                delete(RefreshTokens).where(RefreshTokens.user_id == user.user_id)  # type: ignore[arg-type]
+            )
 
-    await db.commit()
-    await db.refresh(user)
+        # Handle email validation
+        if "email" in update_data:
+            email = update_data["email"]
+            # Check if email is already taken by another user
+            existing_email = await db.execute(
+                select(Users).where(Users.email == email, Users.user_id != user_id)  # type: ignore[arg-type]
+            )
+            if existing_email.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail="Email already in use")
 
-    # Return the DB model instance so callers can serialize to either
-    # public or private response schemas depending on the endpoint.
-    return user
+        # Update user fields
+        # NOTE: Input sanitization is now handled by schema validators (UserUpdate)
+        # which escape HTML to prevent XSS attacks. We no longer normalize here.
+        for field, value in update_data.items():
+            setattr(user, field, value)
+
+        await db.commit()
+        await db.refresh(user)
+
+        # Return the DB model instance so callers can serialize to either
+        # public or private response schemas depending on the endpoint.
+        return user
+
+    return await retry_on_snapshot_conflict(db, _apply, what="user_profile_update")
 
 
 @router.get("/{user_id}/images", response_model=ImageDetailedListResponse)

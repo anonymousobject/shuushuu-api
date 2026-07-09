@@ -28,7 +28,6 @@ from fastapi import (
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import and_, asc, delete, desc, func, or_, select
 from sqlalchemy import text as sql_text
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -51,6 +50,7 @@ from app.config import (
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
+from app.core.db_retry import retry_on_snapshot_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission, has_any_permission, has_permission
@@ -2629,26 +2629,6 @@ async def unfavorite_image(
     }
 
 
-# MariaDB with innodb_snapshot_isolation=ON aborts a locking operation that
-# meets index entries committed after the transaction's snapshot (ER_CHECKREAD,
-# errno 1020) instead of returning stale data. Concurrent uploads collide this
-# way on the temp-row INSERT below: every in-flight upload writes identical
-# placeholder values ("temp", status=1, zeroes) into the same index positions,
-# and the request's snapshot is pinned by the auth query well before the INSERT
-# runs. The conflict is transient — a rollback starts a fresh transaction whose
-# snapshot sees the other upload's committed rows — so a bounded retry resolves
-# it. Observed in practice when parallel e2e suites upload concurrently.
-_SNAPSHOT_CONFLICT_ERRNO = 1020
-_SNAPSHOT_CONFLICT_ATTEMPTS = 3
-
-
-def _is_snapshot_conflict(exc: OperationalError) -> bool:
-    args = getattr(exc.orig, "args", None)
-    if not args:
-        return False
-    return bool(args[0] == _SNAPSHOT_CONFLICT_ERRNO)
-
-
 @router.post(
     "/upload",
     response_model=ImageUploadResponse,
@@ -2725,10 +2705,11 @@ async def upload_image(
     # touching an expired attribute on an async session raises.
     uploader_id: int = current_user.id
 
-    # Create temporary image record to get image_id for filename. Retried on
-    # ER_CHECKREAD — see _is_snapshot_conflict above.
-    for attempt in range(1, _SNAPSHOT_CONFLICT_ATTEMPTS + 1):
-        temp_image = Images(
+    # Concurrent uploads write identical placeholder values into the same
+    # index positions, so this INSERT can hit a snapshot conflict (see
+    # app/core/db_retry.py). A rolled-back attempt just burns an auto-inc id.
+    async def _insert_temp_image() -> Images:
+        temp = Images(
             filename="temp",  # Will be updated after save
             ext="tmp",
             original_filename=file.filename or "unknown",
@@ -2741,21 +2722,11 @@ async def upload_image(
             status=1,
             locked=0,
         )
-        db.add(temp_image)
-        try:
-            await db.flush()  # Get image_id
-            break
-        except OperationalError as e:
-            if not _is_snapshot_conflict(e) or attempt == _SNAPSHOT_CONFLICT_ATTEMPTS:
-                raise
-            # Fresh transaction -> fresh snapshot. The rolled-back auto-inc id
-            # is simply burned; id gaps are normal.
-            await db.rollback()
-            logger.warning(
-                "upload_snapshot_conflict_retry",
-                attempt=attempt,
-                user_id=uploader_id,
-            )
+        db.add(temp)
+        await db.flush()  # Get image_id
+        return temp
+
+    temp_image = await retry_on_snapshot_conflict(db, _insert_temp_image, what="upload_temp_image")
     image_id: int = temp_image.image_id  # type: ignore[assignment]
 
     logger.info("image_record_created", image_id=image_id)

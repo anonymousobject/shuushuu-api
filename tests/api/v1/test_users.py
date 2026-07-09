@@ -127,7 +127,9 @@ class TestListUsers:
         assert data["total"] == 0
         assert data["users"] == []
 
-    async def test_update_user_freeform_fields_normalized(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_update_user_freeform_fields_normalized(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Updating user free-form fields (location/interests) stores plain text (no normalization).
 
         Note: user_title is restricted to users with USER_EDIT_PROFILE permission.
@@ -167,7 +169,9 @@ class TestListUsers:
         assert response.status_code == 200
 
         # Fetch profile and verify fields are stored as plain text
-        response = await client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {access_token}"})
+        response = await client.get(
+            "/api/v1/users/me", headers={"Authorization": f"Bearer {access_token}"}
+        )
         assert response.status_code == 200
         data = response.json()
         # Plain text storage: what goes in comes out (no HTML escaping/normalization)
@@ -237,7 +241,9 @@ class TestListUsers:
         assert "user.name" in usernames
         assert "user-name" in usernames
 
-    async def test_list_users_search_exact_match_priority(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_list_users_search_exact_match_priority(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Exact username match should be prioritized for search results."""
         # Create a user with exact name 'Ran'
         ran = Users(
@@ -461,10 +467,42 @@ class TestGetCurrentUserProfile:
         await db_session.refresh(sender)
 
         # Add 2 unread + 1 read + 1 deleted PM
-        db_session.add(Privmsgs(from_user_id=sender.user_id, to_user_id=user.user_id, subject="Unread 1", viewed=0, to_del=0))
-        db_session.add(Privmsgs(from_user_id=sender.user_id, to_user_id=user.user_id, subject="Unread 2", viewed=0, to_del=0))
-        db_session.add(Privmsgs(from_user_id=sender.user_id, to_user_id=user.user_id, subject="Read", viewed=1, to_del=0))
-        db_session.add(Privmsgs(from_user_id=sender.user_id, to_user_id=user.user_id, subject="Deleted", viewed=0, to_del=1))
+        db_session.add(
+            Privmsgs(
+                from_user_id=sender.user_id,
+                to_user_id=user.user_id,
+                subject="Unread 1",
+                viewed=0,
+                to_del=0,
+            )
+        )
+        db_session.add(
+            Privmsgs(
+                from_user_id=sender.user_id,
+                to_user_id=user.user_id,
+                subject="Unread 2",
+                viewed=0,
+                to_del=0,
+            )
+        )
+        db_session.add(
+            Privmsgs(
+                from_user_id=sender.user_id,
+                to_user_id=user.user_id,
+                subject="Read",
+                viewed=1,
+                to_del=0,
+            )
+        )
+        db_session.add(
+            Privmsgs(
+                from_user_id=sender.user_id,
+                to_user_id=user.user_id,
+                subject="Deleted",
+                viewed=0,
+                to_del=1,
+            )
+        )
         await db_session.commit()
 
         login_response = await client.post(
@@ -666,8 +704,7 @@ class TestUpdateUserProfile:
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 200
-        data = response.json()
-        # assert data["email"] == "newemail@example.com"  # Email may not be returned in response
+        # response.json()["email"] not asserted: email may not be returned in the response
 
     async def test_self_password_change_via_patch_rejected(
         self, client: AsyncClient, db_session: AsyncSession
@@ -824,9 +861,7 @@ class TestUpdateUserProfile:
         await db_session.refresh(user)
         assert user.email_pm_pref == 1
 
-    async def test_update_user_settings_via_me(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_update_user_settings_via_me(self, client: AsyncClient, db_session: AsyncSession):
         """Test that PATCH /api/v1/users/me accepts and returns user settings."""
         # Create user with default settings
         user = Users(
@@ -1125,9 +1160,7 @@ class TestUpdateUserProfile:
         assert user.theme_preset is None
         assert user.dark_mode is None
 
-    async def test_theme_preset_allowlist(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_theme_preset_allowlist(self, client: AsyncClient, db_session: AsyncSession):
         """PATCH /api/v1/users/me rejects unknown theme_preset values."""
         user = Users(
             username="themeallowlist",
@@ -1171,9 +1204,7 @@ class TestUpdateUserProfile:
         )
         assert response.status_code == 422
 
-    async def test_dark_mode_type_validation(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_dark_mode_type_validation(self, client: AsyncClient, db_session: AsyncSession):
         """PATCH /api/v1/users/me requires dark_mode to be a boolean or null."""
         user = Users(
             username="darkmodevalidation",
@@ -1200,9 +1231,7 @@ class TestUpdateUserProfile:
                 json={"dark_mode": bad_value},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-            assert response.status_code == 422, (
-                f"dark_mode={bad_value!r} should be rejected"
-            )
+            assert response.status_code == 422, f"dark_mode={bad_value!r} should be rejected"
 
 
 @pytest.mark.api
@@ -1252,12 +1281,12 @@ class TestGetUserImages:
 
         # Create images with various statuses
         statuses = {
-            "active": 1,       # public
-            "repost": -1,      # public
-            "spoiler": 2,      # public
-            "review": -4,      # non-public
+            "active": 1,  # public
+            "repost": -1,  # public
+            "spoiler": 2,  # public
+            "review": -4,  # non-public
             "inappropriate": -2,  # non-public
-            "other": 0,        # non-public
+            "other": 0,  # non-public
         }
         for name, status_val in statuses.items():
             data = sample_image_data.copy()
@@ -1324,11 +1353,23 @@ class TestGetUserImages:
         """A hide_reposts viewer doesn't see another user's reposts in their gallery."""
         from app.core.security import create_access_token
 
-        subject = Users(username="hrg_subject", password=get_password_hash("TestPassword123!"),
-                        password_type="bcrypt", salt="", email="hrg_subject@test.com", active=1)
-        viewer = Users(username="hrg_viewer", password=get_password_hash("TestPassword123!"),
-                       password_type="bcrypt", salt="", email="hrg_viewer@test.com", active=1,
-                       hide_reposts=1)
+        subject = Users(
+            username="hrg_subject",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="hrg_subject@test.com",
+            active=1,
+        )
+        viewer = Users(
+            username="hrg_viewer",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="hrg_viewer@test.com",
+            active=1,
+            hide_reposts=1,
+        )
         db_session.add(subject)
         db_session.add(viewer)
         await db_session.commit()
@@ -1345,8 +1386,9 @@ class TestGetUserImages:
         await db_session.commit()
 
         token = create_access_token(viewer.user_id)
-        response = await client.get(f"/api/v1/users/{subject.user_id}/images",
-                                    headers={"Authorization": f"Bearer {token}"})
+        response = await client.get(
+            f"/api/v1/users/{subject.user_id}/images", headers={"Authorization": f"Bearer {token}"}
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
@@ -1358,9 +1400,15 @@ class TestGetUserImages:
         """hide_reposts hides the viewer's OWN reposts but keeps own non-repost non-public images."""
         from app.core.security import create_access_token
 
-        viewer = Users(username="hrg_own", password=get_password_hash("TestPassword123!"),
-                       password_type="bcrypt", salt="", email="hrg_own@test.com", active=1,
-                       hide_reposts=1)
+        viewer = Users(
+            username="hrg_own",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="hrg_own@test.com",
+            active=1,
+            hide_reposts=1,
+        )
         db_session.add(viewer)
         await db_session.commit()
         await db_session.refresh(viewer)
@@ -1375,8 +1423,9 @@ class TestGetUserImages:
         await db_session.commit()
 
         token = create_access_token(viewer.user_id)
-        response = await client.get(f"/api/v1/users/{viewer.user_id}/images",
-                                    headers={"Authorization": f"Bearer {token}"})
+        response = await client.get(
+            f"/api/v1/users/{viewer.user_id}/images", headers={"Authorization": f"Bearer {token}"}
+        )
         assert response.status_code == 200
         data = response.json()
         # own active (public) + own review (own non-public) visible; own repost hidden.
@@ -1478,11 +1527,23 @@ class TestGetUserFavorites:
         """A hide_reposts viewer doesn't see reposts in another user's favorites."""
         from app.core.security import create_access_token
 
-        subject = Users(username="hrf_subject", password=get_password_hash("TestPassword123!"),
-                        password_type="bcrypt", salt="", email="hrf_subject@test.com", active=1)
-        viewer = Users(username="hrf_viewer", password=get_password_hash("TestPassword123!"),
-                       password_type="bcrypt", salt="", email="hrf_viewer@test.com", active=1,
-                       hide_reposts=1)
+        subject = Users(
+            username="hrf_subject",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="hrf_subject@test.com",
+            active=1,
+        )
+        viewer = Users(
+            username="hrf_viewer",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="hrf_viewer@test.com",
+            active=1,
+            hide_reposts=1,
+        )
         db_session.add(subject)
         db_session.add(viewer)
         await db_session.commit()
@@ -1490,12 +1551,24 @@ class TestGetUserFavorites:
         await db_session.refresh(viewer)
 
         active_data = sample_image_data.copy()
-        active_data.update({"filename": "hrf-active", "md5_hash": "hrfactive" + "0" * 15,
-                            "status": 1, "user_id": subject.user_id})
+        active_data.update(
+            {
+                "filename": "hrf-active",
+                "md5_hash": "hrfactive" + "0" * 15,
+                "status": 1,
+                "user_id": subject.user_id,
+            }
+        )
         active_img = Images(**active_data)
         repost_data = sample_image_data.copy()
-        repost_data.update({"filename": "hrf-repost", "md5_hash": "hrfrepost" + "0" * 15,
-                            "status": -1, "user_id": subject.user_id})
+        repost_data.update(
+            {
+                "filename": "hrf-repost",
+                "md5_hash": "hrfrepost" + "0" * 15,
+                "status": -1,
+                "user_id": subject.user_id,
+            }
+        )
         repost_img = Images(**repost_data)
         db_session.add(active_img)
         db_session.add(repost_img)
@@ -1508,8 +1581,10 @@ class TestGetUserFavorites:
         await db_session.commit()
 
         token = create_access_token(viewer.user_id)
-        response = await client.get(f"/api/v1/users/{subject.user_id}/favorites",
-                                    headers={"Authorization": f"Bearer {token}"})
+        response = await client.get(
+            f"/api/v1/users/{subject.user_id}/favorites",
+            headers={"Authorization": f"Bearer {token}"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
@@ -1856,7 +1931,9 @@ class TestUserSorting:
         for user in users:
             await db_session.refresh(user)
 
-        response = await client.get("/api/v1/users?sort_by=username&sort_order=DESC&search=sortuser")
+        response = await client.get(
+            "/api/v1/users?sort_by=username&sort_order=DESC&search=sortuser"
+        )
         assert response.status_code == 200
         data = response.json()
         returned_usernames = [u["username"] for u in data["users"]]
@@ -1885,7 +1962,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=date_joined&sort_order=ASC&search=datejoinuser")
+        response = await client.get(
+            "/api/v1/users?sort_by=date_joined&sort_order=ASC&search=datejoinuser"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1915,7 +1994,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=date_joined&sort_order=DESC&search=datejoinuser_desc")
+        response = await client.get(
+            "/api/v1/users?sort_by=date_joined&sort_order=DESC&search=datejoinuser_desc"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1945,7 +2026,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=last_login&sort_order=ASC&search=loginuser")
+        response = await client.get(
+            "/api/v1/users?sort_by=last_login&sort_order=ASC&search=loginuser"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -1976,7 +2059,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=last_login&sort_order=DESC&search=loginuser_desc")
+        response = await client.get(
+            "/api/v1/users?sort_by=last_login&sort_order=DESC&search=loginuser_desc"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -2013,7 +2098,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=last_active&sort_order=ASC&search=activeuser_asc")
+        response = await client.get(
+            "/api/v1/users?sort_by=last_active&sort_order=ASC&search=activeuser_asc"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -2041,7 +2128,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=last_active&sort_order=DESC&search=activeuser_desc")
+        response = await client.get(
+            "/api/v1/users?sort_by=last_active&sort_order=DESC&search=activeuser_desc"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -2074,7 +2163,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=image_posts&sort_order=ASC&search=imgpostuser")
+        response = await client.get(
+            "/api/v1/users?sort_by=image_posts&sort_order=ASC&search=imgpostuser"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -2102,7 +2193,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=image_posts&sort_order=DESC&search=imgpostuser_desc")
+        response = await client.get(
+            "/api/v1/users?sort_by=image_posts&sort_order=DESC&search=imgpostuser_desc"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -2158,7 +2251,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=posts&sort_order=DESC&search=postsuser_desc")
+        response = await client.get(
+            "/api/v1/users?sort_by=posts&sort_order=DESC&search=postsuser_desc"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -2214,7 +2309,9 @@ class TestUserSorting:
             db_session.add(user)
         await db_session.commit()
 
-        response = await client.get("/api/v1/users?sort_by=favorites&sort_order=DESC&search=favuser_desc")
+        response = await client.get(
+            "/api/v1/users?sort_by=favorites&sort_order=DESC&search=favuser_desc"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data["users"]) == 5
@@ -2258,12 +2355,16 @@ class TestUserSorting:
         await db_session.commit()
 
         # Test ASC order - filter to only our test users
-        response_asc = await client.get("/api/v1/users?sort_by=last_login&sort_order=ASC&search=nullloginuser")
+        response_asc = await client.get(
+            "/api/v1/users?sort_by=last_login&sort_order=ASC&search=nullloginuser"
+        )
         assert response_asc.status_code == 200
         data_asc = response_asc.json()
 
         # Test DESC order - filter to only our test users
-        response_desc = await client.get("/api/v1/users?sort_by=last_login&sort_order=DESC&search=nullloginuser")
+        response_desc = await client.get(
+            "/api/v1/users?sort_by=last_login&sort_order=DESC&search=nullloginuser"
+        )
         assert response_desc.status_code == 200
         data_desc = response_desc.json()
 
@@ -2272,8 +2373,12 @@ class TestUserSorting:
         assert len(data_desc["users"]) == 6
 
         # Verify that users with non-null last_login are properly ordered
-        last_logins_asc = [u["last_login"] for u in data_asc["users"] if u["last_login"] is not None]
-        last_logins_desc = [u["last_login"] for u in data_desc["users"] if u["last_login"] is not None]
+        last_logins_asc = [
+            u["last_login"] for u in data_asc["users"] if u["last_login"] is not None
+        ]
+        last_logins_desc = [
+            u["last_login"] for u in data_desc["users"] if u["last_login"] is not None
+        ]
 
         # Check ordering by comparing adjacent elements
         for i in range(len(last_logins_asc) - 1):
@@ -2547,9 +2652,7 @@ async def grant_user_permission(db_session: AsyncSession, user_id: int, perm_tit
         db_session.add(perm)
         await db_session.flush()
 
-    result = await db_session.execute(
-        select(Groups).where(Groups.title == "user_edit_test_group")
-    )
+    result = await db_session.execute(select(Groups).where(Groups.title == "user_edit_test_group"))
     group = result.scalar_one_or_none()
     if not group:
         group = Groups(title="user_edit_test_group", desc="User edit test group")
@@ -2862,9 +2965,7 @@ class TestMaxImgPerDayRestriction:
 class TestUserProfileEditAuthorization:
     """Tests for user profile edit authorization using permission system."""
 
-    async def test_user_can_edit_own_profile(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_user_can_edit_own_profile(self, client: AsyncClient, db_session: AsyncSession):
         """Test that a user can edit their own profile."""
         user, password = await create_test_user_with_password(
             db_session, "selfeditor", "selfeditor@example.com"
@@ -2889,9 +2990,7 @@ class TestUserProfileEditAuthorization:
         )
         await grant_user_permission(db_session, editor.user_id, "user_edit_profile")
 
-        target, _ = await create_test_user_with_password(
-            db_session, "editme", "editme@example.com"
-        )
+        target, _ = await create_test_user_with_password(db_session, "editme", "editme@example.com")
 
         token = await login_test_user(client, editor.username, editor_password)
 
@@ -2930,9 +3029,7 @@ class TestUserProfileEditAuthorization:
 class TestGenderField:
     """Tests for free-form gender field."""
 
-    async def test_update_gender_freeform_text(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_update_gender_freeform_text(self, client: AsyncClient, db_session: AsyncSession):
         """Test that gender field accepts free-form text input."""
         user, password = await create_test_user_with_password(
             db_session, "genderuser", "genderuser@example.com"
@@ -2949,9 +3046,7 @@ class TestGenderField:
         assert response.status_code == 200
         assert response.json()["gender"] == "Non-binary"
 
-    async def test_update_gender_longer_text(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_update_gender_longer_text(self, client: AsyncClient, db_session: AsyncSession):
         """Test that gender field accepts longer descriptive text."""
         user, password = await create_test_user_with_password(
             db_session, "genderuser2", "genderuser2@example.com"
@@ -2969,9 +3064,7 @@ class TestGenderField:
         assert response.status_code == 200
         assert response.json()["gender"] == gender_value
 
-    async def test_update_gender_empty_string(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_update_gender_empty_string(self, client: AsyncClient, db_session: AsyncSession):
         """Test that gender field accepts empty string."""
         user, password = await create_test_user_with_password(
             db_session, "genderuser3", "genderuser3@example.com"
@@ -2987,9 +3080,7 @@ class TestGenderField:
         assert response.status_code == 200
         assert response.json()["gender"] == ""
 
-    async def test_gender_max_length(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_gender_max_length(self, client: AsyncClient, db_session: AsyncSession):
         """Test that gender field has reasonable max length (50 chars)."""
         user, password = await create_test_user_with_password(
             db_session, "genderuser4", "genderuser4@example.com"
@@ -3020,9 +3111,7 @@ class TestGenderField:
 class TestUserGroups:
     """Tests for groups field in user responses."""
 
-    async def test_get_user_includes_groups(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_user_includes_groups(self, client: AsyncClient, db_session: AsyncSession):
         """Test that GET /users/{id} returns user's groups."""
         # Create user
         user = Users(
@@ -3057,9 +3146,7 @@ class TestUserGroups:
         assert isinstance(data["groups"], list)
         assert "Moderators" in data["groups"]
 
-    async def test_list_users_includes_groups(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_list_users_includes_groups(self, client: AsyncClient, db_session: AsyncSession):
         """Test that GET /users returns groups for each user."""
         # Create user with a group
         user = Users(
@@ -3130,8 +3217,12 @@ class TestHideRepostsSetting:
 
     async def test_patch_persists_hide_reposts(self, client: AsyncClient, db_session: AsyncSession):
         user = Users(
-            username="hr_persist", password=get_password_hash("TestPassword123!"),
-            password_type="bcrypt", salt="", email="hr_persist@test.com", active=1,
+            username="hr_persist",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="hr_persist@test.com",
+            active=1,
         )
         db_session.add(user)
         await db_session.commit()
@@ -3152,10 +3243,16 @@ class TestHideRepostsSetting:
         await db_session.refresh(user)
         assert user.hide_reposts == 1
 
-    async def test_hide_reposts_rejects_non_boolean(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_hide_reposts_rejects_non_boolean(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         user = Users(
-            username="hr_valid", password=get_password_hash("TestPassword123!"),
-            password_type="bcrypt", salt="", email="hr_valid@test.com", active=1,
+            username="hr_valid",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="hr_valid@test.com",
+            active=1,
         )
         db_session.add(user)
         await db_session.commit()
@@ -3163,7 +3260,118 @@ class TestHideRepostsSetting:
         token = create_access_token(user.user_id)
 
         resp = await client.patch(
-            "/api/v1/users/me", json={"hide_reposts": 2},
+            "/api/v1/users/me",
+            json={"hide_reposts": 2},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 422
+
+
+class TestUserUpdateSnapshotConflictRetry:
+    """Concurrent PATCHes of one users row trip MariaDB ER_CHECKREAD (errno
+    1020) under innodb_snapshot_isolation — the losing transaction's UPDATE
+    meets a row version committed after its snapshot. The update must retry on
+    a fresh snapshot instead of surfacing a 500. (Observed in practice when
+    the frontend's settings auto-save fires several PATCHes back-to-back.)"""
+
+    async def _make_user_and_token(self, db_session: AsyncSession) -> tuple[Users, str]:
+        user = Users(
+            username="snapshotpatch",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="snapshotpatch@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+        return user, create_access_token(user.id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.needs_commit
+    async def test_patch_me_retries_snapshot_conflict_and_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A transient 1020 on the users UPDATE is retried and the PATCH succeeds.
+
+        needs_commit: the retry performs a real session rollback for a fresh
+        snapshot; under SAVEPOINT isolation that rollback would unwind the
+        fixture's user row too, which can't happen in production.
+        """
+        from unittest.mock import patch
+
+        import pymysql
+        from sqlalchemy.exc import OperationalError
+
+        _, token = await self._make_user_and_token(db_session)
+
+        real_commit = AsyncSession.commit
+        calls: list[int] = []
+
+        async def flaky_commit(self, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OperationalError(
+                    "UPDATE users ...",
+                    None,
+                    pymysql.err.OperationalError(
+                        1020, "Record has changed since last read in table 'users'"
+                    ),
+                )
+            await real_commit(self, *args, **kwargs)
+
+        with patch.object(AsyncSession, "commit", flaky_commit):
+            resp = await client.patch(
+                "/api/v1/users/me",
+                json={"location": "Retry City"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["location"] == "Retry City"
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+    @pytest.mark.asyncio
+    @pytest.mark.needs_commit
+    async def test_patch_me_gives_up_after_bounded_retries(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A persistent 1020 propagates after a bounded number of attempts.
+
+        needs_commit: each retry re-SELECTs the user after a real rollback;
+        under SAVEPOINT isolation that rollback unwinds the fixture's user row
+        and the retry would 404 instead of exercising the conflict path.
+        """
+        from unittest.mock import patch
+
+        import pymysql
+        from sqlalchemy.exc import OperationalError
+
+        _, token = await self._make_user_and_token(db_session)
+
+        calls: list[int] = []
+
+        async def always_conflict(self, *args, **kwargs):
+            calls.append(1)
+            raise OperationalError(
+                "UPDATE users ...",
+                None,
+                pymysql.err.OperationalError(
+                    1020, "Record has changed since last read in table 'users'"
+                ),
+            )
+
+        with (
+            patch.object(AsyncSession, "commit", always_conflict),
+            pytest.raises(OperationalError),
+        ):
+            await client.patch(
+                "/api/v1/users/me",
+                json={"location": "Never Land"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert len(calls) == 3  # bounded: no infinite retry loop
+
+        assert len(calls) == 3  # bounded: no infinite retry loop
