@@ -3373,5 +3373,3 @@ class TestUserUpdateSnapshotConflictRetry:
             )
 
         assert len(calls) == 3  # bounded: no infinite retry loop
-
-        assert len(calls) == 3  # bounded: no infinite retry loop
