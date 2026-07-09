@@ -6,8 +6,10 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pymysql
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token
@@ -314,7 +316,9 @@ class TestUploadMLTagSuggestions:
             for call in enqueue_mock.call_args_list
             if call.args and call.args[0] == "generate_ml_tag_suggestions"
         ]
-        assert len(ml_calls) == 1, f"Expected 1 ml job call, got {len(ml_calls)}: {enqueue_mock.call_args_list}"
+        assert len(ml_calls) == 1, (
+            f"Expected 1 ml job call, got {len(ml_calls)}: {enqueue_mock.call_args_list}"
+        )
         image_id = response.json()["image"]["image_id"]
         assert ml_calls[0].kwargs.get("image_id") == image_id
         assert ml_calls[0].kwargs.get("_defer_by") is None  # runs immediately, no defer
@@ -388,7 +392,8 @@ class TestUploadMLTagSuggestions:
 
         assert response.status_code == 201
         non_ml_calls = [
-            c for c in enqueue_mock.call_args_list
+            c
+            for c in enqueue_mock.call_args_list
             if not (c.args and c.args[0] == "generate_ml_tag_suggestions")
         ]
         assert non_ml_calls, "other enqueue jobs should still have been called"
@@ -478,3 +483,115 @@ async def test_images_source_url_roundtrip(db_session: AsyncSession):
     await db_session.commit()
     await db_session.refresh(image)
     assert image.source_url == "https://www.pixiv.net/artworks/138823691"
+
+
+def _db_error(errno: int, message: str) -> OperationalError:
+    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
+    return OperationalError(
+        "INSERT INTO images ...", None, pymysql.err.OperationalError(errno, message)
+    )
+
+
+def _snapshot_conflict_error() -> OperationalError:
+    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD)."""
+    return _db_error(1020, "Record has changed since last read in table 'images'")
+
+
+def _flaky_flush(fail_times: int, error: OperationalError):
+    """Patch AsyncSession.flush to raise `error` for the first `fail_times`
+    calls, then delegate to the real flush. Only the route's explicit
+    `await db.flush()` goes through AsyncSession.flush (autoflush runs inside
+    the sync Session), so the first intercepted call is the temp-row INSERT.
+    Returns (patch_ctx, calls) where calls records each intercepted flush."""
+    real_flush = AsyncSession.flush
+    calls: list[int] = []
+
+    async def flush(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) <= fail_times:
+            raise error
+        await real_flush(self, *args, **kwargs)
+
+    return patch.object(AsyncSession, "flush", flush), calls
+
+
+class TestUploadSnapshotConflictRetry:
+    """Concurrent uploads trip MariaDB ER_CHECKREAD (errno 1020) on the temp-row
+    INSERT: with innodb_snapshot_isolation=ON, a locking insert that meets index
+    entries committed after this transaction's snapshot aborts instead of
+    proceeding, and every in-flight upload writes identical placeholder values
+    into the same index positions. The upload route must retry on a fresh
+    snapshot instead of surfacing a 500."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.needs_commit
+    async def test_upload_retries_snapshot_conflict_and_succeeds(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """A transient 1020 on the temp-row INSERT is retried and the upload succeeds.
+
+        needs_commit: the retry performs a real session rollback to obtain a
+        fresh snapshot; under the default SAVEPOINT isolation that rollback
+        would unwind the fixture's user row too (FK 1452 on the retried
+        INSERT), which can't happen in production where the user is durably
+        committed.
+        """
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        with (
+            _mock_save_uploaded_image("snapshotretry1"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+            flush_patch,
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["image"]["image_id"] > 0
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+    @pytest.mark.asyncio
+    async def test_upload_gives_up_after_bounded_retries(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """A persistent 1020 propagates after a bounded number of attempts."""
+        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error())
+        with (
+            _mock_save_uploaded_image("snapshotretry2"),
+            flush_patch,
+            pytest.raises(OperationalError),
+        ):
+            await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert len(calls) == 3  # bounded: no infinite retry loop
+
+    @pytest.mark.asyncio
+    async def test_upload_does_not_retry_other_db_errors(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Non-1020 database errors propagate immediately with no retry."""
+        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        with (
+            _mock_save_uploaded_image("snapshotretry3"),
+            flush_patch,
+            pytest.raises(OperationalError),
+        ):
+            await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert len(calls) == 1  # not retried

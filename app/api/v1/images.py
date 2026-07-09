@@ -28,6 +28,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import and_, asc, delete, desc, func, or_, select
 from sqlalchemy import text as sql_text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -2628,6 +2629,26 @@ async def unfavorite_image(
     }
 
 
+# MariaDB with innodb_snapshot_isolation=ON aborts a locking operation that
+# meets index entries committed after the transaction's snapshot (ER_CHECKREAD,
+# errno 1020) instead of returning stale data. Concurrent uploads collide this
+# way on the temp-row INSERT below: every in-flight upload writes identical
+# placeholder values ("temp", status=1, zeroes) into the same index positions,
+# and the request's snapshot is pinned by the auth query well before the INSERT
+# runs. The conflict is transient — a rollback starts a fresh transaction whose
+# snapshot sees the other upload's committed rows — so a bounded retry resolves
+# it. Observed in practice when parallel e2e suites upload concurrently.
+_SNAPSHOT_CONFLICT_ERRNO = 1020
+_SNAPSHOT_CONFLICT_ATTEMPTS = 3
+
+
+def _is_snapshot_conflict(exc: OperationalError) -> bool:
+    args = getattr(exc.orig, "args", None)
+    if not args:
+        return False
+    return bool(args[0] == _SNAPSHOT_CONFLICT_ERRNO)
+
+
 @router.post(
     "/upload",
     response_model=ImageUploadResponse,
@@ -2699,22 +2720,42 @@ async def upload_image(
     # Get client IP address for logging
     client_ip = _get_client_ip(request)
 
-    # Create temporary image record to get image_id for filename
-    temp_image = Images(
-        filename="temp",  # Will be updated after save
-        ext="tmp",
-        original_filename=file.filename or "unknown",
-        md5_hash="",  # Will be calculated during save
-        filesize=0,
-        width=0,
-        height=0,
-        user_id=current_user.id,
-        ip=client_ip,  # Log IP address
-        status=1,
-        locked=0,
-    )
-    db.add(temp_image)
-    await db.flush()  # Get image_id
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user) — and
+    # touching an expired attribute on an async session raises.
+    uploader_id: int = current_user.id
+
+    # Create temporary image record to get image_id for filename. Retried on
+    # ER_CHECKREAD — see _is_snapshot_conflict above.
+    for attempt in range(1, _SNAPSHOT_CONFLICT_ATTEMPTS + 1):
+        temp_image = Images(
+            filename="temp",  # Will be updated after save
+            ext="tmp",
+            original_filename=file.filename or "unknown",
+            md5_hash="",  # Will be calculated during save
+            filesize=0,
+            width=0,
+            height=0,
+            user_id=uploader_id,
+            ip=client_ip,  # Log IP address
+            status=1,
+            locked=0,
+        )
+        db.add(temp_image)
+        try:
+            await db.flush()  # Get image_id
+            break
+        except OperationalError as e:
+            if not _is_snapshot_conflict(e) or attempt == _SNAPSHOT_CONFLICT_ATTEMPTS:
+                raise
+            # Fresh transaction -> fresh snapshot. The rolled-back auto-inc id
+            # is simply burned; id gaps are normal.
+            await db.rollback()
+            logger.warning(
+                "upload_snapshot_conflict_retry",
+                attempt=attempt,
+                user_id=uploader_id,
+            )
     image_id: int = temp_image.image_id  # type: ignore[assignment]
 
     logger.info("image_record_created", image_id=image_id)
@@ -2829,7 +2870,7 @@ async def upload_image(
         if tag_ids.strip():
             try:
                 tag_id_list = [int(tid.strip()) for tid in tag_ids.split(",") if tid.strip()]
-                await link_tags_to_image(image_id, tag_id_list, current_user.id, db)
+                await link_tags_to_image(image_id, tag_id_list, uploader_id, db)
             except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
