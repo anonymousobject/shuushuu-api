@@ -50,6 +50,7 @@ from app.config import (
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db
+from app.core.db_retry import retry_on_snapshot_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission, has_any_permission, has_permission
@@ -2699,22 +2700,33 @@ async def upload_image(
     # Get client IP address for logging
     client_ip = _get_client_ip(request)
 
-    # Create temporary image record to get image_id for filename
-    temp_image = Images(
-        filename="temp",  # Will be updated after save
-        ext="tmp",
-        original_filename=file.filename or "unknown",
-        md5_hash="",  # Will be calculated during save
-        filesize=0,
-        width=0,
-        height=0,
-        user_id=current_user.id,
-        ip=client_ip,  # Log IP address
-        status=1,
-        locked=0,
-    )
-    db.add(temp_image)
-    await db.flush()  # Get image_id
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user) — and
+    # touching an expired attribute on an async session raises.
+    uploader_id: int = current_user.id
+
+    # Concurrent uploads write identical placeholder values into the same
+    # index positions, so this INSERT can hit a snapshot conflict (see
+    # app/core/db_retry.py). A rolled-back attempt just burns an auto-inc id.
+    async def _insert_temp_image() -> Images:
+        temp = Images(
+            filename="temp",  # Will be updated after save
+            ext="tmp",
+            original_filename=file.filename or "unknown",
+            md5_hash="",  # Will be calculated during save
+            filesize=0,
+            width=0,
+            height=0,
+            user_id=uploader_id,
+            ip=client_ip,  # Log IP address
+            status=1,
+            locked=0,
+        )
+        db.add(temp)
+        await db.flush()  # Get image_id
+        return temp
+
+    temp_image = await retry_on_snapshot_conflict(db, _insert_temp_image, what="upload_temp_image")
     image_id: int = temp_image.image_id  # type: ignore[assignment]
 
     logger.info("image_record_created", image_id=image_id)
@@ -2829,7 +2841,7 @@ async def upload_image(
         if tag_ids.strip():
             try:
                 tag_id_list = [int(tid.strip()) for tid in tag_ids.split(",") if tid.strip()]
-                await link_tags_to_image(image_id, tag_id_list, current_user.id, db)
+                await link_tags_to_image(image_id, tag_id_list, uploader_id, db)
             except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
