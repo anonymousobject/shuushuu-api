@@ -169,6 +169,58 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    # Imported phpBB forum attachments - served from local storage (test uses
+    # local FS, not R2, so nginx serves these directly; the extension in the
+    # on-disk filename lets it infer Content-Type).
+    location /images/forum-archive/ {
+        alias ${STORAGE_PATH}/forum-archive/;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # --- Legacy URL redirects (forum URLs feature) ---
+    # e-shuushuu.net/image/N/ → /images/N
+    location ~ "^/image/([0-9]+)/?$" {
+        return 301 /images/$1;
+    }
+    # image.php?mode=view&image_id=N → /images/N
+    location = /image.php {
+        if ($arg_image_id) { return 301 /images/$arg_image_id; }
+        return 404;
+    }
+    # Old profile links → /users/N (legacy profile ids == current user ids)
+    location ~ "^/profile/([0-9]+)/?$" { return 301 /users/$1; }
+    location = /profile.php {
+        # Imported links use ?mode=view_profile&user_id=N (verified against dev data).
+        if ($arg_user_id) { return 301 /users/$arg_user_id; }
+        return 404;
+    }
+
+    # Legacy phpBB forum URLs → new forum, resolved by the API via legacy_* columns.
+    # (The server-level `set $api_upstream api;` above is inherited here.)
+    location = /forums/viewforum.php {
+        rewrite ^ /api/v1/forum/legacy/viewforum break;
+        proxy_pass http://$api_upstream:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /forums/viewtopic.php {
+        rewrite ^ /api/v1/forum/legacy/viewtopic break;
+        proxy_pass http://$api_upstream:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    # Forum post permalink: /forum/posts/{id} → thread + page + anchor.
+    location ~ "^/forum/posts/[0-9]+/?$" {
+        rewrite "^/forum/posts/([0-9]+)/?$" /api/v1/forum/posts/$1/redirect break;
+        proxy_pass http://$api_upstream:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # Frontend - proxy to SvelteKit SSR server (production build in Docker)
     location / {
         proxy_pass http://$frontend_upstream:3000;
