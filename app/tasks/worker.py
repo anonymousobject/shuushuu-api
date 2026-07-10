@@ -192,8 +192,8 @@ class WorkerSettings:
         func(sync_image_status_job, max_tries=settings.ARQ_MAX_TRIES),
         func(r2_delete_image_job, max_tries=settings.ARQ_MAX_TRIES),
         func(generate_ml_tag_suggestions, max_tries=3),
-        # job_timeout (300s) would kill this ~15-minute refresh; override per-function.
-        func(refresh_user_tag_affinity_job, max_tries=1, timeout=3600),
+        # job_timeout (300s) would kill this ~30+ minute refresh; override per-function.
+        func(refresh_user_tag_affinity_job, max_tries=1, timeout=7200),
     ]
 
     cron_jobs = [
@@ -201,5 +201,5 @@ class WorkerSettings:
         cron(process_review_deadlines, minute=0),  # Every hour on the hour
         # Cron jobs are dispatched under a separate "cron:<name>" registry key from
         # func() entries, so the timeout above does NOT apply here — set it again.
-        cron(refresh_user_tag_affinity_job, hour=5, minute=0, timeout=3600),  # nightly, 05:00 UTC
+        cron(refresh_user_tag_affinity_job, hour=5, minute=0, timeout=7200),  # nightly, 05:00 UTC
     ]

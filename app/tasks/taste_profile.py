@@ -12,8 +12,8 @@ async def refresh_user_tag_affinity_job(ctx: dict[str, Any]) -> None:
     Nightly refresh of the user_tag_affinity table (05:00 UTC).
 
     Skips silently if another refresh is already running (advisory lock not
-    acquired). ~15 minutes on production-scale data, batched to keep MariaDB
-    memory bounded.
+    acquired). ~30+ minutes on dev-scale data (5.7M favorites), batched to
+    keep MariaDB memory bounded.
     """
     from app.config import settings
     from app.core.database import get_async_session
@@ -37,7 +37,5 @@ async def refresh_user_tag_affinity_job(ctx: dict[str, Any]) -> None:
             )
             return
 
-    if n < 0:
-        logger.info("user_tag_affinity_refresh_skipped_lock_held")
-    else:
+    if n >= 0:
         logger.info("user_tag_affinity_refreshed", rows=n)
