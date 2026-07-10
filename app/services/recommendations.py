@@ -14,6 +14,7 @@ from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus, settings
+from app.models.tag import Tags
 from app.models.user import Users
 from app.models.user_tag_affinity import UserTagAffinity
 from app.schemas.image import TagSummary
@@ -61,6 +62,21 @@ async def get_recommended_images(
         ).first()
         return RecommendationPage(total=0, image_ids=[], profile_ready=has_rows is not None)
 
+    # The candidate subquery below filters tag_links.tag_id directly (not via
+    # COALESCE(tg.alias_of, tg.tag_id) like the scoring/because queries) so
+    # it can use the tag_links tag_id index. That means an image tagged only
+    # through an alias of a top-affinity canonical tag would never reach
+    # scoring at all. Fix: expand top_tag_ids with any alias tags pointing at
+    # them (one extra indexed lookup on tags.alias_of) and use the expanded
+    # set only for candidate selection — scoring/because already resolve
+    # aliases via COALESCE and don't need it.
+    alias_rows = (
+        await db.execute(
+            select(Tags.tag_id).where(Tags.alias_of.in_(top_tag_ids))  # type: ignore[call-overload,union-attr]
+        )
+    ).all()
+    candidate_tag_ids = top_tag_ids + [r[0] for r in alias_rows]
+
     show_all = user.show_all_images == 1
     status_clause = "" if show_all else "AND i.status IN :public_statuses"
     hide_reposts_clause = "AND i.status != :repost_status" if user.hide_reposts == 1 else ""
@@ -71,7 +87,7 @@ async def get_recommended_images(
             SELECT DISTINCT c.image_id, p.tag_id, p.affinity
             FROM (
                 SELECT DISTINCT tl.image_id FROM tag_links tl
-                WHERE tl.tag_id IN :top_tag_ids
+                WHERE tl.tag_id IN :candidate_tag_ids
                 ORDER BY tl.image_id DESC
                 LIMIT {int(settings.TASTE_CANDIDATE_CAP)}
             ) c
@@ -94,8 +110,8 @@ async def get_recommended_images(
         ORDER BY score DESC, d.image_id DESC
         LIMIT {int(settings.TASTE_FEED_POOL)}
     """
-    stmt = text(sql).bindparams(bindparam("top_tag_ids", expanding=True))
-    params: dict[str, Any] = {"top_tag_ids": top_tag_ids, "uid": user.user_id}
+    stmt = text(sql).bindparams(bindparam("candidate_tag_ids", expanding=True))
+    params: dict[str, Any] = {"candidate_tag_ids": candidate_tag_ids, "uid": user.user_id}
     if not show_all:
         stmt = stmt.bindparams(bindparam("public_statuses", expanding=True))
         params["public_statuses"] = list(PUBLIC_IMAGE_STATUSES)

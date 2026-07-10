@@ -78,6 +78,32 @@ async def test_scored_order_and_because_tags(authenticated_client, rec_world):
     assert because[0]["title"] == "Loved"
 
 
+async def test_candidate_includes_alias_only_tagged_image(
+    db_session, authenticated_client, rec_world, test_user
+):
+    """An image tagged ONLY through an alias of a top-affinity canonical tag
+    must still surface as a candidate. The candidate subquery filters
+    `tl.tag_id IN top_tag_ids` directly (no alias resolution) for index
+    reasons, so a naive implementation only ever finds canonical-tagged
+    images even though scoring resolves aliases fine."""
+    db_session.add(Tags(tag_id=303, type=TagType.SOURCE, title="Loved Alias", alias_of=301))
+    _img(db_session, 9008, test_user.user_id)  # tagged only via alias 303 -> score +2
+    await db_session.flush()
+    db_session.add(TagLinks(tag_id=303, image_id=9008, user_id=test_user.user_id))
+    await db_session.commit()
+
+    resp = await authenticated_client.get("/api/v1/images/recommended")
+    data = resp.json()
+    ids = [im["image_id"] for im in data["images"]]
+    # 9008 ties 9001 at score +2.0; ORDER BY score DESC, image_id DESC puts
+    # the higher id first among ties.
+    assert ids == [9008, 9001, 9002]
+    img = next(im for im in data["images"] if im["image_id"] == 9008)
+    because = img["because_tags"]
+    assert [t["tag_id"] for t in because] == [301]  # resolves to the canonical tag
+    assert because[0]["title"] == "Loved"
+
+
 async def test_excludes_seen_and_own_images(db_session, authenticated_client, rec_world):
     uid = rec_world.user_id
     db_session.add(Favorites(user_id=uid, image_id=9001))  # favorited -> excluded
