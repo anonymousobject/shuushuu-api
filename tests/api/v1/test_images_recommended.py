@@ -103,6 +103,55 @@ async def test_excludes_hidden_statuses(db_session, authenticated_client, rec_wo
     assert 9005 not in ids
 
 
+async def test_hide_reposts_setting(db_session, authenticated_client, rec_world, test_user):
+    _img(db_session, 9006, test_user.user_id, status=ImageStatus.REPOST)
+    await db_session.flush()
+    db_session.add(TagLinks(tag_id=301, image_id=9006, user_id=test_user.user_id))
+    await db_session.commit()
+
+    # hide_reposts=0 (default): REPOST is a public status -> visible
+    resp = await authenticated_client.get("/api/v1/images/recommended")
+    ids = [im["image_id"] for im in resp.json()["images"]]
+    assert 9006 in ids
+
+    rec_world.hide_reposts = 1
+    db_session.add(rec_world)
+    await db_session.commit()
+
+    # hide_reposts=1 -> repost excluded even though it carries a loved tag
+    resp = await authenticated_client.get("/api/v1/images/recommended")
+    ids = [im["image_id"] for im in resp.json()["images"]]
+    assert 9006 not in ids
+
+
+async def test_show_all_images_includes_deactivated(
+    db_session, authenticated_client, rec_world, test_user
+):
+    rec_world.show_all_images = 1
+    db_session.add(rec_world)
+    _img(db_session, 9007, test_user.user_id, status=ImageStatus.DEACTIVATED)
+    await db_session.flush()
+    db_session.add(TagLinks(tag_id=301, image_id=9007, user_id=test_user.user_id))
+    await db_session.commit()
+
+    resp = await authenticated_client.get("/api/v1/images/recommended")
+    ids = [im["image_id"] for im in resp.json()["images"]]
+    assert 9007 in ids
+
+
+async def test_profile_with_only_negative_affinity(db_session, authenticated_client, sample_user):
+    """A profile exists but has no positive-affinity tags -> ready, but no candidates."""
+    _aff(db_session, sample_user.user_id, 302, -3.0)
+    await db_session.commit()
+
+    resp = await authenticated_client.get("/api/v1/images/recommended")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["profile_ready"] is True
+    assert data["images"] == []
+    assert data["total"] == 0
+
+
 async def test_pagination_slices_scored_list(authenticated_client, rec_world):
     resp = await authenticated_client.get("/api/v1/images/recommended?page=2&per_page=1")
     data = resp.json()

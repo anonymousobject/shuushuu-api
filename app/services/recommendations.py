@@ -112,7 +112,7 @@ async def get_recommended_images(
     # top contributing (positive) profile tags per page image
     because_stmt = text(
         """
-        SELECT tl.image_id, p.tag_id, p.affinity, t.title, t.type
+        SELECT DISTINCT tl.image_id, p.tag_id, p.affinity, t.title, t.type
         FROM tag_links tl
         JOIN tags tg0 ON tg0.tag_id = tl.tag_id
         JOIN user_tag_affinity p
