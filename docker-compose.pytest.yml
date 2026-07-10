@@ -65,6 +65,7 @@ services:
     # under `-n auto`, but far below the dev container's 3 GiB — so it can
     # never repeat the OOM, and uses less host memory than sharing the dev DB.
     mem_limit: 1g
+    mem_swappiness: 0
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
