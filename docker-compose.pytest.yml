@@ -64,8 +64,9 @@ services:
     # Hard ceiling well above the ~0.8 GiB this container actually peaks at
     # under `-n auto`, but far below the dev container's 3 GiB — so it can
     # never repeat the OOM, and uses less host memory than sharing the dev DB.
+    # memswap_limit equal to mem_limit disables swap entirely (cgroup v2).
     mem_limit: 1g
-    mem_swappiness: 0
+    memswap_limit: 1g
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s

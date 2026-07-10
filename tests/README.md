@@ -55,6 +55,11 @@ Each worker gets its own database (`shuushuu_pytest_gw0`, ...) and Redis DB,
 created automatically. `--dist loadgroup` keeps the schema-sync tests (which
 rebuild fixed-name databases) on a single worker.
 
+**Note on Redis fixtures:** Tests using real-Redis fixtures (not mocked) still
+target the local Redis at `localhost:6379`. They skip gracefully if Redis is not
+available (pre-existing behavior). Only the database is fully isolated; Redis
+fixtures are shared across workers.
+
 **Do not run `-n auto` against the dev database.** The dev MariaDB runs a 2 GiB
 InnoDB buffer pool inside a 3 GiB container cap; serving the live dev site keeps
 that pool resident, so a parallel run has almost no headroom. The added
