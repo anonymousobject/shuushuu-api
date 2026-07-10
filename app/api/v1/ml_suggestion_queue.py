@@ -25,7 +25,7 @@ from app.models.image import Images
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
-from app.schemas.image import ImageResponse, TagSummary
+from app.schemas.image import ImageResponse, TagSummary, sort_tag_links_for_display
 from app.schemas.ml_suggestion_queue import (
     BulkReviewItem,
     BulkReviewResult,
@@ -217,7 +217,10 @@ async def get_suggestions_for_tag(
             suggestion_id=suggestion_id,
             confidence=confidence,
             image=ImageResponse.model_validate(images_by_id[image_id]),
-            tags=[TagSummary.model_validate(tl.tag) for tl in images_by_id[image_id].tag_links],
+            tags=[
+                TagSummary.model_validate(tl.tag)
+                for tl in sort_tag_links_for_display(images_by_id[image_id].tag_links)
+            ],
         )
         for (suggestion_id, image_id, confidence) in items
         if image_id in images_by_id

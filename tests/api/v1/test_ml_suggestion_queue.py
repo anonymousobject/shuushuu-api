@@ -208,9 +208,7 @@ class TestSuggestionGridEndpoint:
         assert thumb.endswith(f"/thumbs/{image_hi.filename}.webp")
         assert "/" in thumb  # a URL path, not just the bare filename
 
-    async def test_min_confidence_filters_grid(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_min_confidence_filters_grid(self, client: AsyncClient, db_session: AsyncSession):
         """min_confidence excludes suggestions below the threshold."""
         user = await _make_user(db_session, "grid2")
         await _grant_image_tag_add(db_session, user)
@@ -232,6 +230,57 @@ class TestSuggestionGridEndpoint:
         assert data["total"] == 1
         assert len(data["items"]) == 1
         assert data["items"][0]["confidence"] == 0.9
+
+    async def test_grid_item_tags_sorted_by_type_then_title(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """items[*].tags follow the site-wide order — tag type (artist → source →
+        character → theme) then alphabetical by title — matching
+        ImageDetailedResponse so the /ml-suggestions hover popup reads the same
+        as the board and detail page.
+        """
+        user = await _make_user(db_session, "gridsort")
+        await _grant_image_tag_add(db_session, user)
+        image = await _make_image(db_session, user, "gridsort_img")
+
+        # Applied tags spanning all four types, plus a second theme tag to
+        # exercise the alphabetical tiebreak. Created in an order where tag_id
+        # ascending is NOT the expected sorted order, and linked in yet another
+        # order, so the test can only pass through real sorting.
+        theme_z = await _make_tag(db_session, user, "zzz_theme", tag_type=TagType.THEME)
+        character = await _make_tag(db_session, user, "char_solo", tag_type=TagType.CHARACTER)
+        theme_a = await _make_tag(db_session, user, "aaa_theme", tag_type=TagType.THEME)
+        artist = await _make_tag(db_session, user, "artist_solo", tag_type=TagType.ARTIST)
+        source = await _make_tag(db_session, user, "source_solo", tag_type=TagType.SOURCE)
+        for applied in (source, theme_z, artist, character, theme_a):
+            db_session.add(
+                TagLinks(image_id=image.image_id, tag_id=applied.tag_id, user_id=user.user_id)
+            )
+        await db_session.flush()
+
+        # A separate tag carries the pending suggestion that puts this image in
+        # the grid; it is NOT applied to the image, so it isn't in items[*].tags.
+        review_tag = await _make_tag(db_session, user, "gridsort_review")
+        await _make_suggestion(db_session, image, review_tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/ml-suggestions?tag_id={review_tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        returned = [(t["type"], t["title"]) for t in items[0]["tags"]]
+        assert returned == [
+            (TagType.ARTIST, artist.title),
+            (TagType.SOURCE, source.title),
+            (TagType.CHARACTER, character.title),
+            (TagType.THEME, theme_a.title),
+            (TagType.THEME, theme_z.title),
+        ]
 
 
 @pytest.mark.api
@@ -275,9 +324,7 @@ class TestSuggestionReviewEndpoint:
         await db_session.refresh(suggestion)
         assert suggestion.status == "approved"
 
-    async def test_bulk_mixed_across_images(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_bulk_mixed_across_images(self, client: AsyncClient, db_session: AsyncSession):
         """Approve on one image, reject on another, in a single request."""
         user = await _make_user(db_session, "rev2")
         await _grant_image_tag_add(db_session, user)
@@ -307,17 +354,17 @@ class TestSuggestionReviewEndpoint:
 
         # tag1 applied to image1, tag2 NOT applied to image2.
         link1 = (
-            await db_session.execute(
-                select(TagLinks).where(TagLinks.image_id == image1.image_id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(TagLinks).where(TagLinks.image_id == image1.image_id)))
+            .scalars()
+            .all()
+        )
         assert {link.tag_id for link in link1} == {tag1.tag_id}
 
         link2 = (
-            await db_session.execute(
-                select(TagLinks).where(TagLinks.image_id == image2.image_id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(TagLinks).where(TagLinks.image_id == image2.image_id)))
+            .scalars()
+            .all()
+        )
         assert link2 == []
 
     async def test_missing_suggestion_reported_in_errors(
@@ -480,12 +527,8 @@ class TestWorklistPagination:
         token = create_access_token(user_id=user.user_id)
         headers = {"Authorization": f"Bearer {token}"}
 
-        r1 = await client.get(
-            "/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers
-        )
-        r2 = await client.get(
-            "/api/v1/ml-suggestions/tags?page=2&per_page=3", headers=headers
-        )
+        r1 = await client.get("/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers)
+        r2 = await client.get("/api/v1/ml-suggestions/tags?page=2&per_page=3", headers=headers)
 
         assert r1.status_code == 200
         assert r2.status_code == 200
@@ -499,9 +542,7 @@ class TestWorklistPagination:
         assert d1["page"] == 1
         assert d2["page"] == 2
 
-    async def test_total_is_same_across_pages(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_total_is_same_across_pages(self, client: AsyncClient, db_session: AsyncSession):
         """total reflects all distinct pending tags, independent of page."""
         user = await _make_user(db_session, "wpag2")
         await _grant_image_tag_add(db_session, user)
@@ -514,12 +555,8 @@ class TestWorklistPagination:
         token = create_access_token(user_id=user.user_id)
         headers = {"Authorization": f"Bearer {token}"}
 
-        r1 = await client.get(
-            "/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers
-        )
-        r2 = await client.get(
-            "/api/v1/ml-suggestions/tags?page=2&per_page=3", headers=headers
-        )
+        r1 = await client.get("/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers)
+        r2 = await client.get("/api/v1/ml-suggestions/tags?page=2&per_page=3", headers=headers)
 
         assert r1.json()["total"] == r2.json()["total"]
         assert r1.json()["total"] >= 8
@@ -567,13 +604,9 @@ class TestWorklistPagination:
         headers = {"Authorization": f"Bearer {token}"}
 
         # First call: page=1, per_page=2
-        r_a = await client.get(
-            "/api/v1/ml-suggestions/tags?page=1&per_page=2", headers=headers
-        )
+        r_a = await client.get("/api/v1/ml-suggestions/tags?page=1&per_page=2", headers=headers)
         # Second call: page=1, per_page=3  (different per_page → different items)
-        r_b = await client.get(
-            "/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers
-        )
+        r_b = await client.get("/api/v1/ml-suggestions/tags?page=1&per_page=3", headers=headers)
 
         assert r_a.status_code == 200
         assert r_b.status_code == 200
@@ -586,9 +619,7 @@ class TestWorklistPagination:
 class TestGridPerPageLimit:
     """GET /api/v1/ml-suggestions — per_page must be capped like the worklist endpoint."""
 
-    async def test_oversized_per_page_rejected(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_oversized_per_page_rejected(self, client: AsyncClient, db_session: AsyncSession):
         """per_page above the cap is a 422, not an unbounded DB scan."""
         user = await _make_user(db_session, "gpp1")
         await _grant_image_tag_add(db_session, user)
@@ -603,9 +634,7 @@ class TestGridPerPageLimit:
 
         assert response.status_code == 422
 
-    async def test_per_page_at_cap_accepted(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_per_page_at_cap_accepted(self, client: AsyncClient, db_session: AsyncSession):
         """per_page equal to the cap (200) is still valid."""
         user = await _make_user(db_session, "gpp2")
         await _grant_image_tag_add(db_session, user)
@@ -749,9 +778,7 @@ class TestSuggestionQueuePermissions:
         r_tags = await client.get("/api/v1/ml-suggestions/tags", headers=headers)
         assert r_tags.status_code == 403
 
-        r_grid = await client.get(
-            f"/api/v1/ml-suggestions?tag_id={tag.tag_id}", headers=headers
-        )
+        r_grid = await client.get(f"/api/v1/ml-suggestions?tag_id={tag.tag_id}", headers=headers)
         assert r_grid.status_code == 403
 
         r_review = await client.post(
@@ -778,9 +805,7 @@ class TestSuggestionQueuePermissions:
         r_tags = await client.get("/api/v1/ml-suggestions/tags", headers=headers)
         assert r_tags.status_code == 200
 
-        r_grid = await client.get(
-            f"/api/v1/ml-suggestions?tag_id={tag.tag_id}", headers=headers
-        )
+        r_grid = await client.get(f"/api/v1/ml-suggestions?tag_id={tag.tag_id}", headers=headers)
         assert r_grid.status_code == 200
 
         r_review = await client.post(
@@ -806,9 +831,7 @@ class TestSuggestionQueuePermissions:
         r_tags = await client.get("/api/v1/ml-suggestions/tags", headers=headers)
         assert r_tags.status_code == 200
 
-        r_grid = await client.get(
-            f"/api/v1/ml-suggestions?tag_id={tag.tag_id}", headers=headers
-        )
+        r_grid = await client.get(f"/api/v1/ml-suggestions?tag_id={tag.tag_id}", headers=headers)
         assert r_grid.status_code == 200
 
         r_review = await client.post(
