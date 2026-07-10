@@ -21,6 +21,23 @@ TAG_TYPE_SORT_ORDER = {
 }
 
 
+def sort_tag_links_for_display(tag_links: list) -> list:  # type: ignore[type-arg]
+    """Order an image's tag_links for display: by tag type (artist → source →
+    character → theme) then alphabetically by title.
+
+    The canonical order for surfacing an image's applied tags. Used by both
+    ImageDetailedResponse and the ML suggestion grid so the tag list reads the
+    same everywhere (board, detail page, and /ml-suggestions hover popup).
+    """
+    return sorted(
+        tag_links,
+        key=lambda tl: (
+            TAG_TYPE_SORT_ORDER.get(tl.tag.type, 99),  # Primary: type order
+            (tl.tag.title or "").lower(),  # Secondary: alphabetical
+        ),
+    )
+
+
 class TagSummary(BaseModel):
     """Minimal tag info for embedding"""
 
@@ -197,13 +214,7 @@ class ImageDetailedResponse(ImageResponse):
 
         # Add tags if loaded through tag_links, sorted by type then alphabetically
         if hasattr(image, "tag_links") and image.tag_links:
-            sorted_links = sorted(
-                image.tag_links,
-                key=lambda tl: (
-                    TAG_TYPE_SORT_ORDER.get(tl.tag.type, 99),  # Primary: type order
-                    (tl.tag.title or "").lower(),  # Secondary: alphabetical
-                ),
-            )
+            sorted_links = sort_tag_links_for_display(image.tag_links)
             data["tags"] = [TagSummary.model_validate(tl.tag) for tl in sorted_links]
 
         data["is_favorited"] = is_favorited
