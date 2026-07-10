@@ -229,6 +229,16 @@ async def refresh_user_tag_affinity(
         await db.commit()
         return n_rows
     finally:
+        # A mid-run failure can leave the session's transaction in a state
+        # that makes RELEASE_LOCK itself raise (e.g. PendingRollbackError) --
+        # swallowed below, that would return a still-locked connection to the
+        # pool and wedge every later refresh at -1 until the pool recycles it.
+        # A healthy post-commit session tolerates rollback() fine, so this is
+        # a no-op on the success path.
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         # Connection-scoped lock survives the DDL implicit-commits on this session.
         try:
             await db.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": lock_name})

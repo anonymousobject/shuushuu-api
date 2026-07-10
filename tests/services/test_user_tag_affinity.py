@@ -332,3 +332,37 @@ async def test_lock_skip_returns_sentinel(db_session, engine):
         n = await refresh_user_tag_affinity(db_session, **REFRESH_KW)
         assert n == -1
         await other.execute(sqla_text("SELECT RELEASE_LOCK(:n)"), {"n": lock_name})
+
+
+async def test_lock_released_after_mid_run_failure(db_session, engine):
+    # Forces a real (not mocked) mid-run failure: a second connection holds
+    # an open, uncommitted `FOR UPDATE` on a real `_taste_vl` table, so the
+    # service's own first statement after acquiring the advisory lock -- its
+    # defensive `DROP TABLE IF EXISTS _taste_vl` -- blocks on a metadata lock
+    # and genuinely errors once lock_wait_timeout is exceeded. This verifies
+    # the failure propagates (isn't silently swallowed) AND that the
+    # advisory lock isn't leaked: a second refresh on the SAME session, once
+    # the blocker releases, must succeed rather than returning the
+    # locked-out sentinel (-1), which is what would happen if RELEASE_LOCK
+    # in the `finally` failed on a still-poisoned session and got swallowed.
+    from sqlalchemy import text as sqla_text
+    from sqlalchemy.exc import OperationalError
+
+    async with engine.connect() as blocker:
+        await blocker.execute(sqla_text("DROP TABLE IF EXISTS _taste_vl"))
+        await blocker.execute(sqla_text("CREATE TABLE _taste_vl (id INT) ENGINE=InnoDB"))
+        await blocker.commit()
+        await blocker.execute(sqla_text("INSERT INTO _taste_vl VALUES (1)"))
+        await blocker.commit()
+        await blocker.execute(sqla_text("SELECT * FROM _taste_vl FOR UPDATE"))  # open txn
+
+        await db_session.execute(sqla_text("SET SESSION lock_wait_timeout = 1"))
+        with pytest.raises(OperationalError, match="Lock wait timeout exceeded"):
+            await refresh_user_tag_affinity(db_session, **REFRESH_KW)
+
+        await blocker.rollback()  # release the metadata lock
+        await blocker.execute(sqla_text("DROP TABLE IF EXISTS _taste_vl"))
+        await blocker.commit()
+
+    n = await refresh_user_tag_affinity(db_session, **REFRESH_KW)
+    assert n >= 0  # lock was released after the failure, not leaked

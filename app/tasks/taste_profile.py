@@ -19,6 +19,10 @@ async def refresh_user_tag_affinity_job(ctx: dict[str, Any]) -> None:
     from app.core.database import get_async_session
     from app.services.user_tag_affinity import refresh_user_tag_affinity
 
+    if not settings.TASTE_REFRESH_ENABLED:
+        logger.info("user_tag_affinity_refresh_disabled")
+        return
+
     async with get_async_session() as db:
         try:
             n = await refresh_user_tag_affinity(

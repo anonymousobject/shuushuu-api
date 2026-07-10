@@ -299,6 +299,9 @@ class Settings(BaseSettings):
     BANNER_CACHE_TTL_JITTER: int = Field(default=300, ge=0)
 
     # User taste profiles (per-user tag affinity) + recommendations
+    TASTE_REFRESH_ENABLED: bool = Field(
+        default=True, description="Enable the nightly user_tag_affinity refresh cron"
+    )
     TASTE_MIN_SUPPORT: int = Field(default=5, ge=1)  # min pool/rated images to store a row
     TASTE_SMOOTHING_K: int = Field(
         default=200, ge=0
