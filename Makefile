@@ -4,7 +4,7 @@
 # Ensure bash is used for all commands (required for read -p in clean target)
 SHELL := /bin/bash
 
-.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy clean
+.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend pytest pytest-db-up pytest-db-down prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy clean
 
 # Capture extra arguments for logs commands (e.g., `make dev-logs api`)
 ARGS = $(filter-out $@,$(MAKECMDGOALS))
@@ -27,6 +27,11 @@ help:
 	@echo "  test-logs    Follow all logs"
 	@echo "  test-ps      Show running containers"
 	@echo "  test-build-frontend     Rebuild frontend image"
+	@echo ""
+	@echo "Python test suite (isolated DB on :3316):"
+	@echo "  pytest       Run the pytest suite (-n auto) against an isolated MariaDB"
+	@echo "  pytest-db-up   Start the isolated pytest MariaDB"
+	@echo "  pytest-db-down Stop the isolated pytest MariaDB"
 	@echo ""
 	@echo "Production (HTTPS on e-shuushuu.net):"
 	@echo "  prod         Start production environment (foreground)"
@@ -105,6 +110,35 @@ test-ps:
 
 test-build-frontend:
 	$(COMPOSE_TEST) build --no-cache frontend
+
+# pytest targets — run the Python unit/integration suite against an isolated,
+# right-sized MariaDB (docker-compose.pytest.yml) instead of the shared,
+# memory-saturated dev container. See that file's header for the OOM root cause
+# this avoids. This is the supported way to run `pytest -n auto` locally.
+COMPOSE_PYTEST = docker compose -f docker-compose.pytest.yml
+# Pin the suite at the isolated DB (port 3316) regardless of what .env holds.
+# DATABASE_URL is what the app engine builds from at import; the TEST_DB_*
+# components are what conftest builds the test engine AND the root admin engine
+# (which creates the per-worker databases) from -- the root path reads
+# TEST_DB_HOST/TEST_DB_PORT, not TEST_DATABASE_URL, so set the components.
+PYTEST_DB_ENV = \
+	DATABASE_URL="mysql+aiomysql://shuushuu:shuushuu_password@127.0.0.1:3316/shuushuu_pytest?charset=utf8mb4" \
+	DATABASE_URL_SYNC="mysql+pymysql://shuushuu:shuushuu_password@127.0.0.1:3316/shuushuu_pytest?charset=utf8mb4" \
+	TEST_DB_HOST=127.0.0.1 \
+	TEST_DB_PORT=3316 \
+	TEST_DB_USER=shuushuu \
+	TEST_DB_PASSWORD=shuushuu_password \
+	TEST_DB_NAME=shuushuu_pytest \
+	MARIADB_ROOT_PASSWORD=root_password
+
+pytest-db-up:
+	$(COMPOSE_PYTEST) up -d --wait
+
+pytest-db-down:
+	$(COMPOSE_PYTEST) down
+
+pytest: pytest-db-up
+	$(PYTEST_DB_ENV) uv run pytest -n auto --dist loadgroup $(ARGS)
 
 # Production targets
 prod:

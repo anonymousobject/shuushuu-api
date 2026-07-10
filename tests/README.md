@@ -44,16 +44,38 @@ uv run pytest tests/unit/test_schemas.py
 ```
 
 ### Run in parallel (pytest-xdist)
+
+Use the Makefile target. It starts a dedicated, right-sized MariaDB and runs the
+suite against it:
 ```bash
-uv run pytest -n 4 --dist loadgroup
+make pytest                 # full suite, -n auto --dist loadgroup
+make pytest ARGS="-m unit"  # forward extra args to pytest
 ```
 Each worker gets its own database (`shuushuu_pytest_gw0`, ...) and Redis DB,
 created automatically. `--dist loadgroup` keeps the schema-sync tests (which
-rebuild fixed-name databases) on a single worker. 4 workers is the sweet spot
-locally; more just contend on MariaDB, and Redis DB numbering caps runs at
-13 workers. CI runs with `-n auto --dist loadgroup`.
+rebuild fixed-name databases) on a single worker.
 
-If root DB access is unavailable, worker databases require a one-time grant:
+**Note on Redis fixtures:** Tests using real-Redis fixtures (not mocked) still
+target the local Redis at `localhost:6379`. They skip gracefully if Redis is not
+available (pre-existing behavior). Only the database is fully isolated; Redis
+fixtures are shared across workers.
+
+**Do not run `-n auto` against the dev database.** The dev MariaDB runs a 2 GiB
+InnoDB buffer pool inside a 3 GiB container cap; serving the live dev site keeps
+that pool resident, so a parallel run has almost no headroom. The added
+migration/connection/temp memory tips mariadbd over the cap and it is OOM-killed
+mid-run, dropping every in-flight connection at once — hundreds of pymysql
+`(2013, 'Lost connection during query')` / aiomysql `IncompleteReadError` setup
+and teardown ERRORs that all pass when re-run serially. `make pytest` sidesteps
+this by pointing the suite at the isolated `docker-compose.pytest.yml` database
+(256 MiB pool, RAM-backed, port 3316); see that file's header for the full
+arithmetic. CI runs `-n auto --dist loadgroup` against its own dedicated DB for
+the same reason.
+
+Redis DB numbering caps runs at 13 workers (see `_test_redis_db` in conftest).
+
+If you instead point the suite at a server where root DB access is unavailable,
+worker databases require a one-time grant:
 ```sql
 GRANT ALL PRIVILEGES ON `shuushuu\_pytest\_%`.* TO `shuushuu`@`%`;
 ```
