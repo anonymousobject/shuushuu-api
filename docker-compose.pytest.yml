@@ -1,0 +1,73 @@
+# Dedicated, resource-isolated MariaDB for the pytest unit/integration suite.
+#
+# Why this file exists — root cause of the xdist "connection death" flakiness
+# ---------------------------------------------------------------------------
+# Running `uv run pytest -n auto` against the shared dev MariaDB
+# (docker-compose.yml) intermittently produced mass carnage: hundreds of
+# setup/teardown ERRORs, all pymysql (2013 "Lost connection during query") /
+# aiomysql IncompleteReadError signatures, while every test passes serially.
+#
+# It was never a connection-limit problem (Max_used_connections peaked at ~10,
+# limit is 400). mariadbd was being OOM-killed mid-run. The arithmetic:
+#
+#   dev container cap ................ 3.0 GiB   (docker-compose.yml)
+#   --innodb_buffer_pool_size ........ 2.0 GiB   (tuned for the live dev feed;
+#                                                 stays ~2.36 GiB resident while
+#                                                 serving the dev site)
+#   headroom under the cap ........... ~0.6 GiB
+#   `pytest -n auto` adds ............ ~0.5 GiB   (one xdist worker per core;
+#                                                 concurrent migration/DDL +
+#                                                 connections + temp tables)
+#
+# Combined peak sits right at the 3 GiB cap. Because the dev container also
+# allows swap (memory-swap 6 GiB) on a host whose swap is already ~93% full,
+# the overflow drives the host out of memory and the host OOM-killer reaps
+# mariadbd (unclean SIGKILL -> InnoDB crash recovery on restart). All in-flight
+# test connections die at once -> the ERROR storm. It is intermittent because
+# it only tips over when the test load, a filled buffer pool, and concurrent
+# dev-site activity align.
+#
+# The fix: give the suite its own database instead of borrowing the
+# memory-saturated dev container — exactly what CI already does. The pytest
+# databases are tiny, so a 256 MiB buffer pool is ample and a RAM-backed
+# (tmpfs) datadir with its own 1 GiB budget leaves enormous headroom. Verified:
+# `pytest -n auto` runs clean 3x in a row with zero connection-death errors,
+# and ~8x faster (~172 s -> ~21 s) thanks to the small pool + tmpfs.
+#
+# Isolated from the dev/test/prod stacks: own container name, own port (3316),
+# ephemeral tmpfs data. Use it via the Makefile:
+#
+#   make pytest            # start this DB (if needed) and run the suite on it
+#   make pytest-db-up      # just start the DB
+#   make pytest-db-down    # stop and remove it
+services:
+  mariadb-pytest:
+    image: mariadb:12
+    container_name: shuushuu-mariadb-pytest
+    environment:
+      MARIADB_ROOT_PASSWORD: root_password
+      MARIADB_DATABASE: shuushuu_pytest
+      MARIADB_USER: shuushuu
+      MARIADB_PASSWORD: shuushuu_password
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=400
+      --innodb_buffer_pool_size=256M
+    ports:
+      - "3316:3306"
+    # RAM-backed datadir: the pytest databases are ephemeral and rebuilt each
+    # session, so there is nothing to persist. Also makes migrations/truncates
+    # dramatically faster than fsync-ing to disk.
+    tmpfs:
+      - /var/lib/mysql
+    # Hard ceiling well above the ~0.8 GiB this container actually peaks at
+    # under `-n auto`, but far below the dev container's 3 GiB — so it can
+    # never repeat the OOM, and uses less host memory than sharing the dev DB.
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: "no"
