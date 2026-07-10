@@ -8,7 +8,7 @@ import secrets
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
-from typing import Annotated
+from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import (
@@ -22,7 +22,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import asc, case, delete, desc, func, or_, select
+from sqlalchemy import asc, case, delete, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -41,11 +41,13 @@ from app.core.permissions import Permission, has_permission
 from app.core.r2_client import get_r2_storage
 from app.core.redis import get_redis
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
-from app.models import Favorites, Images, TagLinks, Users
+from app.models import Favorites, Images, TagLinks, Tags, Users
 from app.models.permissions import UserGroups
 from app.models.refresh_token import RefreshTokens
 from app.models.user_suspension import UserSuspensions
+from app.models.user_tag_affinity import UserTagAffinity
 from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
+from app.schemas.taste_profile import TasteProfileResponse, TasteProfileSummary, TasteProfileTag
 from app.schemas.user import (
     AcknowledgeWarningsResponse,
     UserCreate,
@@ -64,6 +66,7 @@ from app.services.avatar import (
     save_avatar,
     validate_avatar_upload,
 )
+from app.services.feeds import TAG_TYPE_NAME
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.rate_limit import check_registration_rate_limit
 from app.services.turnstile import verify_turnstile_token
@@ -413,6 +416,125 @@ async def acknowledge_warnings(
     return AcknowledgeWarningsResponse(
         acknowledged_count=count,
         message=message,
+    )
+
+
+@router.get("/me/taste-profile", response_model=TasteProfileResponse)
+async def get_taste_profile(
+    current_user_id: Annotated[int, Depends(get_current_user_id)],
+    db: AsyncSession = Depends(get_db),
+) -> TasteProfileResponse:
+    """
+    The logged-in user's taste profile (private, owner-only).
+
+    Reads the precomputed user_tag_affinity table (refreshed nightly).
+    top_tags applies the TASTE_DISPLAY_MIN_LIFT floor so popularity-only tags
+    (e.g. "long hair" at lift ~1.3) don't crowd out actual taste; rated_high /
+    rated_low are the largest positive / negative per-user-centered rating
+    deltas with rating support.
+    """
+    # profile_ready = any rows exist. Do NOT key this on updated_at: ORM
+    # inserts (tests) send explicit NULL there; only the refresh job's raw
+    # INSERT…SELECT gets the server default.
+    has_rows = (
+        await db.execute(
+            select(UserTagAffinity.user_id)  # type: ignore[call-overload]
+            .where(UserTagAffinity.user_id == current_user_id)
+            .limit(1)
+        )
+    ).first()
+    if has_rows is None:
+        return TasteProfileResponse(profile_ready=False)
+    updated_at = (
+        await db.execute(
+            select(func.max(UserTagAffinity.updated_at)).where(
+                UserTagAffinity.user_id == current_user_id  # type: ignore[arg-type]
+            )
+        )
+    ).scalar()
+
+    def _mk(row: Any) -> TasteProfileTag:
+        aff, title, ttype = row
+        return TasteProfileTag(
+            tag_id=aff.tag_id,
+            title=title,
+            type=ttype,
+            type_name=TAG_TYPE_NAME.get(ttype, "Tag"),
+            pool_cnt=aff.pool_cnt,
+            fav_count=aff.fav_count,
+            upload_count=aff.upload_count,
+            rated_count=aff.rated_count,
+            rating_avg=aff.rating_avg,
+            lift=aff.lift,
+            rating_delta=aff.rating_delta,
+            affinity=aff.affinity,
+        )
+
+    base = (
+        select(UserTagAffinity, Tags.title, Tags.type)  # type: ignore[call-overload]
+        .join(Tags, Tags.tag_id == UserTagAffinity.tag_id)
+        .where(UserTagAffinity.user_id == current_user_id)
+    )
+    top_rows = (
+        await db.execute(
+            base.where(
+                UserTagAffinity.pool_cnt >= settings.TASTE_MIN_SUPPORT,
+                UserTagAffinity.lift >= settings.TASTE_DISPLAY_MIN_LIFT,  # type: ignore[operator]
+                UserTagAffinity.affinity > 0,
+            )
+            .order_by(desc(UserTagAffinity.affinity))  # type: ignore[arg-type]
+            .limit(40)
+        )
+    ).all()
+    high_rows = (
+        await db.execute(
+            base.where(
+                UserTagAffinity.rated_count >= settings.TASTE_MIN_SUPPORT,
+                UserTagAffinity.rating_delta > 0,  # type: ignore[operator]
+            )
+            .order_by(desc(UserTagAffinity.rating_delta))  # type: ignore[arg-type]
+            .limit(10)
+        )
+    ).all()
+    low_rows = (
+        await db.execute(
+            base.where(
+                UserTagAffinity.rated_count >= settings.TASTE_MIN_SUPPORT,
+                UserTagAffinity.rating_delta < 0,  # type: ignore[operator]
+            )
+            .order_by(UserTagAffinity.rating_delta)
+            .limit(10)
+        )
+    ).all()
+
+    pool_size = (
+        await db.execute(
+            text(
+                "SELECT COUNT(*) FROM ("
+                "SELECT image_id FROM favorites WHERE user_id = :u "
+                "UNION SELECT image_id FROM images WHERE user_id = :u) p"
+            ),
+            {"u": current_user_id},
+        )
+    ).scalar() or 0
+    rated_row = (
+        await db.execute(
+            text("SELECT COUNT(*) c, AVG(rating) m FROM image_ratings WHERE user_id = :u"),
+            {"u": current_user_id},
+        )
+    ).one()
+
+    return TasteProfileResponse(
+        profile_ready=True,
+        summary=TasteProfileSummary(
+            pool_size=pool_size,
+            rated_total=rated_row.c or 0,
+            mean_rating=float(rated_row.m) if rated_row.m is not None else None,
+            updated_at=updated_at,
+        ),
+        top_tags=[_mk(r) for r in top_rows],
+        rated_high=[_mk(r) for r in high_rows],
+        rated_low=[_mk(r) for r in low_rows],
     )
 
 

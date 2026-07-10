@@ -58,6 +58,7 @@ from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.tag_mapping import TagMappings
 from app.models.user import Users
+from app.models.user_tag_affinity import UserTagAffinity
 
 __all__ = [
     "Base",
@@ -69,6 +70,7 @@ __all__ = [
     # Junction/relationship tables
     "Favorites",
     "TagLinks",
+    "UserTagAffinity",
     "TagExternalLinks",
     "TagMappings",
     "CharacterSourceLinks",

@@ -298,6 +298,28 @@ class Settings(BaseSettings):
     BANNER_CACHE_TTL: int = Field(default=600, ge=0)
     BANNER_CACHE_TTL_JITTER: int = Field(default=300, ge=0)
 
+    # User taste profiles (per-user tag affinity) + recommendations
+    TASTE_REFRESH_ENABLED: bool = Field(
+        default=True, description="Enable the nightly user_tag_affinity refresh cron"
+    )
+    TASTE_MIN_SUPPORT: int = Field(default=5, ge=1)  # min pool/rated images to store a row
+    TASTE_SMOOTHING_K: int = Field(
+        default=200, ge=0
+    )  # add-K on global tag counts; damps sole-contributor lift saturation
+    TASTE_RATING_BETA: float = Field(
+        default=0.5, ge=0.0
+    )  # weight of the rating-delta axis in the blended affinity
+    TASTE_MIN_EVENTS: int = Field(default=10, ge=1)  # favs+ratings+uploads to be profiled
+    TASTE_BATCH_SIZE: int = Field(
+        default=500, ge=1
+    )  # users per INSERT…SELECT batch; unbatched is ~75M intermediate rows (OOM risk)
+    TASTE_TOP_TAGS: int = Field(default=30, ge=1)  # positive tags used for candidate generation
+    TASTE_CANDIDATE_CAP: int = Field(default=3000, ge=1)  # max candidate images scored per request
+    TASTE_FEED_POOL: int = Field(default=500, ge=1)  # max scored feed depth (pagination cap)
+    TASTE_DISPLAY_MIN_LIFT: float = Field(
+        default=1.5, ge=0.0
+    )  # analytics display floor; keeps popularity-only tags (e.g. "long hair") out
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:

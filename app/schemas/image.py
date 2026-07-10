@@ -2,7 +2,7 @@
 Pydantic schemas for Image endpoints
 """
 
-from typing import Any
+from typing import Any, Self
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -200,7 +200,7 @@ class ImageDetailedResponse(ImageResponse):
         next_image_id: int | None = None,
         has_open_report: bool = False,
         can_see_reason: bool = False,
-    ) -> ImageDetailedResponse:
+    ) -> Self:
         """Create response from database model with relationships.
 
         ``can_see_reason`` gates the moderation reason (owner + mods); when False the
@@ -364,3 +364,19 @@ class ImageUploadDuplicateResponse(BaseModel):
 
     detail: str
     existing_image_id: int
+
+
+class RecommendedImageResponse(ImageDetailedResponse):
+    """A recommended image plus the profile tags that most contributed to its score."""
+
+    because_tags: list[TagSummary] = []
+
+
+class RecommendedImagesResponse(BaseModel):
+    """Personalized feed envelope (standard list shape + profile_ready flag)."""
+
+    total: int
+    page: int
+    per_page: int
+    profile_ready: bool
+    images: list[RecommendedImageResponse]
