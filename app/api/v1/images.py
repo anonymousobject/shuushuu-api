@@ -97,6 +97,8 @@ from app.schemas.image import (
     ImageUploadDuplicateResponse,
     ImageUploadResponse,
     ImageUploadSimilarResponse,
+    RecommendedImageResponse,
+    RecommendedImagesResponse,
     SimilarImageResult,
     SimilarImagesResponse,
     SimilarImagesUploadResponse,
@@ -126,6 +128,7 @@ from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, check_iqdb_similarity_by_hash, remove_from_iqdb
 from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import recalculate_image_ratings
+from app.services.recommendations import get_recommended_images
 from app.services.search import sync_tag_to_search
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
@@ -1052,6 +1055,62 @@ async def random_images_page(
     return RedirectResponse(
         url=f"/?page={page}",
         status_code=status.HTTP_302_FOUND,
+    )
+
+
+@router.get("/recommended", response_model=RecommendedImagesResponse)
+async def get_recommended(
+    pagination: Annotated[PaginationParams, Depends()],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> RecommendedImagesResponse:
+    """
+    Personalized feed: images scored against the caller's taste profile.
+
+    Live-scored per request from the nightly-refreshed user_tag_affinity table.
+    Excludes images the user favorited, rated, or uploaded; applies the standard
+    status-visibility rules and the user's hide_reposts setting. Feed depth is
+    capped at TASTE_FEED_POOL scored images. `profile_ready=false` with an empty
+    list means the user has no profile yet (cold start) — not an error.
+    """
+    rec = await get_recommended_images(
+        db, current_user, page=pagination.page, per_page=pagination.per_page
+    )
+    if not rec.image_ids:
+        return RecommendedImagesResponse(
+            total=rec.total,
+            page=pagination.page,
+            per_page=pagination.per_page,
+            profile_ready=rec.profile_ready,
+            images=[],
+        )
+
+    query = (
+        select(Images)
+        .options(
+            selectinload(Images.user)  # type: ignore[arg-type]
+            .selectinload(Users.user_groups)  # type: ignore[arg-type]
+            .selectinload(UserGroups.group),  # type: ignore[arg-type]
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
+        )
+        .where(Images.image_id.in_(rec.image_ids))  # type: ignore[union-attr]
+    )
+    result = await db.execute(query)
+    by_id = {img.image_id: img for img in result.scalars().all()}
+    items: list[RecommendedImageResponse] = []
+    for iid in rec.image_ids:
+        img = by_id.get(iid)
+        if img is None:
+            continue
+        item = RecommendedImageResponse.from_db_model(img, is_favorited=False)
+        item.because_tags = rec.because.get(iid, [])
+        items.append(item)
+    return RecommendedImagesResponse(
+        total=rec.total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        profile_ready=True,
+        images=items,
     )
 
 
