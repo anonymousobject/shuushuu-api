@@ -55,7 +55,9 @@ services:
       --max_connections=400
       --innodb_buffer_pool_size=256M
     ports:
-      - "3316:3306"
+      # localhost-only bind: credentials are hardcoded throwaway values and must
+      # never be network-reachable from off-host
+      - "127.0.0.1:3316:3306"
     # RAM-backed datadir: the pytest databases are ephemeral and rebuilt each
     # session, so there is nothing to persist. Also makes migrations/truncates
     # dramatically faster than fsync-ing to disk.
