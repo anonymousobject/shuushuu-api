@@ -56,6 +56,7 @@ from app.core.permission_deps import require_permission
 from app.core.permissions import Permission, has_any_permission, has_permission
 from app.core.r2_constants import R2Location
 from app.core.redis import get_redis
+from app.core.user_loader import image_uploader_load
 from app.models import (
     AdminActions,
     Comments,
@@ -155,17 +156,7 @@ async def _hydrate_similar_images(
     """Fetch full image data for IQDB results and build SimilarImageResult list."""
     similar_ids = [r["image_id"] for r in iqdb_results]
     images_result = await db.execute(
-        select(Images)
-        .options(
-            selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                Users.user_id,  # type: ignore[arg-type]
-                Users.username,  # type: ignore[arg-type]
-                Users.avatar,  # type: ignore[arg-type]
-                Users.avatar_in_r2,  # type: ignore[arg-type]
-                Users.user_title,  # type: ignore[arg-type]
-            )
-        )
-        .where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
+        select(Images).options(image_uploader_load()).where(Images.image_id.in_(similar_ids))  # type: ignore[union-attr]
     )
     images_by_id: dict[int, Images] = {
         img.image_id: img  # type: ignore[misc]
@@ -1966,17 +1957,7 @@ async def search_by_hash(
     Useful for duplicate detection and reverse image search.
     """
     result = await db.execute(
-        select(Images)
-        .options(
-            selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                Users.user_id,  # type: ignore[arg-type]
-                Users.username,  # type: ignore[arg-type]
-                Users.avatar,  # type: ignore[arg-type]
-                Users.avatar_in_r2,  # type: ignore[arg-type]
-                Users.user_title,  # type: ignore[arg-type]
-            )
-        )
-        .where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
+        select(Images).options(image_uploader_load()).where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
     )
     images = result.scalars().all()
 
@@ -2199,15 +2180,7 @@ async def get_bookmark_image(
 
     result = await db.execute(
         select(Images)
-        .options(
-            selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                Users.user_id,  # type: ignore[arg-type]
-                Users.username,  # type: ignore[arg-type]
-                Users.avatar,  # type: ignore[arg-type]
-                Users.avatar_in_r2,  # type: ignore[arg-type]
-                Users.user_title,  # type: ignore[arg-type]
-            )
-        )
+        .options(image_uploader_load())
         .where(Images.image_id == current_user.bookmark)  # type: ignore[arg-type]
     )
     image = result.scalar_one_or_none()

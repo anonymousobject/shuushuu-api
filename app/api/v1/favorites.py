@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
 from app.core.database import get_db
+from app.core.user_loader import image_uploader_load
 from app.models import Favorites, Images, Users
 from app.models.permissions import UserGroups
 from app.schemas.image import ImageListResponse, ImageResponse
@@ -46,15 +47,7 @@ async def get_favorite_images(
     # Get user's favorite images
     query = (
         select(Images)
-        .options(
-            selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                Users.user_id,  # type: ignore[arg-type]
-                Users.username,  # type: ignore[arg-type]
-                Users.avatar,  # type: ignore[arg-type]
-                Users.avatar_in_r2,  # type: ignore[arg-type]
-                Users.user_title,  # type: ignore[arg-type]
-            )
-        )
+        .options(image_uploader_load())
         .join(Favorites)
         .where(Favorites.user_id == user_id)  # type: ignore[arg-type]
     )

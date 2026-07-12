@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.permission_deps import require_image_tag_add
 from app.core.redis import get_redis
+from app.core.user_loader import image_uploader_load
 from app.models.image import Images
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
@@ -199,13 +200,7 @@ async def get_suggestions_for_tag(
         result = await db.execute(
             select(Images)
             .options(
-                selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                    Users.user_id,  # type: ignore[arg-type]
-                    Users.username,  # type: ignore[arg-type]
-                    Users.avatar,  # type: ignore[arg-type]
-                    Users.avatar_in_r2,  # type: ignore[arg-type]
-                    Users.user_title,  # type: ignore[arg-type]
-                ),
+                image_uploader_load(),
                 selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
             )
             .where(Images.image_id.in_(image_ids))  # type: ignore[union-attr]
