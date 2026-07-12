@@ -33,3 +33,9 @@ class UserSummary(BaseModel):
         from app.services.avatar import avatar_url as _build_avatar_url
 
         return _build_avatar_url(self.avatar, self.avatar_in_r2)
+
+
+class MessageResponse(BaseModel):
+    """Generic message response for simple success operations."""
+
+    message: str

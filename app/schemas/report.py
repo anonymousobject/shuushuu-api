@@ -390,12 +390,3 @@ class ApplyTagSuggestionsResponse(BaseModel):
     removed_tags: list[int] = []  # Tag IDs removed from image
     already_present: list[int] = []  # Additions skipped (already on image)
     already_absent: list[int] = []  # Removals skipped (not on image)
-
-
-# ===== Simple Response =====
-
-
-class MessageResponse(BaseModel):
-    """Simple message response for success operations."""
-
-    message: str

@@ -177,15 +177,6 @@ class UserGroupsResponse(BaseModel):
     groups: list[UserGroupItem]
 
 
-# ===== Simple Message Response =====
-
-
-class MessageResponse(BaseModel):
-    """Simple message response for success operations."""
-
-    message: str
-
-
 # ===== User Suspension Schemas =====
 
 

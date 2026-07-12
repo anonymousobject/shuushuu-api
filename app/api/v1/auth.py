@@ -44,11 +44,11 @@ from app.models.user import Users
 from app.schemas.auth import (
     ForgotPasswordRequest,
     LoginRequest,
-    MessageResponse,
     PasswordChangeRequest,
     ResetPasswordRequest,
     TokenResponse,
 )
+from app.schemas.common import MessageResponse
 from app.services.user import build_user_private_response
 from app.tasks.queue import enqueue_job
 

@@ -66,7 +66,6 @@ from app.schemas.admin import (
     GroupUpdate,
     ImageStatusResponse,
     ImageStatusUpdate,
-    MessageResponse,
     PermListResponse,
     PermResponse,
     SuspendUserRequest,
@@ -82,7 +81,7 @@ from app.schemas.comment_report import (
     CommentReportDismissRequest,
     CommentReportListItem,
 )
-from app.schemas.common import UserSummary
+from app.schemas.common import MessageResponse, UserSummary
 from app.schemas.report import (
     ApplyTagSuggestionsRequest,
     ApplyTagSuggestionsResponse,
