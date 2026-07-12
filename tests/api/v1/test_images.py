@@ -3445,6 +3445,127 @@ class TestShowAllImagesFilter:
         assert data["images"][0]["filename"] == "active1"
 
 
+class TestAnonymousExplicitStatusFilter:
+    """The explicit ?status= param used to bypass visibility checks entirely,
+    so an anonymous caller could enumerate metadata (uploader, tags,
+    dimensions, existence) for moderation-hidden images via e.g.
+    `?status=0` (DEACTIVATED), `?status=-2` (INAPPROPRIATE), or `?status=-4`
+    (REVIEW queue). Anonymous callers must never see non-public statuses,
+    even when requesting them explicitly; authenticated callers keep the
+    pre-existing explicit-status behavior unchanged."""
+
+    async def test_anonymous_explicit_non_public_status_is_filtered(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Anonymous `?status=0` (DEACTIVATED) must not surface a deactivated image."""
+        from app.config import ImageStatus
+
+        owner = Users(
+            username="statusowner",
+            email="statusowner@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000032",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        img_data = sample_image_data.copy()
+        img_data.update(
+            {
+                "filename": "deactivated_img",
+                "md5_hash": "hash_anon_explicit_000",
+                "status": ImageStatus.DEACTIVATED,
+                "user_id": owner.user_id,
+            }
+        )
+        db_session.add(Images(**img_data))
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?status=0")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["images"] == []
+
+    async def test_anonymous_explicit_public_status_still_returned(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """Regression guard: the anonymous gate must not swallow legitimate
+        public-status requests too."""
+        from app.config import ImageStatus
+
+        owner = Users(
+            username="statusowner2",
+            email="statusowner2@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000033",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        img_data = sample_image_data.copy()
+        img_data.update(
+            {
+                "filename": "active_img_explicit",
+                "md5_hash": "hash_anon_explicit_001",
+                "status": ImageStatus.ACTIVE,
+                "user_id": owner.user_id,
+            }
+        )
+        db_session.add(Images(**img_data))
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?status=1")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "active_img_explicit"
+
+    async def test_authenticated_explicit_non_public_status_still_returned(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        """Authenticated users (even non-owners with no elevated permissions)
+        keep the pre-existing explicit-status behavior — the anonymous-only
+        gate must not affect them."""
+        from app.config import ImageStatus
+
+        owner = Users(
+            username="statusowner3",
+            email="statusowner3@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000034",
+            active=1,
+        )
+        db_session.add(owner)
+        await db_session.flush()
+
+        img_data = sample_image_data.copy()
+        img_data.update(
+            {
+                "filename": "deactivated_img_auth",
+                "md5_hash": "hash_auth_explicit_000",
+                "status": ImageStatus.DEACTIVATED,
+                "user_id": owner.user_id,
+            }
+        )
+        db_session.add(Images(**img_data))
+        await db_session.commit()
+
+        response = await authenticated_client.get("/api/v1/images?status=0")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["images"][0]["filename"] == "deactivated_img_auth"
+
+
 class TestBookmarkPage:
     """Tests for GET /images/bookmark/page endpoint."""
 

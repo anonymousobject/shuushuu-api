@@ -567,6 +567,12 @@ async def list_images(
     if image_status is not None:
         # Explicit status filter - always honor it (supports single or multiple values)
         query = query.where(Images.status.in_(image_status))  # type: ignore[attr-defined]
+        if current_user is None:
+            # Anonymous users may never see non-public statuses, even when requested
+            # explicitly — otherwise ?status=0/-2/-4 enumerates deactivated /
+            # inappropriate / review-queue image metadata. Authenticated users retain
+            # full explicit-status access (policy decision 2026-07-12).
+            query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
     else:
         # No explicit filter - apply default based on user's show_all_images setting
         # Anonymous users or users with show_all_images=0 see only public statuses
