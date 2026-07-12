@@ -34,15 +34,11 @@ dependencies = [
     "httpx[http2]>=0.27.0", # HTTP client for IQDB API requests
     # Logging
     "structlog>=24.1.0",
-    "python-json-logger>=2.0.7",
     # Feed generation
     "feedgenerator>=2.2.1",
     # Task queue
     "arq>=0.27.0", # Task queue for background jobs
     "aioboto3>=13.0.0",  # Async S3-compatible client for Cloudflare R2
-    # "python-magic>=0.4.27",  # File type detection - for validating image uploads
-    # "slowapi>=0.1.9",  # Rate limiting - for API throttling
-    # "python-multipart>=0.0.20",  # Multipart form data - needed for image uploads
     "aiosmtplib>=5.1.1",
     "onnxruntime>=1.26.0",  # 1.26.0 is the first release with Python 3.14 wheels
     "numpy>=2.4.1",
