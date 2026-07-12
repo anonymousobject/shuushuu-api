@@ -8,10 +8,13 @@ These tests cover the /api/v1/images endpoints including:
 """
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 
+import pymysql
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
@@ -3893,6 +3896,192 @@ class TestRateImage:
         data = response.json()
         assert data["average_rating"] == 10.0
         assert data["num_ratings"] == 1
+
+
+def _db_error(errno: int, message: str) -> OperationalError:
+    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
+    return OperationalError("UPDATE ...", None, pymysql.err.OperationalError(errno, message))
+
+
+def _snapshot_conflict_error() -> OperationalError:
+    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD)."""
+    return _db_error(1020, "Record has changed since last read in table 'images'")
+
+
+def _flaky_flush(fail_times: int, error: OperationalError):
+    """Patch AsyncSession.flush to raise `error` for the first `fail_times`
+    calls, then delegate to the real flush. Only a route's explicit
+    ``await db.flush()`` goes through AsyncSession.flush (autoflush runs inside
+    the sync Session), so the first intercepted call is the counter write.
+    Returns (patch_ctx, calls) where calls records each intercepted flush."""
+    real_flush = AsyncSession.flush
+    calls: list[int] = []
+
+    async def flush(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) <= fail_times:
+            raise error
+        await real_flush(self, *args, **kwargs)
+
+    return patch.object(AsyncSession, "flush", flush), calls
+
+
+@pytest.mark.api
+class TestFavoriteRatingSnapshotConflictRetry:
+    """favorite/unfavorite/rate do read-modify-write UPDATEs on shared
+    images/users rows, so under innodb_snapshot_isolation a concurrent commit
+    can abort them with ER_CHECKREAD (errno 1020) — a double-click is enough.
+    Each write path must retry on a fresh snapshot instead of surfacing a 500.
+
+    These exercise the real retry helper (app/core/db_retry.py); the 1020 is
+    injected into the wrapped unit's explicit flush, mirroring the upload path's
+    TestUploadSnapshotConflictRetry."""
+
+    @pytest.mark.needs_commit
+    async def test_favorite_retries_snapshot_conflict_and_succeeds(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """A transient 1020 on the favorite counter write is retried and succeeds.
+
+        needs_commit: the retry performs a real session rollback to obtain a
+        fresh snapshot; under the default SAVEPOINT isolation that rollback
+        would unwind the fixture's committed image/user rows too, which can't
+        happen in production where they are durably committed.
+        """
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        initial_favorites = image.favorites
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        with flush_patch:
+            response = await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
+
+        assert response.status_code == 201, response.text
+        assert response.json()["favorites_count"] == initial_favorites + 1
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        # The favorite landed exactly once despite the retry.
+        result = await db_session.execute(
+            select(Favorites).where(
+                Favorites.user_id == sample_user.user_id,
+                Favorites.image_id == image.image_id,
+            )
+        )
+        assert result.scalar_one_or_none() is not None
+
+    @pytest.mark.needs_commit
+    async def test_unfavorite_retries_snapshot_conflict_and_succeeds(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """A transient 1020 on the unfavorite counter write is retried and succeeds."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        db_session.add(Favorites(user_id=sample_user.user_id, image_id=image.image_id))
+        image.favorites += 1
+        sample_user.favorites += 1
+        await db_session.commit()
+        await db_session.refresh(image)
+        favorites_before = image.favorites
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        with flush_patch:
+            response = await authenticated_client.delete(
+                f"/api/v1/images/{image.image_id}/favorite"
+            )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["favorites_count"] == favorites_before - 1
+        assert len(calls) >= 2
+
+        # The favorite was removed exactly once despite the retry.
+        result = await db_session.execute(
+            select(Favorites).where(
+                Favorites.user_id == sample_user.user_id,
+                Favorites.image_id == image.image_id,
+            )
+        )
+        assert result.scalar_one_or_none() is None
+
+    @pytest.mark.needs_commit
+    async def test_rate_retries_snapshot_conflict_and_succeeds(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sample_user: Users,
+    ):
+        """A transient 1020 on the rating write is retried and the rating succeeds."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        with flush_patch:
+            response = await authenticated_client.post(
+                f"/api/v1/images/{image.image_id}/rating?rating=8"
+            )
+
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["average_rating"] == 8.0
+        assert data["num_ratings"] == 1
+        assert len(calls) >= 2
+
+    @pytest.mark.needs_commit
+    async def test_favorite_gives_up_after_bounded_retries(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        """A persistent 1020 propagates after a bounded number of attempts.
+
+        needs_commit: each retry rolls back for a fresh snapshot, so the image
+        must be durably committed to survive re-fetch across attempts (as in
+        production).
+        """
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error())
+        with flush_patch, pytest.raises(OperationalError):
+            await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
+
+        assert len(calls) == 3  # bounded: no infinite retry loop
+
+    async def test_favorite_does_not_retry_other_db_errors(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        """Non-1020 database errors propagate immediately with no retry."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        with flush_patch, pytest.raises(OperationalError):
+            await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
+
+        assert len(calls) == 1  # not retried
 
 
 @pytest.mark.api

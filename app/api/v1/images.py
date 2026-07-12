@@ -127,7 +127,7 @@ from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, check_iqdb_similarity_by_hash, remove_from_iqdb
 from app.services.rate_limit import check_similarity_rate_limit
-from app.services.rating import recalculate_image_ratings
+from app.services.rating import RatingStats, recalculate_image_ratings
 from app.services.recommendations import get_recommended_images
 from app.services.search import sync_tag_to_search
 from app.services.tag_type_flags import refresh_image_tag_type_flags
@@ -2525,42 +2525,52 @@ async def rate_image(
     Returns:
         Message and updated rating stats (average_rating, bayesian_rating, num_ratings)
     """
-    # Verify image exists
-    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
-    image = image_result.scalar_one_or_none()
+    # Capture as a primitive: a snapshot-conflict retry rolls back the
+    # transaction, expiring ORM instances (including current_user).
+    user_id: int = current_user.id
 
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
+    # The rating INSERT/UPDATE and the image stats UPDATE are read-modify-write
+    # on shared rows, so under innodb_snapshot_isolation a concurrent commit can
+    # abort them with ER_CHECKREAD (1020). Retry on a fresh snapshot instead of
+    # surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its rows.
+    async def _apply_rating() -> tuple[str, RatingStats]:
+        # Verify image exists
+        image = await db.get(Images, image_id)
+        if image is None:
+            raise HTTPException(status_code=404, detail="Image not found")
 
-    # Check if user already rated this image
-    existing_rating = await db.execute(
-        select(ImageRatings).where(
-            ImageRatings.user_id == current_user.id,  # type: ignore[arg-type]
-            ImageRatings.image_id == image_id,  # type: ignore[arg-type]
+        # Check if user already rated this image
+        existing_rating = await db.execute(
+            select(ImageRatings).where(
+                ImageRatings.user_id == user_id,  # type: ignore[arg-type]
+                ImageRatings.image_id == image_id,  # type: ignore[arg-type]
+            )
         )
-    )
-    existing = existing_rating.scalar_one_or_none()
+        existing = existing_rating.scalar_one_or_none()
 
-    if existing:
-        # Update existing rating
-        existing.rating = rating
-        message = "Rating updated successfully"
-    else:
-        # Create new rating
-        new_rating = ImageRatings(
-            user_id=current_user.id,
-            image_id=image_id,
-            rating=rating,
-        )
-        db.add(new_rating)
-        message = "Rating added successfully"
+        if existing:
+            # Update existing rating
+            existing.rating = rating
+            message = "Rating updated successfully"
+        else:
+            # Create new rating
+            new_rating = ImageRatings(
+                user_id=user_id,
+                image_id=image_id,
+                rating=rating,
+            )
+            db.add(new_rating)
+            message = "Rating added successfully"
 
-    # Flush so the recalculation query sees the new/updated rating
-    await db.flush()
+        # Flush so the recalculation query sees the new/updated rating
+        await db.flush()
 
-    # Recalculate and persist updated stats (global stats cached in Redis)
-    stats = await recalculate_image_ratings(db, image_id, redis_client)
-    await db.commit()
+        # Recalculate and persist updated stats (global stats cached in Redis)
+        stats = await recalculate_image_ratings(db, image_id, redis_client)
+        await db.commit()
+        return message, stats
+
+    message, stats = await retry_on_snapshot_conflict(db, _apply_rating, what="rate_image")
 
     return {
         "message": message,
@@ -2588,46 +2598,60 @@ async def favorite_image(
     Returns:
         Success message indicating if favorite was created or already existed
     """
-    # Verify image exists
-    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
-    image = image_result.scalar_one_or_none()
+    # Capture as a primitive: a snapshot-conflict retry rolls back the
+    # transaction, expiring ORM instances (including current_user).
+    user_id: int = current_user.id
 
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
+    # Incrementing image.favorites and current_user.favorites is read-modify-write
+    # on shared rows, so under innodb_snapshot_isolation a concurrent commit (a
+    # double-click is enough) can abort the UPDATE with ER_CHECKREAD (1020). Retry
+    # on a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows and re-checks idempotency so a retry re-decides.
+    async def _apply_favorite() -> tuple[bool, int]:
+        # Verify image exists
+        image = await db.get(Images, image_id)
+        if image is None:
+            raise HTTPException(status_code=404, detail="Image not found")
 
-    # Check if user already favorited this image
-    existing_favorite = await db.execute(
-        select(Favorites).where(
-            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
-            Favorites.image_id == image_id,  # type: ignore[arg-type]
+        # Check if user already favorited this image
+        existing_favorite = await db.execute(
+            select(Favorites).where(
+                Favorites.user_id == user_id,  # type: ignore[arg-type]
+                Favorites.image_id == image_id,  # type: ignore[arg-type]
+            )
         )
-    )
-    existing = existing_favorite.scalar_one_or_none()
+        if existing_favorite.scalar_one_or_none():
+            # Favorite already exists — idempotent, no write needed.
+            return True, image.favorites
 
-    if existing:
+        user = await db.get(Users, user_id)
+        if user is None:  # pragma: no cover - authenticated user always exists
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Create new favorite and update counters
+        db.add(Favorites(user_id=user_id, image_id=image_id))
+        image.favorites += 1
+        user.favorites += 1
+
+        await db.flush()
+        favorites_count: int = image.favorites
+        await db.commit()
+        return False, favorites_count
+
+    already_favorited, favorites_count = await retry_on_snapshot_conflict(
+        db, _apply_favorite, what="favorite_image"
+    )
+
+    if already_favorited:
         # Favorite already exists, return 200 OK (idempotent)
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={
                 "message": "Image already favorited",
                 "favorited": True,
-                "favorites_count": image.favorites,
+                "favorites_count": favorites_count,
             },
         )
-
-    # Create new favorite
-    new_favorite = Favorites(
-        user_id=current_user.id,
-        image_id=image_id,
-    )
-    db.add(new_favorite)
-
-    # Update counters
-    image.favorites += 1
-    current_user.favorites += 1
-
-    # Commit all changes
-    await db.commit()
 
     # Return 201 Created for new favorites
     return JSONResponse(
@@ -2635,7 +2659,7 @@ async def favorite_image(
         content={
             "message": "Favorite added successfully",
             "favorited": True,
-            "favorites_count": image.favorites,
+            "favorites_count": favorites_count,
         },
     )
 
@@ -2654,43 +2678,59 @@ async def unfavorite_image(
     Args:
         image_id: The image to unfavorite
     """
-    # Verify image exists
-    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
-    image = image_result.scalar_one_or_none()
+    # Capture as a primitive: a snapshot-conflict retry rolls back the
+    # transaction, expiring ORM instances (including current_user).
+    user_id: int = current_user.id
 
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
+    # Decrementing image.favorites and current_user.favorites is read-modify-write
+    # on shared rows, so under innodb_snapshot_isolation a concurrent commit can
+    # abort the UPDATE with ER_CHECKREAD (1020). Retry on a fresh snapshot instead
+    # of surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its rows.
+    async def _apply_unfavorite() -> int:
+        # Verify image exists
+        image = await db.get(Images, image_id)
+        if image is None:
+            raise HTTPException(status_code=404, detail="Image not found")
 
-    # Check if user has favorited this image
-    existing_favorite = await db.execute(
-        select(Favorites).where(
-            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
-            Favorites.image_id == image_id,  # type: ignore[arg-type]
+        # Check if user has favorited this image
+        existing_favorite = await db.execute(
+            select(Favorites).where(
+                Favorites.user_id == user_id,  # type: ignore[arg-type]
+                Favorites.image_id == image_id,  # type: ignore[arg-type]
+            )
         )
-    )
-    existing = existing_favorite.scalar_one_or_none()
+        if not existing_favorite.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Favorite not found")
 
-    if not existing:
-        raise HTTPException(status_code=404, detail="Favorite not found")
+        user = await db.get(Users, user_id)
+        if user is None:  # pragma: no cover - authenticated user always exists
+            raise HTTPException(status_code=404, detail="User not found")
 
-    # Delete the favorite
-    await db.execute(
-        delete(Favorites).where(
-            Favorites.user_id == current_user.id,  # type: ignore[arg-type]
-            Favorites.image_id == image_id,  # type: ignore[arg-type]
+        # Delete the favorite
+        await db.execute(
+            delete(Favorites).where(
+                Favorites.user_id == user_id,  # type: ignore[arg-type]
+                Favorites.image_id == image_id,  # type: ignore[arg-type]
+            )
         )
+
+        # Update counters (ensure they don't go negative)
+        image.favorites = max(0, image.favorites - 1)
+        user.favorites = max(0, user.favorites - 1)
+
+        await db.flush()
+        favorites_count: int = image.favorites
+        await db.commit()
+        return favorites_count
+
+    favorites_count = await retry_on_snapshot_conflict(
+        db, _apply_unfavorite, what="unfavorite_image"
     )
-
-    # Update counters (ensure they don't go negative)
-    image.favorites = max(0, image.favorites - 1)
-    current_user.favorites = max(0, current_user.favorites - 1)
-
-    await db.commit()
 
     return {
         "message": "Favorite removed successfully",
         "favorited": False,
-        "favorites_count": image.favorites,
+        "favorites_count": favorites_count,
     }
 
 
