@@ -162,6 +162,37 @@ async def check_similarity_rate_limit(user_id: int, redis_client: redis.Redis) -
     )
 
 
+async def check_forum_create_rate_limit(user_id: int, redis_client: redis.Redis) -> None:  # type: ignore[type-arg]
+    """
+    Enforce the anti-spam rate limit on forum content creation per user.
+
+    Thread and post creation share one per-user budget (a spammer must not be
+    able to bypass the cap by alternating the two endpoints).
+
+    Limit: FORUM_CREATE_RATE_LIMIT per user per 60 seconds. Moderators are
+    exempt (the caller skips this check), mirroring how the upload path exempts
+    admins.
+
+    Uses Redis for fast lookups and automatic expiration.
+    Gracefully degrades if Redis is unavailable (allows the request).
+
+    Args:
+        user_id: ID of the user making the request
+        redis_client: Redis client instance
+
+    Raises:
+        HTTPException: 429 if rate limit exceeded
+    """
+    await _check_user_rate_limit(
+        redis_client,
+        user_id,
+        key_prefix="forum_create_rate",
+        limit=settings.FORUM_CREATE_RATE_LIMIT,
+        window_seconds=60,
+        detail="You are posting too fast. Please wait a minute and try again.",
+    )
+
+
 async def check_analyze_rate_limit(user_id: int, redis_client: redis.Redis) -> None:  # type: ignore[type-arg]
     """
     Enforce tag-analysis rate limit per user.

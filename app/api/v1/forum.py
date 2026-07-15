@@ -37,6 +37,7 @@ from app.schemas.forum import (
     ForumThreadUpdate,
 )
 from app.services.forum import can_access, recompute_thread_stats, upsert_thread_read
+from app.services.rate_limit import check_forum_create_rate_limit
 
 router = APIRouter(prefix="/forum", tags=["forum"])
 
@@ -413,9 +414,12 @@ async def create_thread(
     """Create a thread with its opening post in one transaction."""
     assert current_user.user_id is not None
     perms = await _effective_perms(db, redis_client, current_user)
+    is_moderator = Permission.FORUM_MODERATE.value in perms
     category = await _visible_category(db, category_id, perms)
     if not can_access(perms, category.thread_create_perm):
         raise HTTPException(status_code=403, detail="You cannot create threads in this category")
+    if not is_moderator:
+        await check_forum_create_rate_limit(current_user.user_id, redis_client)
 
     thread = ForumThreads(
         category_id=category.category_id, title=body.title, user_id=current_user.user_id
@@ -624,6 +628,11 @@ async def create_post(
     # transaction, expiring ORM instances (including current_user).
     user_id = current_user.user_id
     client_ip = request.client.host if request.client else ""
+
+    # Anti-spam rate limit (moderators exempt). Kept outside the retried unit
+    # below so a snapshot-conflict retry does not double-count the attempt.
+    if not is_moderator:
+        await check_forum_create_rate_limit(user_id, redis_client)
 
     # Lock the thread row and recompute its stats as one retryable unit: under
     # innodb_snapshot_isolation the locking read can abort with ER_CHECKREAD
