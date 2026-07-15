@@ -11,6 +11,7 @@ from app.config import TagType
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
+from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.services.ml_suggestion_queue import count_pending_by_tag, list_pending_for_tag
 
@@ -68,6 +69,12 @@ async def _make_suggestion(
     db.add(suggestion)
     await db.flush()
     return suggestion
+
+
+async def _apply_tag(db: AsyncSession, image: Images, tag: Tags, user: Users) -> None:
+    """Apply a tag to an image directly (out-of-band of the ML review flow)."""
+    db.add(TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=user.user_id))
+    await db.flush()
 
 
 class TestCountPendingByTag:
@@ -260,6 +267,29 @@ class TestListPendingForTag:
         assert total == 1
         assert len(items) == 1
         assert items[0][0] == pending.suggestion_id
+
+    async def test_excludes_suggestions_whose_tag_is_already_applied(self, db_session: AsyncSession):
+        """A pending suggestion whose tag was applied out of band is not listed.
+
+        Covers the review-queue staleness bug: tags applied without going
+        through the review flow left their suggestion rows 'pending', so the
+        grid kept surfacing images that no longer needed review.
+        """
+        user = await _make_user(db_session, "lst7")
+        image1 = await _make_image(db_session, user, "lst7a")
+        image2 = await _make_image(db_session, user, "lst7b")
+        tag = await _make_tag(db_session, user, "lst7_tag")
+        await _make_suggestion(db_session, image1, tag, confidence=0.9)
+        remaining = await _make_suggestion(db_session, image2, tag, confidence=0.8)
+        # Tag applied to image1 out of band; suggestion row stays 'pending'.
+        await _apply_tag(db_session, image1, tag, user)
+        await db_session.commit()
+
+        items, total = await list_pending_for_tag(db_session, tag.tag_id, 0.0, 1, 10)
+
+        assert total == 1
+        assert len(items) == 1
+        assert items[0][0] == remaining.suggestion_id
 
     async def test_item_structure_has_suggestion_id_image_id_confidence(self, db_session: AsyncSession):
         """Each item is a (suggestion_id, image_id, confidence) tuple."""

@@ -15,6 +15,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
+from app.models.tag_link import TagLinks
+
+# Anti-join: excludes suggestions whose tag is already applied to the image.
+# Tags can be applied without going through the review flow (manual tag add,
+# batch tagging, report resolution) — those paths leave the suggestion row
+# status='pending', so status alone cannot tell us the work is done.
+_TAG_NOT_ALREADY_APPLIED = ~(
+    select(TagLinks.tag_id)  # type: ignore[call-overload]
+    .where(
+        TagLinks.image_id == MlTagSuggestions.image_id,
+        TagLinks.tag_id == MlTagSuggestions.tag_id,
+    )
+    .exists()
+)
 
 
 async def count_pending_by_tag(
@@ -30,6 +44,11 @@ async def count_pending_by_tag(
     Joins MlTagSuggestions → Tags and aggregates only suggestions with
     status='pending' and confidence >= min_confidence.  When type_filter is
     not None, only tags with that type are included.
+
+    Unlike list_pending_for_tag, this does NOT exclude suggestions whose tag
+    is already applied to the image: the anti-join over every pending row was
+    measured at 7-11s on production-sized data (vs ~0.9s without), so counts
+    may run slightly ahead of what the per-tag grid actually shows.
 
     When search is provided, only tags whose title contains the search string
     (case-insensitive LIKE %search%) are included.
@@ -89,8 +108,10 @@ async def list_pending_for_tag(
     """Return paginated pending suggestions for a single tag.
 
     Fetches MlTagSuggestions rows with status='pending', tag_id=tag_id, and
-    confidence >= min_confidence, ordered by confidence DESC.  Pagination is
-    1-based (page=1 is the first page).
+    confidence >= min_confidence, ordered by confidence DESC, excluding
+    suggestions whose tag is already applied to the image (see
+    _TAG_NOT_ALREADY_APPLIED).  Pagination is 1-based (page=1 is the first
+    page).
 
     Returns (items, total) where:
     - items is a list of (suggestion_id, image_id, confidence)
@@ -100,6 +121,7 @@ async def list_pending_for_tag(
         MlTagSuggestions.status == "pending",
         MlTagSuggestions.tag_id == tag_id,
         MlTagSuggestions.confidence >= min_confidence,
+        _TAG_NOT_ALREADY_APPLIED,
     )
 
     count_stmt = select(func.count(MlTagSuggestions.suggestion_id)).where(*base_filter)  # type: ignore[arg-type]
