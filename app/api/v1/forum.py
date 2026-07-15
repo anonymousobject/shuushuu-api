@@ -540,7 +540,7 @@ async def update_thread(
     thread = await db.get(ForumThreads, thread_id)
     if thread is None or (thread.deleted and not is_moderator):
         raise HTTPException(status_code=404, detail="Thread not found")
-    await _visible_category(db, thread.category_id, perms)
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Thread not found")
 
     updates = body.model_dump(exclude_unset=True)
     mod_fields = {"pinned", "locked", "category_id", "deleted"} & updates.keys()
@@ -588,7 +588,7 @@ async def delete_thread(
     thread = await db.get(ForumThreads, thread_id)
     if thread is None or (thread.deleted and not is_moderator):
         raise HTTPException(status_code=404, detail="Thread not found")
-    await _visible_category(db, thread.category_id, perms)
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Thread not found")
 
     if not is_moderator:
         if thread.user_id != current_user.user_id:
@@ -712,7 +712,7 @@ async def update_post(
         thread = result.scalar_one()
         if thread.deleted and not is_moderator:
             raise HTTPException(status_code=404, detail="Thread not found")
-        await _visible_category(db, thread.category_id, perms)
+        await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
         if thread.locked and not is_moderator:
             # A locked thread blocks the owner's own edit/soft-delete too,
             # matching create_post; moderators may still act (they unlock first).
@@ -780,7 +780,7 @@ async def delete_post(
         thread = result.scalar_one()
         if thread.deleted and not is_moderator:
             raise HTTPException(status_code=404, detail="Thread not found")
-        await _visible_category(db, thread.category_id, perms)
+        await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
         if thread.locked and not is_moderator:
             # A locked thread blocks the owner's own soft-delete too, matching
             # create_post; moderators may still act (they unlock first).

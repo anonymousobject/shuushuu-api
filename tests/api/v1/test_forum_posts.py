@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import Permission
-from app.models.forum import ForumCategories, ForumThreads
+from app.models.forum import ForumCategories, ForumPosts, ForumThreads
 from tests.api.v1.conftest import make_thread
 
 
@@ -182,6 +182,27 @@ class TestCreatePost:
         )
         assert missing_resp.status_code == gated_resp.status_code == 404
         assert missing_resp.json() == gated_resp.json()
+
+    async def test_missing_and_gated_post_mutation_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category, user_token
+    ):
+        # PATCH/DELETE of a gated-but-existing post must be byte-identical to a
+        # missing post, so the mutation endpoints don't leak gated post ids.
+        gated_thread = await make_thread(db_session, staff_category)
+        post = ForumPosts(thread_id=gated_thread.thread_id, user_id=1, post_text="secret")
+        db_session.add(post)
+        await db_session.commit()
+        await db_session.refresh(post)
+        for method, kwargs in (("patch", {"json": {"post_text": "x"}}), ("delete", {})):
+            req = getattr(client, method)
+            missing = await req(
+                "/api/v1/forum/posts/999999", headers=_auth(user_token), **kwargs
+            )
+            gated = await req(
+                f"/api/v1/forum/posts/{post.post_id}", headers=_auth(user_token), **kwargs
+            )
+            assert missing.status_code == gated.status_code == 404
+            assert missing.json() == gated.json()
 
     async def test_reply_gated_403(
         self, client: AsyncClient, db_session: AsyncSession, user_token
