@@ -26,6 +26,7 @@ from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.image_review import ImageReviews
 from app.models.image_status_history import ImageStatusHistory
+from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
@@ -1844,6 +1845,52 @@ class TestAdminApplyTagSuggestions:
             sql_select(TagLinks).where(TagLinks.image_id == image.image_id)
         )
         assert len(tag_links.scalars().all()) == 3
+
+    async def test_apply_suggestions_approves_matching_ml_suggestion(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Applying a report tag suggestion resolves the matching pending ML suggestion."""
+        admin, password = await create_auth_user(db_session, username="applyml1", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=1)
+        token = await login_user(client, admin.username, password)
+
+        ml_suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tags[0].tag_id,
+            confidence=0.9,
+            model_version="v3",
+            status="pending",
+        )
+        db_session.add(ml_suggestion)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestion = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tags[0].tag_id)
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+        await db_session.refresh(ml_suggestion)
+
+        response = await client.post(
+            f"/api/v1/admin/reports/{report.report_id}/apply-tag-suggestions",
+            json={"approved_suggestion_ids": [suggestion.suggestion_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["applied_tags"] == [tags[0].tag_id]
+
+        await db_session.refresh(ml_suggestion)
+        assert ml_suggestion.status == "approved"
+        assert ml_suggestion.reviewed_by_user_id == admin.user_id
 
     async def test_apply_partial_suggestions(
         self, client: AsyncClient, db_session: AsyncSession

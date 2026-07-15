@@ -14,6 +14,7 @@ from app.schemas.tag import (
     BatchTagResultItem,
     BatchTagSkippedItem,
 )
+from app.services.ml_suggestion_review import approve_pending_suggestions_for_links
 from app.services.search import sync_tags_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
 
@@ -132,6 +133,12 @@ async def batch_add_tags(
 
             # Track as existing to prevent duplicates within same batch
             existing_links.add((image_id, resolved_tag_id))
+
+    # Resolve any matching pending ML suggestions (applying a tag out of band
+    # is an implicit approval; keeps the review queue's pending counts honest).
+    await approve_pending_suggestions_for_links(
+        db, [(item.image_id, item.tag_id) for item in added], user_id
+    )
 
     await refresh_images_tag_type_flags(db, {item.image_id for item in added})
 

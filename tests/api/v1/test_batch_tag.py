@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import TagType
 from app.core.security import create_access_token
 from app.models.image import Images
+from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
@@ -699,3 +700,52 @@ class TestBatchTagTypeFlags:
             assert fresh.has_artist is False, (
                 f"image {img.image_id} has_artist should be False after batch remove"
             )
+
+
+@pytest.mark.api
+class TestBatchAddApprovesMlSuggestions:
+    """Batch-adding tags must resolve matching pending ML suggestions."""
+
+    async def test_batch_add_approves_matching_pending_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Pending suggestions on all batch-tagged images are marked approved."""
+        user = await _create_user_with_tag_permission(db_session)
+        images = await _create_test_images(db_session, user, 2)
+        tag = Tags(title="batch_ml_sugg_tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        suggestions = []
+        for img in images:
+            s = MlTagSuggestions(
+                image_id=img.image_id,
+                tag_id=tag.tag_id,
+                confidence=0.9,
+                model_version="v3",
+                status="pending",
+            )
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        token = create_access_token(user.id)
+        response = await client.post(
+            "/api/v1/tags/batch",
+            json={
+                "action": "add",
+                "tag_ids": [tag.tag_id],
+                "image_ids": [img.image_id for img in images],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        assert len(response.json()["added"]) == 2
+
+        for s in suggestions:
+            await db_session.refresh(s)
+            assert s.status == "approved"
+            assert s.reviewed_by_user_id == user.user_id

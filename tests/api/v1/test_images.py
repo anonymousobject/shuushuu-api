@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
+from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import Groups, UserGroups
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 
@@ -2400,6 +2401,96 @@ class TestImageFavorites:
         await db_session.refresh(sample_user)
         assert image.favorites >= 0
         assert sample_user.favorites >= 0
+
+
+@pytest.mark.api
+class TestAddTagApprovesMlSuggestion:
+    """Adding a tag out of band must resolve its matching pending ML suggestion."""
+
+    async def test_add_tag_approves_matching_pending_suggestion(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """POST /images/{id}/tags/{tag_id} marks the pending suggestion approved."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="ml_sugg_manual_add", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.9,
+            model_version="v3",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+
+        response = await authenticated_client.post(
+            f"/api/v1/images/{image.image_id}/tags/{tag.tag_id}"
+        )
+        assert response.status_code == 201
+
+        await db_session.refresh(suggestion)
+        assert suggestion.status == "approved"
+        assert suggestion.reviewed_by_user_id == sample_user.user_id
+        assert suggestion.reviewed_at is not None
+
+    async def test_add_alias_tag_approves_suggestion_on_canonical(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """Adding via an alias resolves to the canonical tag, matching its suggestion."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        canonical = Tags(title="ml_sugg_canonical", type=1)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="ml_sugg_alias", type=1, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=canonical.tag_id,
+            confidence=0.9,
+            model_version="v3",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+
+        response = await authenticated_client.post(
+            f"/api/v1/images/{image.image_id}/tags/{alias.tag_id}"
+        )
+        assert response.status_code == 201
+
+        await db_session.refresh(suggestion)
+        assert suggestion.status == "approved"
 
 
 @pytest.mark.api
