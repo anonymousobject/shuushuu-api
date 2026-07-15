@@ -533,6 +533,10 @@ async def update_thread(
             status_code=403,
             detail="Only the thread author or a moderator can edit the title",
         )
+    if "title" in updates and thread.locked and not is_moderator:
+        # A locked thread blocks the author's rename too (moderators unlock
+        # first); mod-only fields above are already gated by FORUM_MODERATE.
+        raise HTTPException(status_code=403, detail="Thread is locked")
     if "category_id" in updates:
         target = await db.get(ForumCategories, updates["category_id"])
         if target is None:
@@ -668,6 +672,10 @@ async def update_post(
     if thread.deleted and not is_moderator:
         raise HTTPException(status_code=404, detail="Thread not found")
     await _visible_category(db, thread.category_id, perms)
+    if thread.locked and not is_moderator:
+        # A locked thread blocks the owner's own edit/soft-delete too, matching
+        # create_post; moderators may still act (they unlock first).
+        raise HTTPException(status_code=403, detail="Thread is locked")
 
     updates = body.model_dump(exclude_unset=True)
     if "deleted" in updates and not is_moderator:
@@ -723,6 +731,10 @@ async def delete_post(
     if thread.deleted and not is_moderator:
         raise HTTPException(status_code=404, detail="Thread not found")
     await _visible_category(db, thread.category_id, perms)
+    if thread.locked and not is_moderator:
+        # A locked thread blocks the owner's own soft-delete too, matching
+        # create_post; moderators may still act (they unlock first).
+        raise HTTPException(status_code=403, detail="Thread is locked")
 
     if not (is_moderator or post.user_id == current_user.user_id):
         raise HTTPException(
