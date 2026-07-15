@@ -5,8 +5,7 @@ Use USER_WITH_GROUPS_OPTIONS when loading users that need groups populated.
 This ensures UserSummary.model_validate(user) automatically includes groups.
 """
 
-from sqlalchemy.orm import selectinload
-from sqlalchemy.orm.strategy_options import _AbstractLoad
+from sqlalchemy.orm import Load, selectinload
 
 from app.models.image import Images
 from app.models.permissions import UserGroups
@@ -34,7 +33,7 @@ def user_with_groups_options() -> tuple:  # type: ignore[type-arg]
     )
 
 
-def image_uploader_load() -> _AbstractLoad:
+def image_uploader_load() -> Load:
     """
     Return the standard eager-load option for an image's uploader summary.
 
@@ -43,7 +42,7 @@ def image_uploader_load() -> _AbstractLoad:
     Loads only the columns UserSummary needs (id, username, avatar,
     avatar_in_r2, user_title), avoiding a full Users row fetch.
     """
-    return selectinload(Images.user).load_only(  # type: ignore[arg-type]
+    return selectinload(Images.user).load_only(  # type: ignore[arg-type, return-value]
         Users.user_id,  # type: ignore[arg-type]
         Users.username,  # type: ignore[arg-type]
         Users.avatar,  # type: ignore[arg-type]
