@@ -41,6 +41,7 @@ from app.core.permissions import Permission, has_permission
 from app.core.r2_client import get_r2_storage
 from app.core.redis import get_redis
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
+from app.core.user_loader import image_uploader_load
 from app.models import Favorites, Images, TagLinks, Tags, Users
 from app.models.permissions import UserGroups
 from app.models.refresh_token import RefreshTokens
@@ -779,13 +780,7 @@ async def get_user_images(
     query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                Users.user_id,  # type: ignore[arg-type]
-                Users.username,  # type: ignore[arg-type]
-                Users.avatar,  # type: ignore[arg-type]
-                Users.avatar_in_r2,  # type: ignore[arg-type]
-                Users.user_title,  # type: ignore[arg-type]
-            ),
+            image_uploader_load(),
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
         .where(Images.user_id == user_id)  # type: ignore[arg-type]
@@ -897,13 +892,7 @@ async def get_user_favorites(
     query = (
         select(Images)
         .options(
-            selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                Users.user_id,  # type: ignore[arg-type]
-                Users.username,  # type: ignore[arg-type]
-                Users.avatar,  # type: ignore[arg-type]
-                Users.avatar_in_r2,  # type: ignore[arg-type]
-                Users.user_title,  # type: ignore[arg-type]
-            ),
+            image_uploader_load(),
             selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
         )
         .join(Favorites)

@@ -102,9 +102,3 @@ class ResetPasswordRequest(BaseModel):
         if not is_valid:
             raise ValueError(error_message)
         return v
-
-
-class MessageResponse(BaseModel):
-    """Generic message response."""
-
-    message: str

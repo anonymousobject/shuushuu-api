@@ -19,6 +19,7 @@ from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
 from app.core.redis import get_redis
+from app.core.user_loader import image_uploader_load
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
 from app.models.image_report import ImageReports
@@ -842,15 +843,7 @@ async def get_images_by_tag(
     sort_column = sorting.sort_by.get_column(Images)
     query = (
         select(Images)
-        .options(
-            selectinload(Images.user).load_only(  # type: ignore[arg-type]
-                Users.user_id,  # type: ignore[arg-type]
-                Users.username,  # type: ignore[arg-type]
-                Users.avatar,  # type: ignore[arg-type]
-                Users.avatar_in_r2,  # type: ignore[arg-type]
-                Users.user_title,  # type: ignore[arg-type]
-            )
-        )
+        .options(image_uploader_load())
         .join(
             image_id_subquery,
             Images.image_id == image_id_subquery.columns.image_id,  # type: ignore[arg-type]
