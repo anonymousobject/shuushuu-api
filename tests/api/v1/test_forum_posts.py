@@ -242,6 +242,32 @@ class TestUpdatePost:
         assert thread.post_count == 2
         assert thread.last_post_user_id == 3
 
+    async def test_locked_thread_blocks_owner_edit_but_not_moderator(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token, staff_token
+    ):
+        # The lock must block the post owner's own edit (parity with create_post),
+        # but a moderator may still act (they unlock first in the normal flow).
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        thread = await _get_thread(db_session, public_thread.thread_id)
+        thread.locked = True
+        await db_session.commit()
+
+        owner_resp = await client.patch(
+            f"/api/v1/forum/posts/{post['post_id']}",
+            json={"post_text": "sneaky edit"},
+            headers=_auth(user_token),
+        )
+        assert owner_resp.status_code == 403
+        assert "locked" in owner_resp.json()["detail"].lower()
+
+        mod_resp = await client.patch(
+            f"/api/v1/forum/posts/{post['post_id']}",
+            json={"post_text": "mod edit"},
+            headers=_auth(staff_token),
+        )
+        assert mod_resp.status_code == 200
+        assert mod_resp.json()["post_text"] == "mod edit"
+
 
 class TestDeletePost:
     """DELETE /api/v1/forum/posts/{post_id}"""
@@ -303,3 +329,24 @@ class TestDeletePost:
             f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(staff_token)
         )
         assert response.status_code == 204
+
+    async def test_locked_thread_blocks_owner_delete_but_not_moderator(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token, staff_token
+    ):
+        # A locked thread must block the owner's soft-delete of their own post,
+        # but a moderator may still remove it.
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        thread = await _get_thread(db_session, public_thread.thread_id)
+        thread.locked = True
+        await db_session.commit()
+
+        owner_resp = await client.delete(
+            f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(user_token)
+        )
+        assert owner_resp.status_code == 403
+        assert "locked" in owner_resp.json()["detail"].lower()
+
+        mod_resp = await client.delete(
+            f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(staff_token)
+        )
+        assert mod_resp.status_code == 204

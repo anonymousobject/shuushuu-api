@@ -274,17 +274,29 @@ class TestUpdateThread:
         assert data["pinned"] is True
         assert data["locked"] is True
 
-    async def test_locked_thread_title_still_editable(
-        self, client: AsyncClient, db_session: AsyncSession, public_thread, author_token
+    async def test_locked_thread_blocks_author_title_edit_but_not_moderator(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, author_token, staff_token
     ):
+        # A lock must block the author's title rename too — otherwise the thread
+        # author could still mutate a locked thread. Moderators may still rename.
         public_thread.locked = True
         await db_session.commit()
-        response = await client.patch(
+
+        author_resp = await client.patch(
             f"/api/v1/forum/threads/{public_thread.thread_id}",
-            json={"title": "Still editable"},
+            json={"title": "Sneaky rename"},
             headers=_auth(author_token),
         )
-        assert response.status_code == 200
+        assert author_resp.status_code == 403
+        assert "locked" in author_resp.json()["detail"].lower()
+
+        mod_resp = await client.patch(
+            f"/api/v1/forum/threads/{public_thread.thread_id}",
+            json={"title": "Mod rename"},
+            headers=_auth(staff_token),
+        )
+        assert mod_resp.status_code == 200
+        assert mod_resp.json()["title"] == "Mod rename"
 
     async def test_moderator_moves_thread(
         self, client: AsyncClient, public_thread, announce_category, staff_token
