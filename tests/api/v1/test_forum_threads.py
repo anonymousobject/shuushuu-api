@@ -185,6 +185,18 @@ class TestGetThread:
         )
         assert response.status_code == 404
 
+    async def test_missing_and_gated_thread_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category
+    ):
+        # An anonymous caller must not distinguish a gated-but-existing thread
+        # from a missing one: both 404s must be byte-identical (no existence
+        # oracle for enumerating gated thread ids).
+        gated = await make_thread(db_session, staff_category, title="Secret")
+        missing_resp = await client.get("/api/v1/forum/threads/999999")
+        gated_resp = await client.get(f"/api/v1/forum/threads/{gated.thread_id}")
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()
+
     async def test_deleted_thread_404_for_users_200_for_mods(
         self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token, staff_token
     ):

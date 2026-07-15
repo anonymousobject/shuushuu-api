@@ -63,12 +63,23 @@ async def _effective_perms(
     return await get_cached_user_permissions(db, redis_client, user.user_id)
 
 
-async def _visible_category(db: AsyncSession, category_id: int, perms: set[str]) -> ForumCategories:
+async def _visible_category(
+    db: AsyncSession,
+    category_id: int,
+    perms: set[str],
+    *,
+    not_found_detail: str = "Not found",
+) -> ForumCategories:
     """Load a category the caller may view; 404 (not 403) otherwise so gated
-    categories don't leak existence."""
+    categories don't leak existence.
+
+    Callers that reach this after resolving a thread/post pass their own
+    missing-object detail as ``not_found_detail`` so a gated-but-existing
+    object and a missing one return a byte-identical 404 — otherwise the
+    differing detail string is itself an existence oracle for gated ids."""
     category = await db.get(ForumCategories, category_id)
     if category is None or not can_access(perms, category.view_perm):
-        raise HTTPException(status_code=404, detail="Category not found")
+        raise HTTPException(status_code=404, detail=not_found_detail)
     return category
 
 
@@ -447,7 +458,9 @@ async def get_thread(
     thread = await db.get(ForumThreads, thread_id)
     if thread is None or (thread.deleted and not is_moderator):
         raise HTTPException(status_code=404, detail="Thread not found")
-    category = await _visible_category(db, thread.category_id, perms)
+    category = await _visible_category(
+        db, thread.category_id, perms, not_found_detail="Thread not found"
+    )
 
     total = (
         await db.execute(
@@ -619,7 +632,9 @@ async def create_post(
         # Non-moderators can't distinguish a deleted thread from a missing one,
         # matching get_thread/update_thread/delete_thread — no existence leak.
         raise HTTPException(status_code=404, detail="Thread not found")
-    category = await _visible_category(db, thread.category_id, perms)
+    category = await _visible_category(
+        db, thread.category_id, perms, not_found_detail="Thread not found"
+    )
     if thread.deleted:
         # Moderator path: the thread exists but must be restored before posting.
         raise HTTPException(status_code=403, detail="Thread is deleted")
@@ -795,8 +810,10 @@ async def legacy_viewtopic(
     thread = result.scalars().first()
     if thread is None:
         raise HTTPException(status_code=404, detail="Topic not found")
-    # 404 if the destination category is gated and not visible to the caller.
-    await _visible_category(db, thread.category_id, perms)
+    # 404 (identical to the missing-topic 404 above) if the destination category
+    # is gated and not visible to the caller, so gated topic ids can't be
+    # enumerated by the differing detail string.
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Topic not found")
     return RedirectResponse(
         url=f"/forum/threads/{thread.thread_id}",
         status_code=status.HTTP_301_MOVED_PERMANENTLY,
@@ -821,8 +838,10 @@ async def post_permalink(
     thread = await db.get(ForumThreads, post.thread_id)
     if thread is None:  # FK guarantees a parent thread; guard defensively anyway.
         raise HTTPException(status_code=404, detail="Post not found")
-    # 404 if the destination category is gated and not visible to the caller.
-    await _visible_category(db, thread.category_id, perms)
+    # 404 (identical to the missing-post 404 above) if the destination category
+    # is gated and not visible to the caller, so gated post ids can't be
+    # enumerated by the differing detail string.
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
     rank = (
         await db.execute(
             select(func.count())

@@ -127,6 +127,25 @@ class TestCreatePost:
         )
         assert response.status_code == 404
 
+    async def test_missing_and_gated_thread_reply_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category, user_token
+    ):
+        # Replying to a gated-but-existing thread and to a missing one must be
+        # indistinguishable (no existence oracle), matching get_thread.
+        thread = await make_thread(db_session, staff_category)
+        missing_resp = await client.post(
+            "/api/v1/forum/threads/999999/posts",
+            json={"post_text": "hi"},
+            headers=_auth(user_token),
+        )
+        gated_resp = await client.post(
+            f"/api/v1/forum/threads/{thread.thread_id}/posts",
+            json={"post_text": "hi"},
+            headers=_auth(user_token),
+        )
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()
+
     async def test_reply_gated_403(
         self, client: AsyncClient, db_session: AsyncSession, user_token
     ):
