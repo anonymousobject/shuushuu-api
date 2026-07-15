@@ -504,6 +504,33 @@ class TestCreateComment:
         # Validation error from pydantic
         assert response.status_code == 422
 
+    async def test_create_comment_whitespace_only_text(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        """Whitespace-only text is rejected, not stored as an empty comment.
+
+        min_length must be checked *after* stripping; otherwise a body of
+        spaces slips past validation and strips down to an empty comment.
+        """
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        response = await authenticated_client.post(
+            "/api/v1/comments",
+            json={
+                "image_id": image.image_id,
+                "post_text": "   ",
+                "parent_comment_id": None,
+            },
+        )
+        # Validation error from pydantic (stripped text is empty)
+        assert response.status_code == 422
+
     async def test_create_comment_on_locked_image(
         self,
         authenticated_client: AsyncClient,
@@ -600,6 +627,38 @@ class TestUpdateComment:
             assert response.status_code == 200
             data = response.json()
             assert data["update_count"] == i + 1
+
+    async def test_update_comment_whitespace_only_text(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: dict,
+        sample_image_data: dict,
+    ):
+        """Updating a comment to whitespace-only text is rejected (not emptied).
+
+        min_length must be checked *after* stripping so an edit of spaces can't
+        overwrite a real comment with empty text.
+        """
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        comment = Comments(
+            image_id=image.image_id,
+            user_id=sample_user.id,
+            post_text="Original text",
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        response = await authenticated_client.patch(
+            f"/api/v1/comments/{comment.post_id}",
+            json={"post_text": "   "},
+        )
+        assert response.status_code == 422
 
     async def test_update_requires_auth(self, client: AsyncClient):
         """Test that updating a comment requires authentication."""

@@ -20,7 +20,7 @@ class CommentCreate(BaseModel):
         description="Parent comment ID for replies (null = top-level comment)",
     )
 
-    @field_validator("post_text")
+    @field_validator("post_text", mode="before")
     @classmethod
     def sanitize_post_text(cls, v: str) -> str:
         """
@@ -28,8 +28,13 @@ class CommentCreate(BaseModel):
 
         For markdown fields, we store raw user input and let parse_markdown()
         handle HTML escaping at render time. We only trim whitespace here.
+
+        Runs in mode="before" so min_length is enforced on the stripped value:
+        a whitespace-only body must fail validation, not strip down to empty.
         """
-        return v.strip()
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
 
 class CommentUpdate(BaseModel):
@@ -37,7 +42,7 @@ class CommentUpdate(BaseModel):
 
     post_text: str = Field(min_length=1, description="Comment text (markdown supported)")
 
-    @field_validator("post_text")
+    @field_validator("post_text", mode="before")
     @classmethod
     def sanitize_post_text(cls, v: str) -> str:
         """
@@ -45,8 +50,13 @@ class CommentUpdate(BaseModel):
 
         For markdown fields, we store raw user input and let parse_markdown()
         handle HTML escaping at render time. We only trim whitespace here.
+
+        Runs in mode="before" so min_length is enforced on the stripped value:
+        a whitespace-only body must fail validation, not strip down to empty.
         """
-        return v.strip()
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
 
 class CommentResponse(CommentBase):
