@@ -127,6 +127,7 @@ from app.services.image_processing import (
 from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, check_iqdb_similarity_by_hash, remove_from_iqdb
+from app.services.ml_suggestion_review import approve_pending_suggestions_for_links
 from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import RatingStats, recalculate_image_ratings
 from app.services.recommendations import get_recommended_images
@@ -2393,6 +2394,10 @@ async def add_tag_to_image(
         user_id=current_user.id,
     )
     db.add(history_entry)
+
+    # Resolve any matching pending ML suggestion (applying the tag out of band
+    # is an implicit approval; keeps the review queue's pending counts honest).
+    await approve_pending_suggestions_for_links(db, [(image_id, resolved_tag_id)], current_user.id)
 
     await refresh_image_tag_type_flags(db, image_id)
     await db.commit()

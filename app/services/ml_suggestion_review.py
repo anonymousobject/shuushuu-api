@@ -8,10 +8,11 @@ Meilisearch after commit. Rejecting only updates the suggestion row.
 """
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ml_tag_suggestion import MlTagSuggestions
@@ -25,6 +26,44 @@ from app.schemas.ml_tag_suggestion import (
 )
 from app.services.search import sync_tags_to_search
 from app.services.tag_type_flags import refresh_image_tag_type_flags
+
+
+async def approve_pending_suggestions_for_links(
+    db: AsyncSession,
+    links: Iterable[tuple[int, int]],
+    user_id: int | None,
+) -> None:
+    """Mark pending ML suggestions approved when their tag is applied out of band.
+
+    ``links`` is the (image_id, tag_id) pairs for TagLinks the caller just
+    created outside the ML review flow (manual tag add, batch tagging, report
+    resolution). Without this, those suggestion rows stay 'pending' forever
+    and inflate the review-queue worklist counts. The tagger is recorded as
+    the reviewer: applying the tag is an implicit approval.
+
+    Matches on the applied (canonical) tag_id only — a pending suggestion
+    whose tag has since become an alias of the applied tag is not matched,
+    consistent with the exact-tag_id semantics of suggestion generation and
+    the queue's grid filter.
+
+    Flushes only; the caller owns the transaction and commit.
+    """
+    pairs = list(links)
+    if not pairs:
+        return
+
+    await db.execute(
+        update(MlTagSuggestions)
+        .where(
+            MlTagSuggestions.status == "pending",  # type: ignore[arg-type]
+            tuple_(MlTagSuggestions.image_id, MlTagSuggestions.tag_id).in_(pairs),  # type: ignore[arg-type]
+        )
+        .values(
+            status="approved",
+            reviewed_at=datetime.now(UTC),
+            reviewed_by_user_id=user_id,
+        )
+    )
 
 
 async def _apply_reviews_for_image(

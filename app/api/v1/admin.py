@@ -106,6 +106,7 @@ from app.services.image_status import (
 from app.services.image_status import (
     enqueue_r2_sync_on_status_change,
 )
+from app.services.ml_suggestion_review import approve_pending_suggestions_for_links
 from app.services.rating import schedule_rating_recalculation
 from app.services.review_jobs import check_early_close
 from app.services.tag_type_flags import refresh_image_tag_type_flags
@@ -1602,6 +1603,12 @@ async def apply_tag_suggestions(
                     already_absent.append(resolved_tag_id)
         else:
             suggestion.accepted = False
+
+    # Resolve any matching pending ML suggestions (applying a tag out of band
+    # is an implicit approval; keeps the review queue's pending counts honest).
+    await approve_pending_suggestions_for_links(
+        db, [(report.image_id, tid) for tid in applied_tags], current_user.user_id
+    )
 
     # Update report
     report.status = ReportStatus.REVIEWED
