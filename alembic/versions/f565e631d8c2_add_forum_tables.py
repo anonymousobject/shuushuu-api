@@ -1,7 +1,7 @@
 """add_forum_tables
 
 Revision ID: f565e631d8c2
-Revises: 25cad69549de
+Revises: 12bf25199415
 Create Date: 2026-07-07 06:39:25.595816
 
 Forum timestamps use DATETIME(6) (microsecond precision): unread tracking
@@ -17,7 +17,10 @@ from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
 revision: str = 'f565e631d8c2'
-down_revision: str | Sequence[str] | None = '25cad69549de'
+# Re-pointed from 25cad69549de onto main's head (12bf25199415, user_tag_affinity)
+# when the forum stack was rebased onto main, so the migration graph stays linear
+# and single-headed (the forum and taste-profile tables are independent).
+down_revision: str | Sequence[str] | None = '12bf25199415'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
