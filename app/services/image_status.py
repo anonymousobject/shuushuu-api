@@ -19,6 +19,7 @@ from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_status_history import ImageStatusHistory
 from app.models.user import Users
+from app.services.ml_suggestion_lifecycle import sync_suggestions_for_status_transition
 from app.services.repost import migrate_repost_data
 from app.tasks.queue import enqueue_job
 
@@ -134,6 +135,12 @@ async def change_image_status(
         image.status = new_status
         image.status_user_id = actor_id
         image.status_updated = datetime.now(UTC)
+
+        # Keep ML suggestion rows consistent with the new status (ADR-0002).
+        if new_status != previous_status:
+            await sync_suggestions_for_status_transition(
+                db, image.image_id, previous_status, new_status
+            )
 
     if locked is not None:
         image.locked = 1 if locked else 0
