@@ -394,3 +394,67 @@ async def test_ingest_results_skips_missing_image_and_continues(db_session):
     assert stats.errors == []
     rows = await db_session.execute(select(MlTagSuggestions))
     assert {s.image_id for s in rows.scalars().all()} == {good_id}
+
+
+@pytest.mark.needs_commit
+async def test_ingest_results_records_exception_and_continues(db_session):
+    """A genuine error partway through ingest is recorded in stats.errors and
+    rolled back; a later valid manifest item still processes and creates a row.
+
+    Restores coverage of ingest_results' except/rollback/append/continue branch.
+    test_ingest_results_skips_missing_image_and_continues no longer exercises this
+    branch: its "missing image_id" trigger is now intercepted earlier by
+    store_predictions' own eligibility guard (db.get returns None) before any
+    insert is attempted, so nothing raises there anymore.
+
+    This test instead targets an ELIGIBLE image whose predicted external tag
+    resolves to a tag_id with no row in `tags`. store_predictions' guard passes
+    (the image itself is fine), so its insert-then-commit reaches the database,
+    where the dangling FK trips a real IntegrityError -- NOT the
+    unique_ml_suggestion_image_tag case store_predictions swallows -- so it
+    re-raises and ingest_results' try/except catches it.
+    """
+    user = await _make_user(db_session, "err2")
+    bad_img = await _make_image(db_session, user, "bad_tag")
+    good_img = await _make_image(db_session, user, "good2")
+    db_session.add(Tags(tag_id=46, title="long hair"))
+    await db_session.commit()
+    # capture before ingest: the rollback below expires `bad_img`/`good_img`
+    bad_id = bad_img.image_id
+    good_id = good_img.image_id
+
+    results = [
+        {
+            "image_id": bad_id,
+            "predictions": [{"external_tag": "ghost_tag", "confidence": 0.9, "model_version": "v3"}],
+        },
+        {
+            "image_id": good_id,
+            "predictions": [{"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}],
+        },
+    ]
+
+    async def _resolver_by_external_tag(db, suggestions):
+        # "ghost_tag" maps to a tag_id absent from `tags` (dangling FK);
+        # "long_hair" maps to the real tag_id 46.
+        return [
+            {
+                "tag_id": 999999 if s["external_tag"] == "ghost_tag" else 46,
+                "confidence": s["confidence"],
+                "model_version": s["model_version"],
+            }
+            for s in suggestions
+        ]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_by_external_tag),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough),
+    ):
+        stats = await ingest_results(db_session, results)
+
+    assert stats.processed == 1
+    assert stats.created == 1
+    assert len(stats.errors) == 1
+    assert stats.errors[0].startswith(f"{bad_id}:")
+    rows = await db_session.execute(select(MlTagSuggestions))
+    assert {s.image_id for s in rows.scalars().all()} == {good_id}
