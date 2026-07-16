@@ -19,7 +19,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import ImageStatus
 from app.core.logging import get_logger
+from app.models.image import Images
 from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag_mapping import TagMappings
@@ -42,6 +44,15 @@ async def remap_image(
 
     Flush-only; the caller owns the transaction and commit.
     """
+    image = await db.get(Images, image_id)
+    if image is None or image.status not in ImageStatus.SUGGESTION_ELIGIBLE_STATUSES:
+        logger.info(
+            "ml_remap_skipped_ineligible",
+            image_id=image_id,
+            status=None if image is None else image.status,
+        )
+        return 0
+
     implied, _applied = await compute_implied_suggestions(db, image_id, predictions)
     implied_by_tag = {p["tag_id"]: p for p in implied}
 

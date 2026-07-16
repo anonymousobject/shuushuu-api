@@ -414,6 +414,11 @@ class ImageStatus:
     # Hide for: REVIEW (-4), LOW_QUALITY (-3), INAPPROPRIATE (-2), DEACTIVATED (0)
     VISIBLE_USER_STATUSES: set[int] = {REPOST, SPOILER, ACTIVE}
 
+    # Statuses where ML tag suggestion rows may exist and appear in review
+    # surfaces (see CONTEXT.md "suggestion-eligible" and ADR-0002). Everything
+    # else — REPOST, DEACTIVATED, REVIEW, legacy hidden — is ineligible.
+    SUGGESTION_ELIGIBLE_STATUSES: set[int] = {ACTIVE, SPOILER}
+
     LABELS: dict[int, str] = {
         REVIEW: "review",
         LOW_QUALITY: "low_quality",  # legacy label for historical rows
