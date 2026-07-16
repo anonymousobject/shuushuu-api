@@ -587,6 +587,48 @@ class TestImageStatusChangeAuditLog:
         assert action.details["ratings_moved"] == 1
         assert action.details["tags_moved"] == 1
 
+    async def test_repost_marking_cleans_ml_suggestions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Marking a repost via the admin endpoint wipes its suggestion rows."""
+        from app.models.ml_tag_suggestion import MlTagSuggestions
+        from app.models.tag import Tags
+
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+        original = await create_test_image(db_session, admin.user_id)
+        repost = await create_test_image(db_session, admin.user_id)
+
+        tag = Tags(title="admin_repost_ml_tag", type=1)
+        db_session.add(tag)
+        await db_session.flush()
+        suggestion = MlTagSuggestions(
+            image_id=repost.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.9,
+            model_version="test-model",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        token = await login_user(client, admin.username, admin_password)
+        response = await client.patch(
+            f"/api/v1/admin/images/{repost.image_id}",
+            json={"status": ImageStatus.REPOST, "replacement_id": original.image_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        rows = (
+            await db_session.execute(
+                select(MlTagSuggestions).where(
+                    MlTagSuggestions.image_id == repost.image_id
+                )
+            )
+        ).scalars().all()
+        assert rows == []
+
 
 @pytest.mark.api
 class TestImageLocked:

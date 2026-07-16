@@ -198,3 +198,40 @@ class TestIneligibleToEligible:
         assert len(rows) == 1
         assert rows[0].status == "pending"
         assert rows[0].tag_id == tag.tag_id
+
+
+class TestMigrateRepostData:
+    async def test_wipes_repost_rows_and_resolves_original(
+        self, db_session: AsyncSession
+    ):
+        """Repost-marking wipes ALL the repost's suggestion rows and resolves the
+        original's matching pending suggestion with a NULL reviewer."""
+        from app.models.tag_link import TagLinks
+        from app.services.repost import migrate_repost_data
+
+        user = await _make_user(db_session, "repost")
+        repost = await _make_image(db_session, user, "repost_r", ImageStatus.ACTIVE)
+        original = await _make_image(db_session, user, "repost_o", ImageStatus.ACTIVE)
+        shared_tag = await _make_tag(db_session, user, "repost_shared")
+
+        # The repost carries the tag; the original has a pending suggestion for it.
+        db_session.add(
+            TagLinks(image_id=repost.image_id, tag_id=shared_tag.tag_id, user_id=user.user_id)
+        )
+        await _make_suggestion(db_session, repost, shared_tag, status="approved")
+        original_pending = await _make_suggestion(
+            db_session, original, shared_tag, status="pending"
+        )
+        await db_session.commit()
+
+        await migrate_repost_data(repost.image_id, original.image_id, db_session)
+        await db_session.commit()
+
+        # Repost: every suggestion row gone.
+        assert await _suggestion_rows(db_session, repost.image_id) == []
+
+        # Original: pending resolved as a system resolution (NULL reviewer).
+        await db_session.refresh(original_pending)
+        assert original_pending.status == "approved"
+        assert original_pending.reviewed_by_user_id is None
+        assert original_pending.reviewed_at is not None
