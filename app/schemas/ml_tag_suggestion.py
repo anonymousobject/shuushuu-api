@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import UserSummary
 from app.schemas.tag import TagResponse
 
 
@@ -35,6 +36,7 @@ class MlTagSuggestionResponse(BaseModel):
                 "status": "pending",
                 "created_at": "2025-12-04T12:00:00Z",
                 "reviewed_at": None,
+                "reviewed_by": None,
             }
         },
     )
@@ -53,6 +55,13 @@ class MlTagSuggestionResponse(BaseModel):
     created_at: datetime = Field(description="When this suggestion was generated")
     reviewed_at: datetime | None = Field(
         default=None, description="When this suggestion was reviewed (null if not yet reviewed)"
+    )
+    reviewed_by: UserSummary | None = Field(
+        default=None,
+        description=(
+            "Who reviewed this suggestion. Null for unreviewed rows and for "
+            "system resolutions (backfill, repost tag migration)."
+        ),
     )
 
 
@@ -77,6 +86,7 @@ class MlTagSuggestionsListResponse(BaseModel):
                         "status": "pending",
                         "created_at": "2025-12-04T12:00:00Z",
                         "reviewed_at": None,
+                        "reviewed_by": None,
                     },
                     {
                         "suggestion_id": 2,
@@ -86,6 +96,7 @@ class MlTagSuggestionsListResponse(BaseModel):
                         "status": "pending",
                         "created_at": "2025-12-04T12:00:00Z",
                         "reviewed_at": None,
+                        "reviewed_by": None,
                     },
                 ],
                 "total": 2,

@@ -10,6 +10,7 @@ import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.core.auth import CurrentUser
@@ -19,8 +20,10 @@ from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
+from app.models.permissions import UserGroups
 from app.models.tag import Tags
 from app.models.user import Users
+from app.schemas.common import UserSummary
 from app.schemas.ml_tag_suggestion import (
     GenerateSuggestionsResponse,
     MlTagSuggestionResponse,
@@ -157,6 +160,33 @@ async def get_ml_tag_suggestions(
     )
     tags_by_id = {tag.tag_id: tag for tag in tag_result.scalars().all()}
 
+    # Batch fetch reviewers in one query (same pattern as the public
+    # tag-history endpoint; groups drive username coloring).
+    reviewer_ids = {
+        sugg.reviewed_by_user_id for sugg in suggestions if sugg.reviewed_by_user_id is not None
+    }
+    reviewers_by_id: dict[int, Users] = {}
+    if reviewer_ids:
+        reviewer_result = await db.execute(
+            select(Users)
+            .options(selectinload(Users.user_groups).selectinload(UserGroups.group))  # type: ignore[arg-type]
+            .where(Users.user_id.in_(reviewer_ids))  # type: ignore[union-attr]
+        )
+        reviewers_by_id = {u.user_id: u for u in reviewer_result.scalars().all()}  # type: ignore[misc]
+
+    def _reviewer_summary(user_id: int | None) -> UserSummary | None:
+        user = reviewers_by_id.get(user_id) if user_id is not None else None
+        if user is None or user.user_id is None:
+            return None
+        return UserSummary(
+            user_id=user.user_id,
+            username=user.username,
+            avatar=user.avatar,
+            avatar_in_r2=user.avatar_in_r2,
+            user_title=user.user_title,
+            groups=user.groups,
+        )
+
     # Build suggestion responses
     suggestion_responses = [
         MlTagSuggestionResponse(
@@ -167,6 +197,7 @@ async def get_ml_tag_suggestions(
             status=sugg.status,  # type: ignore[arg-type]
             created_at=sugg.created_at,  # type: ignore[arg-type]
             reviewed_at=sugg.reviewed_at,
+            reviewed_by=_reviewer_summary(sugg.reviewed_by_user_id),
         )
         for sugg in suggestions
     ]
