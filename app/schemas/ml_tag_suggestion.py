@@ -86,6 +86,7 @@ class MlTagSuggestionsListResponse(BaseModel):
                         "status": "pending",
                         "created_at": "2025-12-04T12:00:00Z",
                         "reviewed_at": None,
+                        "reviewed_by": None,
                     },
                     {
                         "suggestion_id": 2,
@@ -95,6 +96,7 @@ class MlTagSuggestionsListResponse(BaseModel):
                         "status": "pending",
                         "created_at": "2025-12-04T12:00:00Z",
                         "reviewed_at": None,
+                        "reviewed_by": None,
                     },
                 ],
                 "total": 2,
