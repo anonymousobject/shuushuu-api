@@ -39,6 +39,8 @@ async def remap_image(
     UNIQUE(image_id, tag_id) constraint, re-map scopes its reconcile to its own
     model_version so it never deletes pending rows produced by a different model
     (e.g. swinv2 live path rows are safe during a caformer re-map).
+
+    Flush-only; the caller owns the transaction and commit.
     """
     implied, _applied = await compute_implied_suggestions(db, image_id, predictions)
     implied_by_tag = {p["tag_id"]: p for p in implied}
@@ -83,7 +85,7 @@ async def remap_image(
         )
         added += 1
 
-    await db.commit()
+    await db.flush()
     logger.info(
         "ml_remap_image_reconciled",
         image_id=image_id,
@@ -178,5 +180,6 @@ async def remap_images_for_tag(db: AsyncSession, internal_tag_id: int, model_nam
     # Step 3: remap each image using the existing per-image entry point
     for image_id in image_ids:
         await remap_image_from_store(db, image_id, model_name)
+        await db.commit()
 
     return len(image_ids)
