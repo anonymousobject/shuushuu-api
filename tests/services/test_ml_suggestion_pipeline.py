@@ -985,6 +985,36 @@ async def test_character_suggestions_stored_when_flag_on(db_session, tmp_path, m
     assert {s.tag_id for s in result.scalars().all()} == {311, 312}
 
 
+async def test_generate_skips_suggestion_ineligible_image(db_session):
+    """generate_and_store_suggestions returns 0 for an ineligible image without
+    touching the filesystem or the model (guard runs before file resolution).
+
+    No local file is created for this image (unlike _make_image) — if the
+    guard did not run before file resolution, this would fail with
+    FileNotFoundError instead.
+    """
+    from app.config import ImageStatus
+
+    user = await _make_user(db_session, "inelig")
+    image = Images(
+        filename="2024-01-01-inelig",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash="hash_inelig",
+        filesize=1024,
+        width=800,
+        height=600,
+        status=ImageStatus.REPOST,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    # ml_service is never reached: the guard returns before any use.
+    created = await generate_and_store_suggestions(db_session, image, None)  # type: ignore[arg-type]
+
+    assert created == 0
+
+
 async def test_character_child_does_not_supersede_theme_parent_when_gated(
     db_session, tmp_path, monkeypatch
 ):

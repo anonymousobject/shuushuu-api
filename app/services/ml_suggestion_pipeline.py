@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from app.services.ml_service import MLTagSuggestionService
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import TagType, settings
+from app.config import ImageStatus, TagType, settings
 from app.core.logging import get_logger
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
@@ -242,6 +242,16 @@ async def generate_and_store_suggestions(
     """
     assert image.image_id is not None  # a persisted image always has an id
     image_id = image.image_id
+
+    # Ineligible images (repost/deactivated/etc.) never get suggestion rows
+    # (ADR-0002) — return before touching the filesystem or the model.
+    if image.status not in ImageStatus.SUGGESTION_ELIGIBLE_STATUSES:
+        logger.info(
+            "ml_suggestion_pipeline_skipped_ineligible",
+            image_id=image_id,
+            status=image.status,
+        )
+        return 0
 
     # Resolve the local image path. Images are stored as:
     #   {STORAGE_PATH}/fullsize/{filename}.{ext}
