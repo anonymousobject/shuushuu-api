@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from app.services.ml_service import MLTagSuggestionService
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import TagType, settings
+from app.config import ImageStatus, TagType, settings
 from app.core.logging import get_logger
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
@@ -236,12 +236,23 @@ async def generate_and_store_suggestions(
     aliases/hierarchy → drop redundant vs existing tags → upsert suggestions.
     Existing suggestions are kept (idempotent regeneration); approved
     suggestions whose tag was since removed from the image reset to pending.
+    Ineligible-status images (ADR-0002) short-circuit to 0 before inference.
 
     Returns the number of new suggestions created.
     Raises FileNotFoundError if the local image file is missing.
     """
     assert image.image_id is not None  # a persisted image always has an id
     image_id = image.image_id
+
+    # Ineligible images (repost/deactivated/etc.) never get suggestion rows
+    # (ADR-0002) — return before touching the filesystem or the model.
+    if image.status not in ImageStatus.SUGGESTION_ELIGIBLE_STATUSES:
+        logger.info(
+            "ml_suggestion_pipeline_skipped_ineligible",
+            image_id=image_id,
+            status=image.status,
+        )
+        return 0
 
     # Resolve the local image path. Images are stored as:
     #   {STORAGE_PATH}/fullsize/{filename}.{ext}
@@ -385,7 +396,22 @@ async def store_predictions(
     Existing suggestions are kept (idempotent regeneration); approved
     suggestions whose tag was since removed from the image reset to pending.
     Commits the session. Returns the number of new suggestions created.
+
+    This is the single creation funnel — reached from the live job's md5
+    analyze-cache hit path (persist_predictions) and from the offline backfill
+    ingest, neither of which checks eligibility first — so it guards itself:
+    missing or ineligible-status images (ADR-0002) short-circuit to 0 before
+    any row is created or reset.
     """
+    image = await db.get(Images, image_id)
+    if image is None or image.status not in ImageStatus.SUGGESTION_ELIGIBLE_STATUSES:
+        logger.info(
+            "ml_suggestion_store_skipped_ineligible",
+            image_id=image_id,
+            status=None if image is None else image.status,
+        )
+        return 0
+
     implied, applied = await compute_implied_suggestions(db, image_id, predictions)
 
     # 5. Get existing suggestions for this image (to avoid duplicate key errors on regenerate).

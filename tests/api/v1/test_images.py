@@ -2494,6 +2494,51 @@ class TestAddTagApprovesMlSuggestion:
 
 
 @pytest.mark.api
+class TestOwnerStatusChangeSyncsMlSuggestions:
+    """The owner-facing PATCH /images/{id} status path runs the lifecycle hook."""
+
+    async def test_owner_spoiler_marking_keeps_pending(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """ACTIVE -> SPOILER is eligible -> eligible: pending rows survive."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="owner_spoiler_ml_tag", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.9,
+            model_version="test-model",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+
+        response = await authenticated_client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"status": 2},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(suggestion)
+        assert suggestion.status == "pending"
+
+
+@pytest.mark.api
 class TestTagUsageCount:
     """Tests for automatic tag usage_count updates via database triggers."""
 

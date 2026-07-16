@@ -25,7 +25,7 @@ import pytest
 from sqlalchemy import select
 
 import scripts.ml_remap as ml_remap_script
-from app.config import settings
+from app.config import ImageStatus, settings
 from app.models.image import Images
 from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
 from app.models.ml_tag_suggestion import MlTagSuggestions
@@ -708,3 +708,36 @@ async def test_remap_image_from_store_ignores_other_model(db_session, monkeypatc
         )
     ).scalars().all()
     assert rows == [], "swinv2 raw predictions must not be picked up by caformer remap"
+
+
+# ---------------------------------------------------------------------------
+# Eligibility guard: ineligible images never get suggestion rows (ADR-0002)
+# ---------------------------------------------------------------------------
+
+
+async def test_remap_skips_suggestion_ineligible_image(db_session, monkeypatch):
+    """remap_image returns 0 and writes nothing for an image outside
+    SUGGESTION_ELIGIBLE_STATUSES (e.g. a repost)."""
+    monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.35)
+
+    user = await _make_user(db_session, "inelig")
+    image = await _make_image(db_session, user, "inelig")
+    image.status = ImageStatus.REPOST
+    await _make_tags(db_session, 301)
+    await db_session.commit()
+
+    predictions = _preds(301, model=CAFORMER)
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(predictions)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _resolver_passthrough),
+    ):
+        added = await remap_image(db_session, image.image_id, predictions, CAFORMER)
+
+    assert added == 0
+    rows = (
+        await db_session.execute(
+            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        )
+    ).scalars().all()
+    assert rows == []
