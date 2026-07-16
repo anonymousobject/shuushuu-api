@@ -1963,3 +1963,82 @@ class TestGenerateMlTagSuggestions:
             )
 
         assert response.status_code == 202
+
+
+@pytest.mark.api
+class TestSuggestionReviewerAttribution:
+    """GET /images/{id}/ml-tag-suggestions embeds reviewer identity."""
+
+    async def test_reviewed_by_embedded_and_null_for_system(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = Users(
+            username="hist_owner",
+            email="hist_owner@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        reviewer = Users(
+            username="hist_reviewer",
+            email="hist_reviewer@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add_all([owner, reviewer])
+        await db_session.flush()
+
+        image = Images(
+            filename="2024-01-01-hist",
+            ext="jpg",
+            user_id=owner.user_id,
+            md5_hash="hist_md5_hash_000000000000000000",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag_human = Tags(title="hist tag human", type=1)
+        tag_system = Tags(title="hist tag system", type=1)
+        db_session.add_all([tag_human, tag_system])
+        await db_session.flush()
+
+        db_session.add(
+            MlTagSuggestions(
+                image_id=image.image_id,
+                tag_id=tag_human.tag_id,
+                confidence=0.9,
+                model_version="test-model",
+                status="approved",
+                reviewed_by_user_id=reviewer.user_id,
+            )
+        )
+        db_session.add(
+            MlTagSuggestions(
+                image_id=image.image_id,
+                tag_id=tag_system.tag_id,
+                confidence=0.8,
+                model_version="test-model",
+                status="approved",
+                reviewed_by_user_id=None,  # system resolution
+            )
+        )
+        await db_session.commit()
+
+        token = create_access_token(owner.id)
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions?status=approved",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        suggestions = response.json()["suggestions"]
+        by_tag = {s["tag"]["title"]: s for s in suggestions}
+
+        assert by_tag["hist tag human"]["reviewed_by"]["username"] == "hist_reviewer"
+        assert by_tag["hist tag human"]["reviewed_by"]["user_id"] == reviewer.user_id
+        assert by_tag["hist tag system"]["reviewed_by"] is None
