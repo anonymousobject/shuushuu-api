@@ -360,8 +360,17 @@ async def test_ingest_results_skips_given_ids(db_session):
 
 
 @pytest.mark.needs_commit
-async def test_ingest_results_records_errors_and_continues(db_session):
-    """A bad image_id (FK violation) is recorded; remaining images still ingest."""
+async def test_ingest_results_skips_missing_image_and_continues(db_session):
+    """A manifest entry for an image_id that no longer exists (e.g. deleted since
+    the manifest was built) is gracefully skipped by store_predictions'
+    eligibility guard (db.get returns None -> 0 created, no exception) rather
+    than tripping an images FK violation; remaining images still ingest.
+
+    This test previously asserted the FK-violation path was caught and recorded
+    in stats.errors. store_predictions now fetches the image via db.get before
+    any insert, so a missing image_id never reaches the FK constraint -- it is
+    absorbed as a normal 0-created result and counted as processed, not errored.
+    """
     user = await _make_user(db_session, "err")
     good = await _make_image(db_session, user, "good")
     db_session.add(Tags(tag_id=46, title="long hair"))
@@ -380,8 +389,8 @@ async def test_ingest_results_records_errors_and_continues(db_session):
     ):
         stats = await ingest_results(db_session, results)
 
-    assert stats.processed == 1
+    assert stats.processed == 2
     assert stats.created == 1
-    assert len(stats.errors) == 1
+    assert stats.errors == []
     rows = await db_session.execute(select(MlTagSuggestions))
     assert {s.image_id for s in rows.scalars().all()} == {good_id}

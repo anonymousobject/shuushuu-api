@@ -35,7 +35,8 @@ async def remap_image(
 ) -> int:
     """Re-map raw predictions into ml_tag_suggestions: regenerate the pending set
     from current mappings, preserve approved/rejected, never re-suggest a
-    dismissed tag. Returns the number of pending rows added.
+    dismissed tag. Returns the number of pending rows added. Missing or
+    ineligible-status images (ADR-0002) short-circuit to 0.
 
     The delete step is scoped to ``model_name``: because ml_tag_suggestions has a
     UNIQUE(image_id, tag_id) constraint, re-map scopes its reconcile to its own
