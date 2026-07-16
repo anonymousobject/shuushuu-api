@@ -127,6 +127,7 @@ from app.services.image_processing import (
 from app.services.image_status import enqueue_r2_sync_on_status_change
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.iqdb import check_iqdb_similarity, check_iqdb_similarity_by_hash, remove_from_iqdb
+from app.services.ml_suggestion_lifecycle import sync_suggestions_for_status_transition
 from app.services.ml_suggestion_review import approve_pending_suggestions_for_links
 from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import RatingStats, recalculate_image_ratings
@@ -1459,6 +1460,10 @@ async def update_image(
         image.status = new_status
         image.status_user_id = current_user.id
         image.status_updated = datetime.now(UTC)
+
+        # Keep ML suggestion rows consistent with the new status (ADR-0002).
+        if new_status != previous_status:
+            await sync_suggestions_for_status_transition(db, image_id, previous_status, new_status)
 
         # Log to status history
         history = ImageStatusHistory(

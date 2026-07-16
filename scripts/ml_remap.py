@@ -77,6 +77,7 @@ async def run(args: argparse.Namespace) -> None:
 
             try:
                 added = await remap_image_from_store(db, image_id, model_name)
+                await db.commit()
                 added_total += added
                 processed += 1
                 write_results(checkpoint, [{"image_id": image_id}])

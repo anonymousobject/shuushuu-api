@@ -186,3 +186,42 @@ async def test_status_history_row_records_report_id(db_session: AsyncSession):
     )).scalars().all()
     assert hist[0].report_id == report.report_id
     assert hist[0].review_id is None
+
+
+async def test_status_change_syncs_ml_suggestions(db_session: AsyncSession):
+    """Deactivating an image deletes its pending ML suggestions (ADR-0002)."""
+    from app.models.ml_tag_suggestion import MlTagSuggestions
+    from app.models.tag import Tags
+
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id)
+    tag = Tags(title="lifecycle-hook-tag", type=1)
+    db_session.add(tag)
+    await db_session.flush()
+    db_session.add(
+        MlTagSuggestions(
+            image_id=img.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.9,
+            model_version="test-model",
+            status="pending",
+        )
+    )
+    await db_session.commit()
+
+    await change_image_status(
+        db_session,
+        img,
+        actor,
+        new_status=ImageStatus.DEACTIVATED,
+        reason_category=DeactivationReason.OTHER,
+        reason="lifecycle test",
+    )
+    await db_session.commit()
+
+    remaining = (
+        await db_session.execute(
+            select(MlTagSuggestions).where(MlTagSuggestions.image_id == img.image_id)
+        )
+    ).scalars().all()
+    assert remaining == []

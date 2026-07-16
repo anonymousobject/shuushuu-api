@@ -639,6 +639,52 @@ async def test_store_predictions_persists_without_inference(db_session, tmp_path
     assert all(s.status == "pending" for s in suggestions)
 
 
+async def test_store_predictions_skips_ineligible_image(db_session):
+    """store_predictions is the single creation funnel: it's reached WITHOUT any
+    eligibility check via persist_predictions (arq job's md5 analyze-cache hit
+    path) and via ml_backfill.ingest_results (operator-run bulk ingest), so the
+    guard must live here rather than only in generate_and_store_suggestions.
+
+    Race scenario: upload enqueues the ML job, a mod repost-marks the duplicate
+    before the worker runs — the job must not resurrect pending suggestion rows
+    on the now-repost image.
+    """
+    from app.config import ImageStatus
+
+    tags = [Tags(tag_id=46, title="long hair")]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "repost_guard")
+    image = Images(
+        filename="2024-01-01-repost_guard",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash="hash_repost_guard",
+        filesize=1024,
+        width=800,
+        height=600,
+        status=ImageStatus.REPOST,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    predictions = [{"external_tag": "long_hair", "confidence": 0.92, "model_version": "v3"}]
+    mapped = [{"tag_id": 46, "confidence": 0.92, "model_version": "v3"}]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await store_predictions(db_session, image.image_id, predictions)
+
+    assert created == 0
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    assert result.scalars().all() == []
+
+
 @pytest.mark.needs_commit
 async def test_store_predictions_swallows_duplicate_race(db_session, tmp_path, monkeypatch):
     """Two concurrent regenerations of the same image (arq job vs sync generate,
@@ -983,6 +1029,36 @@ async def test_character_suggestions_stored_when_flag_on(db_session, tmp_path, m
         select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
     )
     assert {s.tag_id for s in result.scalars().all()} == {311, 312}
+
+
+async def test_generate_skips_suggestion_ineligible_image(db_session):
+    """generate_and_store_suggestions returns 0 for an ineligible image without
+    touching the filesystem or the model (guard runs before file resolution).
+
+    No local file is created for this image (unlike _make_image) — if the
+    guard did not run before file resolution, this would fail with
+    FileNotFoundError instead.
+    """
+    from app.config import ImageStatus
+
+    user = await _make_user(db_session, "inelig")
+    image = Images(
+        filename="2024-01-01-inelig",
+        ext="jpg",
+        user_id=user.user_id,
+        md5_hash="hash_inelig",
+        filesize=1024,
+        width=800,
+        height=600,
+        status=ImageStatus.REPOST,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    # ml_service is never reached: the guard returns before any use.
+    created = await generate_and_store_suggestions(db_session, image, None)  # type: ignore[arg-type]
+
+    assert created == 0
 
 
 async def test_character_child_does_not_supersede_theme_parent_when_gated(

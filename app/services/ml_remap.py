@@ -19,7 +19,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import ImageStatus
 from app.core.logging import get_logger
+from app.models.image import Images
 from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag_mapping import TagMappings
@@ -33,13 +35,25 @@ async def remap_image(
 ) -> int:
     """Re-map raw predictions into ml_tag_suggestions: regenerate the pending set
     from current mappings, preserve approved/rejected, never re-suggest a
-    dismissed tag. Returns the number of pending rows added.
+    dismissed tag. Returns the number of pending rows added. Missing or
+    ineligible-status images (ADR-0002) short-circuit to 0.
 
     The delete step is scoped to ``model_name``: because ml_tag_suggestions has a
     UNIQUE(image_id, tag_id) constraint, re-map scopes its reconcile to its own
     model_version so it never deletes pending rows produced by a different model
     (e.g. swinv2 live path rows are safe during a caformer re-map).
+
+    Flush-only; the caller owns the transaction and commit.
     """
+    image = await db.get(Images, image_id)
+    if image is None or image.status not in ImageStatus.SUGGESTION_ELIGIBLE_STATUSES:
+        logger.info(
+            "ml_remap_skipped_ineligible",
+            image_id=image_id,
+            status=None if image is None else image.status,
+        )
+        return 0
+
     implied, _applied = await compute_implied_suggestions(db, image_id, predictions)
     implied_by_tag = {p["tag_id"]: p for p in implied}
 
@@ -83,7 +97,7 @@ async def remap_image(
         )
         added += 1
 
-    await db.commit()
+    await db.flush()
     logger.info(
         "ml_remap_image_reconciled",
         image_id=image_id,
@@ -178,5 +192,6 @@ async def remap_images_for_tag(db: AsyncSession, internal_tag_id: int, model_nam
     # Step 3: remap each image using the existing per-image entry point
     for image_id in image_ids:
         await remap_image_from_store(db, image_id, model_name)
+        await db.commit()
 
     return len(image_ids)
