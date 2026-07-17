@@ -4,7 +4,10 @@
 services:
   # MariaDB Database
   mariadb:
-    image: mariadb:12
+    # Pin to prod's version (dedicated DB server runs MariaDB 11.8). Bump
+    # MARIADB_IMAGE in .env to move dev+test+pytest together; do not use a
+    # floating major tag (:11/:12) here — silent drift will bite prod.
+    image: ${MARIADB_IMAGE:-mariadb:11.8}
     container_name: shuushuu-mariadb
     environment:
       MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root_password}
