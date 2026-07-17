@@ -58,7 +58,7 @@ Tests run against a real MariaDB database using GitHub Actions service container
 ```yaml
 services:
   mysql:
-    image: mariadb:12
+    image: mariadb:11.8
     env:
       MYSQL_ROOT_PASSWORD: root_password
       MYSQL_DATABASE: shuushuu_test

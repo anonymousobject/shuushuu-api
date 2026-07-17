@@ -1,6 +1,6 @@
 """Retry helper for MariaDB snapshot-isolation conflicts (ER_CHECKREAD, errno 1020).
 
-With ``innodb_snapshot_isolation=ON`` (prod 11.8.6, dev mariadb:12), a locking
+With ``innodb_snapshot_isolation=ON`` (MariaDB 11.8), a locking
 statement that meets row/index versions committed *after* the transaction's
 snapshot aborts with error 1020 instead of returning stale data. The snapshot
 is pinned by the request's first read — the auth query — so the conflict

@@ -42,7 +42,7 @@
 #   make pytest-db-down    # stop and remove it
 services:
   mariadb-pytest:
-    image: mariadb:12
+    image: ${MARIADB_IMAGE:-mariadb:11.8}
     container_name: shuushuu-mariadb-pytest
     environment:
       MARIADB_ROOT_PASSWORD: root_password
