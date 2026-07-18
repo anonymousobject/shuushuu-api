@@ -271,6 +271,10 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
+    # Requests slower than this (ms) are logged at INFO even when they succeed;
+    # faster successful requests drop to DEBUG so routine traffic doesn't flood
+    # the aggregated logs. See RequestLoggingMiddleware in app/main.py.
+    SLOW_REQUEST_LOG_MS: float = 1000.0
 
     # Review System
     REVIEW_DEADLINE_DAYS: int = 7  # Default deadline for review voting

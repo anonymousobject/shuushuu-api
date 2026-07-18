@@ -35,6 +35,24 @@ logger = get_logger(__name__)
 _REDACTED_PARAMS = {"token", "code", "access_token", "refresh_token", "password"}
 
 
+def _log_level_for(status_code: int, elapsed_ms: float) -> str:
+    """Pick the access-log level for a completed request.
+
+    Nginx already logs every request (with the real client IP), so the API's
+    per-request log only needs to carry the high-signal lines: server errors,
+    client faults (kept so anonymous 401s can be clustered by source), and slow
+    requests. Routine fast 2xx traffic — the bulk of the volume — drops to DEBUG,
+    which production suppresses.
+    """
+    if status_code >= 500:
+        return "error"
+    if status_code >= 400:
+        return "warning"
+    if elapsed_ms >= settings.SLOW_REQUEST_LOG_MS:
+        return "info"
+    return "debug"
+
+
 def _redact_query(query_string: str) -> str:
     """Redact sensitive query parameters to avoid leaking secrets in logs."""
     params = parse_qs(query_string, keep_blank_values=True)
@@ -72,7 +90,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             elapsed_ms = round((time.monotonic() - start) * 1000, 1)
             # Add request ID to response headers for debugging
             response.headers["X-Request-ID"] = request_id
-            logger.info(
+            log = getattr(logger, _log_level_for(response.status_code, elapsed_ms))
+            log(
                 "request_complete",
                 method=request.method,
                 path=str(request.url.path)
