@@ -54,7 +54,7 @@ async def create_thumbnail_job(
 
         # Derive thumb filename from source file stem (preserves date prefix)
         src_stem = FilePath(source_path).stem
-        thumb_path = f"{storage_path}/thumbs/{src_stem}.jpeg"
+        thumb_path = f"{storage_path}/thumbs/{src_stem}.webp"
         logger.info("thumbnail_job_completed", image_id=image_id, path=thumb_path)
 
         return {"success": True, "thumbnail_path": thumb_path}
