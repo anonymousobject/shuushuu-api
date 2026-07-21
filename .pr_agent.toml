@@ -1,0 +1,35 @@
+# Qodo PR-Agent configuration. Picked up automatically from the repo root
+# via the GitHub API (no checkout needed by the action).
+# Docs: https://github.com/qodo-ai/pr-agent/blob/main/docs/docs/usage-guide/changing_a_model.md
+
+[config]
+# OpenRouter routes to the underlying provider. DeepSeek-chat is cheap and
+# strong at code review; swap to e.g. "openrouter/anthropic/claude-3.7-sonnet"
+# or "openrouter/anthropic/claude-3-5-haiku" if you want Claude quality.
+model = "openrouter/deepseek/deepseek-v4-pro"
+fallback_models = ["openrouter/deepseek/deepseek-v4-flash"]
+# OpenRouter slugs aren't in PR-Agent's built-in MAX_TOKENS table, so the
+# token-chunking logic can't size diffs without this. 32k matches PR-Agent's
+# default diff budget and fits both models' contexts.
+custom_model_max_tokens = 32000
+
+[pr_reviewer]
+# Project-specific review tuning. Defaults are reasonable; the
+# overrides below tighten security focus and cut noise.
+require_score_review = true           # post the numeric quality score
+require_tests_review = true            # flag PRs that add logic but no tests
+require_estimate_effort_to_review = true
+require_can_be_split_review = false
+require_security_review = true         # this is an authed API — security matters
+require_ticket_analysis_review = false # no external ticket tracker
+publish_output_no_suggestions = true  # keep the "no issues" confirmation
+persistent_comment = true             # update one comment instead of spamming
+num_max_findings = 4                  # slightly above default (3) for thorough PRs
+final_update_message = true
+enable_review_labels_security = true
+enable_review_labels_effort = true
+enable_intro_text = false             # less noise, straight to findings
+enable_help_text = false
+# Steer the reviewer toward this repo's conventions. AGENTS.md covers the
+# migration-from-PHP context, async/SQLAlchemy patterns, and testing rules.
+extra_instructions = "Follow the conventions in AGENTS.md at the repo root. This is a FastAPI + async SQLAlchemy backend migrating off legacy PHP (shuu-php/). Flag SQL injection risks, missing async/await on I/O, unauthenticated endpoints, and N+1 query patterns. Skip nitpicks about formatting (ruff handles those)."
