@@ -1,0 +1,42 @@
+name: PR Agent Review
+
+# Qodo PR-Agent (https://github.com/qodo-ai/pr-agent) — OpenRouter-backed.
+# Replaces the subscription-gated Claude review. Model + review behavior live
+# in .pr_agent.toml (picked up via the GitHub API, no checkout needed).
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  pr_agent_job:
+    # Skip bot-triggered events to avoid loops.
+    if: ${{ github.event.sender.type != 'Bot' }}
+    name: PR Agent
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: write
+      checks: write
+
+    steps:
+      - name: PR Agent action step
+        id: pragent
+        uses: qodo-ai/pr-agent@main
+        env:
+          # OpenRouter API key — add as a repo Actions secret named
+          # OPENROUTER_API_KEY (Settings > Secrets and variables > Actions).
+          OPENROUTER__KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read .pr_agent.toml from the PR's own branch (PR-Agent otherwise
+          # fetches it from the default branch, where it won't exist until this
+          # workflow + config land). Lets the model + pr_reviewer settings in
+          # .pr_agent.toml apply to the very PR that introduces them.
+          PR_AGENT_CONFIG_BRANCH: ${{ github.head_ref }}
+          # Run /describe, /review, /improve automatically on each PR.
+          github_action_config.auto_review: 'true'
+          github_action_config.auto_describe: 'true'
+          github_action_config.auto_improve: 'true'
+          # Only auto-run on these PR events (matches the triggers above).
+          github_action_config.pr_actions: '["opened", "synchronize", "ready_for_review"]'
