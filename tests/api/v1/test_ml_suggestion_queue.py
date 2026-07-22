@@ -25,7 +25,7 @@ from app.config import TagType
 from app.core.security import create_access_token
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
-from app.models.permissions import Perms, UserPerms
+from app.models.permissions import Groups, Perms, UserGroups, UserPerms
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
@@ -207,6 +207,40 @@ class TestSuggestionGridEndpoint:
         assert thumb
         assert thumb.endswith(f"/thumbs/{image_hi.filename}.webp")
         assert "/" in thumb  # a URL path, not just the bare filename
+
+    async def test_grid_item_uploader_carries_groups(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The embedded uploader must include its group memberships.
+
+        The /ml-suggestions hover popup colours the uploader's username by group
+        (e.g. admins red). That needs image.user.groups populated in the grid
+        response — a regression when the endpoint's uploader loader omitted groups.
+        The colour is driven by group membership, not the admin flag, so this
+        user is a plain tagger placed in the admins group.
+        """
+        user = await _make_user(db_session, "gridgroups")
+        await _grant_image_tag_add(db_session, user)
+        # Put the uploader in the admins group.
+        group = Groups(title="admins", desc="Administrators")
+        db_session.add(group)
+        await db_session.flush()
+        db_session.add(UserGroups(user_id=user.user_id, group_id=group.group_id))
+        image = await _make_image(db_session, user, "gridgroups_img")
+        tag = await _make_tag(db_session, user, "gridgroups_tag")
+        await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/ml-suggestions?tag_id={tag.tag_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["image"]["user"]["groups"] == ["admins"]
 
     async def test_min_confidence_filters_grid(self, client: AsyncClient, db_session: AsyncSession):
         """min_confidence excludes suggestions below the threshold."""

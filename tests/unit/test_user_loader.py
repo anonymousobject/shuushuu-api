@@ -3,7 +3,8 @@
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.user_loader import USER_WITH_GROUPS_OPTIONS
+from app.core.user_loader import USER_WITH_GROUPS_OPTIONS, image_uploader_load
+from app.models.image import Images
 from app.models.permissions import Groups, UserGroups
 from app.models.user import Users
 from app.schemas.common import UserSummary
@@ -52,6 +53,47 @@ async def test_user_summary_auto_populates_groups(db_session: AsyncSession):
     summary = UserSummary.model_validate(user)
 
     assert summary.groups == ["auto_test"]
+
+
+@pytest.mark.asyncio
+async def test_image_uploader_load_populates_groups(db_session: AsyncSession):
+    """image_uploader_load() must eager-load the uploader's groups.
+
+    Every endpoint that serialises an image's uploader as a UserSummary relies
+    on this helper; if it omits user_groups the summary's groups come back empty
+    and the frontend can't colour admin/mod/tagger usernames (the /ml-suggestions
+    hover-popup regression).
+    """
+    from sqlalchemy import select
+
+    # Put the fixture user (user 1) in the admins group.
+    group = Groups(title="admins", desc="Administrators")
+    db_session.add(group)
+    await db_session.flush()
+    db_session.add(UserGroups(user_id=1, group_id=group.group_id))
+
+    image = Images(
+        filename="uploader-load-groups",
+        ext="jpg",
+        md5_hash="uploaderloadgroupshash",
+        filesize=1000,
+        width=100,
+        height=100,
+        user_id=1,
+        status=1,
+        locked=0,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    result = await db_session.execute(
+        select(Images).options(image_uploader_load()).where(Images.image_id == image.image_id)
+    )
+    loaded = result.scalar_one()
+
+    # The uploader summary must carry the group so username colouring works.
+    summary = UserSummary.model_validate(loaded.user)
+    assert summary.groups == ["admins"]
 
 
 @pytest.mark.asyncio
