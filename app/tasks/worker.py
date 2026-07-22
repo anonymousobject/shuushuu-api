@@ -5,6 +5,8 @@ Run worker with: uv run arq app.tasks.worker.WorkerSettings
 """
 
 import asyncio
+import hashlib
+from pathlib import Path
 from typing import Any
 
 # arq's Worker.__init__ calls asyncio.get_event_loop() which raises RuntimeError
@@ -102,6 +104,42 @@ async def process_review_deadlines(ctx: dict[str, Any]) -> None:
             )
 
 
+def _check_lockfile_freshness(logger: Any) -> None:
+    """Verify the mounted uv.lock matches the one used to build the image.
+
+    The Dockerfile bakes a sha256 of uv.lock into /app/.uv-lock-hash at
+    build time. docker-compose mounts the host's uv.lock at /app/uv.lock
+    at runtime. If the hashes differ, the image was built against an older
+    lockfile — installed packages are stale and the worker will crash-loop
+    on the first import of a missing dependency.
+
+    Raises SystemExit(1) with an actionable message so the operator knows
+    to rebuild instead of debugging a raw ModuleNotFoundError traceback.
+    """
+    hash_file = Path("/app/.uv-lock-hash")
+    lock_file = Path("/app/uv.lock")
+
+    # Older image without the hash file — skip check (no false positive).
+    if not hash_file.exists() or not lock_file.exists():
+        return
+
+    expected = hash_file.read_text().strip()
+    actual = hashlib.sha256(lock_file.read_bytes()).hexdigest()
+
+    if expected != actual:
+        logger.error(
+            "worker_lockfile_mismatch",
+            expected_hash=expected,
+            actual_hash=actual,
+            hint="Rebuild the Docker image: docker compose build --no-cache arq-worker",
+        )
+        raise SystemExit(
+            "uv.lock has changed since the Docker image was built — "
+            "installed packages are stale.\n"
+            "Rebuild: docker compose build --no-cache arq-worker"
+        )
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     """Worker startup - initialize any shared resources."""
     from meilisearch_python_sdk import AsyncClient as MeilisearchClient
@@ -111,6 +149,12 @@ async def startup(ctx: dict[str, Any]) -> None:
 
     logger = get_logger(__name__)
     logger.info("arq_worker_starting", redis_url=settings.ARQ_REDIS_URL)
+
+    # Verify the Docker image isn't stale: compare the baked-in lockfile
+    # hash against the host's uv.lock mounted at runtime. A mismatch means
+    # deps were added to uv.lock but the image wasn't rebuilt — the worker
+    # would crash-loop on the first missing import.
+    _check_lockfile_freshness(logger)
 
     # Initialize Meilisearch search service so worker tasks calling
     # sync_tag_to_search / sync_tags_to_search actually sync (rather than

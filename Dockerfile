@@ -31,6 +31,11 @@ COPY pyproject.toml uv.lock ./
 # the app/ source isn't copied yet — installed in the layer below.
 RUN uv sync --frozen --no-install-project --no-dev
 
+# Bake the lockfile hash so the worker can detect a stale image at startup.
+# docker-compose mounts ./uv.lock from the host at runtime; if the hash
+# differs, the image was built against an older lockfile and must be rebuilt.
+RUN sha256sum uv.lock | awk '{print $1}' > /app/.uv-lock-hash
+
 # Copy only what's needed for runtime (explicit allowlist)
 COPY app/ ./app/
 COPY alembic/ ./alembic/

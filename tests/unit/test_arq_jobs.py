@@ -1,12 +1,13 @@
 """Tests for arq background jobs."""
 
+import hashlib
 import pytest
 from pathlib import Path as FilePath
 from unittest.mock import AsyncMock, Mock, patch
 
 from app.models.image import VariantStatus
 from app.tasks.image_jobs import create_thumbnail_job, create_variant_job
-from app.tasks.worker import WorkerSettings
+from app.tasks.worker import WorkerSettings, _check_lockfile_freshness
 
 
 @pytest.mark.unit
@@ -34,7 +35,8 @@ async def test_create_thumbnail_job_success():
 
         # Assert
         assert result["success"] is True
-        assert "thumbnail_path" in result
+        assert result["thumbnail_path"].endswith(".webp")
+        assert ".jpeg" not in result["thumbnail_path"]
         mock_create.assert_called_once()
 
 
@@ -135,3 +137,90 @@ async def test_create_thumbnail_job_retry_on_failure():
         # Act & Assert
         with pytest.raises(Retry):
             await create_thumbnail_job(ctx, 123, "/test/image.jpg", "jpg", "/test/storage")
+
+
+# ---------------------------------------------------------------------------
+# Lockfile freshness check
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_lockfile_check_passes_when_hash_matches(tmp_path):
+    """No error when the mounted uv.lock hash matches the baked-in hash."""
+    lock_content = b'lockfile content'
+    lock_path = tmp_path / "uv.lock"
+    hash_path = tmp_path / ".uv-lock-hash"
+    lock_path.write_bytes(lock_content)
+    hash_path.write_text(hashlib.sha256(lock_content).hexdigest())
+
+    logger = Mock()
+    with patch("app.tasks.worker.Path") as mock_path_cls:
+        def _path_side_effect(p):
+            s = str(p)
+            if s.endswith(".uv-lock-hash"):
+                return hash_path
+            if s.endswith("uv.lock"):
+                return lock_path
+            return p
+
+        mock_path_cls.side_effect = _path_side_effect
+
+        # Should not raise
+        _check_lockfile_freshness(logger)
+
+    logger.error.assert_not_called()
+
+
+@pytest.mark.unit
+def test_lockfile_check_exits_when_hash_differs(tmp_path):
+    """SystemExit when the mounted uv.lock differs from the baked-in hash."""
+    lock_content = b'new lockfile content'
+    old_hash = hashlib.sha256(b'old lockfile content').hexdigest()
+
+    lock_path = tmp_path / "uv.lock"
+    hash_path = tmp_path / ".uv-lock-hash"
+    lock_path.write_bytes(lock_content)
+    hash_path.write_text(old_hash)
+
+    logger = Mock()
+    with patch("app.tasks.worker.Path") as mock_path_cls:
+        def _path_side_effect(p):
+            s = str(p)
+            if s.endswith(".uv-lock-hash"):
+                return hash_path
+            if s.endswith("uv.lock"):
+                return lock_path
+            return p
+
+        mock_path_cls.side_effect = _path_side_effect
+
+        with pytest.raises(SystemExit) as exc_info:
+            _check_lockfile_freshness(logger)
+
+    assert "Rebuild" in str(exc_info.value)
+    assert "uv.lock" in str(exc_info.value)
+    logger.error.assert_called_once()
+    assert logger.error.call_args.args[0] == "worker_lockfile_mismatch"
+
+
+@pytest.mark.unit
+def test_lockfile_check_skips_when_no_hash_file(tmp_path):
+    """No error when the image predates the hash file (backward compatible)."""
+    lock_path = tmp_path / "uv.lock"
+    lock_path.write_bytes(b'some lockfile')
+
+    logger = Mock()
+    with patch("app.tasks.worker.Path") as mock_path_cls:
+        def _path_side_effect(p):
+            s = str(p)
+            if s.endswith(".uv-lock-hash"):
+                return tmp_path / ".uv-lock-hash"  # does not exist
+            if s.endswith("uv.lock"):
+                return lock_path
+            return p
+
+        mock_path_cls.side_effect = _path_side_effect
+
+        # Should not raise — hash file missing means older image
+        _check_lockfile_freshness(logger)
+
+    logger.error.assert_not_called()

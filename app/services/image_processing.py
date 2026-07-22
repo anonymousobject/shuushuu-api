@@ -324,6 +324,7 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
             error_type=type(e).__name__,
             source_path=str(source_path),
         )
+        raise
 
 
 def create_medium_variant(
