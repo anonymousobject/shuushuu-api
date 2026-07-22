@@ -1,12 +1,18 @@
 name: PR Agent Review
 
+# DISABLED — automated review moved back to
+# .github/workflows/claude-review.yml (Anthropic Claude review).
 # Qodo PR-Agent (https://github.com/qodo-ai/pr-agent) — OpenRouter-backed.
-# Replaces the subscription-gated Claude review. Model + review behavior live
-# in .pr_agent.toml (picked up via the GitHub API, no checkout needed).
-
+# Model + review behavior live in .pr_agent.toml (picked up via the GitHub
+# API, no checkout needed).
+# To re-enable: restore the `on:` block below to
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, ready_for_review]
+# and ensure the OPENROUTER_API_KEY secret is set. The job body below is
+# intentionally left intact so nothing is lost.
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review]
+  workflow_dispatch: {}
 
 jobs:
   pr_agent_job:
