@@ -1,7 +1,8 @@
 # Production override — containerised nginx + certbot as TLS edge
 # Docker provides: api, arq-worker, frontend, nginx, certbot, mediawiki, meilisearch, iqdb, loki, grafana, alloy, docker-socket-proxy
 # DB tier (native, out-of-stack): mariadb + redis reached over private network; containers are busybox stubs
-# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Config comes from the host's .env (one env per host; see .env.example)
 
 x-logging: &default-logging
   driver: json-file
@@ -92,7 +93,7 @@ services:
     container_name: shuushuu-nginx-prod
     environment:
       - STORAGE_PATH=${STORAGE_PATH:-/shuushuu/images}
-      - NGINX_HOST=${NGINX_HOST:?NGINX_HOST must be set in .env.prod}
+      - NGINX_HOST=${NGINX_HOST:?NGINX_HOST must be set in .env}
     volumes: !override
       # Read-only image storage for nginx's static-file locations.
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}:ro
@@ -153,11 +154,6 @@ services:
     # rollout, and nginx reaches the api over the compose network (api:8000), so
     # the publish was debug-only. Use `docker compose exec api …` for host access.
     ports: !override []
-    # !override replaces (rather than merges with) the base service's
-    # env_file list; without it, compose tries to load both .env and
-    # .env.prod and errors out when the dev-only .env is absent.
-    env_file: !override
-      - .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
@@ -187,11 +183,6 @@ services:
     container_name: shuushuu-arq-worker-prod
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
     ports: []
-    # !override replaces (rather than merges with) the base service's
-    # env_file list; without it, compose tries to load both .env and
-    # .env.prod and errors out when the dev-only .env is absent.
-    env_file: !override
-      - .env.prod
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
@@ -251,8 +242,8 @@ services:
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
       - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
-    # No env_file: .env.prod — only GRAFANA_ADMIN_PASSWORD is needed, and it is
-    # already substituted via ${VAR} in `environment:` (sourced from --env-file at compose level).
+    # No env_file — only GRAFANA_ADMIN_PASSWORD is needed, and it is already
+    # substituted via ${VAR} in `environment:` (sourced from .env at compose level).
     # This avoids leaking unrelated DB/Redis/etc. credentials into the Grafana container.
     volumes:
       - grafana_data:/var/lib/grafana
@@ -286,10 +277,10 @@ services:
     container_name: shuushuu-docker-socket-proxy-prod
     userns_mode: "host"
     group_add:
-      # Host docker GID, rendered into .env.prod by ansible (gathered via
+      # Host docker GID, rendered into .env by ansible (gathered via
       # `getent group docker` on the host). Required because under
       # userns_mode: host the in-container gid must match the real host gid.
-      - "${DOCKER_GID:?DOCKER_GID must be set in .env.prod}"
+      - "${DOCKER_GID:?DOCKER_GID must be set in .env}"
     environment:
       # CONTAINERS — list/inspect containers (alloy's discovery.docker)
       # NETWORKS  — GET /networks/<id>; alloy enriches container targets
@@ -370,7 +361,7 @@ services:
   # container won't start until both certs exist. Issue them first:
   #
   #   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
-  #       --env-file ../.env.prod run --rm --entrypoint certbot certbot \
+  #       run --rm --entrypoint certbot certbot \
   #       certonly --non-interactive --agree-tos \
   #       --email <your-email> \
   #       --dns-cloudflare \

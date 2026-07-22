@@ -4,7 +4,7 @@
 # Ensure bash is used for all commands (required for read -p in clean target)
 SHELL := /bin/bash
 
-.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend pytest pytest-db-up pytest-db-down prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy clean
+.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend pytest pytest-db-up pytest-db-down prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy clean check-env-test check-env-prod
 
 # Capture extra arguments for logs commands (e.g., `make dev-logs api`)
 ARGS = $(filter-out $@,$(MAKECMDGOALS))
@@ -53,10 +53,12 @@ help:
 	@echo "  make dev-logs api arq-worker"
 
 # Common compose commands
-# Dev uses .env by default (docker-compose's default behavior)
+# One env per host: every environment reads the host's .env (docker-compose's
+# default behavior). The check-env-* guards below assert the .env matches the
+# stack being started, replacing the safety the old per-env filenames provided.
 COMPOSE_DEV = docker compose -f docker-compose.yml -f docker-compose.override.yml
-COMPOSE_TEST = docker compose -f docker-compose.yml -f docker-compose.test.yml --env-file .env.test
-COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod
+COMPOSE_TEST = docker compose -f docker-compose.yml -f docker-compose.test.yml
+COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml
 
 # Zero-downtime rollout via the docker-rollout CLI plugin. Same files/env as
 # COMPOSE_PROD so it acts on the identical merged config. Install once on the
@@ -68,7 +70,7 @@ COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml -
 # --timeout 90: the new replica's healthcheck can take up to ~50s to pass
 # (start_period 20s + interval 10s x 3 retries); 90 leaves headroom above that
 # and self-documents the expected window (plugin default is only 60s).
-ROLLOUT_PROD = docker rollout --timeout 90 -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod
+ROLLOUT_PROD = docker rollout --timeout 90 -f docker-compose.yml -f docker-compose.prod.yml
 
 # App services that support zero-downtime rollout: stateless, fronted by nginx
 # which re-resolves their service name via Docker DNS at request time. Override
@@ -92,11 +94,23 @@ dev-logs:
 dev-ps:
 	$(COMPOSE_DEV) ps
 
+# Guards: with a single .env per host, the filename no longer encodes the
+# environment, so assert the config matches the stack before acting on it
+# (stops e.g. `make prod` on the dev box from consuming the dev .env).
+# Read-only targets (down/logs/ps) stay unguarded so cleanup always works.
+check-env-test:
+	@grep -q '^DOMAIN=test\.shuushuu\.com' .env || \
+		{ echo "ERROR: .env is not the test config (expected DOMAIN=test.shuushuu.com) — wrong host?"; exit 1; }
+
+check-env-prod:
+	@grep -q '^NGINX_HOST=e-shuushuu\.net' .env || \
+		{ echo "ERROR: .env is not the prod config (expected NGINX_HOST=e-shuushuu.net) — wrong host?"; exit 1; }
+
 # Test targets
-test:
+test: check-env-test
 	$(COMPOSE_TEST) up
 
-test-up:
+test-up: check-env-test
 	$(COMPOSE_TEST) up -d
 
 test-down:
@@ -108,7 +122,7 @@ test-logs:
 test-ps:
 	$(COMPOSE_TEST) ps
 
-test-build-frontend:
+test-build-frontend: check-env-test
 	$(COMPOSE_TEST) build --no-cache frontend
 
 # pytest targets — run the Python unit/integration suite against an isolated,
@@ -141,10 +155,10 @@ pytest: pytest-db-up
 	$(PYTEST_DB_ENV) uv run pytest -n auto --dist loadgroup $(ARGS)
 
 # Production targets
-prod:
+prod: check-env-prod
 	$(COMPOSE_PROD) up
 
-prod-up:
+prod-up: check-env-prod
 	$(COMPOSE_PROD) up -d
 
 prod-down:
@@ -156,10 +170,10 @@ prod-logs:
 prod-ps:
 	$(COMPOSE_PROD) ps
 
-prod-build:
+prod-build: check-env-prod
 	$(COMPOSE_PROD) build
 
-prod-build-frontend:
+prod-build-frontend: check-env-prod
 	$(COMPOSE_PROD) build --no-cache frontend
 
 # Apply database migrations as an explicit, gated step. Run this BEFORE
@@ -168,7 +182,7 @@ prod-build-frontend:
 # versions briefly run against the same DB at once, so a column the old code
 # still reads must not disappear yet. Defer destructive (contract) changes to a
 # later release, once no old container remains.
-prod-migrate:
+prod-migrate: check-env-prod
 	# prod-deploy rebuilds too; this build ensures the migrator runs the NEW
 	# migration code even if prod-migrate is run on its own. The duplicate
 	# build is a cache-cheap no-op.
@@ -179,7 +193,7 @@ prod-migrate:
 # time. docker-rollout starts a new replica, waits for its healthcheck, then
 # drains the old one — nginx re-resolves the service name via Docker DNS, so no
 # requests are dropped. Does NOT run migrations (see prod-migrate).
-prod-deploy:
+prod-deploy: check-env-prod
 	$(COMPOSE_PROD) build $(DEPLOY_SERVICES)
 	@for svc in $(DEPLOY_SERVICES); do \
 		echo "==> Rolling out $$svc (zero-downtime)"; \
@@ -190,7 +204,7 @@ prod-deploy:
 # outage (stop-then-start with no overlap), and with no args it recreates nginx
 # and everything else. Use it for nginx/config/infra changes, not app code —
 # for api/frontend use prod-deploy.
-prod-restart:
+prod-restart: check-env-prod
 	$(COMPOSE_PROD) up -d --force-recreate $(ARGS)
 
 # Cleanup (removes volumes - use with caution)

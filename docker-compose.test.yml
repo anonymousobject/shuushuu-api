@@ -53,13 +53,11 @@ services:
   api:
     # Don't expose directly in production, go through nginx
     ports: []
-    env_file: .env.test
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
   arq-worker:
-    env_file: .env.test
     restart: always
     extra_hosts:
       - "host.docker.internal:host-gateway"
