@@ -101,6 +101,75 @@ class TestSimilarImages:
         assert data["similar_images"][0]["similarity_score"] == 85.3
 
     @pytest.mark.asyncio
+    async def test_similar_images_avatar_url_uses_cdn_when_avatar_in_r2(
+        self, client: AsyncClient, test_image, db_session
+    ):
+        """The embedded uploader's avatar_url must use the CDN when avatar_in_r2=True.
+
+        Regression: the route round-tripped the image through model_dump(), which
+        drops the nested user's exclude=True avatar_in_r2 bit, so the rebuilt
+        SimilarImageResult defaulted it to False and produced a local FS avatar URL.
+        """
+        from unittest.mock import patch as _patch
+
+        from app.config import settings
+        from app.models.image import Images
+        from app.models.user import Users
+
+        with (
+            _patch.object(settings, "R2_ENABLED", True),
+            _patch.object(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test"),
+            _patch.object(settings, "IMAGE_BASE_URL", "http://local.test"),
+        ):
+            uploader = Users(
+                username="r2_uploader",
+                password="hashed",
+                password_type="bcrypt",
+                salt="x" * 16,
+                email="r2uploader@example.com",
+                active=1,
+                avatar="abc.png",
+                avatar_in_r2=True,
+            )
+            db_session.add(uploader)
+            await db_session.commit()
+            await db_session.refresh(uploader)
+
+            similar_image = Images(
+                filename="r2-similar-001",
+                ext="jpg",
+                original_filename="r2sim.jpg",
+                md5_hash="a1b2c3d4e5f600000000000000000000",
+                filesize=1000,
+                width=100,
+                height=100,
+                user_id=uploader.user_id,
+                status=1,
+                locked=False,
+            )
+            db_session.add(similar_image)
+            await db_session.commit()
+            await db_session.refresh(similar_image)
+
+            iqdb_response = [{"image_id": similar_image.image_id, "score": 88.0}]
+
+            with (
+                patch("app.api.v1.images.FilePath.exists", return_value=True),
+                patch(
+                    "app.api.v1.images.check_iqdb_similarity",
+                    new_callable=AsyncMock,
+                    return_value=iqdb_response,
+                ),
+            ):
+                response = await client.get(f"/api/v1/images/{test_image.image_id}/similar")
+
+        assert response.status_code == 200
+        result = response.json()["similar_images"][0]
+        assert result["user"]["avatar"] == "abc.png"
+        assert "avatar_in_r2" not in result["user"]
+        assert result["user"]["avatar_url"] == "https://cdn.test/avatars/abc.png"
+
+    @pytest.mark.asyncio
     async def test_similar_images_ordered_by_score(
         self, client: AsyncClient, test_image, test_images_batch, db_session
     ):
