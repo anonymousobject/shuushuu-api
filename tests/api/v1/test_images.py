@@ -4277,6 +4277,54 @@ class TestGetImageRatings:
         assert "user_id" in first
         assert "username" in first
 
+    async def test_get_image_ratings_avatar_url_uses_cdn_when_avatar_in_r2(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A rater with avatar_in_r2=True must get a CDN avatar_url, not a local one.
+
+        Regression: the route round-tripped the user through model_dump(), which
+        drops the exclude=True avatar_in_r2 bit, so the rebuilt schema defaulted it
+        to False and the avatar_url computed field fell back to the local FS URL.
+        """
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.test")
+        monkeypatch.setattr(settings, "IMAGE_BASE_URL", "http://local.test")
+
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        user = Users(
+            username="r2_rater",
+            password="hashed",
+            password_type="bcrypt",
+            salt="x" * 16,
+            email="r2rater@example.com",
+            active=1,
+            avatar="abc.png",
+            avatar_in_r2=True,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        db_session.add(ImageRatings(user_id=user.user_id, image_id=image.image_id, rating=7))
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/ratings")
+        assert response.status_code == 200
+
+        rated_user = response.json()["users"][0]
+        assert rated_user["avatar"] == "abc.png"
+        # Internal routing bit stays out of the response; clients only see avatar_url.
+        assert "avatar_in_r2" not in rated_user
+        assert rated_user["avatar_url"] == "https://cdn.test/avatars/abc.png"
+
     async def test_get_image_ratings_nonexistent_image(self, client: AsyncClient):
         """Returns 404 for an image that doesn't exist."""
         response = await client.get("/api/v1/images/999999/ratings")

@@ -170,6 +170,11 @@ async def _hydrate_similar_images(
         img = images_by_id.get(int(r["image_id"]))
         if img:
             img_data = ImageResponse.model_validate(img).model_dump()
+            # model_dump() drops the embedded user's avatar_in_r2 (exclude=True),
+            # which would make the avatar_url computed field fall back to the local
+            # URL. Re-validate the uploader from the ORM row to preserve it.
+            if getattr(img, "user", None):
+                img_data["user"] = UserSummary.model_validate(img.user)
             img_data["similarity_score"] = r["score"]
             similar.append(SimilarImageResult(**img_data))
     return similar
@@ -2108,6 +2113,9 @@ async def get_image_ratings_users(
     users_with_ratings = [
         UserWithRatingResponse(
             **UserResponse.model_validate(user).model_dump(),
+            # avatar_in_r2 has exclude=True, so model_dump() drops it; re-supply it
+            # explicitly or the avatar_url computed field falls back to the local URL.
+            avatar_in_r2=user.avatar_in_r2,
             rating=rating,
             rated_at=rated_at,
         )
