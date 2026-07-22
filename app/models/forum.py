@@ -32,6 +32,7 @@ class ForumCategories(SQLModel, table=True):
     view_perm: str | None = Field(default=None, max_length=64)
     thread_create_perm: str | None = Field(default=None, max_length=64)
     reply_perm: str | None = Field(default=None, max_length=64)
+    legacy_forum_id: int | None = Field(default=None, unique=True)
 
 
 class ForumThreads(SQLModel, table=True):
@@ -83,6 +84,7 @@ class ForumThreads(SQLModel, table=True):
         default=None, sa_column=Column(UtcDateTime, nullable=True)
     )
     last_post_user_id: int | None = Field(default=None)
+    legacy_topic_id: int | None = Field(default=None, unique=True)
 
 
 class ForumPosts(SQLModel, table=True):
@@ -139,6 +141,10 @@ class ForumPosts(SQLModel, table=True):
         default=None, sa_column=Column(UtcDateTime, nullable=True)
     )
     last_updated_user_id: int | None = Field(default=None)
+
+    legacy_post_id: int | None = Field(default=None, unique=True)
+    legacy_poster_id: int | None = Field(default=None, index=True)
+    legacy_username: str | None = Field(default=None, max_length=255)
 
 
 class ForumThreadReads(SQLModel, table=True):
