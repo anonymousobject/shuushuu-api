@@ -84,6 +84,12 @@ class Permission(str, Enum):
     REVIEW_VOTE = "review_vote"
     REVIEW_CLOSE_EARLY = "review_close_early"
 
+    # Forum
+    FORUM_ACCESS_STAFF = "forum_access_staff"
+    FORUM_ACCESS_TAGGER = "forum_access_tagger"
+    FORUM_MODERATE = "forum_moderate"
+    FORUM_CATEGORY_MANAGE = "forum_category_manage"
+
     @property
     def description(self) -> str:
         """Human-readable description for this permission."""
@@ -130,7 +136,22 @@ _PERMISSION_DESCRIPTIONS: dict[Permission, str] = {
     Permission.REVIEW_START: "Initiate appropriateness review",
     Permission.REVIEW_VOTE: "Cast votes on reviews",
     Permission.REVIEW_CLOSE_EARLY: "Close review before deadline",
+    # Forum
+    Permission.FORUM_ACCESS_STAFF: "Access staff-only forum categories",
+    Permission.FORUM_ACCESS_TAGGER: "Access tagger forum categories",
+    Permission.FORUM_MODERATE: "Pin, lock, move, delete, and restore forum threads and posts",
+    Permission.FORUM_CATEGORY_MANAGE: "Create and edit forum categories",
 }
+
+# Permission titles allowed in forum_categories.view_perm / thread_create_perm /
+# reply_perm. Only access-tier permissions belong here — moderation/management
+# perms must not gate category access.
+FORUM_ACCESS_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        Permission.FORUM_ACCESS_STAFF.value,
+        Permission.FORUM_ACCESS_TAGGER.value,
+    }
+)
 
 
 async def get_user_permissions(db: AsyncSession, user_id: int) -> set[str]:
