@@ -16,6 +16,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      # actions: read lets the reviewer read CI check results (gh pr checks)
       actions: read
 
     steps:
@@ -29,6 +30,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: true
-          prompt: "Review this pull request for code quality, correctness, and security. Follow the project conventions in AGENTS.md. Leave inline comments for concrete issues; skip nitpicks."
+          prompt: "Review this pull request for code quality, correctness, and security. Follow the project conventions in AGENTS.md. Check the PR's CI results first (gh pr checks) and factor them into the review — do not attempt to run tests, linters, or type checkers yourself; CI already gates the same commit. Leave inline comments for concrete issues; skip nitpicks."
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*)"
