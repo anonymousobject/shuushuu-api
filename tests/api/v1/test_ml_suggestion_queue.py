@@ -216,8 +216,10 @@ class TestSuggestionGridEndpoint:
         The /ml-suggestions hover popup colours the uploader's username by group
         (e.g. admins red). That needs image.user.groups populated in the grid
         response — a regression when the endpoint's uploader loader omitted groups.
+        The colour is driven by group membership, not the admin flag, so this
+        user is a plain tagger placed in the admins group.
         """
-        user = await _make_user(db_session, "gridgroups", admin=True)
+        user = await _make_user(db_session, "gridgroups")
         await _grant_image_tag_add(db_session, user)
         # Put the uploader in the admins group.
         group = Groups(title="admins", desc="Administrators")
