@@ -185,6 +185,36 @@ class TestGetThread:
         )
         assert response.status_code == 404
 
+    async def test_missing_and_gated_thread_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category
+    ):
+        # An anonymous caller must not distinguish a gated-but-existing thread
+        # from a missing one: both 404s must be byte-identical (no existence
+        # oracle for enumerating gated thread ids).
+        gated = await make_thread(db_session, staff_category, title="Secret")
+        missing_resp = await client.get("/api/v1/forum/threads/999999")
+        gated_resp = await client.get(f"/api/v1/forum/threads/{gated.thread_id}")
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()
+
+    async def test_missing_and_gated_thread_mutation_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category, user_token
+    ):
+        # The same non-existence-oracle guarantee must hold on the authenticated
+        # mutation endpoints: PATCH/DELETE of a gated-but-existing thread must be
+        # byte-identical to that of a missing thread (no enumeration of gated ids).
+        gated = await make_thread(db_session, staff_category, title="Secret")
+        for method, kwargs in (("patch", {"json": {"title": "x"}}), ("delete", {})):
+            req = getattr(client, method)
+            missing = await req(
+                "/api/v1/forum/threads/999999", headers=_auth(user_token), **kwargs
+            )
+            gated_resp = await req(
+                f"/api/v1/forum/threads/{gated.thread_id}", headers=_auth(user_token), **kwargs
+            )
+            assert missing.status_code == gated_resp.status_code == 404
+            assert missing.json() == gated_resp.json()
+
     async def test_deleted_thread_404_for_users_200_for_mods(
         self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token, staff_token
     ):
@@ -274,17 +304,29 @@ class TestUpdateThread:
         assert data["pinned"] is True
         assert data["locked"] is True
 
-    async def test_locked_thread_title_still_editable(
-        self, client: AsyncClient, db_session: AsyncSession, public_thread, author_token
+    async def test_locked_thread_blocks_author_title_edit_but_not_moderator(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, author_token, staff_token
     ):
+        # A lock must block the author's title rename too — otherwise the thread
+        # author could still mutate a locked thread. Moderators may still rename.
         public_thread.locked = True
         await db_session.commit()
-        response = await client.patch(
+
+        author_resp = await client.patch(
             f"/api/v1/forum/threads/{public_thread.thread_id}",
-            json={"title": "Still editable"},
+            json={"title": "Sneaky rename"},
             headers=_auth(author_token),
         )
-        assert response.status_code == 200
+        assert author_resp.status_code == 403
+        assert "locked" in author_resp.json()["detail"].lower()
+
+        mod_resp = await client.patch(
+            f"/api/v1/forum/threads/{public_thread.thread_id}",
+            json={"title": "Mod rename"},
+            headers=_auth(staff_token),
+        )
+        assert mod_resp.status_code == 200
+        assert mod_resp.json()["title"] == "Mod rename"
 
     async def test_moderator_moves_thread(
         self, client: AsyncClient, public_thread, announce_category, staff_token
