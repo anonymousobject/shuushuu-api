@@ -44,7 +44,7 @@ DEFAULT_TEST_DB_USER = "shuushuu"
 DEFAULT_TEST_DB_PASSWORD = "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
 DEFAULT_TEST_DB_HOST = "localhost"
 DEFAULT_TEST_DB_PORT = "3306"
-DEFAULT_TEST_DB_NAME = "shuushuu_pytest"  # Separate from staging environment (shuushuu_test in .env.test)
+DEFAULT_TEST_DB_NAME = "shuushuu_pytest"  # Separate from staging environment (shuushuu_test on the test host)
 DEFAULT_ROOT_PASSWORD = "root_password"
 
 # Under pytest-xdist each worker process gets its own database (and Redis DB)

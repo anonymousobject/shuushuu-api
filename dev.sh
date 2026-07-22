@@ -16,8 +16,7 @@ case "$ENVIRONMENT" in
     test)
         echo "Starting in TEST mode (HTTPS on test.shuushuu.com)"
         echo "⚠️  Make sure you have SSL certificates in ./docker/certbot/conf"
-        docker compose --env-file "$SCRIPT_DIR/.env.test" \
-                       -f "$SCRIPT_DIR/docker-compose.yml" \
+        docker compose -f "$SCRIPT_DIR/docker-compose.yml" \
                        -f "$SCRIPT_DIR/docker-compose.test.yml" \
                        --profile test \
                        ${2:-up} ${@:3}

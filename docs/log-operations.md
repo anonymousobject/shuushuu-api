@@ -11,10 +11,10 @@ Before bringing the stack up for the first time, generate and store the Grafana 
 
 ```bash
 # On the prod host, in the shuushuu-api repo directory:
-echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)" >> .env.prod
+echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)" >> .env
 ```
 
-`.env.prod` is gitignored. Note the password — you'll need it to log in to Grafana.
+`.env` is gitignored. Note the password — you'll need it to log in to Grafana.
 
 Verify the docker and adm group GIDs match the values in `docker-compose.prod.yml`:
 
@@ -28,7 +28,7 @@ If either differs, update the `group_add` list in the alloy service in `docker-c
 ### Bringing the stack up
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d loki grafana alloy
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d loki grafana alloy
 ```
 
 Verify all three reach a healthy state (loki and grafana have healthchecks; alloy does not — see "Operational notes" below):
@@ -70,7 +70,7 @@ Host shuu-prod-logs
 ```bash
 ssh shuu-prod-logs
 # Leave terminal open; visit http://localhost:3001 in your browser.
-# Login: admin / value of GRAFANA_ADMIN_PASSWORD in .env.prod on prod host.
+# Login: admin / value of GRAFANA_ADMIN_PASSWORD in .env on the prod host.
 ```
 
 ## Sample LogQL queries
@@ -236,9 +236,9 @@ docker restart shuushuu-grafana-prod
 **Recovering from a stuck Alloy WAL.** If Alloy's WAL gets corrupted (e.g., disk full mid-write) and Alloy refuses to start, the safest recovery is to wipe the volume and restart:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod stop alloy
+docker compose -f docker-compose.yml -f docker-compose.prod.yml stop alloy
 docker volume rm alloy_data_prod
-docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d alloy
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d alloy
 ```
 
 Cost: a small gap in container log history covering the outage. Host nginx files are unaffected (Alloy resumes from inode + offset).
