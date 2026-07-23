@@ -72,7 +72,7 @@ async def approve_pending_suggestions_for_links(
 async def delete_pending_ancestor_suggestions(
     db: AsyncSession,
     links: Iterable[tuple[int, int]],
-) -> None:
+) -> list[int]:
     """Delete pending suggestions made redundant by a newly applied descendant.
 
     ``links`` is the (image_id, tag_id) pairs for TagLinks the caller just
@@ -84,11 +84,12 @@ async def delete_pending_ancestor_suggestions(
     and only ancestors are affected: a pending suggestion for a DESCENDANT of
     the applied tag keeps its own review.
 
-    Flush-only; the caller owns the transaction and commit.
+    Flush-only; the caller owns the transaction and commit. Returns the
+    suggestion_ids of the deleted rows so callers can report them to clients.
     """
     pairs = list(links)
     if not pairs:
-        return
+        return []
 
     # Flush first: the session is autoflush=False and callers in this module
     # (_apply_reviews_for_image) set suggestion.status as unflushed ORM
@@ -109,7 +110,15 @@ async def delete_pending_ancestor_suggestions(
             depth += 1
 
     if not doomed:
-        return
+        return []
+
+    doomed_ids_result = await db.execute(
+        select(MlTagSuggestions.suggestion_id).where(  # type: ignore[call-overload]
+            MlTagSuggestions.status == "pending",
+            tuple_(MlTagSuggestions.image_id, MlTagSuggestions.tag_id).in_(doomed),  # type: ignore[arg-type]
+        )
+    )
+    doomed_ids = list(doomed_ids_result.scalars().all())
 
     await db.execute(
         delete(MlTagSuggestions).where(
@@ -118,13 +127,15 @@ async def delete_pending_ancestor_suggestions(
         )
     )
 
+    return doomed_ids
+
 
 async def _apply_reviews_for_image(
     db: AsyncSession,
     image_id: int,
     items: list[ReviewSuggestionRequest],
     user_id: int,
-) -> set[int]:
+) -> tuple[set[int], list[int]]:
     """Apply approve/reject decisions for all suggestions on a single image.
 
     Performs:
@@ -133,7 +144,10 @@ async def _apply_reviews_for_image(
     - refresh_image_tag_type_flags(db, image_id) when any TagLink was created
 
     Does NOT call db.commit() and does NOT call sync_tags_to_search.
-    Returns the set of canonical tag_ids for which a new TagLink was created.
+    Returns (created_link_tag_ids, removed_suggestion_ids): the set of
+    canonical tag_ids for which a new TagLink was created, and the
+    suggestion_ids of any PENDING ancestor suggestions cascade-deleted as a
+    result (empty when no TagLink was created).
     """
     suggestion_ids = [item.suggestion_id for item in items]
     suggestions_result = await db.execute(
@@ -209,8 +223,9 @@ async def _apply_reviews_for_image(
             suggestion.reviewed_at = review_time
             suggestion.reviewed_by_user_id = user_id
 
+    removed_suggestion_ids: list[int] = []
     if created_link_tag_ids:
-        await delete_pending_ancestor_suggestions(
+        removed_suggestion_ids = await delete_pending_ancestor_suggestions(
             db, [(image_id, tag_id) for tag_id in created_link_tag_ids]
         )
 
@@ -218,7 +233,7 @@ async def _apply_reviews_for_image(
     if created_link_tag_ids:
         await refresh_image_tag_type_flags(db, image_id)
 
-    return created_link_tag_ids
+    return created_link_tag_ids, removed_suggestion_ids
 
 
 async def review_ml_tag_suggestions(
@@ -259,7 +274,9 @@ async def review_ml_tag_suggestions(
             elif review_item.action == "reject":
                 rejected_count += 1
 
-    created = await _apply_reviews_for_image(db, image_id, found_items, user_id)
+    created, removed_suggestion_ids = await _apply_reviews_for_image(
+        db, image_id, found_items, user_id
+    )
 
     await db.commit()
 
@@ -274,6 +291,7 @@ async def review_ml_tag_suggestions(
         approved=approved_count,
         rejected=rejected_count,
         errors=errors,
+        removed_suggestion_ids=removed_suggestion_ids,
     )
 
 
@@ -320,11 +338,16 @@ async def bulk_review_suggestions(
         elif action == "reject":
             rejected_count += 1
 
-    # Process each image's suggestions; accumulate created tag_ids.
+    # Process each image's suggestions; accumulate created tag_ids and
+    # cascade-deleted ancestor suggestion_ids.
     all_created_tag_ids: set[int] = set()
+    all_removed_suggestion_ids: list[int] = []
     for image_id, items in items_by_image.items():
-        created = await _apply_reviews_for_image(db, image_id, items, user_id)
+        created, removed_suggestion_ids = await _apply_reviews_for_image(
+            db, image_id, items, user_id
+        )
         all_created_tag_ids |= created
+        all_removed_suggestion_ids.extend(removed_suggestion_ids)
 
     # Single commit spanning all images.
     await db.commit()
@@ -340,4 +363,5 @@ async def bulk_review_suggestions(
         approved=approved_count,
         rejected=rejected_count,
         errors=errors,
+        removed_suggestion_ids=all_removed_suggestion_ids,
     )

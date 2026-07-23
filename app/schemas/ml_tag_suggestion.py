@@ -190,6 +190,13 @@ class ReviewSuggestionsResponse(BaseModel):
         default_factory=list,
         description="List of error messages for suggestions that failed to process",
     )
+    removed_suggestion_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "suggestion_ids of PENDING ancestor suggestions cascade-deleted because a "
+            "more specific descendant tag was applied during this review"
+        ),
+    )
 
 
 class GenerateSuggestionsResponse(BaseModel):

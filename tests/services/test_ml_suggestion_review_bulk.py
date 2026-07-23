@@ -220,8 +220,8 @@ class TestAncestorCleanupOnApprove:
         user = await _make_user(db_session, "anc1")
         image = await _make_image(db_session, user, "anc1")
         grandparent, parent, child = await _make_chain(db_session, user, "anc1")
-        await _make_suggestion(db_session, image, grandparent)
-        await _make_suggestion(db_session, image, parent)
+        sugg_gp = await _make_suggestion(db_session, image, grandparent)
+        sugg_p = await _make_suggestion(db_session, image, parent)
         sugg_c = await _make_suggestion(db_session, image, child)
         await db_session.commit()
 
@@ -231,6 +231,12 @@ class TestAncestorCleanupOnApprove:
             user.user_id,
         )
         assert result.approved == 1
+        # Reports exactly the deleted pending ancestor rows, not the reviewed child.
+        assert set(result.removed_suggestion_ids) == {
+            sugg_gp.suggestion_id,
+            sugg_p.suggestion_id,
+        }
+        assert sugg_c.suggestion_id not in result.removed_suggestion_ids
 
         rows = (
             (
@@ -290,11 +296,13 @@ class TestAncestorCleanupOnApprove:
         sugg_c = await _make_suggestion(db_session, image, child)
         await db_session.commit()
 
-        await bulk_review_suggestions(
+        result = await bulk_review_suggestions(
             db_session,
             [{"suggestion_id": sugg_c.suggestion_id, "action": "reject"}],
             user.user_id,
         )
+        # A reject never deletes ancestors — nothing to report.
+        assert result.removed_suggestion_ids == []
 
         refreshed = (
             (
