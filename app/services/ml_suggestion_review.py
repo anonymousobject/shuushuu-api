@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, tuple_, update
+from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ml_tag_suggestion import MlTagSuggestions
@@ -24,6 +24,7 @@ from app.schemas.ml_tag_suggestion import (
     ReviewSuggestionsRequest,
     ReviewSuggestionsResponse,
 )
+from app.services.ml_suggestion_pipeline import fetch_parent_map
 from app.services.search import sync_tags_to_search
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 
@@ -62,6 +63,51 @@ async def approve_pending_suggestions_for_links(
             status="approved",
             reviewed_at=datetime.now(UTC),
             reviewed_by_user_id=user_id,
+        )
+    )
+
+    await delete_pending_ancestor_suggestions(db, pairs)
+
+
+async def delete_pending_ancestor_suggestions(
+    db: AsyncSession,
+    links: Iterable[tuple[int, int]],
+) -> None:
+    """Delete pending suggestions made redundant by a newly applied descendant.
+
+    ``links`` is the (image_id, tag_id) pairs for TagLinks the caller just
+    created. Each applied tag's Tags.inheritedfrom_id chain is walked and any
+    PENDING suggestion rows for those ancestors on that image are deleted —
+    once the more specific tag is on the image, suggesting the generic one is
+    redundant (generation applies the same rule via
+    filter_redundant_suggestions). Approved/rejected rows are never touched,
+    and only ancestors are affected: a pending suggestion for a DESCENDANT of
+    the applied tag keeps its own review.
+
+    Flush-only; the caller owns the transaction and commit.
+    """
+    pairs = list(links)
+    if not pairs:
+        return
+
+    parent_of = await fetch_parent_map(db, {tag_id for _, tag_id in pairs})
+
+    doomed: set[tuple[int, int]] = set()
+    for image_id, tag_id in pairs:
+        cur = parent_of.get(tag_id)
+        depth = 0
+        while cur is not None and depth < 10:
+            doomed.add((image_id, cur))
+            cur = parent_of.get(cur)
+            depth += 1
+
+    if not doomed:
+        return
+
+    await db.execute(
+        delete(MlTagSuggestions).where(
+            MlTagSuggestions.status == "pending",  # type: ignore[arg-type]
+            tuple_(MlTagSuggestions.image_id, MlTagSuggestions.tag_id).in_(doomed),  # type: ignore[arg-type]
         )
     )
 
@@ -155,6 +201,11 @@ async def _apply_reviews_for_image(
             suggestion.status = "rejected"
             suggestion.reviewed_at = review_time
             suggestion.reviewed_by_user_id = user_id
+
+    if created_link_tag_ids:
+        await delete_pending_ancestor_suggestions(
+            db, [(image_id, tag_id) for tag_id in created_link_tag_ids]
+        )
 
     # Refresh denormalized tag-type flags (per-image; flush only, no commit).
     if created_link_tag_ids:
