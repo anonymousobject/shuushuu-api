@@ -145,6 +145,35 @@ async def filter_redundant_suggestions(
     return filtered
 
 
+async def fetch_parent_map(db: AsyncSession, tag_ids: set[int]) -> dict[int, int | None]:
+    """tag_id -> inheritedfrom_id covering the full ancestry of ``tag_ids``.
+
+    Iteratively fetches parents not yet seen, so chains can be walked through
+    tags outside the input set. Depth-capped at 10 like
+    filter_redundant_suggestions' walk.
+    """
+    parent_of: dict[int, int | None] = {}
+    to_fetch = set(tag_ids)
+    for _ in range(10):
+        if not to_fetch:
+            break
+        rows = (
+            await db.execute(
+                select(Tags.tag_id, Tags.inheritedfrom_id).where(  # type: ignore[call-overload]
+                    Tags.tag_id.in_(to_fetch)  # type: ignore[union-attr]
+                )
+            )
+        ).all()
+        for tag_id, parent_id in rows:
+            parent_of[tag_id] = parent_id
+        to_fetch = {
+            parent_id
+            for _, parent_id in rows
+            if parent_id is not None and parent_id not in parent_of
+        }
+    return parent_of
+
+
 async def filter_superseded_parents(
     db: AsyncSession,
     suggestions: list[dict[str, Any]],
@@ -152,9 +181,11 @@ async def filter_superseded_parents(
 ) -> list[dict[str, Any]]:
     """Drop a suggested tag when a more-specific suggested descendant (via
     Tags.inheritedfrom_id) is present and that descendant's confidence is
-    >= min_child_confidence. Operates only WITHIN the suggestion set — never
-    drops a tag that isn't itself suggested. A low-confidence child does not
-    suppress its parent (both kept). Input dicts have at least tag_id + confidence.
+    >= min_child_confidence. The ancestor chain is walked through the Tags
+    table, so a suggested grandparent is dropped even when intermediate tags
+    in the chain are not themselves suggested. Only tags that are in the
+    suggestion set are ever dropped. A low-confidence child does not suppress
+    its ancestors (all kept). Input dicts have at least tag_id + confidence.
     """
     if len(suggestions) < 2:
         return suggestions
@@ -165,26 +196,18 @@ async def filter_superseded_parents(
         conf_by_id[tid] = max(conf_by_id.get(tid, 0.0), s["confidence"])
     suggested_ids = set(conf_by_id)
 
-    # inheritedfrom_id for every suggested tag (one query). A suggested ancestor
-    # is itself in this map, so the chain can be walked entirely within the set.
-    rows = (
-        await db.execute(
-            select(Tags.tag_id, Tags.inheritedfrom_id).where(  # type: ignore[call-overload]
-                Tags.tag_id.in_(suggested_ids)  # type: ignore[union-attr]
-            )
-        )
-    ).all()
-    parent_of: dict[int, int | None] = {row[0]: row[1] for row in rows}
+    parent_of = await fetch_parent_map(db, suggested_ids)
 
     superseded: set[int] = set()
     for child_id, conf in conf_by_id.items():
         if conf < min_child_confidence:
             continue
-        cur = parent_of.get(child_id)  # the child's direct parent
+        cur = parent_of.get(child_id)
         depth = 0
-        while cur is not None and cur in suggested_ids and depth < 10:
-            superseded.add(cur)
-            cur = parent_of.get(cur)  # cur is suggested -> present in parent_of
+        while cur is not None and depth < 10:
+            if cur in suggested_ids:
+                superseded.add(cur)
+            cur = parent_of.get(cur)
             depth += 1
 
     if not superseded:

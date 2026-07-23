@@ -959,6 +959,45 @@ async def test_filter_superseded_parents_parent_not_suggested_kept(db_session):
     assert {s["tag_id"] for s in result} == {651, 652}
 
 
+async def test_filter_superseded_parents_gap_in_chain_drops_grandparent(db_session):
+    """A confident child drops a suggested GRANDPARENT even when the
+    intermediate parent is not itself suggested (randoseru -> school bag ->
+    bag with only randoseru + bag suggested)."""
+    grandparent = Tags(tag_id=660, title="bag")
+    parent = Tags(tag_id=661, title="school bag", inheritedfrom_id=660)
+    child = Tags(tag_id=662, title="randoseru", inheritedfrom_id=661)
+    db_session.add_all([grandparent, parent, child])
+    await db_session.commit()
+
+    # Intermediate 661 is NOT suggested — the chain must be walked through it.
+    suggestions = [
+        {"tag_id": 660, "confidence": 0.90, "model_version": "v3"},  # bag (grandparent)
+        {"tag_id": 662, "confidence": 0.70, "model_version": "v3"},  # randoseru (child)
+    ]
+
+    result = await filter_superseded_parents(db_session, suggestions, 0.6)
+
+    assert {s["tag_id"] for s in result} == {662}
+
+
+async def test_filter_superseded_parents_gap_chain_weak_child_keeps_grandparent(db_session):
+    """A below-threshold child does not suppress ancestors across a gap either."""
+    grandparent = Tags(tag_id=670, title="bag")
+    parent = Tags(tag_id=671, title="school bag", inheritedfrom_id=670)
+    child = Tags(tag_id=672, title="randoseru", inheritedfrom_id=671)
+    db_session.add_all([grandparent, parent, child])
+    await db_session.commit()
+
+    suggestions = [
+        {"tag_id": 670, "confidence": 0.90, "model_version": "v3"},
+        {"tag_id": 672, "confidence": 0.55, "model_version": "v3"},
+    ]
+
+    result = await filter_superseded_parents(db_session, suggestions, 0.6)
+
+    assert {s["tag_id"] for s in result} == {670, 672}
+
+
 async def test_character_suggestions_dropped_when_flag_off(db_session, tmp_path, monkeypatch):
     """Flag off: suggestions resolving to character-type tags are not stored;
     theme suggestions are unaffected. Raw inference/ingest is untouched by this
