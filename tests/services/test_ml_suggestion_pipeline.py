@@ -1148,3 +1148,12 @@ async def test_character_child_does_not_supersede_theme_parent_when_gated(
         select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
     )
     assert {s.tag_id for s in result.scalars().all()} == {401}
+
+
+def test_parent_supersede_default_threshold_is_conservative():
+    """Default raised 0.6 -> 0.9 (2026-07-23 analysis: at 0.6 ~24% of marginal
+    supersedes suppressed a parent the human applied; at 0.9 that is ~7%).
+    Ambiguous child/parent pairs are left for the review queue to sequence."""
+    from app.config import Settings
+
+    assert Settings.model_fields["ML_PARENT_SUPERSEDE_MIN_CONFIDENCE"].default == 0.9
