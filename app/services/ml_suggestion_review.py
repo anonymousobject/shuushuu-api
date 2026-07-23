@@ -90,6 +90,13 @@ async def delete_pending_ancestor_suggestions(
     if not pairs:
         return
 
+    # Flush first: the session is autoflush=False and callers in this module
+    # (_apply_reviews_for_image) set suggestion.status as unflushed ORM
+    # attribute mutations before reaching here. Without this, the pending-only
+    # DELETE below reads stale pre-flush status and can delete a row the
+    # same-batch review just marked approved/rejected.
+    await db.flush()
+
     parent_of = await fetch_parent_map(db, {tag_id for _, tag_id in pairs})
 
     doomed: set[tuple[int, int]] = set()

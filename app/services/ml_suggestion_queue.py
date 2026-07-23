@@ -138,7 +138,11 @@ async def list_pending_for_tag(
     _TAG_NOT_ALREADY_APPLIED).  Also excludes suggestions on images that
     still have a pending suggestion for a DESCENDANT of ``tag_id`` — per-tag
     review is most-specific-first; rejecting the descendant resurfaces the
-    ancestor here.  Pagination is 1-based (page=1 is the first page).
+    ancestor here.  This descendant-pending exclusion applies regardless of
+    the descendant's own confidence — even a pending descendant below this
+    call's min_confidence still hides the ancestor here, since the
+    most-specific-pending-wins rule is deliberately confidence-agnostic.
+    Pagination is 1-based (page=1 is the first page).
 
     Returns (items, total) where:
     - items is a list of (suggestion_id, image_id, confidence)

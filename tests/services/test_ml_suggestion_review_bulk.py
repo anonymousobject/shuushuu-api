@@ -5,7 +5,6 @@ No mocked behavior is asserted; all assertions target real DB rows written
 by the service.
 """
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -376,3 +375,49 @@ class TestAncestorCleanupOnApprove:
             .one_or_none()
         )
         assert refreshed is not None and refreshed.status == "pending"
+
+    async def test_same_batch_reject_ancestor_approve_child_keeps_rejection(
+        self, db_session: AsyncSession
+    ):
+        """A moderator rejecting the parent and approving the child in ONE
+        request must keep the parent row as 'rejected' — the cleanup DELETE
+        must see the same-batch status changes (autoflush=False session).
+
+        The db_session fixture itself runs with autoflush=True (unlike the
+        production sessionmaker in app/core/database.py), which would flush
+        the pending 'rejected' status ahead of the DELETE regardless of the
+        fix under test. no_autoflush reproduces the production autoflush=False
+        setting for the call so this test actually exercises the bug.
+        """
+        user = await _make_user(db_session, "anc6")
+        image = await _make_image(db_session, user, "anc6")
+        _grandparent, parent, child = await _make_chain(db_session, user, "anc6")
+        sugg_p = await _make_suggestion(db_session, image, parent)
+        sugg_c = await _make_suggestion(db_session, image, child)
+        await db_session.commit()
+
+        with db_session.no_autoflush:
+            result = await bulk_review_suggestions(
+                db_session,
+                [
+                    {"suggestion_id": sugg_p.suggestion_id, "action": "reject"},
+                    {"suggestion_id": sugg_c.suggestion_id, "action": "approve"},
+                ],
+                user.user_id,
+            )
+        assert result.approved == 1 and result.rejected == 1
+
+        rows = (
+            (
+                await db_session.execute(
+                    select(MlTagSuggestions).where(
+                        MlTagSuggestions.image_id == image.image_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_tag = {r.tag_id: r.status for r in rows}
+        assert by_tag[parent.tag_id] == "rejected"
+        assert by_tag[child.tag_id] == "approved"
