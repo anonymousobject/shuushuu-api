@@ -450,6 +450,164 @@ class TestGetMlTagSuggestions:
         )
         assert response.status_code == 200
 
+    async def test_get_suggestions_reports_superseded_ancestors(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A pending gap chain (child + grandparent suggested, intermediate tag
+        NOT suggested): the child's superseded_suggestion_ids names the
+        grandparent's row; grandparent and an unrelated pending tag get []."""
+        user = Users(
+            username="test_superseded",
+            email="test_superseded@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test_superseded",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="superseded123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        grandparent = Tags(title="bag sup", type=1, user_id=user.user_id)
+        db_session.add(grandparent)
+        await db_session.flush()
+        parent = Tags(
+            title="school bag sup",
+            type=1,
+            user_id=user.user_id,
+            inheritedfrom_id=grandparent.tag_id,
+        )
+        db_session.add(parent)
+        await db_session.flush()
+        child = Tags(
+            title="randoseru sup",
+            type=1,
+            user_id=user.user_id,
+            inheritedfrom_id=parent.tag_id,
+        )
+        unrelated = Tags(title="smile sup", type=1, user_id=user.user_id)
+        db_session.add_all([child, unrelated])
+        await db_session.flush()
+
+        # Pending rows for child + grandparent + unrelated; the intermediate
+        # tag deliberately has NO suggestion row (the gap).
+        sugg_child = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=child.tag_id,
+            confidence=0.9,
+            model_version="v1",
+            status="pending",
+        )
+        sugg_gp = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=grandparent.tag_id,
+            confidence=0.8,
+            model_version="v1",
+            status="pending",
+        )
+        sugg_unrelated = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=unrelated.tag_id,
+            confidence=0.7,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add_all([sugg_child, sugg_gp, sugg_unrelated])
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        by_id = {s["suggestion_id"]: s for s in response.json()["suggestions"]}
+        assert by_id[sugg_child.suggestion_id]["superseded_suggestion_ids"] == [
+            sugg_gp.suggestion_id
+        ]
+        assert by_id[sugg_gp.suggestion_id]["superseded_suggestion_ids"] == []
+        assert by_id[sugg_unrelated.suggestion_id]["superseded_suggestion_ids"] == []
+
+    async def test_superseded_ignores_reviewed_rows(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A REJECTED ancestor row creates no edge: the pending child reports []
+        and the rejected row itself reports []."""
+        user = Users(
+            username="test_superseded2",
+            email="test_superseded2@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test_superseded2",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="superseded456",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        parent_tag = Tags(title="dress sup", type=1, user_id=user.user_id)
+        db_session.add(parent_tag)
+        await db_session.flush()
+        child_tag = Tags(
+            title="sundress sup",
+            type=1,
+            user_id=user.user_id,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add(child_tag)
+        await db_session.flush()
+
+        sugg_child = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=child_tag.tag_id,
+            confidence=0.9,
+            model_version="v1",
+            status="pending",
+        )
+        sugg_parent_rejected = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=parent_tag.tag_id,
+            confidence=0.8,
+            model_version="v1",
+            status="rejected",
+        )
+        db_session.add_all([sugg_child, sugg_parent_rejected])
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        by_id = {s["suggestion_id"]: s for s in response.json()["suggestions"]}
+        assert by_id[sugg_child.suggestion_id]["superseded_suggestion_ids"] == []
+        assert by_id[sugg_parent_rejected.suggestion_id]["superseded_suggestion_ids"] == []
+
 
 @pytest.mark.api
 class TestReviewMlTagSuggestions:
