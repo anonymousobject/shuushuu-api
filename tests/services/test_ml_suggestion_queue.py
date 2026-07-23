@@ -492,3 +492,107 @@ class TestCountPendingByTagPagination:
         assert len(seeded) == 2
         seeded_ids = [item[0] for item in seeded]
         assert seeded_ids.index(tag_hi.tag_id) < seeded_ids.index(tag_lo.tag_id)
+
+
+async def _make_child_tag(
+    db: AsyncSession, user: Users, suffix: str, parent: Tags
+) -> Tags:
+    tag = Tags(
+        title=f"queue tag {suffix}", type=TagType.THEME, user_id=user.user_id,
+        inheritedfrom_id=parent.tag_id,
+    )
+    db.add(tag)
+    await db.flush()
+    return tag
+
+
+class TestListPendingDescendantHiding:
+    """An ancestor's pending suggestion is hidden from its per-tag queue while
+    a more-specific descendant suggestion is pending on the same image, so
+    per-tag review is most-specific-first by construction."""
+
+    async def test_pending_child_hides_parent_row(self, db_session: AsyncSession):
+        user = await _make_user(db_session, "hide1")
+        image = await _make_image(db_session, user, "hide1")
+        parent = await _make_tag(db_session, user, "hide1_parent")
+        child = await _make_child_tag(db_session, user, "hide1_child", parent)
+        await _make_suggestion(db_session, image, parent)
+        await _make_suggestion(db_session, image, child)
+        await db_session.commit()
+
+        items, total = await list_pending_for_tag(
+            db_session, parent.tag_id, min_confidence=0.0, page=1, per_page=10
+        )
+        assert total == 0 and items == []
+
+        # The child's own queue still shows the image.
+        items, total = await list_pending_for_tag(
+            db_session, child.tag_id, min_confidence=0.0, page=1, per_page=10
+        )
+        assert total == 1
+
+    async def test_pending_grandchild_hides_grandparent_row(
+        self, db_session: AsyncSession
+    ):
+        """Transitive: the intermediate tag has NO suggestion row at all."""
+        user = await _make_user(db_session, "hide2")
+        image = await _make_image(db_session, user, "hide2")
+        grandparent = await _make_tag(db_session, user, "hide2_gp")
+        parent = await _make_child_tag(db_session, user, "hide2_p", grandparent)
+        grandchild = await _make_child_tag(db_session, user, "hide2_c", parent)
+        await _make_suggestion(db_session, image, grandparent)
+        await _make_suggestion(db_session, image, grandchild)
+        await db_session.commit()
+
+        items, total = await list_pending_for_tag(
+            db_session, grandparent.tag_id, min_confidence=0.0, page=1, per_page=10
+        )
+        assert total == 0 and items == []
+
+    async def test_rejected_descendant_does_not_hide(self, db_session: AsyncSession):
+        """Rejecting the child resurfaces the parent — the cascade."""
+        user = await _make_user(db_session, "hide3")
+        image = await _make_image(db_session, user, "hide3")
+        parent = await _make_tag(db_session, user, "hide3_parent")
+        child = await _make_child_tag(db_session, user, "hide3_child", parent)
+        await _make_suggestion(db_session, image, parent)
+        await _make_suggestion(db_session, image, child, status="rejected")
+        await db_session.commit()
+
+        items, total = await list_pending_for_tag(
+            db_session, parent.tag_id, min_confidence=0.0, page=1, per_page=10
+        )
+        assert total == 1
+
+    async def test_unrelated_pending_does_not_hide(self, db_session: AsyncSession):
+        user = await _make_user(db_session, "hide4")
+        image = await _make_image(db_session, user, "hide4")
+        parent = await _make_tag(db_session, user, "hide4_parent")
+        unrelated = await _make_tag(db_session, user, "hide4_other")
+        await _make_suggestion(db_session, image, parent)
+        await _make_suggestion(db_session, image, unrelated)
+        await db_session.commit()
+
+        items, total = await list_pending_for_tag(
+            db_session, parent.tag_id, min_confidence=0.0, page=1, per_page=10
+        )
+        assert total == 1
+
+    async def test_hiding_is_per_image(self, db_session: AsyncSession):
+        """Another image whose parent suggestion has no pending descendant
+        stays listed while the blocked image is hidden."""
+        user = await _make_user(db_session, "hide5")
+        image_blocked = await _make_image(db_session, user, "hide5a")
+        image_free = await _make_image(db_session, user, "hide5b")
+        parent = await _make_tag(db_session, user, "hide5_parent")
+        child = await _make_child_tag(db_session, user, "hide5_child", parent)
+        await _make_suggestion(db_session, image_blocked, parent)
+        await _make_suggestion(db_session, image_blocked, child)
+        await _make_suggestion(db_session, image_free, parent)
+        await db_session.commit()
+
+        items, total = await list_pending_for_tag(
+            db_session, parent.tag_id, min_confidence=0.0, page=1, per_page=10
+        )
+        assert total == 1
+        assert [item[1] for item in items] == [image_free.image_id]
