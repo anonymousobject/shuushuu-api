@@ -108,6 +108,10 @@ services:
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
       - ./ml_models:/app/ml_models:ro
+      # Read-only so ad-hoc scripts always match the checkout (the image's baked
+      # copy goes stale — a months-old ml_remap.py silently no-opped a full test
+      # remap on 2026-07-24). Scripts must write run artifacts elsewhere (/tmp).
+      - ./scripts:/app/scripts:ro
     depends_on:
       mariadb:
         condition: service_healthy
@@ -191,6 +195,10 @@ services:
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
       - ./ml_models:/app/ml_models:ro
+      # Read-only so ad-hoc scripts always match the checkout (the image's baked
+      # copy goes stale — a months-old ml_remap.py silently no-opped a full test
+      # remap on 2026-07-24). Scripts must write run artifacts elsewhere (/tmp).
+      - ./scripts:/app/scripts:ro
     depends_on:
       redis:
         condition: service_healthy
