@@ -33,7 +33,7 @@ from app.schemas.ml_tag_suggestion import (
 )
 from app.schemas.tag import TagResponse
 from app.services.ml_runtime import get_ml_service, inference_slot
-from app.services.ml_suggestion_pipeline import generate_and_store_suggestions
+from app.services.ml_suggestion_pipeline import fetch_parent_map, generate_and_store_suggestions
 from app.services.ml_suggestion_review import review_ml_tag_suggestions as apply_review
 from app.services.rate_limit import check_analyze_rate_limit
 from app.tasks.queue import enqueue_job
@@ -160,6 +160,29 @@ async def get_ml_tag_suggestions(
     )
     tags_by_id = {tag.tag_id: tag for tag in tag_result.scalars().all()}
 
+    # For each pending suggestion, the OTHER pending suggestions its approval
+    # would cascade-delete: ancestors via inheritedfrom_id, walked through the
+    # full chain so a gap (intermediate tag not suggested) still links child to
+    # grandparent. Mirrors delete_pending_ancestor_suggestions semantics, so
+    # the panel's "related" grouping can never disagree with what approval
+    # actually does. Reviewed rows create no edges and report [].
+    pending_by_tag = {sugg.tag_id: sugg for sugg in suggestions if sugg.status == "pending"}
+    superseded_by_id: dict[int, list[int]] = {}
+    if len(pending_by_tag) > 1:
+        parent_of = await fetch_parent_map(db, set(pending_by_tag))
+        for tag_id, sugg in pending_by_tag.items():
+            ancestors: list[int] = []
+            cur = parent_of.get(tag_id)
+            depth = 0
+            while cur is not None and depth < 10:
+                anc = pending_by_tag.get(cur)
+                if anc is not None and anc.suggestion_id is not None:
+                    ancestors.append(anc.suggestion_id)
+                cur = parent_of.get(cur)
+                depth += 1
+            if ancestors and sugg.suggestion_id is not None:
+                superseded_by_id[sugg.suggestion_id] = ancestors
+
     # Batch fetch reviewers in one query (same pattern as the public
     # tag-history endpoint; groups drive username coloring).
     reviewer_ids = {
@@ -198,6 +221,7 @@ async def get_ml_tag_suggestions(
             created_at=sugg.created_at,  # type: ignore[arg-type]
             reviewed_at=sugg.reviewed_at,
             reviewed_by=_reviewer_summary(sugg.reviewed_by_user_id),
+            superseded_suggestion_ids=superseded_by_id.get(sugg.suggestion_id, []),  # type: ignore[arg-type]
         )
         for sugg in suggestions
     ]

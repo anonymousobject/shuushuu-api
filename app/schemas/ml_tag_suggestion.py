@@ -63,6 +63,14 @@ class MlTagSuggestionResponse(BaseModel):
             "system resolutions (backfill, repost tag migration)."
         ),
     )
+    superseded_suggestion_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "suggestion_ids of OTHER pending suggestions on this image that "
+            "approving this suggestion would cascade-delete (its ancestor tags "
+            "via Tags.inheritedfrom_id). Always empty for reviewed suggestions."
+        ),
+    )
 
 
 class MlTagSuggestionsListResponse(BaseModel):
@@ -189,6 +197,13 @@ class ReviewSuggestionsResponse(BaseModel):
     errors: list[str] = Field(
         default_factory=list,
         description="List of error messages for suggestions that failed to process",
+    )
+    removed_suggestion_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "suggestion_ids of PENDING ancestor suggestions cascade-deleted because a "
+            "more specific descendant tag was applied during this review"
+        ),
     )
 
 

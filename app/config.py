@@ -166,13 +166,13 @@ class Settings(BaseSettings):
         description="Minimum model probability for a prediction to become a suggestion",
     )
     ML_PARENT_SUPERSEDE_MIN_CONFIDENCE: float = Field(
-        default=0.6,
+        default=0.9,
         ge=0.0,
         le=1.0,
         description=(
             "A suggested child tag supersedes (drops) its suggested parent tags "
             "only when the child's confidence is at least this; a weaker child "
-            "leaves the parent in place"
+            "leaves the parent in place; default chosen from tag-hierarchy precision analysis (2026-07)"
         ),
     )
 
