@@ -14,7 +14,10 @@ from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
-from app.services.ml_suggestion_review import bulk_review_suggestions
+from app.services.ml_suggestion_review import (
+    approve_pending_suggestions_for_links,
+    bulk_review_suggestions,
+)
 
 
 async def _make_user(db: AsyncSession, suffix: str) -> Users:
@@ -189,3 +192,321 @@ class TestBulkReviewSuggestions:
             )
         )
         assert len(links_result.scalars().all()) == 1
+
+
+async def _make_chain(db: AsyncSession, user: Users, suffix: str) -> tuple[Tags, Tags, Tags]:
+    """grandparent <- parent <- child via inheritedfrom_id."""
+    grandparent = await _make_tag(db, user, f"gp_{suffix}")
+    parent = Tags(
+        title=f"bulk tag p_{suffix}", type=1, user_id=user.user_id,
+        inheritedfrom_id=grandparent.tag_id,
+    )
+    db.add(parent)
+    await db.flush()
+    child = Tags(
+        title=f"bulk tag c_{suffix}", type=1, user_id=user.user_id,
+        inheritedfrom_id=parent.tag_id,
+    )
+    db.add(child)
+    await db.flush()
+    return grandparent, parent, child
+
+
+class TestAncestorCleanupOnApprove:
+    """Creating a TagLink deletes now-redundant pending ancestor suggestions."""
+
+    async def test_review_approve_child_deletes_pending_ancestors(
+        self, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "anc1")
+        image = await _make_image(db_session, user, "anc1")
+        grandparent, parent, child = await _make_chain(db_session, user, "anc1")
+        sugg_gp = await _make_suggestion(db_session, image, grandparent)
+        sugg_p = await _make_suggestion(db_session, image, parent)
+        sugg_c = await _make_suggestion(db_session, image, child)
+        await db_session.commit()
+
+        result = await bulk_review_suggestions(
+            db_session,
+            [{"suggestion_id": sugg_c.suggestion_id, "action": "approve"}],
+            user.user_id,
+        )
+        assert result.approved == 1
+        # Reports exactly the deleted pending ancestor rows, not the reviewed child.
+        assert set(result.removed_suggestion_ids) == {
+            sugg_gp.suggestion_id,
+            sugg_p.suggestion_id,
+        }
+        assert sugg_c.suggestion_id not in result.removed_suggestion_ids
+
+        rows = (
+            (
+                await db_session.execute(
+                    select(MlTagSuggestions).where(
+                        MlTagSuggestions.image_id == image.image_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_tag = {r.tag_id: r for r in rows}
+        assert by_tag[child.tag_id].status == "approved"
+        # Both pending ancestors are deleted — including the grandparent.
+        assert parent.tag_id not in by_tag
+        assert grandparent.tag_id not in by_tag
+
+    async def test_reviewed_ancestor_rows_are_never_touched(
+        self, db_session: AsyncSession
+    ):
+        user = await _make_user(db_session, "anc2")
+        image = await _make_image(db_session, user, "anc2")
+        grandparent, parent, child = await _make_chain(db_session, user, "anc2")
+        await _make_suggestion(db_session, image, grandparent, status="rejected")
+        await _make_suggestion(db_session, image, parent, status="approved")
+        sugg_c = await _make_suggestion(db_session, image, child)
+        await db_session.commit()
+
+        await bulk_review_suggestions(
+            db_session,
+            [{"suggestion_id": sugg_c.suggestion_id, "action": "approve"}],
+            user.user_id,
+        )
+
+        rows = (
+            (
+                await db_session.execute(
+                    select(MlTagSuggestions).where(
+                        MlTagSuggestions.image_id == image.image_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_tag = {r.tag_id: r.status for r in rows}
+        assert by_tag[grandparent.tag_id] == "rejected"
+        assert by_tag[parent.tag_id] == "approved"
+        assert by_tag[child.tag_id] == "approved"
+
+    async def test_reject_does_not_delete_ancestors(self, db_session: AsyncSession):
+        user = await _make_user(db_session, "anc3")
+        image = await _make_image(db_session, user, "anc3")
+        _grandparent, parent, child = await _make_chain(db_session, user, "anc3")
+        sugg_p = await _make_suggestion(db_session, image, parent)
+        sugg_c = await _make_suggestion(db_session, image, child)
+        await db_session.commit()
+
+        result = await bulk_review_suggestions(
+            db_session,
+            [{"suggestion_id": sugg_c.suggestion_id, "action": "reject"}],
+            user.user_id,
+        )
+        # A reject never deletes ancestors — nothing to report.
+        assert result.removed_suggestion_ids == []
+
+        refreshed = (
+            (
+                await db_session.execute(
+                    select(MlTagSuggestions).where(
+                        MlTagSuggestions.suggestion_id == sugg_p.suggestion_id
+                    )
+                )
+            )
+            .scalars()
+            .one_or_none()
+        )
+        assert refreshed is not None and refreshed.status == "pending"
+
+    async def test_out_of_band_link_approval_deletes_pending_ancestors(
+        self, db_session: AsyncSession
+    ):
+        """approve_pending_suggestions_for_links (manual add / batch tagging
+        path) also deletes pending ancestor rows."""
+        user = await _make_user(db_session, "anc4")
+        image = await _make_image(db_session, user, "anc4")
+        grandparent, _parent, child = await _make_chain(db_session, user, "anc4")
+        await _make_suggestion(db_session, image, grandparent)
+        await _make_suggestion(db_session, image, child)
+        db_session.add(
+            TagLinks(image_id=image.image_id, tag_id=child.tag_id, user_id=user.user_id)
+        )
+        await db_session.flush()
+
+        await approve_pending_suggestions_for_links(
+            db_session, [(image.image_id, child.tag_id)], user.user_id
+        )
+        await db_session.commit()
+
+        rows = (
+            (
+                await db_session.execute(
+                    select(MlTagSuggestions).where(
+                        MlTagSuggestions.image_id == image.image_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_tag = {r.tag_id: r.status for r in rows}
+        assert by_tag[child.tag_id] == "approved"
+        assert grandparent.tag_id not in by_tag
+
+    async def test_pending_descendant_of_applied_tag_survives(
+        self, db_session: AsyncSession
+    ):
+        """Applying a PARENT tag must not delete the more-specific pending
+        child suggestion (cleanup goes up the chain only)."""
+        user = await _make_user(db_session, "anc5")
+        image = await _make_image(db_session, user, "anc5")
+        _grandparent, parent, child = await _make_chain(db_session, user, "anc5")
+        sugg_c = await _make_suggestion(db_session, image, child)
+        db_session.add(
+            TagLinks(image_id=image.image_id, tag_id=parent.tag_id, user_id=user.user_id)
+        )
+        await db_session.flush()
+
+        await approve_pending_suggestions_for_links(
+            db_session, [(image.image_id, parent.tag_id)], user.user_id
+        )
+        await db_session.commit()
+
+        refreshed = (
+            (
+                await db_session.execute(
+                    select(MlTagSuggestions).where(
+                        MlTagSuggestions.suggestion_id == sugg_c.suggestion_id
+                    )
+                )
+            )
+            .scalars()
+            .one_or_none()
+        )
+        assert refreshed is not None and refreshed.status == "pending"
+
+    async def test_same_batch_reject_ancestor_approve_child_keeps_rejection(
+        self, db_session: AsyncSession
+    ):
+        """A moderator rejecting the parent and approving the child in ONE
+        request must keep the parent row as 'rejected' — the cleanup DELETE
+        must see the same-batch status changes (autoflush=False session).
+
+        The db_session fixture itself runs with autoflush=True (unlike the
+        production sessionmaker in app/core/database.py), which would flush
+        the pending 'rejected' status ahead of the DELETE regardless of the
+        fix under test. no_autoflush reproduces the production autoflush=False
+        setting for the call so this test actually exercises the bug.
+        """
+        user = await _make_user(db_session, "anc6")
+        image = await _make_image(db_session, user, "anc6")
+        _grandparent, parent, child = await _make_chain(db_session, user, "anc6")
+        sugg_p = await _make_suggestion(db_session, image, parent)
+        sugg_c = await _make_suggestion(db_session, image, child)
+        await db_session.commit()
+
+        with db_session.no_autoflush:
+            result = await bulk_review_suggestions(
+                db_session,
+                [
+                    {"suggestion_id": sugg_p.suggestion_id, "action": "reject"},
+                    {"suggestion_id": sugg_c.suggestion_id, "action": "approve"},
+                ],
+                user.user_id,
+            )
+        assert result.approved == 1 and result.rejected == 1
+
+        rows = (
+            (
+                await db_session.execute(
+                    select(MlTagSuggestions).where(
+                        MlTagSuggestions.image_id == image.image_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_tag = {r.tag_id: r.status for r in rows}
+        assert by_tag[parent.tag_id] == "rejected"
+        assert by_tag[child.tag_id] == "approved"
+
+
+class TestBulkReviewSnapshotConflictRetry:
+    """A background ml_remap run rewriting ml_tag_suggestions rows while a
+    bulk review commits over the same rows trips MariaDB ER_CHECKREAD (errno
+    1020) under innodb_snapshot_isolation. bulk_review_suggestions must retry
+    on a fresh snapshot instead of propagating the 500 (see
+    app/core/db_retry.py and app/services/ml_suggestion_review.py)."""
+
+    @pytest.mark.needs_commit
+    async def test_bulk_review_approve_retries_snapshot_conflict_and_succeeds(
+        self, db_session: AsyncSession
+    ):
+        """A transient 1020 on the bulk commit is retried and the approval succeeds.
+
+        needs_commit: the retry performs a real session rollback for a fresh
+        snapshot; under the default SAVEPOINT isolation that rollback would
+        unwind the fixture's committed image/tag/suggestion rows too, which
+        can't happen in production where they are durably committed.
+        """
+        from unittest.mock import patch
+
+        import pymysql
+        from sqlalchemy.exc import OperationalError
+
+        user = await _make_user(db_session, "snapshot")
+        image = await _make_image(db_session, user, "snapshot")
+        tag = await _make_tag(db_session, user, "snapshot")
+        suggestion = await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        # Capture plain ids before the retry runs: the retry's inter-attempt
+        # rollback expires every ORM instance in this session (see
+        # app/core/db_retry.py), so touching image/tag/suggestion attributes
+        # again afterward would raise MissingGreenlet.
+        image_id = image.image_id
+        tag_id = tag.tag_id
+        suggestion_id = suggestion.suggestion_id
+
+        real_commit = AsyncSession.commit
+        calls: list[int] = []
+
+        async def flaky_commit(self, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OperationalError(
+                    "UPDATE ml_tag_suggestions ...",
+                    None,
+                    pymysql.err.OperationalError(
+                        1020,
+                        "Record has changed since last read in table 'ml_tag_suggestions'",
+                    ),
+                )
+            await real_commit(self, *args, **kwargs)
+
+        with patch.object(AsyncSession, "commit", flaky_commit):
+            result = await bulk_review_suggestions(
+                db_session,
+                [{"suggestion_id": suggestion_id, "action": "approve"}],
+                user.user_id,
+            )
+
+        assert result.approved == 1
+        assert result.errors == []
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        link_result = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,
+                TagLinks.tag_id == tag_id,
+            )
+        )
+        assert link_result.scalar_one_or_none() is not None
+
+        refreshed = (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.suggestion_id == suggestion_id)
+            )
+        ).scalar_one()
+        assert refreshed.status == "approved"

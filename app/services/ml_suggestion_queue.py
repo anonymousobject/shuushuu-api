@@ -12,6 +12,7 @@ after receiving the (suggestion_id, image_id, confidence) tuples from this layer
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
@@ -31,6 +32,28 @@ _TAG_NOT_ALREADY_APPLIED = ~(
 )
 
 
+async def _descendant_tag_ids(db: AsyncSession, tag_id: int) -> set[int]:
+    """All tags whose inheritedfrom chain leads to ``tag_id`` (children,
+    grandchildren, ...), excluding ``tag_id`` itself. Breadth-first with the
+    same depth cap the pipeline's ancestor walks use."""
+    descendants: set[int] = set()
+    frontier = {tag_id}
+    for _ in range(10):
+        rows = (
+            await db.execute(
+                select(Tags.tag_id).where(  # type: ignore[call-overload]
+                    Tags.inheritedfrom_id.in_(frontier)  # type: ignore[union-attr]
+                )
+            )
+        ).all()
+        new_ids = {row[0] for row in rows} - descendants
+        if not new_ids:
+            break
+        descendants |= new_ids
+        frontier = new_ids
+    return descendants
+
+
 async def count_pending_by_tag(
     db: AsyncSession,
     type_filter: int | None = None,
@@ -48,7 +71,9 @@ async def count_pending_by_tag(
     Unlike list_pending_for_tag, this does NOT exclude suggestions whose tag
     is already applied to the image: the anti-join over every pending row was
     measured at 7-11s on production-sized data (vs ~0.9s without), so counts
-    may run slightly ahead of what the per-tag grid actually shows.
+    may run slightly ahead of what the per-tag grid actually shows. For the
+    same accepted-overcount/perf reason, it likewise does not exclude rows
+    hidden by list_pending_for_tag's descendant-pending check.
 
     When search is provided, only tags whose title contains the search string
     (case-insensitive LIKE %search%) are included.
@@ -110,19 +135,40 @@ async def list_pending_for_tag(
     Fetches MlTagSuggestions rows with status='pending', tag_id=tag_id, and
     confidence >= min_confidence, ordered by confidence DESC, excluding
     suggestions whose tag is already applied to the image (see
-    _TAG_NOT_ALREADY_APPLIED).  Pagination is 1-based (page=1 is the first
-    page).
+    _TAG_NOT_ALREADY_APPLIED).  Also excludes suggestions on images that
+    still have a pending suggestion for a DESCENDANT of ``tag_id`` — per-tag
+    review is most-specific-first; rejecting the descendant resurfaces the
+    ancestor here.  This descendant-pending exclusion applies regardless of
+    the descendant's own confidence — even a pending descendant below this
+    call's min_confidence still hides the ancestor here, since the
+    most-specific-pending-wins rule is deliberately confidence-agnostic.
+    Pagination is 1-based (page=1 is the first page).
 
     Returns (items, total) where:
     - items is a list of (suggestion_id, image_id, confidence)
     - total is the full count matching tag_id + min_confidence (before pagination)
     """
-    base_filter = (
+    descendant_ids = await _descendant_tag_ids(db, tag_id)
+
+    base_filter = [
         MlTagSuggestions.status == "pending",
         MlTagSuggestions.tag_id == tag_id,
         MlTagSuggestions.confidence >= min_confidence,
         _TAG_NOT_ALREADY_APPLIED,
-    )
+    ]
+    if descendant_ids:
+        descendant_pending = aliased(MlTagSuggestions)
+        base_filter.append(
+            ~(
+                select(descendant_pending.suggestion_id)  # type: ignore[call-overload]
+                .where(
+                    descendant_pending.image_id == MlTagSuggestions.image_id,
+                    descendant_pending.status == "pending",
+                    descendant_pending.tag_id.in_(descendant_ids),  # type: ignore[attr-defined]
+                )
+                .exists()
+            )
+        )
 
     count_stmt = select(func.count(MlTagSuggestions.suggestion_id)).where(*base_filter)  # type: ignore[arg-type]
     total: int = (await db.execute(count_stmt)).scalar_one()
