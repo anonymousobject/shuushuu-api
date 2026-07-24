@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db_retry import retry_on_snapshot_conflict
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.tag_history import TagHistory
@@ -250,37 +251,61 @@ async def review_ml_tag_suggestions(
     suggestion row keeps its original tag_id regardless of alias resolution.
     """
     suggestion_ids = [item.suggestion_id for item in request.suggestions]
-    suggestions_result = await db.execute(
-        select(MlTagSuggestions).where(
-            MlTagSuggestions.suggestion_id.in_(suggestion_ids),  # type: ignore[union-attr]
-            MlTagSuggestions.image_id == image_id,  # type: ignore[arg-type]
+
+    # A concurrent ml_remap run (or another reviewer) can rewrite these same
+    # suggestion rows between our fetch and our commit, tripping MariaDB
+    # ER_CHECKREAD (1020) under innodb_snapshot_isolation (see
+    # app/core/db_retry.py). Retry the whole fetch-through-commit unit on a
+    # fresh snapshot. Re-running _apply() after a rollback is idempotent-safe
+    # by construction: the fresh fetch re-reads current suggestion statuses,
+    # so changes already committed by the other writer are visible under the
+    # new snapshot (no double-apply), and a suggestion the other writer
+    # removed simply falls through to the missing-suggestion errors path.
+    async def _apply() -> tuple[int, int, list[str], set[int], list[int]]:
+        suggestions_result = await db.execute(
+            select(MlTagSuggestions).where(
+                MlTagSuggestions.suggestion_id.in_(suggestion_ids),  # type: ignore[union-attr]
+                MlTagSuggestions.image_id == image_id,  # type: ignore[arg-type]
+            )
         )
-    )
-    suggestions_by_id = {sugg.suggestion_id: sugg for sugg in suggestions_result.scalars().all()}
+        suggestions_by_id = {
+            sugg.suggestion_id: sugg for sugg in suggestions_result.scalars().all()
+        }
 
-    approved_count = 0
-    rejected_count = 0
-    errors: list[str] = []
+        approved_count = 0
+        rejected_count = 0
+        errors: list[str] = []
 
-    # Separate items into found (processed by helper) and missing (errors).
-    found_items: list[ReviewSuggestionRequest] = []
-    for review_item in request.suggestions:
-        if review_item.suggestion_id not in suggestions_by_id:
-            errors.append(f"Suggestion {review_item.suggestion_id} not found")
-        else:
-            found_items.append(review_item)
-            if review_item.action == "approve":
-                approved_count += 1
-            elif review_item.action == "reject":
-                rejected_count += 1
+        # Separate items into found (processed by helper) and missing (errors).
+        found_items: list[ReviewSuggestionRequest] = []
+        for review_item in request.suggestions:
+            if review_item.suggestion_id not in suggestions_by_id:
+                errors.append(f"Suggestion {review_item.suggestion_id} not found")
+            else:
+                found_items.append(review_item)
+                if review_item.action == "approve":
+                    approved_count += 1
+                elif review_item.action == "reject":
+                    rejected_count += 1
 
-    created, removed_suggestion_ids = await _apply_reviews_for_image(
-        db, image_id, found_items, user_id
-    )
+        created, removed_suggestion_ids = await _apply_reviews_for_image(
+            db, image_id, found_items, user_id
+        )
 
-    await db.commit()
+        await db.commit()
+
+        return approved_count, rejected_count, errors, created, removed_suggestion_ids
+
+    (
+        approved_count,
+        rejected_count,
+        errors,
+        created,
+        removed_suggestion_ids,
+    ) = await retry_on_snapshot_conflict(db, _apply, what="ml_review_apply")
 
     # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
+    # Non-DB side effect: stays outside the retried unit so it never repeats.
     if created:
         tag_results = await db.execute(
             select(Tags).where(Tags.tag_id.in_(created))  # type: ignore[union-attr]
@@ -310,49 +335,79 @@ async def bulk_review_suggestions(
     all created TagLinks — never N commits or N syncs.
     """
     suggestion_ids = [r["suggestion_id"] for r in reviews]
-    suggestions_result = await db.execute(
-        select(MlTagSuggestions).where(
-            MlTagSuggestions.suggestion_id.in_(suggestion_ids)  # type: ignore[union-attr]
+
+    # Same snapshot-conflict exposure as review_ml_tag_suggestions (a
+    # concurrent ml_remap run or another reviewer rewriting these rows), but
+    # spanning every image in the batch. Retry the whole fetch-through-commit
+    # unit on a fresh snapshot (see app/core/db_retry.py). Re-running _apply()
+    # after a rollback is idempotent-safe by construction: the fresh fetch
+    # re-reads current suggestion statuses, so changes already committed by
+    # the other writer are visible under the new snapshot (no double-apply),
+    # and rows the other writer removed simply fall through to the
+    # missing-suggestion errors path.
+    async def _apply() -> tuple[int, int, list[str], set[int], list[int]]:
+        suggestions_result = await db.execute(
+            select(MlTagSuggestions).where(
+                MlTagSuggestions.suggestion_id.in_(suggestion_ids)  # type: ignore[union-attr]
+            )
         )
-    )
-    suggestions_by_id = {sugg.suggestion_id: sugg for sugg in suggestions_result.scalars().all()}
+        suggestions_by_id = {
+            sugg.suggestion_id: sugg for sugg in suggestions_result.scalars().all()
+        }
 
-    approved_count = 0
-    rejected_count = 0
-    errors: list[str] = []
+        approved_count = 0
+        rejected_count = 0
+        errors: list[str] = []
 
-    # Group found suggestions by image_id; record errors for missing ids.
-    items_by_image: dict[int, list[ReviewSuggestionRequest]] = defaultdict(list)
-    for r in reviews:
-        sid = r["suggestion_id"]
-        action = r["action"]
-        if sid not in suggestions_by_id:
-            errors.append(f"Suggestion {sid} not found")
-            continue
-        sugg = suggestions_by_id[sid]
-        items_by_image[sugg.image_id].append(
-            ReviewSuggestionRequest(suggestion_id=sid, action=action)
+        # Group found suggestions by image_id; record errors for missing ids.
+        items_by_image: dict[int, list[ReviewSuggestionRequest]] = defaultdict(list)
+        for r in reviews:
+            sid = r["suggestion_id"]
+            action = r["action"]
+            if sid not in suggestions_by_id:
+                errors.append(f"Suggestion {sid} not found")
+                continue
+            sugg = suggestions_by_id[sid]
+            items_by_image[sugg.image_id].append(
+                ReviewSuggestionRequest(suggestion_id=sid, action=action)
+            )
+            if action == "approve":
+                approved_count += 1
+            elif action == "reject":
+                rejected_count += 1
+
+        # Process each image's suggestions; accumulate created tag_ids and
+        # cascade-deleted ancestor suggestion_ids.
+        all_created_tag_ids: set[int] = set()
+        all_removed_suggestion_ids: list[int] = []
+        for image_id, items in items_by_image.items():
+            created, removed_suggestion_ids = await _apply_reviews_for_image(
+                db, image_id, items, user_id
+            )
+            all_created_tag_ids |= created
+            all_removed_suggestion_ids.extend(removed_suggestion_ids)
+
+        # Single commit spanning all images.
+        await db.commit()
+
+        return (
+            approved_count,
+            rejected_count,
+            errors,
+            all_created_tag_ids,
+            all_removed_suggestion_ids,
         )
-        if action == "approve":
-            approved_count += 1
-        elif action == "reject":
-            rejected_count += 1
 
-    # Process each image's suggestions; accumulate created tag_ids and
-    # cascade-deleted ancestor suggestion_ids.
-    all_created_tag_ids: set[int] = set()
-    all_removed_suggestion_ids: list[int] = []
-    for image_id, items in items_by_image.items():
-        created, removed_suggestion_ids = await _apply_reviews_for_image(
-            db, image_id, items, user_id
-        )
-        all_created_tag_ids |= created
-        all_removed_suggestion_ids.extend(removed_suggestion_ids)
-
-    # Single commit spanning all images.
-    await db.commit()
+    (
+        approved_count,
+        rejected_count,
+        errors,
+        all_created_tag_ids,
+        all_removed_suggestion_ids,
+    ) = await retry_on_snapshot_conflict(db, _apply, what="ml_review_bulk_apply")
 
     # Single batched search-sync over the union of created tag_ids.
+    # Non-DB side effect: stays outside the retried unit so it never repeats.
     if all_created_tag_ids:
         tag_results = await db.execute(
             select(Tags).where(Tags.tag_id.in_(all_created_tag_ids))  # type: ignore[union-attr]

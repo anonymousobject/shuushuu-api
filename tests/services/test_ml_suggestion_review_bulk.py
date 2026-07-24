@@ -5,6 +5,7 @@ No mocked behavior is asserted; all assertions target real DB rows written
 by the service.
 """
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -429,3 +430,83 @@ class TestAncestorCleanupOnApprove:
         by_tag = {r.tag_id: r.status for r in rows}
         assert by_tag[parent.tag_id] == "rejected"
         assert by_tag[child.tag_id] == "approved"
+
+
+class TestBulkReviewSnapshotConflictRetry:
+    """A background ml_remap run rewriting ml_tag_suggestions rows while a
+    bulk review commits over the same rows trips MariaDB ER_CHECKREAD (errno
+    1020) under innodb_snapshot_isolation. bulk_review_suggestions must retry
+    on a fresh snapshot instead of propagating the 500 (see
+    app/core/db_retry.py and app/services/ml_suggestion_review.py)."""
+
+    @pytest.mark.needs_commit
+    async def test_bulk_review_approve_retries_snapshot_conflict_and_succeeds(
+        self, db_session: AsyncSession
+    ):
+        """A transient 1020 on the bulk commit is retried and the approval succeeds.
+
+        needs_commit: the retry performs a real session rollback for a fresh
+        snapshot; under the default SAVEPOINT isolation that rollback would
+        unwind the fixture's committed image/tag/suggestion rows too, which
+        can't happen in production where they are durably committed.
+        """
+        from unittest.mock import patch
+
+        import pymysql
+        from sqlalchemy.exc import OperationalError
+
+        user = await _make_user(db_session, "snapshot")
+        image = await _make_image(db_session, user, "snapshot")
+        tag = await _make_tag(db_session, user, "snapshot")
+        suggestion = await _make_suggestion(db_session, image, tag)
+        await db_session.commit()
+
+        # Capture plain ids before the retry runs: the retry's inter-attempt
+        # rollback expires every ORM instance in this session (see
+        # app/core/db_retry.py), so touching image/tag/suggestion attributes
+        # again afterward would raise MissingGreenlet.
+        image_id = image.image_id
+        tag_id = tag.tag_id
+        suggestion_id = suggestion.suggestion_id
+
+        real_commit = AsyncSession.commit
+        calls: list[int] = []
+
+        async def flaky_commit(self, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OperationalError(
+                    "UPDATE ml_tag_suggestions ...",
+                    None,
+                    pymysql.err.OperationalError(
+                        1020,
+                        "Record has changed since last read in table 'ml_tag_suggestions'",
+                    ),
+                )
+            await real_commit(self, *args, **kwargs)
+
+        with patch.object(AsyncSession, "commit", flaky_commit):
+            result = await bulk_review_suggestions(
+                db_session,
+                [{"suggestion_id": suggestion_id, "action": "approve"}],
+                user.user_id,
+            )
+
+        assert result.approved == 1
+        assert result.errors == []
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        link_result = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,
+                TagLinks.tag_id == tag_id,
+            )
+        )
+        assert link_result.scalar_one_or_none() is not None
+
+        refreshed = (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.suggestion_id == suggestion_id)
+            )
+        ).scalar_one()
+        assert refreshed.status == "approved"
