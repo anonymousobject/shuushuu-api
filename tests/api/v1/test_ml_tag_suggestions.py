@@ -450,6 +450,164 @@ class TestGetMlTagSuggestions:
         )
         assert response.status_code == 200
 
+    async def test_get_suggestions_reports_superseded_ancestors(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A pending gap chain (child + grandparent suggested, intermediate tag
+        NOT suggested): the child's superseded_suggestion_ids names the
+        grandparent's row; grandparent and an unrelated pending tag get []."""
+        user = Users(
+            username="test_superseded",
+            email="test_superseded@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test_superseded",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="superseded123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        grandparent = Tags(title="bag sup", type=1, user_id=user.user_id)
+        db_session.add(grandparent)
+        await db_session.flush()
+        parent = Tags(
+            title="school bag sup",
+            type=1,
+            user_id=user.user_id,
+            inheritedfrom_id=grandparent.tag_id,
+        )
+        db_session.add(parent)
+        await db_session.flush()
+        child = Tags(
+            title="randoseru sup",
+            type=1,
+            user_id=user.user_id,
+            inheritedfrom_id=parent.tag_id,
+        )
+        unrelated = Tags(title="smile sup", type=1, user_id=user.user_id)
+        db_session.add_all([child, unrelated])
+        await db_session.flush()
+
+        # Pending rows for child + grandparent + unrelated; the intermediate
+        # tag deliberately has NO suggestion row (the gap).
+        sugg_child = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=child.tag_id,
+            confidence=0.9,
+            model_version="v1",
+            status="pending",
+        )
+        sugg_gp = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=grandparent.tag_id,
+            confidence=0.8,
+            model_version="v1",
+            status="pending",
+        )
+        sugg_unrelated = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=unrelated.tag_id,
+            confidence=0.7,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add_all([sugg_child, sugg_gp, sugg_unrelated])
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        by_id = {s["suggestion_id"]: s for s in response.json()["suggestions"]}
+        assert by_id[sugg_child.suggestion_id]["superseded_suggestion_ids"] == [
+            sugg_gp.suggestion_id
+        ]
+        assert by_id[sugg_gp.suggestion_id]["superseded_suggestion_ids"] == []
+        assert by_id[sugg_unrelated.suggestion_id]["superseded_suggestion_ids"] == []
+
+    async def test_superseded_ignores_reviewed_rows(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A REJECTED ancestor row creates no edge: the pending child reports []
+        and the rejected row itself reports []."""
+        user = Users(
+            username="test_superseded2",
+            email="test_superseded2@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test_superseded2",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="superseded456",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        parent_tag = Tags(title="dress sup", type=1, user_id=user.user_id)
+        db_session.add(parent_tag)
+        await db_session.flush()
+        child_tag = Tags(
+            title="sundress sup",
+            type=1,
+            user_id=user.user_id,
+            inheritedfrom_id=parent_tag.tag_id,
+        )
+        db_session.add(child_tag)
+        await db_session.flush()
+
+        sugg_child = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=child_tag.tag_id,
+            confidence=0.9,
+            model_version="v1",
+            status="pending",
+        )
+        sugg_parent_rejected = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=parent_tag.tag_id,
+            confidence=0.8,
+            model_version="v1",
+            status="rejected",
+        )
+        db_session.add_all([sugg_child, sugg_parent_rejected])
+        await db_session.commit()
+
+        access_token = create_access_token(user_id=user.user_id)
+        response = await client.get(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        by_id = {s["suggestion_id"]: s for s in response.json()["suggestions"]}
+        assert by_id[sugg_child.suggestion_id]["superseded_suggestion_ids"] == []
+        assert by_id[sugg_parent_rejected.suggestion_id]["superseded_suggestion_ids"] == []
+
 
 @pytest.mark.api
 class TestReviewMlTagSuggestions:
@@ -1463,6 +1621,118 @@ class TestReviewMlTagSuggestions:
         )
         assert response.status_code == 200
         assert response.json()["approved"] == 1
+
+
+@pytest.mark.api
+class TestReviewMlTagSuggestionsSnapshotConflictRetry:
+    """A background ml_remap run rewriting ml_tag_suggestions rows while a
+    reviewer approves on the same image trips MariaDB ER_CHECKREAD (errno
+    1020) under innodb_snapshot_isolation — reproduced on dev 2026-07-23. The
+    review apply must retry on a fresh snapshot instead of surfacing a 500
+    (see app/core/db_retry.py and app/services/ml_suggestion_review.py)."""
+
+    @pytest.mark.needs_commit
+    async def test_review_approve_retries_snapshot_conflict_and_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A transient 1020 on the review commit is retried and the approval succeeds.
+
+        needs_commit: the retry performs a real session rollback for a fresh
+        snapshot; under the default SAVEPOINT isolation that rollback would
+        unwind the fixture's committed image/tag/suggestion rows too, which
+        can't happen in production where they are durably committed.
+        """
+        from unittest.mock import patch
+
+        import pymysql
+        from sqlalchemy.exc import OperationalError
+
+        user = Users(
+            username="snapshotreview",
+            email="snapshotreview@example.com",
+            password="hashed",
+            password_type="bcrypt",
+            salt="testsalt12345678",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(
+            filename="test",
+            ext="jpg",
+            user_id=user.user_id,
+            md5_hash="snapshotreview123",
+            filesize=1024,
+            width=800,
+            height=600,
+        )
+        db_session.add(image)
+        await db_session.flush()
+
+        tag = Tags(title="snapshot conflict tag", type=1, user_id=user.user_id)
+        db_session.add(tag)
+        await db_session.flush()
+
+        suggestion = MlTagSuggestions(
+            image_id=image.image_id,
+            tag_id=tag.tag_id,
+            confidence=0.9,
+            model_version="v1",
+            status="pending",
+        )
+        db_session.add(suggestion)
+        await db_session.commit()
+
+        # Capture plain ids before the retry runs: the retry's inter-attempt
+        # rollback expires every ORM instance in this shared session (see
+        # app/core/db_retry.py), so touching image/tag/suggestion attributes
+        # again afterward would raise MissingGreenlet.
+        image_id = image.image_id
+        tag_id = tag.tag_id
+        suggestion_id = suggestion.suggestion_id
+
+        real_commit = AsyncSession.commit
+        calls: list[int] = []
+
+        async def flaky_commit(self, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OperationalError(
+                    "UPDATE ml_tag_suggestions ...",
+                    None,
+                    pymysql.err.OperationalError(
+                        1020,
+                        "Record has changed since last read in table 'ml_tag_suggestions'",
+                    ),
+                )
+            await real_commit(self, *args, **kwargs)
+
+        access_token = create_access_token(user_id=user.user_id)
+        with patch.object(AsyncSession, "commit", flaky_commit):
+            response = await client.post(
+                f"/api/v1/images/{image_id}/ml-tag-suggestions/review",
+                json={"suggestions": [{"suggestion_id": suggestion_id, "action": "approve"}]},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["approved"] == 1
+        assert data["errors"] == []
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        result = await db_session.execute(
+            select(TagLinks).where(TagLinks.image_id == image_id, TagLinks.tag_id == tag_id)
+        )
+        assert result.scalar_one_or_none() is not None
+
+        refreshed = (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.suggestion_id == suggestion_id)
+            )
+        ).scalar_one()
+        assert refreshed.status == "approved"
 
 
 @pytest.mark.api
