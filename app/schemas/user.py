@@ -15,6 +15,13 @@ from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 # src/routes/layout.css, and 4) extending the FOUC allowlist in src/app.html.
 THEME_PRESETS_ALLOWED: frozenset[str] = frozenset({"modern", "classic", "sakura"})
 
+# Grid thumbnail size ladder, in CSS pixels. A tuple rather than a set so the
+# validation error message lists the steps in a stable, ascending order.
+# Capped at 440 because thumbnails are 500px on the longest edge
+# (MAX_THUMB_WIDTH/HEIGHT): at 440 the source downsamples ~11%, which also
+# suppresses the q75 artifacts visible at 1:1.
+THUMB_SIZE_STEPS: tuple[int, ...] = (220, 320, 440)
+
 
 class UserCreate(BaseModel):
     """Schema for creating a new user"""
@@ -55,6 +62,7 @@ class UserUpdate(BaseModel):
 
     # Display preferences
     thumb_layout: int | None = None  # 0=list view, 1=grid view
+    thumb_size: int | None = None  # Grid thumbnail size step: 220, 320 or 440
     sorting_pref: str | None = None  # ImageSortBy enum value
     sorting_pref_order: str | None = None  # ASC or DESC
     images_per_page: int | None = None  # 1-100
@@ -133,6 +141,22 @@ class UserUpdate(BaseModel):
             return v
         if v < 1 or v > 100:
             raise ValueError("images_per_page must be between 1 and 100")
+        return v
+
+    @field_validator("thumb_size")
+    @classmethod
+    def validate_thumb_size(cls, v: int | None) -> int | None:
+        """Validate thumb_size is one of the grid ladder steps.
+
+        An allowlist rather than a range: the frontend renders discrete steps,
+        and an arbitrary value would produce a grid size no design covers.
+        Adding a step here is the only API change a new step requires.
+        """
+        if v is None:
+            return v
+        if v not in THUMB_SIZE_STEPS:
+            allowed = ", ".join(str(s) for s in THUMB_SIZE_STEPS)
+            raise ValueError(f"thumb_size must be one of: {allowed}")
         return v
 
     @field_validator("bookmark")
@@ -228,6 +252,7 @@ class UserPrivateResponse(UserResponse):
 
     # Display preferences
     thumb_layout: int  # 0=list view, 1=grid view
+    thumb_size: int  # Grid thumbnail size step: 220, 320 or 440
     sorting_pref: str  # ImageSortBy enum value (e.g., "image_id", "favorites")
     sorting_pref_order: str  # "ASC" or "DESC"
     images_per_page: int  # 1-100
