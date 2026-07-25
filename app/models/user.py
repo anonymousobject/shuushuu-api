@@ -169,6 +169,11 @@ class Users(UserBase, table=True):
     email_pm_pref: int = Field(default=1)
     spoiler_warning_pref: int = Field(default=1)
     thumb_layout: int = Field(default=0)
+    # Grid thumbnail size step in CSS pixels. Stored as the pixel value rather
+    # than an ordinal so that adding steps stays additive — an ordinal would
+    # silently change the meaning of existing rows. Validated against the
+    # ladder in app/schemas/user.py.
+    thumb_size: int = Field(default=220)
     sorting_pref: str = Field(default="image_id", max_length=100)
     sorting_pref_order: str = Field(default="DESC", max_length=10)
     images_per_page: int = Field(default=20)

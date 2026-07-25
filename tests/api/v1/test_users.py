@@ -1233,6 +1233,101 @@ class TestUpdateUserProfile:
             )
             assert response.status_code == 422, f"dark_mode={bad_value!r} should be rejected"
 
+    async def test_update_thumb_size(self, client: AsyncClient, db_session: AsyncSession):
+        """thumb_size round-trips through PATCH /users/me and persists."""
+        user = Users(
+            username="thumbsize",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="thumbsize@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+
+        # A fresh user starts on the default step.
+        assert user.thumb_size == 220
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "thumbsize", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            "/api/v1/users/me",
+            json={"thumb_size": 320},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json().get("thumb_size") == 320
+
+        await db_session.refresh(user)
+        assert user.thumb_size == 320
+
+    async def test_update_thumb_size_accepts_every_ladder_step(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """All three ladder steps are accepted."""
+        user = Users(
+            username="thumbsizeladder",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="thumbsizeladder@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "thumbsizeladder", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        for step in (220, 320, 440):
+            response = await client.patch(
+                "/api/v1/users/me",
+                json={"thumb_size": step},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 200, f"step {step} rejected"
+            assert response.json().get("thumb_size") == step
+
+    async def test_update_thumb_size_validation(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Values off the ladder are rejected, including plausible near-misses."""
+        user = Users(
+            username="thumbsizevalidation",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="thumbsizevalidation@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "thumbsizevalidation", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # 500 is the source thumbnail's longest edge and 300 is a plausible
+        # guess — both must be rejected, not silently coerced.
+        for bad in (0, 219, 300, 500, -220):
+            response = await client.patch(
+                "/api/v1/users/me",
+                json={"thumb_size": bad},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 422, f"{bad} should be rejected"
+
 
 @pytest.mark.api
 class TestGetUserImages:
