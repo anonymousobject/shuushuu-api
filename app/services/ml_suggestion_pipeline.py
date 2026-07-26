@@ -174,21 +174,27 @@ async def fetch_parent_map(db: AsyncSession, tag_ids: set[int]) -> dict[int, int
     return parent_of
 
 
-async def filter_superseded_parents(
+async def find_superseded_parents(
     db: AsyncSession,
     suggestions: list[dict[str, Any]],
     min_child_confidence: float,
-) -> list[dict[str, Any]]:
-    """Drop a suggested tag when a more-specific suggested descendant (via
+) -> dict[int, list[int]]:
+    """Map each superseded ancestor to the suggested descendants that supersede it.
+
+    A suggested tag is superseded when a more-specific suggested descendant (via
     Tags.inheritedfrom_id) is present and that descendant's confidence is
-    >= min_child_confidence. The ancestor chain is walked through the Tags
-    table, so a suggested grandparent is dropped even when intermediate tags
-    in the chain are not themselves suggested. Only tags that are in the
-    suggestion set are ever dropped. A low-confidence child does not suppress
-    its ancestors (all kept). Input dicts have at least tag_id + confidence.
+    >= min_child_confidence. The ancestor chain is walked through the Tags table,
+    so a suggested grandparent is found even when intermediate tags in the chain
+    are not themselves suggested. Only tags in the suggestion set appear as keys.
+    A low-confidence child supersedes nothing. Input dicts have at least
+    tag_id + confidence.
+
+    Callers pick what to do with the result: the write path drops the ancestors
+    (filter_superseded_parents), while the upload form demotes them behind a
+    disclosure so the uploader can still reach one when the child is wrong.
     """
     if len(suggestions) < 2:
-        return suggestions
+        return {}
 
     conf_by_id: dict[int, float] = {}
     for s in suggestions:
@@ -198,18 +204,32 @@ async def filter_superseded_parents(
 
     parent_of = await fetch_parent_map(db, suggested_ids)
 
-    superseded: set[int] = set()
-    for child_id, conf in conf_by_id.items():
+    superseded: dict[int, list[int]] = {}
+    for child_id, conf in sorted(conf_by_id.items()):
         if conf < min_child_confidence:
             continue
         cur = parent_of.get(child_id)
         depth = 0
         while cur is not None and depth < 10:
             if cur in suggested_ids:
-                superseded.add(cur)
+                superseded.setdefault(cur, []).append(child_id)
             cur = parent_of.get(cur)
             depth += 1
 
+    return superseded
+
+
+async def filter_superseded_parents(
+    db: AsyncSession,
+    suggestions: list[dict[str, Any]],
+    min_child_confidence: float,
+) -> list[dict[str, Any]]:
+    """Drop every ancestor that find_superseded_parents reports as superseded.
+
+    Used on the write path, where a redundant stored suggestion has no reviewer
+    affordance to recover from — see find_superseded_parents for the rule.
+    """
+    superseded = await find_superseded_parents(db, suggestions, min_child_confidence)
     if not superseded:
         return suggestions
     return [s for s in suggestions if s["tag_id"] not in superseded]

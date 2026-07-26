@@ -24,7 +24,7 @@ from app.services.ml_categories import SUGGESTION_CATEGORIES  # light: no onnxru
 from app.services.ml_runtime import get_ml_service, inference_slot
 from app.services.ml_suggestion_pipeline import (  # light: no onnxruntime
     filter_character_suggestions,
-    filter_superseded_parents,
+    find_superseded_parents,
 )
 from app.services.rate_limit import check_analyze_rate_limit
 from app.services.tag_mapping_service import resolve_external_tags
@@ -130,11 +130,6 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> A
     # child can't first supersede a theme parent (both chips would be lost).
     resolved = await filter_character_suggestions(db, resolved)
 
-    # Drop a suggested parent when a confident suggested child supersedes it.
-    resolved = await filter_superseded_parents(
-        db, resolved, settings.ML_PARENT_SUPERSEDE_MIN_CONFIDENCE
-    )
-
     # Keep the best confidence per tag_id (resolve can collapse aliases to one id).
     best: dict[int, float] = {}
     for r in resolved:
@@ -165,4 +160,19 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> A
     for _type, rows in by_type.items():
         rows.sort(key=lambda x: x[0], reverse=True)
         suggestions.extend(at for _conf, at in rows[: settings.ML_ANALYZE_MAX_SUGGESTIONS])
+
+    # Mark (never drop) ancestors that a more specific chip already covers, so the
+    # form can tuck them behind a disclosure. Deliberately AFTER the display floor
+    # and per-type cap: only a chip the uploader can actually see may demote
+    # another, or a parent would vanish under a child that never rendered. The
+    # write path's ML_PARENT_SUPERSEDE_MIN_CONFIDENCE gate does not apply here —
+    # it exists because dropping a stored suggestion is irreversible, whereas a
+    # demoted chip is still one click away.
+    superseded = await find_superseded_parents(
+        db,
+        [{"tag_id": s.tag_id, "confidence": s.confidence} for s in suggestions],
+        min_child_confidence=0.0,
+    )
+    for s in suggestions:
+        s.superseded_by_tag_ids = superseded.get(s.tag_id, [])
     return AnalyzeTagsResponse(suggestions=suggestions)
