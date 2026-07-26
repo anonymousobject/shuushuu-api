@@ -172,7 +172,12 @@ class Settings(BaseSettings):
         description=(
             "A suggested child tag supersedes (drops) its suggested parent tags "
             "only when the child's confidence is at least this; a weaker child "
-            "leaves the parent in place; default chosen from tag-hierarchy precision analysis (2026-07)"
+            "leaves the parent in place; default chosen from tag-hierarchy precision analysis (2026-07). "
+            "WRITE PATH ONLY (stored suggestions for the review queue). The upload "
+            "form does NOT use this: it demotes superseded parents behind a "
+            "disclosure rather than dropping them, so it needs no confidence gate. "
+            "Raising this once regressed the upload form back when the two shared "
+            "it — evaluate any change against the queue alone."
         ),
     )
 
