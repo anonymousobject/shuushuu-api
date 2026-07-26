@@ -26,6 +26,7 @@ from app.models.user import Users
 from app.services.ml_suggestion_pipeline import (
     compute_implied_suggestions,
     filter_superseded_parents,
+    find_superseded_parents,
     generate_and_store_suggestions,
     store_predictions,
 )
@@ -996,6 +997,61 @@ async def test_filter_superseded_parents_gap_chain_weak_child_keeps_grandparent(
     result = await filter_superseded_parents(db_session, suggestions, 0.6)
 
     assert {s["tag_id"] for s in result} == {670, 672}
+
+
+async def test_find_superseded_parents_maps_parent_to_its_children(db_session):
+    """The map names WHICH suggested descendants supersede each parent, so a
+    caller can demote (upload form) instead of drop (write path)."""
+    parent = Tags(tag_id=680, title="animal ears")
+    cat = Tags(tag_id=681, title="cat ears", inheritedfrom_id=680)
+    dog = Tags(tag_id=682, title="dog ears", inheritedfrom_id=680)
+    db_session.add_all([parent, cat, dog])
+    await db_session.commit()
+
+    suggestions = [
+        {"tag_id": 680, "confidence": 0.94, "model_version": "v3"},
+        {"tag_id": 681, "confidence": 0.82, "model_version": "v3"},
+        {"tag_id": 682, "confidence": 0.61, "model_version": "v3"},
+    ]
+
+    result = await find_superseded_parents(db_session, suggestions, 0.6)
+
+    assert set(result) == {680}
+    assert sorted(result[680]) == [681, 682]
+
+
+async def test_find_superseded_parents_reaches_through_a_gap(db_session):
+    """A grandparent is superseded even when the middle tag is not suggested,
+    and the map credits the actual suggested descendant."""
+    grand = Tags(tag_id=690, title="bag")
+    middle = Tags(tag_id=691, title="school bag", inheritedfrom_id=690)
+    child = Tags(tag_id=692, title="randoseru", inheritedfrom_id=691)
+    db_session.add_all([grand, middle, child])
+    await db_session.commit()
+
+    suggestions = [
+        {"tag_id": 690, "confidence": 0.88, "model_version": "v3"},
+        {"tag_id": 692, "confidence": 0.75, "model_version": "v3"},
+    ]
+
+    result = await find_superseded_parents(db_session, suggestions, 0.6)
+
+    assert result == {690: [692]}
+
+
+async def test_find_superseded_parents_ignores_weak_children(db_session):
+    """Below min_child_confidence a child supersedes nothing (empty map)."""
+    parent = Tags(tag_id=695, title="dress")
+    child = Tags(tag_id=696, title="sundress", inheritedfrom_id=695)
+    db_session.add_all([parent, child])
+    await db_session.commit()
+
+    suggestions = [
+        {"tag_id": 695, "confidence": 0.80, "model_version": "v3"},
+        {"tag_id": 696, "confidence": 0.55, "model_version": "v3"},
+    ]
+
+    assert await find_superseded_parents(db_session, suggestions, 0.6) == {}
 
 
 async def test_character_suggestions_dropped_when_flag_off(db_session, tmp_path, monkeypatch):
