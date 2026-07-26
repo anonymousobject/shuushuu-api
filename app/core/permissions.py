@@ -15,7 +15,7 @@ Note: Permission checking functions accept an optional Redis client for caching.
 When provided, permissions are cached in Redis for better performance.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 import redis.asyncio as redis
 from sqlalchemy import select, union_all
@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.permissions import GroupPerms, Perms, UserGroups, UserPerms
 
 
-class Permission(str, Enum):
+class Permission(StrEnum):
     """
     Type-safe permission constants mapped to database perm titles.
 

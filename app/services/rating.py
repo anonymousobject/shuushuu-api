@@ -50,7 +50,7 @@ async def _get_global_rating_stats(
             try:
                 data = json.loads(cached)
                 return float(data["c"]), float(data["m"])
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except json.JSONDecodeError, KeyError, TypeError:
                 pass
 
     # Cache miss or no Redis — query database

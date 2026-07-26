@@ -53,7 +53,7 @@ def parse_image_id_from_filename(filename: str) -> int | None:
         # Get last segment after dash: "2026-01-02-1112196" -> "1112196"
         image_id_str = name_without_ext.rsplit("-", 1)[-1]
         return int(image_id_str)
-    except (ValueError, IndexError):
+    except ValueError, IndexError:
         return None
 
 

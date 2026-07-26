@@ -12,7 +12,7 @@ This approach eliminates field duplication while maintaining security boundaries
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
@@ -20,7 +20,7 @@ from sqlmodel import Field, SQLModel
 from app.models.types import UtcDateTime
 
 
-class BanAction(str, Enum):
+class BanAction(StrEnum):
     """Enumeration of ban action types"""
 
     NONE = "None"

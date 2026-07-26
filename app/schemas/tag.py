@@ -3,7 +3,7 @@ Pydantic schemas for Tag endpoints
 """
 
 import re
-from enum import Enum as StdEnum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -267,7 +267,7 @@ class CharacterSourceLinkWithTitles(CharacterSourceLinkResponse):
     source_title: str | None = None
 
 
-class BatchTagAction(str, StdEnum):
+class BatchTagAction(StrEnum):
     """Supported batch tag actions."""
 
     ADD = "add"

@@ -6,10 +6,10 @@
 repos:
   # Ruff - Fast Python linter and formatter (replaces Black, isort, flake8, etc.)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.8
+    rev: v0.16.0
     hooks:
       # Run the linter
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
         types_or: [python, pyi]
         exclude: ^(tests|docs|scripts)/|^test_.*\.py$

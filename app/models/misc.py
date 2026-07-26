@@ -11,7 +11,7 @@ These are generally simple utility tables with minimal relationships.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
@@ -21,7 +21,7 @@ from app.models.types import UtcDateTime
 # ===== Banners =====
 
 
-class BannerSize(str, Enum):
+class BannerSize(StrEnum):
     """Banner size variants."""
 
     small = "small"
@@ -74,7 +74,7 @@ class Banners(BannerBase, table=True):
     )
 
 
-class BannerTheme(str, Enum):
+class BannerTheme(StrEnum):
     """Banner theme variants."""
 
     dark = "dark"
