@@ -201,7 +201,7 @@ def verify_access_token(token: str) -> int | None:
     except jwt.DecodeError:
         # Invalid token format or signature
         return None
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         # Invalid user_id or other type errors
         return None
 

@@ -68,7 +68,7 @@ async def check_iqdb_similarity(
 
         return similar_images
 
-    except (httpx.RequestError, httpx.TimeoutException, ValueError, KeyError):
+    except httpx.RequestError, httpx.TimeoutException, ValueError, KeyError:
         # IQDB unavailable or response parse error
         # Don't block upload - return empty list
         return []
@@ -115,7 +115,7 @@ async def check_iqdb_similarity_by_hash(
             if r.get("score", 0) >= threshold
         ]
 
-    except (httpx.RequestError, httpx.TimeoutException, ValueError, KeyError, TypeError):
+    except httpx.RequestError, httpx.TimeoutException, ValueError, KeyError, TypeError:
         return []
 
 

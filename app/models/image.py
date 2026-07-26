@@ -13,7 +13,7 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum, IntEnum
+from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict, field_validator
@@ -46,7 +46,7 @@ class VariantStatus(IntEnum):
     PENDING = 2
 
 
-class ImageSortBy(str, Enum):
+class ImageSortBy(StrEnum):
     """
     Allowed sort fields for image queries.
 

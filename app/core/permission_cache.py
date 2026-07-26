@@ -51,7 +51,7 @@ async def get_cached_user_permissions(
         try:
             cached_str = cast(str, cached.decode("utf-8") if isinstance(cached, bytes) else cached)
             return set(json.loads(cached_str))
-        except (json.JSONDecodeError, TypeError, AttributeError):
+        except json.JSONDecodeError, TypeError, AttributeError:
             # Cache corrupted, fall through to database
             pass
 

@@ -55,7 +55,7 @@ def _is_not_modified(request: Request, etag: str, last_mod: datetime | None) -> 
         if ims:
             try:
                 ims_dt = parsedate_to_datetime(ims)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 ims_dt = None
             if ims_dt is not None and ims_dt >= last_mod:
                 return True
