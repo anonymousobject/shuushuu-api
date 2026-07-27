@@ -292,6 +292,8 @@ SELECT usage_count FROM tags WHERE tag_id = 159;
 
 Dev actuals: dry-run 26,757; approved 26,757; tag_links both-count 8,947 → 35,704; usage_count 167,754 → 194,511; re-dry-run 0.
 
+Dev actuals, second pass (2026-07-27): after sampling the 0.8–0.9 band (12/12 showed skirts), a second run with `--min-confidence 0.8` approved 28,640 more — both-count → 64,344, usage_count → 223,151, zero ≥0.8 pending left, 0 errors. Prod runs a single pass at 0.8 (Task 6 Step 5).
+
 Spot-check a handful of the newly tagged images in the UI — the tag should render and the ML panel should show skirt as approved.
 
 - [x] **Step 5: Commit**
@@ -381,7 +383,7 @@ tmux new -d -s remap_flip '
 '
 ```
 
-- [ ] **Step 5: Bulk-approve on prod** — dry-run then real run of `scripts/ml_bulk_approve_skirt.py` (Task 4 steps). Confirm a fresh prod DB backup exists first — this writes ~27k tag_links. Run off-peak: each 500-row batch's `usage_count` trigger holds a row lock on `tags.tag_id=159` until commit, so heavy concurrent skirt tagging could hit lock timeouts; a smaller `--batch-size` shortens the lock window if contention shows up. The script ends with a benign `RuntimeError: Event loop is closed` traceback *after* its `done: approved=N` line — this is expected (no `engine.dispose()` in the shared session helper, same as `scripts/ml_remap.py`), not a run failure.
+- [ ] **Step 5: Bulk-approve on prod** — dry-run then real run of `scripts/ml_bulk_approve_skirt.py --user-id <prod admin id> --min-confidence 0.8` (Task 4 steps; **0.8 floor**, decided from dev sampling — 12/12 of a random 0.8–0.9 band sample showed skirts). Confirm a fresh prod DB backup exists first — this writes ~55k tag_links (dev: 26,757 at ≥0.9 + 28,640 at 0.8–0.9). Run off-peak: each 500-row batch's `usage_count` trigger holds a row lock on `tags.tag_id=159` until commit, so heavy concurrent skirt tagging could hit lock timeouts; a smaller `--batch-size` shortens the lock window if contention shows up. The script ends with a benign `RuntimeError: Event loop is closed` traceback *after* its `done: approved=N` line — this is expected (no `engine.dispose()` in the shared session helper, same as `scripts/ml_remap.py`), not a run failure.
 - [ ] **Step 6 (if Task 5 approved): redundant-uniform removal on prod** — Task 5 steps against prod.
 
 ---
@@ -396,7 +398,7 @@ SELECT status, COUNT(*) FROM ml_tag_suggestions WHERE tag_id = 159 GROUP BY stat
 ```
 
 - [ ] **Step 2: Spot-check searches** — `skirt` results contain the bulk-approved images; `seifuku` search resolves to school uniform; a seifuku-tagged image without a skirt no longer appears under `skirt`.
-- [ ] **Step 3: Tell the mod team** (Discord thread): the flip is live; the review queue now holds the 0.7–0.9 skirt band (~45k) plus the 0.49–0.7 band (~18k) — reviewed at normal pace, no deadline; new school-uniform suggestions from serafuku predictions will also appear.
+- [ ] **Step 3: Tell the mod team** (Discord thread): the flip is live; the review queue now holds the 0.7–0.8 skirt band (~16k) plus the sub-0.7 band (~18k) — reviewed at normal pace, no deadline; new school-uniform suggestions from serafuku predictions will also appear.
 - [ ] **Step 4: Merge the branch** — open a PR for `chore/school-uniform-flip` (script, this plan doc; the CSV is git-ignored and never part of the branch — see Task 2).
 
 ## Rollback notes
@@ -408,4 +410,4 @@ SELECT status, COUNT(*) FROM ml_tag_suggestions WHERE tag_id = 159 GROUP BY stat
 ## Open decisions
 
 1. **Task 5** — strip the 2,527 redundant `uniform` links? (Needs mod sign-off.)
-2. **0.7–0.9 band (~45k)** — leave in the manual review queue (current plan), or lower the auto-approve floor after sampling the 0.9 band's precision in dev? Sample ~100 approved images before deciding.
+2. **RESOLVED (2026-07-27): auto-approve floor lowered to 0.8.** Dev sampling: 12/12 random images from the 0.8–0.9 band showed skirts; second dev pass approved that band (28,640). Remaining manual queue in dev: ~34.7k on school-uniform images (16,333 in 0.7–0.8 + 18,400 below 0.7). Lowering further would need fresh sampling of the 0.7–0.8 band.
