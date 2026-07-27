@@ -362,7 +362,7 @@ def main() -> None:
         "--min-images",
         type=int,
         default=5,
-        help="Minimum images for a character to be considered (default: 5)",
+        help="Dominant mode: minimum images for a character to be considered; --conflated mode: minimum per-source image count (default: 5)",
     )
     parser.add_argument(
         "--output",
