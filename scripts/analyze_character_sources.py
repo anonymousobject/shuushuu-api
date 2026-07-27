@@ -14,6 +14,9 @@ Usage:
 
     # Create links in database
     uv run python scripts/analyze_character_sources.py --create-links [--user-id 1]
+
+    # Report conflated-candidate characters (>= 2 dominant sources; report-only)
+    uv run python scripts/analyze_character_sources.py --conflated [--min-usage 20] [--min-share 0.05]
 """
 
 import argparse
@@ -64,8 +67,7 @@ async def analyze_character_sources(
         for char_id, char_title in character_tags:
             # Get count of images with this character
             count_result = await db.execute(
-                select(func.count(TagLinks.image_id))
-                .where(TagLinks.tag_id == char_id)
+                select(func.count(TagLinks.image_id)).where(TagLinks.tag_id == char_id)
             )
             total_images = count_result.scalar() or 0
 
@@ -88,15 +90,17 @@ async def analyze_character_sources(
             for source_id, source_title, count in source_counts_result.all():
                 percentage = count / total_images
                 if percentage >= threshold:
-                    results.append({
-                        "character_tag_id": char_id,
-                        "character_title": char_title,
-                        "source_tag_id": source_id,
-                        "source_title": source_title,
-                        "co_occurrence_count": count,
-                        "total_character_images": total_images,
-                        "percentage": round(percentage * 100, 1),
-                    })
+                    results.append(
+                        {
+                            "character_tag_id": char_id,
+                            "character_title": char_title,
+                            "source_tag_id": source_id,
+                            "source_title": source_title,
+                            "co_occurrence_count": count,
+                            "total_character_images": total_images,
+                            "percentage": round(percentage * 100, 1),
+                        }
+                    )
 
     await engine.dispose()
 
@@ -192,6 +196,160 @@ async def create_links_from_results(
     return created, skipped
 
 
+async def find_conflated_characters(
+    db: AsyncSession,
+    *,
+    min_usage: int = 20,
+    min_images: int = 5,
+    min_share: float = 0.05,
+) -> list[dict]:
+    """
+    Report character tags whose images split across >= 2 dominant sources.
+
+    A source qualifies when it co-occurs on >= min_images of the character's
+    images AND covers >= min_share of the character's source-tagged images.
+    Alias source tags roll up into their canonical tag. Report-only: a human
+    decides which combinations get links (true conflation and legitimate
+    multi-franchise appearances both warrant them).
+    """
+    char_rows = (
+        await db.execute(
+            select(Tags.tag_id, Tags.title)
+            .where(Tags.type == TagType.CHARACTER)
+            .where(Tags.usage_count >= min_usage)
+            .order_by(Tags.tag_id)
+        )
+    ).all()
+
+    link_count_rows = (
+        await db.execute(
+            select(CharacterSourceLinks.character_tag_id, func.count()).group_by(
+                CharacterSourceLinks.character_tag_id
+            )
+        )
+    ).all()
+    link_counts = dict(link_count_rows)
+
+    results: list[dict] = []
+    for char_id, char_title in char_rows:
+        image_subquery = select(TagLinks.image_id).where(TagLinks.tag_id == char_id).subquery()
+
+        total_images = (
+            await db.execute(
+                select(func.count(TagLinks.image_id)).where(TagLinks.tag_id == char_id)
+            )
+        ).scalar() or 0
+        # usage_count is denormalized and can drift; re-check against live links
+        if total_images < min_usage:
+            continue
+
+        canonical_id = func.coalesce(Tags.alias_of, Tags.tag_id).label("source_tag_id")
+        source_rows = (
+            await db.execute(
+                select(canonical_id, func.count(func.distinct(TagLinks.image_id)).label("count"))
+                .join(TagLinks, Tags.tag_id == TagLinks.tag_id)
+                .where(Tags.type == TagType.SOURCE)
+                .where(TagLinks.image_id.in_(select(image_subquery)))
+                .group_by(canonical_id)
+            )
+        ).all()
+
+        source_tagged = (
+            await db.execute(
+                select(func.count(func.distinct(TagLinks.image_id)))
+                .join(Tags, Tags.tag_id == TagLinks.tag_id)
+                .where(Tags.type == TagType.SOURCE)
+                .where(TagLinks.image_id.in_(select(image_subquery)))
+            )
+        ).scalar() or 0
+        if source_tagged == 0:
+            continue
+
+        qualifying = [
+            (source_id, count)
+            for source_id, count in source_rows
+            if count >= min_images and count / source_tagged >= min_share
+        ]
+        if len(qualifying) < 2:
+            continue
+        qualifying.sort(key=lambda pair: -pair[1])
+
+        results.append(
+            {
+                "character_tag_id": char_id,
+                "character_title": char_title,
+                "total_character_images": total_images,
+                "source_tagged_images": source_tagged,
+                "linked_count": link_counts.get(char_id, 0),
+                "sources": [
+                    {
+                        "source_tag_id": source_id,
+                        "count": count,
+                        "share": round(count / source_tagged, 3),
+                    }
+                    for source_id, count in qualifying
+                ],
+            }
+        )
+
+    source_ids = {s["source_tag_id"] for r in results for s in r["sources"]}
+    if source_ids:
+        title_rows = (
+            await db.execute(select(Tags.tag_id, Tags.title).where(Tags.tag_id.in_(source_ids)))
+        ).all()
+        titles = dict(title_rows)
+        for r in results:
+            for s in r["sources"]:
+                s["source_title"] = titles.get(s["source_tag_id"])
+
+    results.sort(key=lambda r: -r["total_character_images"])
+    return results
+
+
+async def run_conflated(
+    min_usage: int, min_images: int, min_share: float, output_file: str | None
+) -> list[dict]:
+    """CLI wrapper: open a session, run the report, print, optionally CSV."""
+    engine = create_async_engine(settings.DATABASE_URL, echo=False)
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as db:
+        results = await find_conflated_characters(
+            db, min_usage=min_usage, min_images=min_images, min_share=min_share
+        )
+    await engine.dispose()
+
+    print(
+        f"\n{len(results)} conflated-candidate character tags "
+        f"(>= 2 sources with >= {min_images} images and >= {min_share:.0%} share):\n"
+    )
+    for r in results:
+        sources = ", ".join(f"{s['source_title']} ({s['count']})" for s in r["sources"])
+        print(
+            f"  #{r['character_tag_id']} {r['character_title']} — "
+            f"{r['total_character_images']} images, links: {r['linked_count']} — {sources}"
+        )
+
+    if output_file:
+        char_fields = [
+            "character_tag_id",
+            "character_title",
+            "total_character_images",
+            "source_tagged_images",
+            "linked_count",
+        ]
+        with open(output_file, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=char_fields + ["source_tag_id", "source_title", "count", "share"]
+            )
+            writer.writeheader()
+            for r in results:
+                for s in r["sources"]:
+                    writer.writerow({**{k: r[k] for k in char_fields}, **s})
+        print(f"\nResults written to {output_file}")
+
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze character-source co-occurrence")
     parser.add_argument(
@@ -223,6 +381,23 @@ def main() -> None:
         default=None,
         help="User ID to record as link creator (optional, used with --create-links)",
     )
+    parser.add_argument(
+        "--conflated",
+        action="store_true",
+        help="Report characters whose images split across >= 2 dominant sources (report-only)",
+    )
+    parser.add_argument(
+        "--min-usage",
+        type=int,
+        default=20,
+        help="(--conflated) minimum character tag usage (default: 20)",
+    )
+    parser.add_argument(
+        "--min-share",
+        type=float,
+        default=0.05,
+        help="(--conflated) minimum share of source-tagged images per source (default: 0.05)",
+    )
     args = parser.parse_args()
 
     if not 0.0 <= args.threshold <= 1.0:
@@ -231,8 +406,18 @@ def main() -> None:
         parser.error("--min-images must be at least 1")
     if args.user_id is not None and args.user_id < 1:
         parser.error("--user-id must be a positive integer")
+    if args.conflated and args.create_links:
+        parser.error("--conflated is report-only and cannot be combined with --create-links")
+    if not 0.0 <= args.min_share <= 1.0:
+        parser.error("--min-share must be between 0.0 and 1.0")
+    if args.min_usage < 1:
+        parser.error("--min-usage must be at least 1")
 
     try:
+        if args.conflated:
+            asyncio.run(run_conflated(args.min_usage, args.min_images, args.min_share, args.output))
+            return
+
         results = asyncio.run(
             analyze_character_sources(
                 threshold=args.threshold,
