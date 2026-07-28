@@ -28,6 +28,7 @@ from app.services.ml_suggestion_pipeline import (  # light: no onnxruntime
 )
 from app.services.rate_limit import check_analyze_rate_limit
 from app.services.tag_mapping_service import resolve_external_tags
+from app.services.tag_resolver import resolve_tag_relationships
 
 logger = get_logger(__name__)
 
@@ -125,6 +126,13 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> A
     resolved = await resolve_external_tags(db, raw)  # [{tag_id, confidence, model_version}]
     if not resolved:
         return AnalyzeTagsResponse(suggestions=[])
+
+    # Collapse aliases to their canonical tag, exactly as the stored-suggestion
+    # pipeline does before persisting. Without this a mapping that points at an
+    # alias row surfaces the alias title here ("miko") while the review queue
+    # shows the canonical one ("shrine maiden") for the same prediction.
+    # Must run before the character gate so aliases of character tags are caught.
+    resolved = await resolve_tag_relationships(db, resolved)
 
     # Character gate: must run before parent-supersede so a gated character
     # child can't first supersede a theme parent (both chips would be lost).

@@ -437,6 +437,80 @@ async def test_keeps_substring_inside_word(db_session, tmp_path, monkeypatch):
     assert {s.tag_id for s in suggestions} == {211}
 
 
+async def test_keeps_theme_substring_of_non_theme_tag(db_session, tmp_path, monkeypatch):
+    """A source/character/artist title must not swallow a theme suggestion.
+
+    The substring rule exists for theme compounds ("kimono" in "short kimono").
+    An image tagged with the SOURCE "Fruits Basket" says nothing about whether a
+    basket is depicted, so suggested theme "basket" must survive.
+    """
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+    existing = Tags(tag_id=220, title="Fruits Basket", type=TagType.SOURCE)
+    suggested = Tags(tag_id=221, title="basket", type=TagType.THEME)
+    db_session.add_all([existing, suggested])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "crosstype")
+    image = await _make_image(db_session, user, "crosstype", tmp_path)
+    await db_session.flush()
+
+    db_session.add(TagLinks(image_id=image.image_id, tag_id=220, user_id=user.user_id))
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("basket"))
+    mapped = [{"tag_id": 221, "confidence": 0.9, "model_version": "v3"}]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 1
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    assert {s.tag_id for s in result.scalars().all()} == {221}
+
+
+async def test_keeps_non_theme_substring_of_theme_tag(db_session, tmp_path, monkeypatch):
+    """An existing theme title must not swallow a character suggestion.
+
+    The reverse of the above: characters named "Blue" would otherwise be dropped
+    on every image already tagged with the theme "blue hair".
+    """
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+    monkeypatch.setattr(settings, "ML_CHARACTER_SUGGESTIONS_ENABLED", True)
+
+    existing = Tags(tag_id=230, title="blue hair", type=TagType.THEME)
+    suggested = Tags(tag_id=231, title="Blue", type=TagType.CHARACTER)
+    db_session.add_all([existing, suggested])
+    await db_session.flush()
+
+    user = await _make_user(db_session, "revcrosstype")
+    image = await _make_image(db_session, user, "revcrosstype", tmp_path)
+    await db_session.flush()
+
+    db_session.add(TagLinks(image_id=image.image_id, tag_id=230, user_id=user.user_id))
+    await db_session.commit()
+
+    ml = FakeMLService(_predictions("blue"))
+    mapped = [{"tag_id": 231, "confidence": 0.9, "model_version": "v3"}]
+
+    with (
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await generate_and_store_suggestions(db_session, image, ml)
+
+    assert created == 1
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+    )
+    assert {s.tag_id for s in result.scalars().all()} == {231}
+
+
 async def test_no_mappings_creates_nothing(db_session, tmp_path, monkeypatch):
     """When nothing maps to an internal tag, the pipeline completes with 0 created."""
     monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
