@@ -87,8 +87,14 @@ async def filter_redundant_suggestions(
 
         tags_to_check = [t for t in tags_to_check if t not in checked_ids]
 
-    # Build set of existing tag titles (lowercase for comparison)
-    existing_titles = {(t.title or "").lower() for t in existing_tags}
+    # Build set of existing THEME tag titles (lowercase for comparison).
+    # Theme-only on purpose: the substring rule below is about theme compounds
+    # ("kimono" in "short kimono"). Source/character/artist titles are proper
+    # nouns that merely happen to contain theme words — "Fruits Basket" says
+    # nothing about whether a basket is depicted. Including them silently
+    # dropped correct suggestions. The ancestor check above stays unrestricted,
+    # since cross-type inheritedfrom chains are real.
+    existing_titles = {(t.title or "").lower() for t in existing_tags if t.type == TagType.THEME}
 
     # Fetch suggested tags to get their titles
     suggested_tag_ids = [s["tag_id"] for s in suggestions]
@@ -112,8 +118,11 @@ async def filter_redundant_suggestions(
             )
             continue
 
-        # Skip if tag title is contained in an existing tag's title
-        if tag and tag.title:
+        # Skip if this THEME tag's title is contained in an existing theme title.
+        # Non-theme suggestions are exempt for the same reason non-theme existing
+        # titles are: a character named "Blue" is not made redundant by the theme
+        # "blue hair" already being on the image.
+        if tag and tag.title and tag.type == TagType.THEME:
             tag_title_lower = tag.title.lower()
             # Check if this tag's title appears as a whole word (or contiguous
             # word phrase) inside any existing tag's title. Only filter if it's a
