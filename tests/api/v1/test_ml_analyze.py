@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import TagType, settings
 from app.core.security import create_access_token
 from app.models.tag import Tags
+from app.models.tag_mapping import TagMappings
 from app.models.user import Users
 from app.services import ml_runtime
 
@@ -136,6 +137,44 @@ async def test_analyze_returns_theme_and_character_tags(
     # confidence is surfaced for evaluation (mapping-scaled; mapping.confidence=1.0 in this fake)
     assert by_title["smile"]["confidence"] == 0.9
     assert by_title["hatsune miku"]["confidence"] == 0.95
+
+
+async def test_analyze_surfaces_canonical_tag_for_alias_mapping(
+    analyze_client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A mapping pointing at an ALIAS surfaces the canonical tag, not the alias.
+
+    Mirrors the stored-suggestion pipeline, which resolves Tags.alias_of before
+    persisting. Uses a real tag_mappings row so the whole map->resolve chain runs.
+    """
+    monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
+
+    canonical = Tags(title="shrine maiden", type=TagType.THEME)
+    db_session.add(canonical)
+    await db_session.commit()
+    await db_session.refresh(canonical)
+
+    alias = Tags(title="miko", type=TagType.THEME, alias_of=canonical.tag_id)
+    db_session.add(alias)
+    await db_session.commit()
+    await db_session.refresh(alias)
+
+    db_session.add(TagMappings(external_tag="miko", internal_tag_id=alias.tag_id, confidence=1.0))
+    await db_session.commit()
+
+    raw_preds = [{"external_tag": "miko", "confidence": 0.9, "category": 0, "model_version": "v1"}]
+
+    with patch(
+        "app.api.v1.ml_analyze.get_ml_service",
+        new_callable=AsyncMock,
+        return_value=_fake_ml_service(raw_preds),
+    ):
+        response = await analyze_client.post("/api/v1/ml-tag-suggestions/analyze", files=_files())
+
+    assert response.status_code == 200, response.text
+    suggestions = response.json()["suggestions"]
+    assert [s["title"] for s in suggestions] == ["shrine maiden"]
+    assert suggestions[0]["tag_id"] == canonical.tag_id
 
 
 async def test_analyze_omits_character_tags_when_flag_off(
