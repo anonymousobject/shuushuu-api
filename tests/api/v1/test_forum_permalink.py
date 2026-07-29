@@ -75,3 +75,15 @@ class TestPostPermalink:
         opening = await _opening_post(db_session, thread)
         r = await client.get(f"/api/v1/forum/posts/{opening.post_id}/redirect")
         assert r.status_code == 404
+
+    async def test_missing_and_gated_post_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category
+    ):
+        # A gated-but-existing post and a missing one must be indistinguishable
+        # to an anonymous caller (no existence oracle for gated post ids).
+        thread = await make_thread(db_session, staff_category, title="Secret")
+        opening = await _opening_post(db_session, thread)
+        missing_resp = await client.get("/api/v1/forum/posts/999999/redirect")
+        gated_resp = await client.get(f"/api/v1/forum/posts/{opening.post_id}/redirect")
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()

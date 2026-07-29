@@ -79,3 +79,16 @@ class TestViewtopicRedirect:
         await db_session.commit()
         r = await client.get("/api/v1/forum/legacy/viewtopic?t=42")
         assert r.status_code == 404
+
+    async def test_missing_and_gated_topic_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category
+    ):
+        # A gated-but-existing legacy topic and a missing one must be
+        # indistinguishable to an anonymous caller (no existence oracle).
+        thread = await make_thread(db_session, staff_category, title="Secret")
+        thread.legacy_topic_id = 4242
+        await db_session.commit()
+        missing_resp = await client.get("/api/v1/forum/legacy/viewtopic?t=999999")
+        gated_resp = await client.get("/api/v1/forum/legacy/viewtopic?t=4242")
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()

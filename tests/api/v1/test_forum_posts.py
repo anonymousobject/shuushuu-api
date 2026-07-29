@@ -1,15 +1,52 @@
 """Tests for forum post endpoints."""
 
+from unittest.mock import patch
+
+import pymysql
+import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import Permission
-from app.models.forum import ForumCategories, ForumThreads
+from app.models.forum import ForumCategories, ForumPosts, ForumThreads
 from tests.api.v1.conftest import make_thread
 
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _db_error(errno: int, message: str) -> OperationalError:
+    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
+    return OperationalError(
+        "SELECT ... FOR UPDATE", None, pymysql.err.OperationalError(errno, message)
+    )
+
+
+def _snapshot_conflict_error() -> OperationalError:
+    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD)."""
+    return _db_error(1020, "Record has changed since last read in table 'forum_threads'")
+
+
+def _flaky_locking_read(fail_times: int, error: OperationalError):
+    """Patch AsyncSession.execute to raise `error` the first `fail_times` times
+    it runs a locking (FOR UPDATE) statement — the exact site MariaDB aborts
+    with ER_CHECKREAD (1020) under innodb_snapshot_isolation. Non-locking
+    statements (and db.get, which does not go through AsyncSession.execute) pass
+    through untouched. Returns (patch_ctx, calls) where calls records each
+    intercepted locking read."""
+    real_execute = AsyncSession.execute
+    calls: list[int] = []
+
+    async def execute(self, statement, *args, **kwargs):
+        if getattr(statement, "_for_update_arg", None) is not None:
+            calls.append(1)
+            if len(calls) <= fail_times:
+                raise error
+        return await real_execute(self, statement, *args, **kwargs)
+
+    return patch.object(AsyncSession, "execute", execute), calls
 
 
 async def _get_thread(db_session: AsyncSession, thread_id: int) -> ForumThreads:
@@ -127,6 +164,46 @@ class TestCreatePost:
         )
         assert response.status_code == 404
 
+    async def test_missing_and_gated_thread_reply_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category, user_token
+    ):
+        # Replying to a gated-but-existing thread and to a missing one must be
+        # indistinguishable (no existence oracle), matching get_thread.
+        thread = await make_thread(db_session, staff_category)
+        missing_resp = await client.post(
+            "/api/v1/forum/threads/999999/posts",
+            json={"post_text": "hi"},
+            headers=_auth(user_token),
+        )
+        gated_resp = await client.post(
+            f"/api/v1/forum/threads/{thread.thread_id}/posts",
+            json={"post_text": "hi"},
+            headers=_auth(user_token),
+        )
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()
+
+    async def test_missing_and_gated_post_mutation_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category, user_token
+    ):
+        # PATCH/DELETE of a gated-but-existing post must be byte-identical to a
+        # missing post, so the mutation endpoints don't leak gated post ids.
+        gated_thread = await make_thread(db_session, staff_category)
+        post = ForumPosts(thread_id=gated_thread.thread_id, user_id=1, post_text="secret")
+        db_session.add(post)
+        await db_session.commit()
+        await db_session.refresh(post)
+        for method, kwargs in (("patch", {"json": {"post_text": "x"}}), ("delete", {})):
+            req = getattr(client, method)
+            missing = await req(
+                "/api/v1/forum/posts/999999", headers=_auth(user_token), **kwargs
+            )
+            gated = await req(
+                f"/api/v1/forum/posts/{post.post_id}", headers=_auth(user_token), **kwargs
+            )
+            assert missing.status_code == gated.status_code == 404
+            assert missing.json() == gated.json()
+
     async def test_reply_gated_403(
         self, client: AsyncClient, db_session: AsyncSession, user_token
     ):
@@ -242,6 +319,32 @@ class TestUpdatePost:
         assert thread.post_count == 2
         assert thread.last_post_user_id == 3
 
+    async def test_locked_thread_blocks_owner_edit_but_not_moderator(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token, staff_token
+    ):
+        # The lock must block the post owner's own edit (parity with create_post),
+        # but a moderator may still act (they unlock first in the normal flow).
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        thread = await _get_thread(db_session, public_thread.thread_id)
+        thread.locked = True
+        await db_session.commit()
+
+        owner_resp = await client.patch(
+            f"/api/v1/forum/posts/{post['post_id']}",
+            json={"post_text": "sneaky edit"},
+            headers=_auth(user_token),
+        )
+        assert owner_resp.status_code == 403
+        assert "locked" in owner_resp.json()["detail"].lower()
+
+        mod_resp = await client.patch(
+            f"/api/v1/forum/posts/{post['post_id']}",
+            json={"post_text": "mod edit"},
+            headers=_auth(staff_token),
+        )
+        assert mod_resp.status_code == 200
+        assert mod_resp.json()["post_text"] == "mod edit"
+
 
 class TestDeletePost:
     """DELETE /api/v1/forum/posts/{post_id}"""
@@ -303,3 +406,126 @@ class TestDeletePost:
             f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(staff_token)
         )
         assert response.status_code == 204
+
+    async def test_locked_thread_blocks_owner_delete_but_not_moderator(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token, staff_token
+    ):
+        # A locked thread must block the owner's soft-delete of their own post,
+        # but a moderator may still remove it.
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        thread = await _get_thread(db_session, public_thread.thread_id)
+        thread.locked = True
+        await db_session.commit()
+
+        owner_resp = await client.delete(
+            f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(user_token)
+        )
+        assert owner_resp.status_code == 403
+        assert "locked" in owner_resp.json()["detail"].lower()
+
+        mod_resp = await client.delete(
+            f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(staff_token)
+        )
+        assert mod_resp.status_code == 204
+
+
+class TestForumSnapshotConflictRetry:
+    """create_post/update_post/delete_post lock the thread row (FOR UPDATE) and
+    recompute denormalized stats. Under innodb_snapshot_isolation a concurrent
+    commit to the same thread/post rows aborts that locking read with
+    ER_CHECKREAD (errno 1020). Each write path must retry on a fresh snapshot
+    instead of surfacing a 500. The 1020 is injected into the locking read
+    itself — the real conflict site — via _flaky_locking_read, exercising the
+    real retry helper (app/core/db_retry.py).
+
+    needs_commit: the retry performs a real session rollback to obtain a fresh
+    snapshot; under the default SAVEPOINT test isolation that rollback would
+    unwind the committed thread/user fixtures too, which cannot happen in
+    production where they are durably committed."""
+
+    async def _create_reply(self, client: AsyncClient, thread_id: int, token: str) -> dict:
+        r = await client.post(
+            f"/api/v1/forum/threads/{thread_id}/posts",
+            json={"post_text": "original"},
+            headers=_auth(token),
+        )
+        assert r.status_code == 201
+        return r.json()
+
+    @pytest.mark.needs_commit
+    async def test_reply_retries_snapshot_conflict_and_succeeds(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        read_patch, calls = _flaky_locking_read(1, _snapshot_conflict_error())
+        with read_patch:
+            response = await client.post(
+                f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
+                json={"post_text": "hi"},
+                headers=_auth(user_token),
+            )
+        assert response.status_code == 201, response.text
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        # The reply landed exactly once despite the retry.
+        detail = (
+            await client.get(f"/api/v1/forum/threads/{public_thread.thread_id}")
+        ).json()
+        assert detail["total"] == 2  # opening + the single retried reply
+
+    @pytest.mark.needs_commit
+    async def test_reply_gives_up_after_bounded_retries(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        read_patch, calls = _flaky_locking_read(100, _snapshot_conflict_error())
+        with read_patch, pytest.raises(OperationalError):
+            await client.post(
+                f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
+                json={"post_text": "hi"},
+                headers=_auth(user_token),
+            )
+        assert len(calls) == 3  # bounded: no infinite retry loop
+
+    async def test_reply_does_not_retry_other_db_errors(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        read_patch, calls = _flaky_locking_read(100, _db_error(1213, "Deadlock found"))
+        with read_patch, pytest.raises(OperationalError):
+            await client.post(
+                f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
+                json={"post_text": "hi"},
+                headers=_auth(user_token),
+            )
+        assert len(calls) == 1  # non-1020 error is not retried
+
+    @pytest.mark.needs_commit
+    async def test_edit_post_retries_snapshot_conflict_and_succeeds(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        read_patch, calls = _flaky_locking_read(1, _snapshot_conflict_error())
+        with read_patch:
+            response = await client.patch(
+                f"/api/v1/forum/posts/{post['post_id']}",
+                json={"post_text": "edited"},
+                headers=_auth(user_token),
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["post_text"] == "edited"
+        assert len(calls) >= 2
+
+    @pytest.mark.needs_commit
+    async def test_delete_post_retries_snapshot_conflict_and_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token
+    ):
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        read_patch, calls = _flaky_locking_read(1, _snapshot_conflict_error())
+        with read_patch:
+            response = await client.delete(
+                f"/api/v1/forum/posts/{post['post_id']}",
+                headers=_auth(user_token),
+            )
+        assert response.status_code == 204, response.text
+        assert len(calls) >= 2
+
+        thread = await _get_thread(db_session, public_thread.thread_id)
+        assert thread.post_count == 1  # stats recomputed exactly once
