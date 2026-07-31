@@ -1290,6 +1290,15 @@ _TAG_HISTORY_ADD_STILL_LINKED = (
     )
     .exists()
 )
+# This is tag-scoped: it drops a history 'a' row if ANY current tag_link
+# exists for (tag_id, image_id), regardless of who owns it. There is a
+# user-scoped twin, _user_history_tag_history_dedup_filter in
+# app.api.v1.history, that must stay stricter than this: it also requires
+# the link's user_id to match the path user, because in a per-user feed a
+# history row can only be considered "represented by the current link" if
+# that link is the same user's. Do not unify these — collapsing the
+# user-scoped filter to this one would silently drop a user's own add from
+# their history whenever someone else re-added the tag after them.
 _TAG_HISTORY_DEDUP_FILTER = or_(
     TagHistory.action.is_distinct_from("a"),  # type: ignore[union-attr]
     ~_TAG_HISTORY_ADD_STILL_LINKED,
