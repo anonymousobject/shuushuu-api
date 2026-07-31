@@ -9,6 +9,7 @@ Tests that user history (all changes made by a user) can be retrieved with:
 Hidden statuses (REVIEW, LOW_QUALITY, INAPPROPRIATE, OTHER) should be excluded.
 """
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -21,6 +22,7 @@ from app.models.image_status_history import ImageStatusHistory
 from app.models.tag import Tags
 from app.models.tag_audit_log import TagAuditLog
 from app.models.tag_history import TagHistory
+from app.models.tag_link import TagLinks
 from app.models.user import Users
 
 
@@ -674,6 +676,449 @@ class TestGetUserHistory:
 
         item = tag_usage_items[0]
         assert item["action"] == "removed"
+
+
+@pytest.mark.api
+class TestUserHistoryTagLinks:
+    """
+    Tags applied at upload time exist only as tag_links rows and never get a
+    tag_history row — before this fix, the hottest user's history was empty
+    despite 1.13M links. These tests cover the tag_links branch of the union,
+    the user-scoped dedup rule (deliberately different from the non-scoped
+    rule on GET /tags/{id}/usage-history — see
+    _user_history_tag_history_dedup_filter in app/api/v1/history.py), and
+    ordering/pagination across all four sources.
+    """
+
+    async def _make_user(self, db_session: AsyncSession, username: str) -> Users:
+        user = Users(
+            username=username,
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email=f"{username}@example.com",
+            active=1,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+        return user
+
+    async def _make_image(self, db_session: AsyncSession, owner: Users, filename: str) -> Images:
+        image = Images(
+            filename=filename,
+            ext="jpg",
+            md5_hash=hashlib.md5(filename.encode()).hexdigest(),
+            user_id=owner.user_id,
+            width=100,
+            height=100,
+            filesize=1000,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        return image
+
+    async def test_upload_time_link_appears_as_added_event(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """An upload-time tag_links row (no tag_history) shows as tag_usage/added
+        and counts toward total."""
+        user = await self._make_user(db_session, "userhistlinkuser")
+        tag = Tags(title="upload link user history tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, user, "userhistlink")
+
+        db_session.add(TagLinks(tag_id=tag.tag_id, image_id=image.image_id, user_id=user.user_id))
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        item = data["items"][0]
+        assert item["type"] == "tag_usage"
+        assert item["action"] == "added"
+        assert item["tag"]["tag_id"] == tag.tag_id
+        assert item["image_id"] == image.image_id
+        assert item["date"] is not None
+
+    async def test_link_and_own_history_add_counted_once(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A tag+image with both this user's link and their own 'a' history row
+        appears exactly once (the link wins the dedup)."""
+        user = await self._make_user(db_session, "userhistdupeuser")
+        tag = Tags(title="dupe user history tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, user, "userhistdupe")
+
+        link_date = datetime(2026, 1, 5, tzinfo=UTC)
+        history_date = datetime(2026, 1, 1, tzinfo=UTC)
+        db_session.add(
+            TagLinks(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                user_id=user.user_id,
+                date_linked=link_date,
+            )
+        )
+        db_session.add(
+            TagHistory(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                action="a",
+                user_id=user.user_id,
+                date=history_date,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        item = data["items"][0]
+        assert item["action"] == "added"
+        assert item["image_id"] == image.image_id
+        # The link wins the dedup: its own date shows through, not the history row's.
+        assert item["date"] == link_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    async def test_removed_tag_shows_add_and_remove(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A tag added then removed (link gone) keeps both history events."""
+        user = await self._make_user(db_session, "userhistremoveduser")
+        tag = Tags(title="removed user history tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, user, "userhistremoved")
+
+        db_session.add_all(
+            [
+                TagHistory(
+                    tag_id=tag.tag_id, image_id=image.image_id, action="a", user_id=user.user_id
+                ),
+                TagHistory(
+                    tag_id=tag.tag_id, image_id=image.image_id, action="r", user_id=user.user_id
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["total"] == 2
+        usage_items = [item for item in data["items"] if item["type"] == "tag_usage"]
+        assert sorted(item["action"] for item in usage_items) == ["added", "removed"]
+
+    async def test_user_scoped_dedup_preserves_original_adder_after_reassignment(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """X adds T to I (link + history 'a'), T is removed from I (X's link
+        deleted, 'r' row recorded), Y re-adds T (Y's link).
+
+        X's history must still show X's original add AND the remove: the
+        dedup EXISTS probe is scoped to the path user's own tag_links, so it
+        only drops X's 'a' row if X *currently* holds the matching link. Once
+        the live link belongs to Y, the non-scoped rule used by the tag
+        endpoint would wrongly match on Y's link and drop X's add — this
+        endpoint's user-scoped rule must not. Y's history shows only Y's
+        link-derived add.
+        """
+        user_x = await self._make_user(db_session, "userhistdedupx")
+        user_y = await self._make_user(db_session, "userhistdedupy")
+        tag = Tags(title="reassigned user history tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, user_x, "userhistdedup")
+
+        add_date = datetime(2026, 1, 1, tzinfo=UTC)
+        remove_date = datetime(2026, 1, 2, tzinfo=UTC)
+        re_add_date = datetime(2026, 1, 3, tzinfo=UTC)
+
+        # X adds T to I (history side of "link + history"; DB end-state below
+        # already reflects X's link having been deleted on removal).
+        db_session.add(
+            TagHistory(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                action="a",
+                user_id=user_x.user_id,
+                date=add_date,
+            )
+        )
+        await db_session.commit()
+
+        # T removed from I: X's link is gone, remove event recorded.
+        db_session.add(
+            TagHistory(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                action="r",
+                user_id=user_x.user_id,
+                date=remove_date,
+            )
+        )
+        await db_session.commit()
+
+        # Y re-adds T: only Y's link now exists for (tag, image).
+        db_session.add(
+            TagLinks(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                user_id=user_y.user_id,
+                date_linked=re_add_date,
+            )
+        )
+        await db_session.commit()
+
+        # X's feed: original add + remove, both preserved.
+        x_response = await client.get(f"/api/v1/users/{user_x.user_id}/history")
+        assert x_response.status_code == 200
+        x_data = x_response.json()
+        x_usage_items = [item for item in x_data["items"] if item["type"] == "tag_usage"]
+        assert sorted(item["action"] for item in x_usage_items) == ["added", "removed"]
+        assert all(item["image_id"] == image.image_id for item in x_usage_items)
+
+        # Y's feed: just the link-derived add.
+        y_response = await client.get(f"/api/v1/users/{user_y.user_id}/history")
+        assert y_response.status_code == 200
+        y_data = y_response.json()
+        assert y_data["total"] == 1
+        assert len(y_data["items"]) == 1
+        y_item = y_data["items"][0]
+        assert y_item["type"] == "tag_usage"
+        assert y_item["action"] == "added"
+        assert y_item["image_id"] == image.image_id
+
+    async def test_ordering_interleaves_all_four_kinds_by_date(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """All four sources (audit, history, link, status) sort together by
+        date, newest first, regardless of kind."""
+        user = await self._make_user(db_session, "userhistorderuser")
+        tag = Tags(title="order interleave user history tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, user, "userhistorder")
+
+        base_date = datetime(2026, 1, 1, tzinfo=UTC)
+
+        # Oldest to newest: tag_metadata, status_change, tag_usage (history
+        # remove), tag_usage (link add).
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.RENAME,
+                old_title="old",
+                new_title="order interleave user history tag",
+                created_at=base_date,
+            )
+        )
+        db_session.add(
+            ImageStatusHistory(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                old_status=ImageStatus.ACTIVE,
+                new_status=ImageStatus.REPOST,
+                created_at=base_date + timedelta(days=1),
+            )
+        )
+        db_session.add(
+            TagHistory(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                action="r",
+                user_id=user.user_id,
+                date=base_date + timedelta(days=2),
+            )
+        )
+        db_session.add(
+            TagLinks(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                user_id=user.user_id,
+                date_linked=base_date + timedelta(days=3),
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) == 4
+
+        assert data["items"][0]["type"] == "tag_usage"
+        assert data["items"][0]["action"] == "added"
+        assert data["items"][1]["type"] == "tag_usage"
+        assert data["items"][1]["action"] == "removed"
+        assert data["items"][2]["type"] == "status_change"
+        assert data["items"][3]["type"] == "tag_metadata"
+
+    async def test_pagination_correct_across_union_boundary_with_tie(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Pagination is correct across the four-branch pushdown, including a
+        same-timestamp tie between kind 3 (link) and kind 2 (history) sitting
+        exactly at the page boundary.
+
+        10 link rows + 10 history rows ('r', to sidestep the add-dedup),
+        interleaved by date, so a per-branch LIMIT of only per_page (instead
+        of offset + per_page) would starve this deep page. Row 5 of each
+        branch shares the same date to pin down the kind DESC tie-break:
+        link (kind 3) sorts before history (kind 2) on an exact tie.
+        """
+        user = await self._make_user(db_session, "userhistpageboundaryuser")
+        tag = Tags(title="page boundary user history tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        link_images = [
+            await self._make_image(db_session, user, f"userhistpblink{i}") for i in range(10)
+        ]
+        history_images = [
+            await self._make_image(db_session, user, f"userhistpbhist{i}") for i in range(10)
+        ]
+
+        base_date = datetime(2026, 1, 1, tzinfo=UTC)
+        for i in range(10):
+            link_date = base_date + timedelta(days=28 - 2 * i)
+            history_date = link_date if i == 5 else link_date - timedelta(days=1)
+            db_session.add(
+                TagLinks(
+                    tag_id=tag.tag_id,
+                    image_id=link_images[i].image_id,
+                    user_id=user.user_id,
+                    date_linked=link_date,
+                )
+            )
+            db_session.add(
+                TagHistory(
+                    tag_id=tag.tag_id,
+                    image_id=history_images[i].image_id,
+                    action="r",
+                    user_id=user.user_id,
+                    date=history_date,
+                )
+            )
+        await db_session.commit()
+
+        # Global rank 11 (offset=10) is link[5] (tie winner via kind DESC);
+        # rank 12 (offset=11) is history[5].
+        response = await client.get(f"/api/v1/users/{user.user_id}/history?page=11&per_page=1")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 20
+        assert len(data["items"]) == 1
+        assert data["items"][0]["image_id"] == link_images[5].image_id
+        assert data["items"][0]["action"] == "added"
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history?page=12&per_page=1")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 20
+        assert len(data["items"]) == 1
+        assert data["items"][0]["image_id"] == history_images[5].image_id
+        assert data["items"][0]["action"] == "removed"
+
+    async def test_link_with_null_user_absent_from_every_feed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A tag_link with NULL user_id must not appear in any user's history:
+        `tag_links.user_id = :user_id` never matches NULL under SQL semantics.
+        """
+        owner = await self._make_user(db_session, "userhistnulllinkowner")
+        tag = Tags(title="null user link user history tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, owner, "userhistnulllink")
+
+        db_session.add(TagLinks(tag_id=tag.tag_id, image_id=image.image_id, user_id=None))
+        await db_session.commit()
+
+        # Not in the image owner's feed either — the link has no creator at all.
+        response = await client.get(f"/api/v1/users/{owner.user_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["items"] == []
+
+    async def test_multi_tag_upload_same_timestamp_paginates_without_duplicates_or_omissions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """N tag_links rows from one upload (same image, same shared
+        timestamp) must each appear exactly once across all pages, never
+        duplicated or dropped.
+
+        tag_links' primary key is (tag_id, image_id); kind 3's tiebreak is
+        image_id alone, so N links on one image sharing a date_linked value
+        (exactly what app.services.upload.link_tags_to_image produces: one
+        TagLinks row per tag, all left at the same server-default
+        timestamp) used to collide on the full (ts, prio, kind, tiebreak)
+        sort tuple with nothing left to break the tie. The per-branch LIMIT
+        (offset + per_page) then picked an arbitrary subset of that tied
+        group — a different subset on every page request, since the LIMIT
+        value itself depends on the requested page — so paginating with a
+        small per_page could show a link twice or skip it entirely. Uses 12
+        tags with per_page=1 so 12 single-row page fetches make any
+        arbitrary slicing overwhelmingly likely to duplicate or omit.
+        """
+        user = await self._make_user(db_session, "userhistmultitaguser")
+        image = await self._make_image(db_session, user, "userhistmultitag")
+
+        shared_date = datetime(2026, 1, 1, tzinfo=UTC)
+        tags = []
+        for i in range(12):
+            tag = Tags(title=f"multi tag upload tag {i}", type=TagType.THEME)
+            db_session.add(tag)
+            await db_session.commit()
+            await db_session.refresh(tag)
+            tags.append(tag)
+            db_session.add(
+                TagLinks(
+                    tag_id=tag.tag_id,
+                    image_id=image.image_id,
+                    user_id=user.user_id,
+                    date_linked=shared_date,
+                )
+            )
+        await db_session.commit()
+
+        seen_tag_ids: list[int] = []
+        for page in range(1, 13):
+            response = await client.get(
+                f"/api/v1/users/{user.user_id}/history?page={page}&per_page=1"
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["total"] == 12
+            assert len(data["items"]) == 1
+            item = data["items"][0]
+            assert item["type"] == "tag_usage"
+            assert item["image_id"] == image.image_id
+            seen_tag_ids.append(item["tag"]["tag_id"])
+
+        # Every tag appears, and exactly once: sorted equality catches both
+        # a duplicate (some tag_id repeated, so another is necessarily
+        # missing from a 12-item list) and an outright omission.
+        assert sorted(seen_tag_ids) == sorted(tag.tag_id for tag in tags)
 
 
 @pytest.mark.api

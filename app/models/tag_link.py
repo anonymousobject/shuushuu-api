@@ -84,6 +84,8 @@ class TagLinks(TagLinkBase, table=True):
         ),
         Index("fk_tag_links_image_id", "image_id"),
         Index("fk_tag_links_user_id", "user_id"),
+        Index("idx_tag_links_tag_date", "tag_id", "date_linked"),
+        Index("idx_tag_links_user_date_image", "user_id", "date_linked", "image_id"),
     )
 
     # Public timestamp

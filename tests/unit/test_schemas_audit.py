@@ -109,3 +109,16 @@ class TestTagHistoryResponse:
         }
         response = TagHistoryResponse.model_validate(data)
         assert response.action == "r"
+
+    def test_tag_history_id_nullable(self) -> None:
+        """Test schema accepts nullable tag_history_id for synthesized events."""
+        data = {
+            "tag_history_id": None,
+            "image_id": 1000,
+            "tag_id": 100,
+            "action": "a",
+            "user": {"user_id": 1, "username": "tagger"},
+            "date": datetime.now(UTC),
+        }
+        response = TagHistoryResponse.model_validate(data)
+        assert response.tag_history_id is None

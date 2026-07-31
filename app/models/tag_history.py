@@ -86,6 +86,8 @@ class TagHistory(TagHistoryBase, table=True):
         Index("fk_tag_history_tag_id", "tag_id"),
         Index("image_id", "image_id"),
         Index("user_id", "user_id"),
+        Index("idx_tag_history_tag_date", "tag_id", "date"),
+        Index("idx_tag_history_user_date", "user_id", "date"),
     )
 
     # Primary key

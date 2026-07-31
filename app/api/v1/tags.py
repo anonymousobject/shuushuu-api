@@ -7,7 +7,23 @@ from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import ColumnElement, asc, case, delete, desc, func, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    Integer,
+    asc,
+    case,
+    cast,
+    delete,
+    desc,
+    func,
+    literal,
+    null,
+    or_,
+    select,
+    text,
+    union_all,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
@@ -1253,6 +1269,146 @@ async def get_tag_history(
     )
 
 
+# Tag usage history: tag_links covers upload-time adds (~98% of applications,
+# up to 728k rows for the hottest tag) and never gets a tag_history row, so a
+# tag's usage history must merge both sources. See
+# app.api.v1.images.get_image_tag_history for the semantics this mirrors — an
+# in-memory merge there is fine (bounded by one image's own activity), but not
+# here where the merge is per-tag and must be paginated in SQL.
+#
+# Drop a history 'a' row when the tag is still linked to that image: the link
+# already represents that add. Edge case (same tradeoff as the image
+# endpoint): for an add -> remove -> re-add tag (now linked again), this also
+# drops the ORIGINAL add history row, not just the intermediate one. Accepted
+# as rare; do not "fix" without also de-duping vs tag_links, or currently
+# linked tags double-count.
+_TAG_HISTORY_ADD_STILL_LINKED = (
+    select(TagLinks.tag_id)  # type: ignore[call-overload]
+    .where(
+        TagLinks.tag_id == TagHistory.tag_id,
+        TagLinks.image_id == TagHistory.image_id,
+    )
+    .exists()
+)
+# This is tag-scoped: it drops a history 'a' row if ANY current tag_link
+# exists for (tag_id, image_id), regardless of who owns it. There is a
+# user-scoped twin, _user_history_tag_history_dedup_filter in
+# app.api.v1.history, that must stay stricter than this: it also requires
+# the link's user_id to match the path user, because in a per-user feed a
+# history row can only be considered "represented by the current link" if
+# that link is the same user's. Do not unify these — collapsing the
+# user-scoped filter to this one would silently drop a user's own add from
+# their history whenever someone else re-added the tag after them.
+_TAG_HISTORY_DEDUP_FILTER = or_(
+    TagHistory.action.is_distinct_from("a"),  # type: ignore[union-attr]
+    ~_TAG_HISTORY_ADD_STILL_LINKED,
+)
+
+
+def _tag_history_user_summary(user: Users | None) -> UserSummary | None:
+    """Build a UserSummary, or None for a missing/unlinked user.
+
+    Mirrors app.api.v1.images.get_image_tag_history's to_summary: a link or
+    history row can have a null user_id (outerjoin miss, or the row itself
+    predates user tracking), and user_id is nullable on the model even though
+    a loaded row always has one.
+    """
+    if user is None or user.user_id is None:
+        return None
+    return UserSummary(
+        user_id=user.user_id,
+        username=user.username,
+        avatar=user.avatar,
+        avatar_in_r2=user.avatar_in_r2,
+        user_title=user.user_title,
+        groups=user.groups,
+    )
+
+
+def _tag_usage_history_union(tag_id: int, offset: int, per_page: int) -> Any:
+    """Paginated UNION ALL of tag_links and tag_history for one tag.
+
+    Both branches project the same columns (tag_history_id, action, image_id,
+    user_id, event_date, lane, tiebreak); tag_id itself isn't projected since
+    every row is already filtered to the path tag_id. `lane` distinguishes the
+    two sources (0=link, 1=history) for a stable sort on timestamp ties, since
+    a link's image_id and a history row's tag_history_id are unrelated id
+    spaces that could otherwise collide.
+
+    Each branch pushes its own ORDER BY + LIMIT (offset + per_page) *before*
+    the union — required, not an optimization. MariaDB materializes a UNION
+    ALL as a derived table, so an outer-only ORDER BY filesorts the full
+    merged set (728k rows for the hottest tag) regardless of indexes. With the
+    pushdown, each branch reads its top rows in index order off
+    idx_tag_links_tag_date / idx_tag_history_tag_date. This is lossless: the
+    global top (offset + per_page) rows are necessarily contained in each
+    branch's own top (offset + per_page) rows.
+    """
+    branch_limit = offset + per_page
+
+    link_branch = (
+        select(
+            cast(null(), Integer).label("tag_history_id"),
+            literal("a").label("action"),
+            TagLinks.image_id.label("image_id"),  # type: ignore[attr-defined]
+            TagLinks.user_id.label("user_id"),  # type: ignore[union-attr]
+            TagLinks.date_linked.label("event_date"),  # type: ignore[union-attr]
+            literal(0).label("lane"),
+            TagLinks.image_id.label("tiebreak"),  # type: ignore[attr-defined]
+        )
+        .where(TagLinks.tag_id == tag_id)  # type: ignore[arg-type]
+        .order_by(desc(TagLinks.date_linked), desc(TagLinks.image_id))  # type: ignore[arg-type]
+        .limit(branch_limit)
+    )
+
+    history_branch = (
+        select(
+            TagHistory.tag_history_id.label("tag_history_id"),  # type: ignore[union-attr]
+            TagHistory.action.label("action"),  # type: ignore[union-attr]
+            TagHistory.image_id.label("image_id"),  # type: ignore[union-attr]
+            TagHistory.user_id.label("user_id"),  # type: ignore[union-attr]
+            TagHistory.date.label("event_date"),  # type: ignore[union-attr]
+            literal(1).label("lane"),
+            TagHistory.tag_history_id.label("tiebreak"),  # type: ignore[union-attr]
+        )
+        .where(TagHistory.tag_id == tag_id)  # type: ignore[arg-type]
+        .where(_TAG_HISTORY_DEDUP_FILTER)
+        .order_by(desc(TagHistory.date), desc(TagHistory.tag_history_id))  # type: ignore[arg-type]
+        .limit(branch_limit)
+    )
+
+    merged = union_all(link_branch, history_branch).subquery()
+    return (
+        select(merged)
+        .order_by(desc(merged.c.event_date), desc(merged.c.lane), desc(merged.c.tiebreak))
+        .limit(per_page)
+        .offset(offset)
+    )
+
+
+async def _tag_usage_history_total(db: AsyncSession, tag_id: int) -> int:
+    """Total usage-history events for a tag: sum of two plain COUNTs.
+
+    Deliberately not COUNT(*) over the union subquery — measured ~10x slower
+    (815ms vs 80ms on the hottest tag) because MariaDB materializes the union
+    into a temp table before it can count it.
+    """
+    link_total = (
+        await db.execute(
+            select(func.count()).select_from(TagLinks).where(TagLinks.tag_id == tag_id)  # type: ignore[arg-type]
+        )
+    ).scalar() or 0
+    history_total = (
+        await db.execute(
+            select(func.count())
+            .select_from(TagHistory)
+            .where(TagHistory.tag_id == tag_id)  # type: ignore[arg-type]
+            .where(_TAG_HISTORY_DEDUP_FILTER)
+        )
+    ).scalar() or 0
+    return link_total + history_total
+
+
 @router.get("/{tag_id}/usage-history", response_model=TagHistoryListResponse)
 async def get_tag_usage_history(
     tag_id: Annotated[int, Path(description="Tag ID")],
@@ -1262,63 +1418,47 @@ async def get_tag_usage_history(
     """
     Get tag usage history (add/remove on images).
 
-    Returns paginated list of when this tag was added or removed from images.
+    Returns a paginated, most-recent-first list of tag add/remove events,
+    merging tag_links (upload-time adds) with tag_history (edit-flow adds and
+    all removes) — see _tag_usage_history_union for the merge mechanics.
     """
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
     if not tag_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Query tag history with user info
-    # Eager load user groups for UserSummary
-    query = (
-        select(TagHistory, Users)
-        .outerjoin(Users, TagHistory.user_id == Users.user_id)  # type: ignore[arg-type]
-        .options(
-            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+    total = await _tag_usage_history_total(db, tag_id)
+
+    union_query = _tag_usage_history_union(tag_id, pagination.offset, pagination.per_page)
+    rows = (await db.execute(union_query)).all()
+
+    # Users can't be eager-loaded through a union; fetch the page's distinct
+    # users in one follow-up query instead.
+    user_ids = {row.user_id for row in rows if row.user_id is not None}
+    users_by_id: dict[int, Users] = {}
+    if user_ids:
+        users_result = await db.execute(
+            select(Users)
+            .options(
+                selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+            )
+            .where(Users.user_id.in_(user_ids))  # type: ignore[union-attr]
         )
-        .where(TagHistory.tag_id == tag_id)  # type: ignore[arg-type]
-    )
-
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await db.execute(count_query)).scalar() or 0
-
-    # Paginate and order by most recent first
-    # Secondary sort by tag_history_id for stable ordering when timestamps match
-    query = (
-        query.order_by(
-            desc(TagHistory.date),  # type: ignore[arg-type]
-            desc(TagHistory.tag_history_id),  # type: ignore[arg-type]
-        )
-        .offset(pagination.offset)
-        .limit(pagination.per_page)
-    )
-
-    result = await db.execute(query)
-    rows = result.all()
+        users_by_id = {
+            user.user_id: user for user in users_result.scalars().all() if user.user_id is not None
+        }
 
     items = []
-    for history, user in rows:
-        user_summary = None
-        if user:
-            user_summary = UserSummary(
-                user_id=user.user_id,
-                username=user.username,
-                avatar=user.avatar,
-                avatar_in_r2=user.avatar_in_r2,
-                user_title=user.user_title,
-                groups=user.groups if user else [],
-            )
-
+    for row in rows:
+        user = users_by_id.get(row.user_id) if row.user_id is not None else None
         items.append(
             TagHistoryResponse(
-                tag_history_id=history.tag_history_id,
-                image_id=history.image_id,
-                tag_id=history.tag_id,
-                action="added" if history.action == "a" else "removed",
-                user=user_summary,
-                date=history.date,
+                tag_history_id=row.tag_history_id,
+                image_id=row.image_id,
+                tag_id=tag_id,
+                action="added" if row.action == "a" else "removed",
+                user=_tag_history_user_summary(user),
+                date=row.event_date,
             )
         )
 
