@@ -1060,6 +1060,66 @@ class TestUserHistoryTagLinks:
         assert data["total"] == 0
         assert data["items"] == []
 
+    async def test_multi_tag_upload_same_timestamp_paginates_without_duplicates_or_omissions(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """N tag_links rows from one upload (same image, same shared
+        timestamp) must each appear exactly once across all pages, never
+        duplicated or dropped.
+
+        tag_links' primary key is (tag_id, image_id); kind 3's tiebreak is
+        image_id alone, so N links on one image sharing a date_linked value
+        (exactly what app.services.upload.link_tags_to_image produces: one
+        TagLinks row per tag, all left at the same server-default
+        timestamp) used to collide on the full (ts, prio, kind, tiebreak)
+        sort tuple with nothing left to break the tie. The per-branch LIMIT
+        (offset + per_page) then picked an arbitrary subset of that tied
+        group — a different subset on every page request, since the LIMIT
+        value itself depends on the requested page — so paginating with a
+        small per_page could show a link twice or skip it entirely. Uses 12
+        tags with per_page=1 so 12 single-row page fetches make any
+        arbitrary slicing overwhelmingly likely to duplicate or omit.
+        """
+        user = await self._make_user(db_session, "userhistmultitaguser")
+        image = await self._make_image(db_session, user, "userhistmultitag")
+
+        shared_date = datetime(2026, 1, 1, tzinfo=UTC)
+        tags = []
+        for i in range(12):
+            tag = Tags(title=f"multi tag upload tag {i}", type=TagType.THEME)
+            db_session.add(tag)
+            await db_session.commit()
+            await db_session.refresh(tag)
+            tags.append(tag)
+            db_session.add(
+                TagLinks(
+                    tag_id=tag.tag_id,
+                    image_id=image.image_id,
+                    user_id=user.user_id,
+                    date_linked=shared_date,
+                )
+            )
+        await db_session.commit()
+
+        seen_tag_ids: list[int] = []
+        for page in range(1, 13):
+            response = await client.get(
+                f"/api/v1/users/{user.user_id}/history?page={page}&per_page=1"
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["total"] == 12
+            assert len(data["items"]) == 1
+            item = data["items"][0]
+            assert item["type"] == "tag_usage"
+            assert item["image_id"] == image.image_id
+            seen_tag_ids.append(item["tag"]["tag_id"])
+
+        # Every tag appears, and exactly once: sorted equality catches both
+        # a duplicate (some tag_id repeated, so another is necessarily
+        # missing from a 12-item list) and an outright omission.
+        assert sorted(seen_tag_ids) == sorted(tag.tag_id for tag in tags)
+
 
 @pytest.mark.api
 class TestUserHistoryLinkedTags:

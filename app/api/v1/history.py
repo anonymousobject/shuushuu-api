@@ -79,6 +79,19 @@ def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
     spaces (tag_history_id vs image_id) — for every other kind, prio already
     implies kind, so ordering is otherwise unchanged from before.
 
+    `id_a` is appended as the FINAL outer sort key, after `tiebreak`. For
+    kinds 1/2/4, id_a *is* tiebreak (same column projected twice), so this
+    is a no-op there. It is not a no-op for kind 3: tag_links' primary key
+    is (tag_id, image_id), and tiebreak is image_id, so two links on the
+    *same image* (an upload tagging N tags at once — see
+    app.services.upload.link_tags_to_image's per-tag TagLinks loop, which
+    leaves date_linked at its shared server-default timestamp for every row
+    in the batch) collide on (ts, prio, kind, tiebreak) with only tag_id
+    (id_a) distinguishing them. An unbroken tie there is not just cosmetically
+    nondeterministic: the per-branch LIMIT below picks a different arbitrary
+    subset of the tied group depending on `offset + per_page`, which differs
+    per page, so paginating could silently duplicate or drop a link.
+
     Each branch pushes its own ORDER BY + LIMIT (offset + per_page) *before*
     the union — required, not an optimization, same rationale as
     _tag_usage_history_union in app.api.v1.tags: MariaDB materializes UNION
@@ -86,6 +99,12 @@ def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
     full merged set (1.13M rows for the hottest user) regardless of indexes.
     This is lossless: the global top (offset + per_page) rows are
     necessarily contained in each branch's own top (offset + per_page) rows.
+    The kind-3 branch's own ORDER BY carries the same tag_id tie-break as
+    the outer query (its prio/kind are constant within the branch, so
+    date_linked, image_id, tag_id is the branch-local restriction of the
+    outer ts/tiebreak/id_a order) — required to keep that pushdown lossless
+    too; the other three branches don't need it since id_a already equals
+    their tiebreak.
     """
     branch_limit = offset + per_page
 
@@ -128,7 +147,11 @@ def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
             TagLinks.image_id.label("tiebreak"),  # type: ignore[attr-defined]
         )
         .where(TagLinks.user_id == user_id)  # type: ignore[arg-type]
-        .order_by(desc(TagLinks.date_linked), desc(TagLinks.image_id))  # type: ignore[arg-type]
+        .order_by(
+            desc(TagLinks.date_linked),  # type: ignore[arg-type]
+            desc(TagLinks.image_id),  # type: ignore[arg-type]
+            desc(TagLinks.tag_id),  # type: ignore[arg-type]
+        )
         .limit(branch_limit)
     )
 
@@ -155,6 +178,7 @@ def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
             desc(merged.c.prio),
             desc(merged.c.kind),
             desc(merged.c.tiebreak),
+            desc(merged.c.id_a),
         )
         .limit(per_page)
         .offset(offset)
