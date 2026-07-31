@@ -5,10 +5,17 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import AdminActionType, DeactivationReason, ImageStatus
+from app.config import (
+    AdminActionType,
+    DeactivationReason,
+    ImageStatus,
+    ReviewOutcome,
+    ReviewStatus,
+)
 from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_report import ImageReports
+from app.models.image_review import ImageReviews
 from app.models.image_status_history import ImageStatusHistory
 from app.models.user import Users
 from app.services.image_status import change_image_status
@@ -20,6 +27,20 @@ async def _mk_image(db: AsyncSession, user_id: int, status: int = ImageStatus.AC
     await db.commit()
     await db.refresh(img)
     return img
+
+
+async def _mk_open_review(db: AsyncSession, image_id: int, initiated_by: int) -> ImageReviews:
+    review = ImageReviews(
+        image_id=image_id,
+        initiated_by=initiated_by,
+        reason_category=DeactivationReason.OTHER,
+        status=ReviewStatus.OPEN,
+        outcome=ReviewOutcome.PENDING,
+    )
+    db.add(review)
+    await db.commit()
+    await db.refresh(review)
+    return review
 
 
 async def test_deactivate_sets_fields_history_and_audit(db_session: AsyncSession):
@@ -225,3 +246,119 @@ async def test_status_change_syncs_ml_suggestions(db_session: AsyncSession):
         )
     ).scalars().all()
     assert remaining == []
+
+
+async def test_manual_status_change_supersedes_open_review(db_session: AsyncSession):
+    """A mod deciding the image's fate by hand closes the open review.
+
+    Otherwise the review keeps collecting votes on a decision already made, and
+    check_review_deadlines eventually re-applies its own outcome — a KEEP close
+    silently reactivating the image the mod just deactivated.
+    """
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id, status=ImageStatus.REVIEW)
+    review = await _mk_open_review(db_session, img.image_id, actor.user_id)
+
+    await change_image_status(
+        db_session,
+        img,
+        actor,
+        new_status=ImageStatus.DEACTIVATED,
+        reason_category=DeactivationReason.OTHER,
+        reason="low quality edit",
+    )
+    await db_session.commit()
+    await db_session.refresh(review)
+
+    assert review.status == ReviewStatus.CLOSED
+    assert review.outcome == ReviewOutcome.SUPERSEDED
+    assert review.closed_by == actor.user_id
+    assert review.closed_at is not None
+
+    close_action = (
+        await db_session.execute(
+            select(AdminActions).where(
+                AdminActions.review_id == review.review_id,
+                AdminActions.action_type == AdminActionType.REVIEW_CLOSE,
+            )
+        )
+    ).scalar_one()
+    assert close_action.details["outcome"] == ReviewOutcome.SUPERSEDED
+    assert close_action.details["new_status"] == ImageStatus.DEACTIVATED
+
+
+async def test_supersede_fires_on_any_manual_status_change(db_session: AsyncSession):
+    """Not just deactivation — restoring the image by hand also settles the review."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id, status=ImageStatus.REVIEW)
+    review = await _mk_open_review(db_session, img.image_id, actor.user_id)
+
+    await change_image_status(
+        db_session, img, actor, new_status=ImageStatus.ACTIVE, reason="looks fine after all"
+    )
+    await db_session.commit()
+    await db_session.refresh(review)
+
+    assert review.status == ReviewStatus.CLOSED
+    assert review.outcome == ReviewOutcome.SUPERSEDED
+
+
+async def test_review_start_does_not_supersede_its_own_review(db_session: AsyncSession):
+    """Opening a review sets the image to REVIEW through this same service —
+    that status change must not close the review it was made for."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id)
+    review = await _mk_open_review(db_session, img.image_id, actor.user_id)
+
+    await change_image_status(
+        db_session,
+        img,
+        actor,
+        new_status=ImageStatus.REVIEW,
+        action_type=AdminActionType.REVIEW_START,
+        review_id=review.review_id,
+    )
+    await db_session.commit()
+    await db_session.refresh(review)
+
+    assert review.status == ReviewStatus.OPEN
+    assert review.outcome == ReviewOutcome.PENDING
+
+
+async def test_review_close_keeps_its_own_outcome(db_session: AsyncSession):
+    """The deadline job closes the review itself, then applies the outcome through
+    this service. The hook must not overwrite that outcome with SUPERSEDED."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id, status=ImageStatus.REVIEW)
+    review = await _mk_open_review(db_session, img.image_id, actor.user_id)
+    # Deliberately unflushed, mirroring _close_review: the session is
+    # autoflush=False, so a SELECT here still sees status=OPEN in the database.
+    # Only the review_id guard keeps the hook off this path.
+    review.status = ReviewStatus.CLOSED
+    review.outcome = ReviewOutcome.KEEP
+
+    await change_image_status(
+        db_session,
+        img,
+        None,
+        new_status=ImageStatus.ACTIVE,
+        action_type=AdminActionType.REVIEW_CLOSE,
+        review_id=review.review_id,
+    )
+    await db_session.commit()
+    await db_session.refresh(review)
+
+    assert review.outcome == ReviewOutcome.KEEP
+
+
+async def test_lock_only_change_leaves_review_open(db_session: AsyncSession):
+    """Locking an image is not a verdict on it — the review keeps running."""
+    actor = (await db_session.execute(select(Users).where(Users.user_id == 1))).scalar_one()
+    img = await _mk_image(db_session, actor.user_id, status=ImageStatus.REVIEW)
+    review = await _mk_open_review(db_session, img.image_id, actor.user_id)
+
+    await change_image_status(db_session, img, actor, locked=True)
+    await db_session.commit()
+    await db_session.refresh(review)
+
+    assert review.status == ReviewStatus.OPEN
