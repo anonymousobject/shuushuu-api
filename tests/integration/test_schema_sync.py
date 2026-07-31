@@ -64,6 +64,15 @@ def get_column_types(inspector, table_name: str) -> dict[str, dict]:
     return columns
 
 
+def get_index_columns(inspector, table_name: str) -> dict[str, list[str]]:
+    """Get index column lists for a table, keyed by index name.
+
+    Column order is preserved (not sorted) since some indexes here depend
+    on exact column order matching a query's ORDER BY clause.
+    """
+    return {idx["name"]: idx["column_names"] for idx in inspector.get_indexes(table_name)}
+
+
 def normalize_fk_action(action: str | None) -> str | None:
     """Normalize FK action for comparison (handle NO ACTION vs None)."""
     if action is None or action == "NO ACTION":
@@ -267,4 +276,52 @@ class TestSchemaSync:
         if differences:
             pytest.fail(
                 "Column type differences between models and migrations:\n" + "\n".join(differences)
+            )
+
+    def test_tag_history_scan_indexes_match(self, schema_inspectors):
+        """
+        Verify the composite indexes for date-ordered tag/user history scans
+        exist in both models and migrations, with matching column order.
+
+        Column order matters: tag_links.idx_tag_links_user_date_image keeps
+        image_id explicit so the on-disk index order matches the query's
+        ORDER BY date_linked, image_id. Without it, InnoDB's implicit PK
+        suffix reorders the index and reintroduces a large filesort.
+        """
+        models_inspector, migrations_inspector = schema_inspectors
+
+        expected_indexes = {
+            "tag_links": {
+                "idx_tag_links_tag_date": ["tag_id", "date_linked"],
+                "idx_tag_links_user_date_image": ["user_id", "date_linked", "image_id"],
+            },
+            "tag_history": {
+                "idx_tag_history_tag_date": ["tag_id", "date"],
+                "idx_tag_history_user_date": ["user_id", "date"],
+            },
+        }
+
+        differences = []
+        for table, indexes in expected_indexes.items():
+            models_indexes = get_index_columns(models_inspector, table)
+            migrations_indexes = get_index_columns(migrations_inspector, table)
+
+            for index_name, expected_columns in indexes.items():
+                models_columns = models_indexes.get(index_name)
+                migrations_columns = migrations_indexes.get(index_name)
+
+                if models_columns != expected_columns:
+                    differences.append(
+                        f"{table}.{index_name}: models columns {models_columns} "
+                        f"!= expected {expected_columns}"
+                    )
+                if migrations_columns != expected_columns:
+                    differences.append(
+                        f"{table}.{index_name}: migrations columns {migrations_columns} "
+                        f"!= expected {expected_columns}"
+                    )
+
+        if differences:
+            pytest.fail(
+                "Index differences for tag/user history scan indexes:\n" + "\n".join(differences)
             )
