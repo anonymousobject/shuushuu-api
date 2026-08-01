@@ -182,6 +182,31 @@ class TestResolveUrl:
         assert body["artist_tag_id"] is None
         assert body["artist_tag_title"] is None
 
+    async def test_resolve_artist_tag_lookup_failure_degrades_gracefully(self, resolve_client):
+        """A DB failure in the artist-tag lookup must not fail an import whose
+        resolver step already succeeded -- it degrades to null tag fields."""
+        from unittest.mock import AsyncMock, patch
+
+        with (
+            patch(
+                "app.api.v1.url_import._make_http_client",
+                _pixiv_client_factory("199999999", "21412050"),
+            ),
+            patch(
+                "app.api.v1.url_import.resolve_identity",
+                AsyncMock(side_effect=RuntimeError("db unavailable")),
+            ),
+        ):
+            response = await resolve_client.post(
+                "/api/v1/images/resolve-url",
+                json={"url": "https://www.pixiv.net/artworks/199999999"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["artist_id"] == "21412050"
+        assert body["artist_tag_id"] is None
+        assert body["artist_tag_title"] is None
+
 
 class TestFetchExternal:
     def _factory(self, handler):
