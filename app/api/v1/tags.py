@@ -1530,13 +1530,15 @@ async def create_tag(
         user_id=current_user.user_id,
     )
     db.add(new_tag)
-    await db.commit()
-    await db.refresh(new_tag)
+    await db.flush()
 
     # A tag born as an alias or a child had no history at all: only update_tag
     # logged relationship changes, so these rows were simply never written.
     # NULL on the old_* side is how update_tag already represents "set from
-    # nothing", so no new action type is needed.
+    # nothing", so no new action type is needed. The flush (not a commit)
+    # above gives us new_tag.tag_id for these rows while keeping the tag
+    # insert and its audit rows in a single transaction, same as update_tag
+    # bundles its audit rows with the row they describe.
     creation_audit: list[TagAuditLog] = []
     if new_tag.alias_of is not None:
         creation_audit.append(
@@ -1558,7 +1560,9 @@ async def create_tag(
         )
     if creation_audit:
         db.add_all(creation_audit)
-        await db.commit()
+
+    await db.commit()
+    await db.refresh(new_tag)
 
     await sync_tag_to_search(new_tag, db=db)
 

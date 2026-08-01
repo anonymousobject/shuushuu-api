@@ -2107,6 +2107,44 @@ class TestTagAuditLogCreation:
         assert entries[0].old_parent_id is None
         assert entries[0].new_parent_id == parent.tag_id
 
+    async def test_creating_a_tag_with_both_alias_and_parent_logs_both(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        token = await self._admin_token(client, db_session, "createaudit4")
+        target = Tags(title="create audit both target", type=TagType.THEME)
+        parent = Tags(title="create audit both parent", type=TagType.THEME)
+        db_session.add(target)
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(target)
+        await db_session.refresh(parent)
+
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "create audit both",
+                "type": TagType.THEME,
+                "alias_of": target.tag_id,
+                "inheritedfrom_id": parent.tag_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        new_id = response.json()["tag_id"]
+
+        entries = (
+            await db_session.execute(
+                select(TagAuditLog).where(TagAuditLog.tag_id == new_id)
+            )
+        ).scalars().all()
+
+        assert len(entries) == 2
+        by_action = {entry.action_type: entry for entry in entries}
+        assert by_action[TagAuditActionType.ALIAS_SET].old_alias_of is None
+        assert by_action[TagAuditActionType.ALIAS_SET].new_alias_of == target.tag_id
+        assert by_action[TagAuditActionType.PARENT_SET].old_parent_id is None
+        assert by_action[TagAuditActionType.PARENT_SET].new_parent_id == parent.tag_id
+
     async def test_creating_a_plain_tag_logs_nothing(
         self, client: AsyncClient, db_session: AsyncSession
     ):
