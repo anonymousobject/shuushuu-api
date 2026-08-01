@@ -515,3 +515,105 @@ class TestSearchEndpoint:
         assert len(hits) == 1
         assert hits[0]["tag_id"] == artist.tag_id
         assert hits[0]["matched_identity"] == "pixiv 21412050"
+
+    async def test_identity_query_on_later_page_does_not_inject_exact_hit(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A page-2+ request for an identity query isn't prepended with the
+        exact hit — only the first page is boosted, so the tag never
+        duplicates itself as a user paginates."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        other = Tags(title="Other Tag", type=TagType.THEME)
+        db_session.add_all([artist, other])
+        await db_session.commit()
+        await db_session.refresh(artist)
+        await db_session.refresh(other)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Every page (including the offset=0 reference check) returns the
+        # same unrelated tag — the artist is nowhere in Meilisearch's results.
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[other.tag_id], total=1
+        )
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "offset": 20, "limit": 1}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert [h["tag_id"] for h in hits] == [other.tag_id]
+        assert all(h["matched_identity"] is None for h in hits)
+
+    async def test_identity_query_total_consistent_across_pages(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """The same identity query reports the same total on page 1 and
+        page 2, even though the exact hit is only ever injected on page 1.
+
+        Meilisearch genuinely ranks the artist on page 1 (so it's *not* a
+        new hit — total shouldn't be bumped) but page 2's own slice
+        naturally doesn't contain it, since it's a different set of tags
+        entirely. A page-local-only "already found" check would wrongly
+        treat page 2 as a fresh discovery and inflate its total.
+        """
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        page2_tag = Tags(title="Page Two Tag", type=TagType.THEME)
+        db_session.add_all([artist, page2_tag])
+        await db_session.commit()
+        for tag in (artist, page2_tag):
+            await db_session.refresh(tag)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Meilisearch itself ranks the artist first (page 1); page 2 is a
+        # different, unrelated tag entirely — same overall total (5) on
+        # both calls, as real pagination of a stable query would look.
+        def fake_search_tags(_q, *, limit, offset, type_filter, exclude_aliases, sort):
+            tag_ids = [artist.tag_id] if offset == 0 else [page2_tag.tag_id]
+            return TagSearchResult(tag_ids=tag_ids, total=5)
+
+        mock_search_service.search_tags.side_effect = fake_search_tags
+
+        page1_response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "offset": 0, "limit": 1}
+        )
+        page2_response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "offset": 1, "limit": 1}
+        )
+        assert page1_response.status_code == 200
+        assert page2_response.status_code == 200
+
+        page1_total = page1_response.json()["total"]
+        page2_total = page2_response.json()["total"]
+        # The artist was genuinely part of Meilisearch's own result set
+        # (ranked on page 1), so it's never counted as "new" on either page:
+        # both totals equal Meilisearch's own total, unmodified.
+        assert page1_total == 5
+        assert page2_total == page1_total
+
+        # The second lookup made an extra reference call (page 1, offset=0)
+        # to answer "already found by Meilisearch" consistently.
+        assert mock_search_service.search_tags.call_count == 3

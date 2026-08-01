@@ -34,6 +34,39 @@ def get_search_service() -> SearchService:
     )
 
 
+async def _identity_hit_already_on_first_page(
+    search_service: SearchService,
+    tag_id: int,
+    q: str,
+    *,
+    limit: int,
+    type_id: int | None,
+    exclude_aliases: bool,
+    sort: list[str] | None,
+) -> bool:
+    """Whether Meilisearch's first page (offset=0) for this query already has tag_id.
+
+    Used only when the caller requested a later page, so the exact-identity
+    layer's "already found by Meilisearch" check has a stable, page-
+    independent answer — see the comment in `search()`. Best-effort: a
+    failure here shouldn't 503 an otherwise-successful request, so it's
+    treated as "already found" (no `total` inflation) rather than raising.
+    """
+    try:
+        first_page = await search_service.search_tags(
+            q,
+            limit=limit,
+            offset=0,
+            type_filter=type_id,
+            exclude_aliases=exclude_aliases,
+            sort=sort,
+        )
+    except Exception:
+        logger.warning("meilisearch_identity_first_page_check_failed", query=q, exc_info=True)
+        return True
+    return tag_id in first_page.tag_ids
+
+
 @router.get("", response_model=SearchResponse)
 async def search(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -114,25 +147,52 @@ async def search(
     # owns it — even if Meilisearch's fuzzy match missed or ranked it lower.
     # Runs after the Meilisearch call above, so Meilisearch downtime still
     # 503s exactly as before this layer existed.
+    #
+    # Pagination semantics: the hit is only ever injected/reflagged into the
+    # FIRST page (offset == 0). Doing this on later pages too would make the
+    # tag appear to "jump" into view on every page as a user paginates, and
+    # — the actual bug this comment replaces — checking for it against a
+    # later page's own (unrelated) `hits` almost never finds it there, so
+    # every page would independently decide it's "new" and re-increment
+    # `total`, giving each page a different, ever-growing total for the same
+    # query. To keep `total` identical no matter which page is requested,
+    # "already found by Meilisearch" is always resolved against Meilisearch's
+    # first page for this query — reusing this request's own result when
+    # offset is already 0, otherwise issuing one extra lookup at offset=0.
     identity = parse_identity_query(q) if q else None
     if identity is not None:
         exact_tag = await resolve_identity(db, identity)
         if exact_tag is not None:
             label = f"{identity.site} {identity.external_id}"
-            existing = next((h for h in hits if h.tag_id == exact_tag.tag_id), None)
-            if existing is not None:
-                hits.remove(existing)
-                existing.matched_identity = label
-                hits.insert(0, existing)
+            if offset == 0:
+                already_found = exact_tag.tag_id in result.tag_ids
             else:
-                exact_hit = TagSearchHit.model_validate(exact_tag)
-                exact_hit.matched_identity = label
-                hits.insert(0, exact_hit)
+                already_found = await _identity_hit_already_on_first_page(
+                    search_service,
+                    exact_tag.tag_id,  # type: ignore[arg-type]
+                    q,
+                    limit=limit,
+                    type_id=type_id,
+                    exclude_aliases=exclude_aliases,
+                    sort=sort,
+                )
+            if not already_found:
                 total += 1
-                # Prepending onto an already-full page would exceed the
-                # requested page size; drop the lowest-ranked meili hit to
-                # keep the limit contract.
-                hits = hits[:limit]
+
+            if offset == 0:
+                existing = next((h for h in hits if h.tag_id == exact_tag.tag_id), None)
+                if existing is not None:
+                    hits.remove(existing)
+                    existing.matched_identity = label
+                    hits.insert(0, existing)
+                else:
+                    exact_hit = TagSearchHit.model_validate(exact_tag)
+                    exact_hit.matched_identity = label
+                    hits.insert(0, exact_hit)
+                    # Prepending onto an already-full page would exceed the
+                    # requested page size; drop the lowest-ranked meili hit
+                    # to keep the limit contract.
+                    hits = hits[:limit]
 
     return SearchResponse(
         query=q,
