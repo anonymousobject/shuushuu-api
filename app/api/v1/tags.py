@@ -1533,6 +1533,33 @@ async def create_tag(
     await db.commit()
     await db.refresh(new_tag)
 
+    # A tag born as an alias or a child had no history at all: only update_tag
+    # logged relationship changes, so these rows were simply never written.
+    # NULL on the old_* side is how update_tag already represents "set from
+    # nothing", so no new action type is needed.
+    creation_audit: list[TagAuditLog] = []
+    if new_tag.alias_of is not None:
+        creation_audit.append(
+            TagAuditLog(
+                tag_id=new_tag.tag_id,
+                action_type=TagAuditActionType.ALIAS_SET,
+                new_alias_of=new_tag.alias_of,
+                user_id=current_user.user_id,
+            )
+        )
+    if new_tag.inheritedfrom_id is not None:
+        creation_audit.append(
+            TagAuditLog(
+                tag_id=new_tag.tag_id,
+                action_type=TagAuditActionType.PARENT_SET,
+                new_parent_id=new_tag.inheritedfrom_id,
+                user_id=current_user.user_id,
+            )
+        )
+    if creation_audit:
+        db.add_all(creation_audit)
+        await db.commit()
+
     await sync_tag_to_search(new_tag, db=db)
 
     return TagResponse.model_validate(new_tag)

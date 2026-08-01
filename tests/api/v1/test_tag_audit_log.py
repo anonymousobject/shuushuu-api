@@ -2006,3 +2006,122 @@ class TestTagAuditLogExternalLinks:
         # The canonical tag's own setup link, plus the one that moved. The
         # colliding URL must NOT be added again.
         assert sorted(e.link_url for e in added) == [shared, unique]
+
+
+@pytest.mark.api
+class TestTagAuditLogCreation:
+    """A tag born as an alias or child must have that recorded."""
+
+    async def _admin_token(self, client: AsyncClient, db_session: AsyncSession, username: str) -> str:
+        for title, desc in (("tag_create", "Create tags"), ("tag_update", "Update tags")):
+            db_session.add(Perms(title=title, desc=desc))
+        await db_session.commit()
+
+        admin = Users(
+            username=username,
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email=f"{username}@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        perms = (await db_session.execute(select(Perms))).scalars().all()
+        for perm in perms:
+            db_session.add(
+                UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+            )
+        await db_session.commit()
+
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": "AdminPassword123!"},
+        )
+        return login.json()["access_token"]
+
+    async def test_creating_a_tag_as_an_alias_logs_alias_set(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        token = await self._admin_token(client, db_session, "createaudit1")
+        target = Tags(title="create audit target", type=TagType.THEME)
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "create audit alias",
+                "type": TagType.THEME,
+                "alias_of": target.tag_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        new_id = response.json()["tag_id"]
+
+        entries = (
+            await db_session.execute(
+                select(TagAuditLog).where(TagAuditLog.tag_id == new_id)
+            )
+        ).scalars().all()
+
+        assert len(entries) == 1
+        assert entries[0].action_type == TagAuditActionType.ALIAS_SET
+        assert entries[0].old_alias_of is None
+        assert entries[0].new_alias_of == target.tag_id
+
+    async def test_creating_a_tag_with_a_parent_logs_parent_set(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        token = await self._admin_token(client, db_session, "createaudit2")
+        parent = Tags(title="create audit parent", type=TagType.THEME)
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+        response = await client.post(
+            "/api/v1/tags",
+            json={
+                "title": "create audit child",
+                "type": TagType.THEME,
+                "inheritedfrom_id": parent.tag_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        new_id = response.json()["tag_id"]
+
+        entries = (
+            await db_session.execute(
+                select(TagAuditLog).where(TagAuditLog.tag_id == new_id)
+            )
+        ).scalars().all()
+
+        assert len(entries) == 1
+        assert entries[0].action_type == TagAuditActionType.PARENT_SET
+        assert entries[0].old_parent_id is None
+        assert entries[0].new_parent_id == parent.tag_id
+
+    async def test_creating_a_plain_tag_logs_nothing(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        token = await self._admin_token(client, db_session, "createaudit3")
+
+        response = await client.post(
+            "/api/v1/tags",
+            json={"title": "create audit plain", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        entries = (
+            await db_session.execute(
+                select(TagAuditLog).where(TagAuditLog.tag_id == response.json()["tag_id"])
+            )
+        ).scalars().all()
+        assert entries == []
