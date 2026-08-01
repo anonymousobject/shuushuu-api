@@ -54,6 +54,14 @@ class TagAuditLogBase(SQLModel):
     character_tag_id: int | None = Field(default=None)
     source_tag_id: int | None = Field(default=None)
 
+    # External-link fields. link_url identifies the affected link for every
+    # link_* action. It is deliberately NOT a foreign key to
+    # tag_external_links.link_id: a link_removed entry has to outlive the row it
+    # describes, so the URL text is the durable identifier.
+    link_url: str | None = Field(default=None, max_length=2000)
+    old_archive_url: str | None = Field(default=None, max_length=2000)
+    new_archive_url: str | None = Field(default=None, max_length=2000)
+
 
 class TagAuditLog(TagAuditLogBase, table=True):
     """

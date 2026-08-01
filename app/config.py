@@ -524,6 +524,14 @@ class TagAuditActionType:
     SOURCE_LINKED = "source_linked"
     SOURCE_UNLINKED = "source_unlinked"
 
+    # External-link events. link_url on the audit row identifies the affected
+    # link; reordering is deliberately not audited (cosmetic display order).
+    LINK_ADDED = "link_added"
+    LINK_REMOVED = "link_removed"
+    LINK_DEAD_MARKED = "link_dead_marked"
+    LINK_DEAD_CLEARED = "link_dead_cleared"
+    LINK_ARCHIVE_CHANGED = "link_archive_changed"
+
 
 class TagType:
     """Tag type constants"""
