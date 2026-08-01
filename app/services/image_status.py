@@ -21,6 +21,7 @@ from app.models.image_status_history import ImageStatusHistory
 from app.models.user import Users
 from app.services.ml_suggestion_lifecycle import sync_suggestions_for_status_transition
 from app.services.repost import migrate_repost_data
+from app.services.review_lifecycle import supersede_open_reviews_for_status_change
 from app.tasks.queue import enqueue_job
 
 
@@ -141,6 +142,17 @@ async def change_image_status(
             await sync_suggestions_for_status_transition(
                 db, image.image_id, previous_status, new_status
             )
+
+            # A moderator deciding the image's status by hand settles any review
+            # still voting on it. Skipped when review_id is set, because then the
+            # caller IS a review action: REVIEW_START would close the review it
+            # just opened, and REVIEW_CLOSE would overwrite the outcome it just
+            # recorded (its own status write is unflushed, so a SELECT here would
+            # still read the review as open).
+            if review_id is None:
+                await supersede_open_reviews_for_status_change(
+                    db, image.image_id, actor_id, new_status
+                )
 
     if locked is not None:
         image.locked = 1 if locked else 0
