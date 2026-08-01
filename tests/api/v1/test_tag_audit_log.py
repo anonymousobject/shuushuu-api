@@ -2163,3 +2163,118 @@ class TestTagAuditLogCreation:
             )
         ).scalars().all()
         assert entries == []
+
+
+@pytest.mark.api
+class TestTagHistoryIncomingRelations:
+    """A target tag's history must show relationships pointed at it."""
+
+    async def test_canonical_tag_sees_incoming_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # The alias_set row is stored against the ALIAS tag, so the canonical tag
+        # never saw that something was aliased to it.
+        canonical = Tags(title="incoming canonical", type=TagType.THEME)
+        alias = Tags(title="incoming alias", type=TagType.THEME)
+        db_session.add_all([canonical, alias])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(alias)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=alias.tag_id,
+                action_type=TagAuditActionType.ALIAS_SET,
+                new_alias_of=canonical.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{canonical.tag_id}/history")
+        assert response.status_code == 200
+        items = response.json()["items"]
+
+        assert len(items) == 1
+        assert items[0]["action_type"] == TagAuditActionType.ALIAS_SET
+        assert items[0]["tag_id"] == alias.tag_id
+        # subject_tag names the tag the row is ABOUT, so the frontend can render
+        # "Alias added: <alias>" instead of a badge pointing back at itself.
+        assert items[0]["subject_tag"]["tag_id"] == alias.tag_id
+        assert items[0]["subject_tag"]["title"] == "incoming alias"
+
+    async def test_parent_tag_sees_incoming_child(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        parent = Tags(title="incoming parent", type=TagType.THEME)
+        child = Tags(title="incoming child", type=TagType.THEME)
+        db_session.add_all([parent, child])
+        await db_session.commit()
+        await db_session.refresh(parent)
+        await db_session.refresh(child)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=child.tag_id,
+                action_type=TagAuditActionType.PARENT_SET,
+                new_parent_id=parent.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{parent.tag_id}/history")
+        items = response.json()["items"]
+
+        assert len(items) == 1
+        assert items[0]["subject_tag"]["tag_id"] == child.tag_id
+
+    async def test_own_history_still_returns_its_own_rows(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # Regression guard: broadening the WHERE must not drop the original rows.
+        tag = Tags(title="own rows", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                action_type=TagAuditActionType.RENAME,
+                old_title="before",
+                new_title="own rows",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/history")
+        items = response.json()["items"]
+
+        assert len(items) == 1
+        assert items[0]["action_type"] == TagAuditActionType.RENAME
+        assert items[0]["subject_tag"]["tag_id"] == tag.tag_id
+
+    async def test_link_fields_are_exposed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        tag = Tags(title="link fields exposed", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                action_type=TagAuditActionType.LINK_ARCHIVE_CHANGED,
+                link_url="https://example.com/subject",
+                old_archive_url=None,
+                new_archive_url="https://web.archive.org/x",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/history")
+        item = response.json()["items"][0]
+
+        assert item["link_url"] == "https://example.com/subject"
+        assert item["old_archive_url"] is None
+        assert item["new_archive_url"] == "https://web.archive.org/x"

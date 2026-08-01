@@ -1171,6 +1171,14 @@ async def get_tag_history(
             (TagAuditLog.tag_id == tag_id)  # type: ignore[arg-type]
             | (TagAuditLog.character_tag_id == tag_id)
             | (TagAuditLog.source_tag_id == tag_id)
+            # Relationships pointed AT this tag. The alias_set/parent_set row
+            # lives on the other tag, so without these a canonical tag never
+            # learns that something was aliased to it. All four columns carry
+            # MariaDB's auto-created FK indexes.
+            | (TagAuditLog.old_alias_of == tag_id)
+            | (TagAuditLog.new_alias_of == tag_id)
+            | (TagAuditLog.old_parent_id == tag_id)
+            | (TagAuditLog.new_parent_id == tag_id)
         )
     )
 
@@ -1196,6 +1204,8 @@ async def get_tag_history(
     # Includes: character_tag, source_tag, alias targets, parent tags
     tag_ids_to_load: set[int] = set()
     for audit, _ in rows:
+        # The row's own subject, so an incoming entry can name the other side.
+        tag_ids_to_load.add(audit.tag_id)
         if audit.character_tag_id:
             tag_ids_to_load.add(audit.character_tag_id)
         if audit.source_tag_id:
@@ -1245,9 +1255,18 @@ async def get_tag_history(
             new_alias_of=audit.new_alias_of,
             old_parent_id=audit.old_parent_id,
             new_parent_id=audit.new_parent_id,
+            link_url=audit.link_url,
+            old_archive_url=audit.old_archive_url,
+            new_archive_url=audit.new_archive_url,
             user=user_summary,
             created_at=audit.created_at,
         )
+
+        subject_info = tags_map.get(audit.tag_id)
+        if subject_info:
+            response.subject_tag = LinkedTag(
+                tag_id=audit.tag_id, title=subject_info[0], type=subject_info[1]
+            )
 
         # Enrich with resolved tag info for related tags
         # Character-source links

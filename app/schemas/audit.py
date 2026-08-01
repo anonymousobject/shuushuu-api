@@ -60,6 +60,17 @@ class TagAuditLogResponse(BaseModel):
     character_tag: LinkedTag | None = None
     source_tag: LinkedTag | None = None
 
+    # The tag this entry is ABOUT — resolved for every entry, not only the
+    # incoming ones. An alias_set row is stored against the alias tag, so the
+    # canonical tag's history needs this to name the other side rather than
+    # rendering a badge that points back at itself.
+    subject_tag: LinkedTag | None = None
+
+    # External-link fields
+    link_url: str | None = None
+    old_archive_url: str | None = None
+    new_archive_url: str | None = None
+
     # Who made the change
     user: UserSummary | None = None
 
