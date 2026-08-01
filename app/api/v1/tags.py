@@ -95,6 +95,29 @@ def _shuu_wiki_sql_flag() -> ColumnElement[bool]:
     return or_(*(TagExternalLinks.url.like(f"%{m}%") for m in _SHUU_WIKI_URL_MARKERS))  # type: ignore[attr-defined]
 
 
+def _record_link_audit(
+    db: AsyncSession,
+    *,
+    tag_id: int,
+    action_type: str,
+    link_url: str,
+    user_id: int | None,
+    old_archive_url: str | None = None,
+    new_archive_url: str | None = None,
+) -> None:
+    """Queue an external-link audit row. Caller owns the commit."""
+    db.add(
+        TagAuditLog(
+            tag_id=tag_id,
+            action_type=action_type,
+            link_url=link_url,
+            user_id=user_id,
+            old_archive_url=old_archive_url,
+            new_archive_url=new_archive_url,
+        )
+    )
+
+
 async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalLinks]:
     """A tag's external links in display order.
 
@@ -1898,13 +1921,12 @@ async def add_tag_link(
 
     # Audit in the same transaction as the insert: a 409 rollback below must
     # take the audit row with it.
-    db.add(
-        TagAuditLog(
-            tag_id=tag_id,
-            action_type=TagAuditActionType.LINK_ADDED,
-            link_url=link_data.url,
-            user_id=current_user.user_id,
-        )
+    _record_link_audit(
+        db,
+        tag_id=tag_id,
+        action_type=TagAuditActionType.LINK_ADDED,
+        link_url=link_data.url,
+        user_id=current_user.user_id,
     )
 
     try:
@@ -1995,13 +2017,12 @@ async def delete_tag_link(
 
     # Capture the URL while the row is still loaded — after db.delete it is gone,
     # and the audit entry has to outlive it.
-    db.add(
-        TagAuditLog(
-            tag_id=tag_id,
-            action_type=TagAuditActionType.LINK_REMOVED,
-            link_url=link.url,
-            user_id=current_user.user_id,
-        )
+    _record_link_audit(
+        db,
+        tag_id=tag_id,
+        action_type=TagAuditActionType.LINK_REMOVED,
+        link_url=link.url,
+        user_id=current_user.user_id,
     )
     await db.delete(link)
     await db.commit()
@@ -2018,6 +2039,7 @@ async def update_tag_link(
     tag_id: Annotated[int, Path(description="Tag ID")],
     link_id: Annotated[int, Path(description="Link ID")],
     link_update: TagExternalLinkUpdate,
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagExternalLinkResponse:
@@ -2040,12 +2062,41 @@ async def update_tag_link(
             detail="Link not found or does not belong to this tag",
         )
 
+    # The dead flag and the archive URL are independent inputs on one endpoint,
+    # so a call that changes both records both. Each write is conditioned on an
+    # actual change: a no-op PATCH must not manufacture history.
     if link_update.is_dead is True and link.dead_at is None:
         link.dead_at = datetime.now(UTC)
-    elif link_update.is_dead is False:
+        _record_link_audit(
+            db,
+            tag_id=tag_id,
+            action_type=TagAuditActionType.LINK_DEAD_MARKED,
+            link_url=link.url,
+            user_id=current_user.user_id,
+        )
+    elif link_update.is_dead is False and link.dead_at is not None:
         link.dead_at = None
+        _record_link_audit(
+            db,
+            tag_id=tag_id,
+            action_type=TagAuditActionType.LINK_DEAD_CLEARED,
+            link_url=link.url,
+            user_id=current_user.user_id,
+        )
 
-    if "archive_url" in link_update.model_fields_set:
+    if (
+        "archive_url" in link_update.model_fields_set
+        and link_update.archive_url != link.archive_url
+    ):
+        _record_link_audit(
+            db,
+            tag_id=tag_id,
+            action_type=TagAuditActionType.LINK_ARCHIVE_CHANGED,
+            link_url=link.url,
+            old_archive_url=link.archive_url,
+            new_archive_url=link_update.archive_url,
+            user_id=current_user.user_id,
+        )
         link.archive_url = link_update.archive_url
 
     await db.commit()

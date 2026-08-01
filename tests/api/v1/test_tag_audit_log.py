@@ -1796,3 +1796,167 @@ class TestTagAuditLogExternalLinks:
         ).scalars().all()
         # Only the two link_added rows from setup.
         assert [e.action_type for e in entries] == [TagAuditActionType.LINK_ADDED] * 2
+
+    async def _tag_with_link(
+        self, client: AsyncClient, db_session: AsyncSession, title: str, token: str
+    ) -> tuple[Tags, int]:
+        tag = await self._tag(db_session, title)
+        created = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://example.com/subject"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        return tag, created.json()["link_id"]
+
+    async def _link_entries(self, db_session: AsyncSession, tag_id: int, action: str):
+        return (
+            await db_session.execute(
+                select(TagAuditLog)
+                .where(TagAuditLog.tag_id == tag_id)
+                .where(TagAuditLog.action_type == action)
+            )
+        ).scalars().all()
+
+    async def test_marking_link_dead_creates_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        admin, token = await self._admin_and_token(client, db_session, "linkaudit5")
+        headers = {"Authorization": f"Bearer {token}"}
+        tag, link_id = await self._tag_with_link(client, db_session, "dead mark", token)
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link_id}",
+            json={"is_dead": True},
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+        entries = await self._link_entries(
+            db_session, tag.tag_id, TagAuditActionType.LINK_DEAD_MARKED
+        )
+        assert len(entries) == 1
+        assert entries[0].link_url == "https://example.com/subject"
+        assert entries[0].user_id == admin.user_id
+
+    async def test_clearing_dead_flag_creates_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        _, token = await self._admin_and_token(client, db_session, "linkaudit6")
+        headers = {"Authorization": f"Bearer {token}"}
+        tag, link_id = await self._tag_with_link(client, db_session, "dead clear", token)
+
+        await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link_id}",
+            json={"is_dead": True},
+            headers=headers,
+        )
+        await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link_id}",
+            json={"is_dead": False},
+            headers=headers,
+        )
+
+        entries = await self._link_entries(
+            db_session, tag.tag_id, TagAuditActionType.LINK_DEAD_CLEARED
+        )
+        assert len(entries) == 1
+        assert entries[0].link_url == "https://example.com/subject"
+
+    async def test_redundant_dead_flag_creates_no_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # Clearing a flag that was never set changes nothing, so it logs nothing.
+        # Mirrors test_rename_with_same_name_creates_no_audit_log.
+        _, token = await self._admin_and_token(client, db_session, "linkaudit7")
+        headers = {"Authorization": f"Bearer {token}"}
+        tag, link_id = await self._tag_with_link(client, db_session, "dead noop", token)
+
+        await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link_id}",
+            json={"is_dead": False},
+            headers=headers,
+        )
+
+        assert (
+            await self._link_entries(
+                db_session, tag.tag_id, TagAuditActionType.LINK_DEAD_CLEARED
+            )
+            == []
+        )
+
+    async def test_archive_url_change_records_old_and_new(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        _, token = await self._admin_and_token(client, db_session, "linkaudit8")
+        headers = {"Authorization": f"Bearer {token}"}
+        tag, link_id = await self._tag_with_link(client, db_session, "archive set", token)
+
+        await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link_id}",
+            json={"archive_url": "https://web.archive.org/first"},
+            headers=headers,
+        )
+        await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link_id}",
+            json={"archive_url": "https://web.archive.org/second"},
+            headers=headers,
+        )
+
+        entries = await self._link_entries(
+            db_session, tag.tag_id, TagAuditActionType.LINK_ARCHIVE_CHANGED
+        )
+        assert len(entries) == 2
+        assert entries[0].old_archive_url is None
+        assert entries[0].new_archive_url == "https://web.archive.org/first"
+        assert entries[1].old_archive_url == "https://web.archive.org/first"
+        assert entries[1].new_archive_url == "https://web.archive.org/second"
+        assert all(e.link_url == "https://example.com/subject" for e in entries)
+
+    async def test_unchanged_archive_url_creates_no_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        _, token = await self._admin_and_token(client, db_session, "linkaudit9")
+        headers = {"Authorization": f"Bearer {token}"}
+        tag, link_id = await self._tag_with_link(client, db_session, "archive noop", token)
+
+        for _ in range(2):
+            await client.patch(
+                f"/api/v1/tags/{tag.tag_id}/links/{link_id}",
+                json={"archive_url": "https://web.archive.org/same"},
+                headers=headers,
+            )
+
+        entries = await self._link_entries(
+            db_session, tag.tag_id, TagAuditActionType.LINK_ARCHIVE_CHANGED
+        )
+        assert len(entries) == 1
+
+    async def test_dead_and_archive_in_one_call_create_two_entries(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # The two are independent inputs on one endpoint; collapsing them into a
+        # single row would lose one of the two facts.
+        _, token = await self._admin_and_token(client, db_session, "linkaudit10")
+        headers = {"Authorization": f"Bearer {token}"}
+        tag, link_id = await self._tag_with_link(client, db_session, "dead plus archive", token)
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/{link_id}",
+            json={"is_dead": True, "archive_url": "https://web.archive.org/both"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+        assert (
+            len(
+                await self._link_entries(
+                    db_session, tag.tag_id, TagAuditActionType.LINK_DEAD_MARKED
+                )
+            )
+            == 1
+        )
+        archive = await self._link_entries(
+            db_session, tag.tag_id, TagAuditActionType.LINK_ARCHIVE_CHANGED
+        )
+        assert len(archive) == 1
+        assert archive[0].new_archive_url == "https://web.archive.org/both"
