@@ -10,11 +10,14 @@ import httpx
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from PIL import Image as PILImage
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.auth import VerifiedUser
+from app.core.database import get_db
 from app.core.redis import get_redis
 from app.schemas.url_import import ResolvedImageOut, UrlResolveRequest, UrlResolveResponse
+from app.services.artist_identity import SITE_PIXIV, ArtistIdentity, resolve_identity
 from app.services.rate_limit import check_external_fetch_rate_limit, check_url_resolve_rate_limit
 from app.services.url_import import (
     BROWSER_USER_AGENT,
@@ -93,6 +96,7 @@ async def resolve_url(
     payload: UrlResolveRequest,
     current_user: VerifiedUser,
     redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: AsyncSession = Depends(get_db),
 ) -> UrlResolveResponse:
     """Resolve a supported external post URL to importable image candidates."""
     await check_url_resolve_rate_limit(current_user.id, redis_client)
@@ -114,11 +118,23 @@ async def resolve_url(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except UpstreamError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    artist_tag_id: int | None = None
+    artist_tag_title: str | None = None
+    if post.artist_id and post.site == SITE_PIXIV:
+        artist_tag = await resolve_identity(
+            db, ArtistIdentity(site=SITE_PIXIV, external_id=post.artist_id)
+        )
+        if artist_tag is not None:
+            artist_tag_id = artist_tag.tag_id
+            artist_tag_title = artist_tag.title
     return UrlResolveResponse(
         site=post.site,
         canonical_url=post.canonical_url,
         title=post.title,
         artist_name=post.artist_name,
+        artist_id=post.artist_id,
+        artist_tag_id=artist_tag_id,
+        artist_tag_title=artist_tag_title,
         images=[
             ResolvedImageOut(
                 token=mint_token(image.full_url, image.headers),

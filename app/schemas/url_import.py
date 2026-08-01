@@ -29,4 +29,7 @@ class UrlResolveResponse(BaseModel):
     canonical_url: str
     title: str | None = None
     artist_name: str | None = None
+    artist_id: str | None = None
+    artist_tag_id: int | None = None
+    artist_tag_title: str | None = None
     images: list[ResolvedImageOut]

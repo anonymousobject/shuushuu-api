@@ -3,12 +3,58 @@
 import io
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import TagType
 from app.core.security import create_access_token
+from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 from app.models.user import Users
 
 FIXTURE_SINGLE = "https://urlimport-fixture.local/post/single"
 FIXTURE_MULTI = "https://urlimport-fixture.local/post/multi"
+
+
+def _pixiv_client_factory(illust_id: str, user_id: str):
+    """MockTransport client factory returning a minimal single-page pixiv artwork.
+
+    Mirrors tests/unit/test_url_import_pixiv.py's stubbed ajax response shape.
+    """
+    import httpx
+
+    def handler(request):
+        if request.url.path == f"/ajax/illust/{illust_id}":
+            return httpx.Response(
+                200,
+                json={
+                    "error": False,
+                    "body": {
+                        "title": "Sample artwork",
+                        "userName": "Some Artist",
+                        "userId": user_id,
+                        "pageCount": 1,
+                        "xRestrict": 0,
+                        "illustType": 0,
+                        "width": 100,
+                        "height": 100,
+                        "urls": {
+                            "small": (
+                                f"https://i.pximg.net/c/540x540_70/img-master/img/x/"
+                                f"{illust_id}_p0_master1200.jpg"
+                            ),
+                            "original": (
+                                f"https://i.pximg.net/img-original/img/x/{illust_id}_p0.png"
+                            ),
+                        },
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    def make(timeout):
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
+
+    return make
 
 
 @pytest.fixture
@@ -83,6 +129,58 @@ class TestResolveUrl:
         token = response.json()["images"][0]["token"]
         ref = verify_token(token)
         assert "/api/v1/images/url-import-fixture/" in ref.url
+
+    async def test_resolve_returns_known_artist_tag(
+        self, resolve_client, db_session: AsyncSession
+    ):
+        """When the pixiv artist_id maps to a tag, the response names it."""
+        from unittest.mock import patch
+
+        artist = Tags(title="TKennshou", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        with patch(
+            "app.api.v1.url_import._make_http_client",
+            _pixiv_client_factory("199999999", "21412050"),
+        ):
+            response = await resolve_client.post(
+                "/api/v1/images/resolve-url",
+                json={"url": "https://www.pixiv.net/artworks/199999999"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["artist_id"] == "21412050"
+        assert body["artist_tag_id"] == artist.tag_id
+        assert body["artist_tag_title"] == "TKennshou"
+
+    async def test_resolve_unknown_artist_id_returns_null_tag(self, resolve_client):
+        """Unknown pixiv ID → artist_id present, tag fields null (no false match)."""
+        from unittest.mock import patch
+
+        with patch(
+            "app.api.v1.url_import._make_http_client",
+            _pixiv_client_factory("199999999", "21412050"),
+        ):
+            response = await resolve_client.post(
+                "/api/v1/images/resolve-url",
+                json={"url": "https://www.pixiv.net/artworks/199999999"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["artist_id"] == "21412050"
+        assert body["artist_tag_id"] is None
+        assert body["artist_tag_title"] is None
 
 
 class TestFetchExternal:
