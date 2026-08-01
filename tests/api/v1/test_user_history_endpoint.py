@@ -1120,6 +1120,125 @@ class TestUserHistoryTagLinks:
         # missing from a 12-item list) and an outright omission.
         assert sorted(seen_tag_ids) == sorted(tag.tag_id for tag in tags)
 
+    async def test_event_id_distinguishes_audit_rows_sharing_a_timestamp(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Audit rows identical in every other rendered field still get
+        distinct event_ids.
+
+        tag_audit_log.created_at is a bare current_timestamp(), so the rows one
+        save writes are identical on it; editing a tag's external links emits a
+        link_added row per link that way. Nothing else in the payload separates
+        them either — same action_type, same tag — so a client with only the
+        rendered fields to work from cannot tell them apart. That is exactly
+        what broke the frontend feed, which keyed its rows on
+        (action_type, tag_id, created_at) and crashed on the collision.
+        """
+        user = await self._make_user(db_session, "userhisteventiduser")
+        tag = Tags(title="event id link tag", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        shared_date = datetime(2026, 1, 1, tzinfo=UTC)
+        urls = [
+            "https://profcard.info/u/6di8O8hVq9dt",
+            "https://x.com/NzzZ_",
+            "https://www.pixiv.net/member.php?id=14693767",
+        ]
+        for url in urls:
+            db_session.add(
+                TagAuditLog(
+                    tag_id=tag.tag_id,
+                    user_id=user.user_id,
+                    action_type=TagAuditActionType.LINK_ADDED,
+                    link_url=url,
+                    created_at=shared_date,
+                )
+            )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) == 3
+
+        # The rows really are indistinguishable on the fields a client renders.
+        rendered = {(i["action_type"], i["tag"]["tag_id"], i["created_at"]) for i in data["items"]}
+        assert len(rendered) == 1
+
+        event_ids = [item["event_id"] for item in data["items"]]
+        assert all(event_ids)
+        assert len(set(event_ids)) == 3
+
+    async def test_event_id_unique_across_all_four_kinds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """event_id is unique across a page mixing every union branch.
+
+        The id is built from (kind, id_a, id_b), and the four branches draw
+        id_a from unrelated id spaces (tag_audit_log.id, tag_history_id,
+        tag_links.tag_id, image_status_history.id) that freely overlap — the
+        leading kind is what keeps them apart.
+        """
+        user = await self._make_user(db_session, "userhisteventidkinduser")
+        tag = Tags(title="event id kind tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, user, "userhisteventidkind")
+
+        base_date = datetime(2026, 1, 1, tzinfo=UTC)
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.RENAME,
+                old_title="old",
+                new_title="event id kind tag",
+                created_at=base_date,
+            )
+        )
+        db_session.add(
+            ImageStatusHistory(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                old_status=ImageStatus.ACTIVE,
+                new_status=ImageStatus.REPOST,
+                created_at=base_date + timedelta(days=1),
+            )
+        )
+        db_session.add(
+            TagHistory(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                action="r",
+                user_id=user.user_id,
+                date=base_date + timedelta(days=2),
+            )
+        )
+        db_session.add(
+            TagLinks(
+                tag_id=tag.tag_id,
+                image_id=image.image_id,
+                user_id=user.user_id,
+                date_linked=base_date + timedelta(days=3),
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) == 4
+
+        event_ids = [item["event_id"] for item in data["items"]]
+        assert all(event_ids)
+        assert len(set(event_ids)) == 4
+        # Kind prefixes: 3=tag_links, 2=tag_history, 4=status, 1=audit, in the
+        # newest-first order the previous test pins.
+        assert [eid.split("-")[0] for eid in event_ids] == ["3", "2", "4", "1"]
+
 
 @pytest.mark.api
 class TestUserHistoryLinkedTags:

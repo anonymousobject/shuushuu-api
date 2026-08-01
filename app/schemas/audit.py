@@ -248,6 +248,16 @@ class UserHistoryItem(BaseModel):
 
     type: Literal["tag_metadata", "tag_usage", "status_change"]
 
+    # Stable unique id for one feed event: "{kind}-{id_a}-{id_b}", the identity
+    # tuple the union in app.api.v1.history already computes to re-fetch each
+    # row. Exists so clients have a real key to render by: nothing else in this
+    # schema is reliably unique, since one save can write several audit rows
+    # sharing (action_type, tag_id, created_at) — created_at is a bare
+    # current_timestamp(), so rows written in the same second are identical on
+    # it. Set by the endpoint, not by the hydration helpers; "" never reaches a
+    # response.
+    event_id: str = ""
+
     # Common timestamp fields (different types use different fields)
     created_at: UTCDatetime | None = None  # For tag_metadata and status_change
     date: UTCDatetime | None = None  # For tag_usage (uses 'date' field)
