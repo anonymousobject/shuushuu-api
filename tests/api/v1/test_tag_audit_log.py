@@ -2376,3 +2376,48 @@ class TestUserHistoryLinkEvents:
         assert items[0]["action_type"] == TagAuditActionType.LINK_ADDED
         assert items[0]["link_url"] == "https://example.com/feed"
         assert items[0]["tag"]["tag_id"] == tag.tag_id
+
+    async def test_user_history_exposes_archive_url_fields(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A link_archive_changed row must survive with link_url AND both
+        archive-url sides intact — the handler passes all three through
+        together, but the sibling link-fields test above only asserts
+        link_url, so losing old_archive_url/new_archive_url would render as
+        silently wrong data rather than a caught error."""
+        actor = Users(
+            username="feedarchiveuser",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="feedarchiveuser@example.com",
+            active=1,
+        )
+        tag = Tags(title="feed archive tag", type=TagType.THEME)
+        db_session.add_all([actor, tag])
+        await db_session.commit()
+        await db_session.refresh(actor)
+        await db_session.refresh(tag)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                action_type=TagAuditActionType.LINK_ARCHIVE_CHANGED,
+                link_url="https://example.com/feed",
+                old_archive_url=None,
+                new_archive_url="https://web.archive.org/feed",
+                user_id=actor.user_id,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{actor.user_id}/history")
+        assert response.status_code == 200
+
+        items = [i for i in response.json()["items"] if i["type"] == "tag_metadata"]
+        assert len(items) == 1
+        assert items[0]["action_type"] == TagAuditActionType.LINK_ARCHIVE_CHANGED
+        assert items[0]["link_url"] == "https://example.com/feed"
+        assert items[0]["old_archive_url"] is None
+        assert items[0]["new_archive_url"] == "https://web.archive.org/feed"
+        assert items[0]["tag"]["tag_id"] == tag.tag_id
