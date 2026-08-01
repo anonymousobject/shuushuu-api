@@ -161,3 +161,30 @@ class TestSearchServiceIntegration:
 
         result = await search_service.search_tags("swimsuit")
         assert result.tag_ids[0] == 51  # Higher usage_count first
+
+    async def test_numeric_query_does_not_typo_match_close_numbers(
+        self, search_service, meilisearch_client
+    ):
+        """A numeric query must only match its exact digits, never a close number.
+
+        Mods paste pixiv artist IDs to check whether the artist already exists;
+        a one-digit-off fuzzy match silently returns the wrong artist.
+        """
+        tag = Tags(tag_id=60, title="TKennshou", type=TagType.ARTIST, usage_count=5)
+        await search_service.index_tag(tag, external_urls=["https://www.pixiv.net/users/21412050"])
+        await _wait_for_indexing(meilisearch_client, TEST_INDEX_NAME)
+
+        exact = await search_service.search_tags("21412050")
+        assert 60 in exact.tag_ids
+
+        off_by_one = await search_service.search_tags("21412051")
+        assert 60 not in off_by_one.tag_ids
+
+    async def test_text_typo_tolerance_still_applies(self, search_service, meilisearch_client):
+        """Disabling typos on numbers must not affect typo tolerance for text."""
+        tag = Tags(tag_id=61, title="Kinomoto", type=TagType.CHARACTER, usage_count=10)
+        await search_service.index_tag(tag)
+        await _wait_for_indexing(meilisearch_client, TEST_INDEX_NAME)
+
+        result = await search_service.search_tags("kinomto")
+        assert 61 in result.tag_ids
