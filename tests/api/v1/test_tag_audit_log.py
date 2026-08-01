@@ -1631,3 +1631,168 @@ class TestGetTagHistory:
         assert parent_entry["parent_tag"]["tag_id"] == parent_tag.tag_id
         assert parent_entry["parent_tag"]["title"] == "Parent Source"
         assert parent_entry["parent_tag"]["type"] == TagType.SOURCE
+
+
+@pytest.mark.api
+class TestTagAuditLogExternalLinks:
+    """Tests for external-link audit logging."""
+
+    async def _admin_and_token(
+        self, client: AsyncClient, db_session: AsyncSession, username: str
+    ) -> tuple[Users, str]:
+        """Create a TAG_UPDATE admin and return them with a bearer token."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username=username,
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email=f"{username}@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        db_session.add(UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1))
+        await db_session.commit()
+
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": "AdminPassword123!"},
+        )
+        return admin, login.json()["access_token"]
+
+    async def _tag(self, db_session: AsyncSession, title: str) -> Tags:
+        tag = Tags(title=title, type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        return tag
+
+    async def test_add_link_creates_link_added_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        admin, token = await self._admin_and_token(client, db_session, "linkaudit1")
+        tag = await self._tag(db_session, "link audit add")
+
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://example.com/artist"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201
+
+        entries = (
+            await db_session.execute(
+                select(TagAuditLog).where(TagAuditLog.tag_id == tag.tag_id)
+            )
+        ).scalars().all()
+
+        assert len(entries) == 1
+        assert entries[0].action_type == TagAuditActionType.LINK_ADDED
+        assert entries[0].link_url == "https://example.com/artist"
+        assert entries[0].user_id == admin.user_id
+
+    @pytest.mark.needs_commit
+    async def test_duplicate_link_creates_no_audit_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The 409 path rolls back; the audit row must roll back with it.
+
+        needs_commit: the duplicate-URL path performs a real session rollback;
+        under the default SAVEPOINT isolation that rollback would unwind the
+        first (successful) link_added row too, which can't happen in
+        production where it is durably committed before the second request.
+        """
+        _, token = await self._admin_and_token(client, db_session, "linkaudit2")
+        tag = await self._tag(db_session, "link audit dupe")
+        # Captured before the request that rolls back: the rollback expires every
+        # object loaded in this session (it's shared with the app via the get_db
+        # override), and a bare `tag.tag_id` access afterward would try to
+        # lazy-refresh the expired attribute outside of a greenlet context.
+        tag_id = tag.tag_id
+        headers = {"Authorization": f"Bearer {token}"}
+        payload = {"url": "https://example.com/dupe"}
+
+        assert (
+            await client.post(f"/api/v1/tags/{tag_id}/links", json=payload, headers=headers)
+        ).status_code == 201
+        assert (
+            await client.post(f"/api/v1/tags/{tag_id}/links", json=payload, headers=headers)
+        ).status_code == 409
+
+        entries = (
+            await db_session.execute(
+                select(TagAuditLog).where(TagAuditLog.tag_id == tag_id)
+            )
+        ).scalars().all()
+        assert len(entries) == 1
+
+    async def test_delete_link_creates_link_removed_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        admin, token = await self._admin_and_token(client, db_session, "linkaudit3")
+        tag = await self._tag(db_session, "link audit delete")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        created = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://example.com/gone"},
+            headers=headers,
+        )
+        link_id = created.json()["link_id"]
+
+        response = await client.delete(
+            f"/api/v1/tags/{tag.tag_id}/links/{link_id}", headers=headers
+        )
+        assert response.status_code == 204
+
+        entries = (
+            await db_session.execute(
+                select(TagAuditLog)
+                .where(TagAuditLog.tag_id == tag.tag_id)
+                .where(TagAuditLog.action_type == TagAuditActionType.LINK_REMOVED)
+            )
+        ).scalars().all()
+
+        assert len(entries) == 1
+        assert entries[0].link_url == "https://example.com/gone"
+        assert entries[0].user_id == admin.user_id
+
+    async def test_reorder_links_creates_no_audit_entries(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # Display order is cosmetic; auditing it would be history noise.
+        _, token = await self._admin_and_token(client, db_session, "linkaudit4")
+        tag = await self._tag(db_session, "link audit reorder")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        ids = []
+        for suffix in ("one", "two"):
+            created = await client.post(
+                f"/api/v1/tags/{tag.tag_id}/links",
+                json={"url": f"https://example.com/{suffix}"},
+                headers=headers,
+            )
+            ids.append(created.json()["link_id"])
+
+        response = await client.patch(
+            f"/api/v1/tags/{tag.tag_id}/links/reorder",
+            json={"link_ids": list(reversed(ids))},
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+        entries = (
+            await db_session.execute(
+                select(TagAuditLog).where(TagAuditLog.tag_id == tag.tag_id)
+            )
+        ).scalars().all()
+        # Only the two link_added rows from setup.
+        assert [e.action_type for e in entries] == [TagAuditActionType.LINK_ADDED] * 2

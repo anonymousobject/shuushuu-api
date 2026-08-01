@@ -1864,6 +1864,7 @@ async def delete_tag(
 async def add_tag_link(
     tag_id: Annotated[int, Path(description="Tag ID")],
     link_data: TagExternalLinkCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagExternalLinkResponse:
@@ -1894,6 +1895,17 @@ async def add_tag_link(
         ).scalar()
         new_link.position = (min_pos if min_pos is not None else 0) - 1
     db.add(new_link)
+
+    # Audit in the same transaction as the insert: a 409 rollback below must
+    # take the audit row with it.
+    db.add(
+        TagAuditLog(
+            tag_id=tag_id,
+            action_type=TagAuditActionType.LINK_ADDED,
+            link_url=link_data.url,
+            user_id=current_user.user_id,
+        )
+    )
 
     try:
         await db.commit()
@@ -1957,6 +1969,7 @@ async def reorder_tag_links(
 async def delete_tag_link(
     tag_id: Annotated[int, Path(description="Tag ID")],
     link_id: Annotated[int, Path(description="Link ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -1980,6 +1993,16 @@ async def delete_tag_link(
             detail="Link not found or does not belong to this tag",
         )
 
+    # Capture the URL while the row is still loaded — after db.delete it is gone,
+    # and the audit entry has to outlive it.
+    db.add(
+        TagAuditLog(
+            tag_id=tag_id,
+            action_type=TagAuditActionType.LINK_REMOVED,
+            link_url=link.url,
+            user_id=current_user.user_id,
+        )
+    )
     await db.delete(link)
     await db.commit()
 
