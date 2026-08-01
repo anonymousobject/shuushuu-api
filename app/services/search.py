@@ -7,7 +7,7 @@ from typing import Any
 
 from meilisearch_python_sdk import AsyncClient
 from meilisearch_python_sdk.errors import MeilisearchApiError
-from meilisearch_python_sdk.models.settings import Pagination
+from meilisearch_python_sdk.models.settings import Pagination, TypoTolerance
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -242,6 +242,10 @@ async def configure_tags_index(client: AsyncClient) -> None:
     await index.update_filterable_attributes(["type", "alias_of"])
     await index.update_searchable_attributes(["title", "desc", "external_urls"])
     await index.update_sortable_attributes(["usage_count", "title", "type", "date_added", "tag_id"])
+    # Numeric tokens must match exactly: mods paste pixiv artist IDs to check
+    # whether an artist exists, and a one-digit-off fuzzy match silently
+    # returns the wrong artist. Text keeps normal typo tolerance.
+    await index.update_typo_tolerance(TypoTolerance(disable_on_numbers=True))
     # Default Meilisearch max_total_hits is 1000, which clamps both the
     # estimatedTotalHits the frontend shows and the maximum offset+limit.
     # Set well above current tag count so list-all views report the true
