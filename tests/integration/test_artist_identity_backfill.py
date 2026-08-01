@@ -32,6 +32,7 @@ class TestBackfillExistingLinks:
         ).scalar_one()
         assert (link.site, link.external_id) == ("pixiv", "21412050")
         assert report.links_parsed == 1
+        assert report.artist_tags_without_identity == 0
 
     async def test_dry_run_changes_nothing(self, db_session: AsyncSession) -> None:
         artist = Tags(title="TKennshou", type=TagType.ARTIST, usage_count=1)
@@ -140,3 +141,33 @@ class TestBackfillFromDesc:
                 select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
             )
         ).first() is None
+
+
+@pytest.mark.integration
+class TestArtistTagsWithoutIdentity:
+    async def test_counts_canonical_artists_missing_from_every_source(
+        self, db_session: AsyncSession
+    ) -> None:
+        artist_with_link = Tags(title="HasLink", type=TagType.ARTIST, usage_count=1)
+        artist_without_identity = Tags(title="NoIdentity", type=TagType.ARTIST, usage_count=1)
+        db_session.add_all([artist_with_link, artist_without_identity])
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist_with_link.tag_id, url="https://www.pixiv.net/users/999"
+            )
+        )
+        # An alias of artist_with_link, itself typed ARTIST but with alias_of set. Its
+        # title doesn't match the "Pixiv <id>" pattern, so it contributes no identity —
+        # it must still be excluded from the canonical-artist population entirely
+        # (not counted as "without identity" in its own right).
+        db_session.add(
+            Tags(title="SomeAliasTitle", type=TagType.ARTIST, alias_of=artist_with_link.tag_id)
+        )
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        # Only artist_without_identity lacks identity; the alias tag isn't a canonical
+        # artist tag (alias_of is set) so it isn't part of the counted population at all.
+        assert report.artist_tags_without_identity == 1
