@@ -131,6 +131,9 @@ async def resolve_url(
                 db, ArtistIdentity(site=SITE_PIXIV, external_id=post.artist_id)
             )
         except Exception:
+            # A failed statement poisons the session's implicit transaction;
+            # roll back so get_db's post-yield commit doesn't also fail.
+            await db.rollback()
             artist_tag = None
             logger.warning(
                 "artist_tag_lookup_failed",
