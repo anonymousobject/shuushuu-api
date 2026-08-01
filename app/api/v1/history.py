@@ -397,24 +397,28 @@ async def get_user_history(
     linked_tags_map = await _load_linked_tags(db, {r.id_a for r in rows if r.kind == 3})
     status_items = await _hydrate_status_change_items(db, [r.id_a for r in rows if r.kind == 4])
 
+    # (kind, id_a, id_b) is the row identity the union already sorts on, so it
+    # is the natural per-event id to hand clients. Stamped here rather than in
+    # the hydration helpers, which are keyed by id and don't know `kind`.
     items: list[UserHistoryItem] = []
     for row in rows:
+        event_id = f"{row.kind}-{row.id_a}-{row.id_b}"
         if row.kind == 1:
-            items.append(metadata_items[row.id_a])
+            item = metadata_items[row.id_a]
         elif row.kind == 2:
-            items.append(usage_items[row.id_a])
+            item = usage_items[row.id_a]
         elif row.kind == 3:
-            items.append(
-                UserHistoryItem(
-                    type="tag_usage",
-                    action="added",
-                    tag=linked_tags_map.get(row.id_a),
-                    image_id=row.id_b,
-                    date=row.ts,
-                )
+            item = UserHistoryItem(
+                type="tag_usage",
+                action="added",
+                tag=linked_tags_map.get(row.id_a),
+                image_id=row.id_b,
+                date=row.ts,
             )
         else:
-            items.append(status_items[row.id_a])
+            item = status_items[row.id_a]
+        item.event_id = event_id
+        items.append(item)
 
     return UserHistoryListResponse(
         total=total,
