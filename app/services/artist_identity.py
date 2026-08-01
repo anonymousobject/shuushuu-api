@@ -9,6 +9,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
+
 SITE_PIXIV = "pixiv"
 
 # Every pixiv profile-URL form in the wild. Old descs/links use the legacy
@@ -57,3 +63,15 @@ def parse_identity_query(q: str) -> ArtistIdentity | None:
 def canonical_profile_url(identity: ArtistIdentity) -> str:
     """The URL to create when backfilling an identity that has no link yet."""
     return f"https://www.pixiv.net/users/{identity.external_id}"
+
+
+async def resolve_identity(db: AsyncSession, identity: ArtistIdentity) -> Tags | None:
+    """Exact lookup: which tag owns this (site, external_id)? None if unclaimed."""
+    result = await db.execute(
+        select(Tags)
+        .join(TagExternalLinks, TagExternalLinks.tag_id == Tags.tag_id)  # type: ignore[arg-type]
+        .where(TagExternalLinks.site == identity.site)  # type: ignore[arg-type]
+        .where(TagExternalLinks.external_id == identity.external_id)  # type: ignore[arg-type]
+        .limit(1)
+    )
+    return result.scalars().first()

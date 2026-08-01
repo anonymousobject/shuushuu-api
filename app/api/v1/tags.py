@@ -69,6 +69,7 @@ from app.schemas.tag import (
     TagWithStats,
 )
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
+from app.services.artist_identity import parse_identity_url, resolve_identity
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
@@ -1985,6 +1986,19 @@ async def add_tag_link(
     # below the current minimum, so it sits above any existing wiki links too); other
     # links keep NULL position and fall to the end via the default ordering.
     new_link = TagExternalLinks(tag_id=tag_id, url=link_data.url)
+    identity = parse_identity_url(link_data.url)
+    if identity is not None:
+        claimed_by = await resolve_identity(db, identity)
+        if claimed_by is not None and claimed_by.tag_id != tag_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{identity.site} ID {identity.external_id} already belongs to "
+                    f"tag '{claimed_by.title}' (id {claimed_by.tag_id})"
+                ),
+            )
+        new_link.site = identity.site
+        new_link.external_id = identity.external_id
     if _is_shuu_wiki_url(link_data.url):
         min_pos = (
             await db.execute(
