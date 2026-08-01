@@ -294,6 +294,9 @@ async def _hydrate_tag_metadata_items(
                 if audit_log.character_tag_id and audit_log.source_tag_id
                 else None
             ),
+            link_url=audit_log.link_url,
+            old_archive_url=audit_log.old_archive_url,
+            new_archive_url=audit_log.new_archive_url,
         )
     return items
 

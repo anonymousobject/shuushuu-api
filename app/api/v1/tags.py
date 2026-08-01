@@ -95,6 +95,29 @@ def _shuu_wiki_sql_flag() -> ColumnElement[bool]:
     return or_(*(TagExternalLinks.url.like(f"%{m}%") for m in _SHUU_WIKI_URL_MARKERS))  # type: ignore[attr-defined]
 
 
+def _record_link_audit(
+    db: AsyncSession,
+    *,
+    tag_id: int,
+    action_type: str,
+    link_url: str,
+    user_id: int | None,
+    old_archive_url: str | None = None,
+    new_archive_url: str | None = None,
+) -> None:
+    """Queue an external-link audit row. Caller owns the commit."""
+    db.add(
+        TagAuditLog(
+            tag_id=tag_id,
+            action_type=action_type,
+            link_url=link_url,
+            user_id=user_id,
+            old_archive_url=old_archive_url,
+            new_archive_url=new_archive_url,
+        )
+    )
+
+
 async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalLinks]:
     """A tag's external links in display order.
 
@@ -1148,6 +1171,14 @@ async def get_tag_history(
             (TagAuditLog.tag_id == tag_id)  # type: ignore[arg-type]
             | (TagAuditLog.character_tag_id == tag_id)
             | (TagAuditLog.source_tag_id == tag_id)
+            # Relationships pointed AT this tag. The alias_set/parent_set row
+            # lives on the other tag, so without these a canonical tag never
+            # learns that something was aliased to it. All four columns carry
+            # MariaDB's auto-created FK indexes.
+            | (TagAuditLog.old_alias_of == tag_id)
+            | (TagAuditLog.new_alias_of == tag_id)
+            | (TagAuditLog.old_parent_id == tag_id)
+            | (TagAuditLog.new_parent_id == tag_id)
         )
     )
 
@@ -1173,6 +1204,8 @@ async def get_tag_history(
     # Includes: character_tag, source_tag, alias targets, parent tags
     tag_ids_to_load: set[int] = set()
     for audit, _ in rows:
+        # The row's own subject, so an incoming entry can name the other side.
+        tag_ids_to_load.add(audit.tag_id)
         if audit.character_tag_id:
             tag_ids_to_load.add(audit.character_tag_id)
         if audit.source_tag_id:
@@ -1222,9 +1255,18 @@ async def get_tag_history(
             new_alias_of=audit.new_alias_of,
             old_parent_id=audit.old_parent_id,
             new_parent_id=audit.new_parent_id,
+            link_url=audit.link_url,
+            old_archive_url=audit.old_archive_url,
+            new_archive_url=audit.new_archive_url,
             user=user_summary,
             created_at=audit.created_at,
         )
+
+        subject_info = tags_map.get(audit.tag_id)
+        if subject_info:
+            response.subject_tag = LinkedTag(
+                tag_id=audit.tag_id, title=subject_info[0], type=subject_info[1]
+            )
 
         # Enrich with resolved tag info for related tags
         # Character-source links
@@ -1507,6 +1549,37 @@ async def create_tag(
         user_id=current_user.user_id,
     )
     db.add(new_tag)
+    await db.flush()
+
+    # A tag born as an alias or a child had no history at all: only update_tag
+    # logged relationship changes, so these rows were simply never written.
+    # NULL on the old_* side is how update_tag already represents "set from
+    # nothing", so no new action type is needed. The flush (not a commit)
+    # above gives us new_tag.tag_id for these rows while keeping the tag
+    # insert and its audit rows in a single transaction, same as update_tag
+    # bundles its audit rows with the row they describe.
+    creation_audit: list[TagAuditLog] = []
+    if new_tag.alias_of is not None:
+        creation_audit.append(
+            TagAuditLog(
+                tag_id=new_tag.tag_id,
+                action_type=TagAuditActionType.ALIAS_SET,
+                new_alias_of=new_tag.alias_of,
+                user_id=current_user.user_id,
+            )
+        )
+    if new_tag.inheritedfrom_id is not None:
+        creation_audit.append(
+            TagAuditLog(
+                tag_id=new_tag.tag_id,
+                action_type=TagAuditActionType.PARENT_SET,
+                new_parent_id=new_tag.inheritedfrom_id,
+                user_id=current_user.user_id,
+            )
+        )
+    if creation_audit:
+        db.add_all(creation_audit)
+
     await db.commit()
     await db.refresh(new_tag)
 
@@ -1750,6 +1823,33 @@ async def update_tag(
         )
         existing_urls = {row[0] for row in existing_urls_result}
 
+        # Audit before the bulk delete/update erase the evidence. Every one of the
+        # alias's links leaves it: colliding URLs are deleted, the rest move. A
+        # moved link is also an add on the canonical side, so each tag's history
+        # stays self-consistent — no link silently appears or vanishes.
+        alias_link_urls = [
+            row[0]
+            for row in await db.execute(
+                select(TagExternalLinks.url).where(TagExternalLinks.tag_id == tag_id)  # type: ignore[call-overload]
+            )
+        ]
+        for url in alias_link_urls:
+            _record_link_audit(
+                db,
+                tag_id=tag_id,
+                action_type=TagAuditActionType.LINK_REMOVED,
+                link_url=url,
+                user_id=current_user.user_id,
+            )
+            if url not in existing_urls:
+                _record_link_audit(
+                    db,
+                    tag_id=canonical_id,
+                    action_type=TagAuditActionType.LINK_ADDED,
+                    link_url=url,
+                    user_id=current_user.user_id,
+                )
+
         # Delete alias external links that would conflict (same URL on canonical)
         if existing_urls:
             await db.execute(
@@ -1864,6 +1964,7 @@ async def delete_tag(
 async def add_tag_link(
     tag_id: Annotated[int, Path(description="Tag ID")],
     link_data: TagExternalLinkCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagExternalLinkResponse:
@@ -1894,6 +1995,16 @@ async def add_tag_link(
         ).scalar()
         new_link.position = (min_pos if min_pos is not None else 0) - 1
     db.add(new_link)
+
+    # Audit in the same transaction as the insert: a 409 rollback below must
+    # take the audit row with it.
+    _record_link_audit(
+        db,
+        tag_id=tag_id,
+        action_type=TagAuditActionType.LINK_ADDED,
+        link_url=link_data.url,
+        user_id=current_user.user_id,
+    )
 
     try:
         await db.commit()
@@ -1957,6 +2068,7 @@ async def reorder_tag_links(
 async def delete_tag_link(
     tag_id: Annotated[int, Path(description="Tag ID")],
     link_id: Annotated[int, Path(description="Link ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -1980,6 +2092,15 @@ async def delete_tag_link(
             detail="Link not found or does not belong to this tag",
         )
 
+    # Capture the URL while the row is still loaded — after db.delete it is gone,
+    # and the audit entry has to outlive it.
+    _record_link_audit(
+        db,
+        tag_id=tag_id,
+        action_type=TagAuditActionType.LINK_REMOVED,
+        link_url=link.url,
+        user_id=current_user.user_id,
+    )
     await db.delete(link)
     await db.commit()
 
@@ -1995,6 +2116,7 @@ async def update_tag_link(
     tag_id: Annotated[int, Path(description="Tag ID")],
     link_id: Annotated[int, Path(description="Link ID")],
     link_update: TagExternalLinkUpdate,
+    current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
     db: AsyncSession = Depends(get_db),
 ) -> TagExternalLinkResponse:
@@ -2017,12 +2139,41 @@ async def update_tag_link(
             detail="Link not found or does not belong to this tag",
         )
 
+    # The dead flag and the archive URL are independent inputs on one endpoint,
+    # so a call that changes both records both. Each write is conditioned on an
+    # actual change: a no-op PATCH must not manufacture history.
     if link_update.is_dead is True and link.dead_at is None:
         link.dead_at = datetime.now(UTC)
-    elif link_update.is_dead is False:
+        _record_link_audit(
+            db,
+            tag_id=tag_id,
+            action_type=TagAuditActionType.LINK_DEAD_MARKED,
+            link_url=link.url,
+            user_id=current_user.user_id,
+        )
+    elif link_update.is_dead is False and link.dead_at is not None:
         link.dead_at = None
+        _record_link_audit(
+            db,
+            tag_id=tag_id,
+            action_type=TagAuditActionType.LINK_DEAD_CLEARED,
+            link_url=link.url,
+            user_id=current_user.user_id,
+        )
 
-    if "archive_url" in link_update.model_fields_set:
+    if (
+        "archive_url" in link_update.model_fields_set
+        and link_update.archive_url != link.archive_url
+    ):
+        _record_link_audit(
+            db,
+            tag_id=tag_id,
+            action_type=TagAuditActionType.LINK_ARCHIVE_CHANGED,
+            link_url=link.url,
+            old_archive_url=link.archive_url,
+            new_archive_url=link_update.archive_url,
+            user_id=current_user.user_id,
+        )
         link.archive_url = link_update.archive_url
 
     await db.commit()
