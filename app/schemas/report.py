@@ -353,7 +353,7 @@ class ReviewResponse(BaseModel):
         status_labels = {0: "Open", 1: "Closed"}
         self.status_label = status_labels.get(self.status, "Unknown")
         # Outcome
-        outcome_labels = {0: "Pending", 1: "Keep", 2: "Remove"}
+        outcome_labels = {0: "Pending", 1: "Keep", 2: "Remove", 3: "Superseded"}
         self.outcome_label = outcome_labels.get(self.outcome, "Unknown")
 
 

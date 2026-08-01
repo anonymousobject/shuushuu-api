@@ -1816,11 +1816,17 @@ async def get_image_status_history(
 
 
 def get_review_outcome_label(outcome: int) -> str:
-    """Get human-readable label for review outcome."""
+    """Get human-readable label for review outcome.
+
+    Second copy of the map on ReviewResponse (app/schemas/report.py) — this one
+    backs the public per-image endpoint, that one the admin views. Both have to
+    learn every new ReviewOutcome or the label degrades to "unknown" here.
+    """
     outcome_labels = {
         ReviewOutcome.PENDING: "pending",
         ReviewOutcome.KEEP: "keep",
         ReviewOutcome.REMOVE: "remove",
+        ReviewOutcome.SUPERSEDED: "superseded",
     }
     return outcome_labels.get(outcome, "unknown")
 

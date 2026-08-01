@@ -495,6 +495,10 @@ class ReviewOutcome:
     PENDING = 0
     KEEP = 1
     REMOVE = 2
+    # Closed without a verdict of its own: a moderator settled the image's status
+    # by hand while the vote was still running (see review_lifecycle.py). Not a
+    # choice /reviews/{id}/close accepts — only the status-change hook sets it.
+    SUPERSEDED = 3
 
 
 class AdminActionType:
