@@ -10,6 +10,11 @@ class TagSearchHit(TagResponse):
 
     model_config = {"from_attributes": True}
 
+    # Set when this hit was resolved by the exact artist-identity layer rather
+    # than (or in addition to) Meilisearch's fuzzy match. Format: "{site}
+    # {external_id}", e.g. "pixiv 21412050". None for ordinary fuzzy hits.
+    matched_identity: str | None = None
+
 
 class SearchResponse(BaseModel):
     """Response from the search endpoint."""

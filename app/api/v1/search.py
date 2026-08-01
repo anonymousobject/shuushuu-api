@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.core.logging import get_logger
 from app.models.tag import Tags
 from app.schemas.search import SearchResponse, TagSearchHit
+from app.services.artist_identity import parse_identity_query, resolve_identity
 from app.services.search import SearchService
 
 logger = get_logger(__name__)
@@ -106,11 +107,34 @@ async def search(
                 hit.alias_of_usage_count = alias_of_usage_count
                 hits.append(hit)
 
+    total = result.total
+
+    # Exact artist-identity layer: if the query names a specific external
+    # identity (bare ID, "pixiv <id>", or a profile URL), prepend the tag that
+    # owns it — even if Meilisearch's fuzzy match missed or ranked it lower.
+    # Runs after the Meilisearch call above, so Meilisearch downtime still
+    # 503s exactly as before this layer existed.
+    identity = parse_identity_query(q) if q else None
+    if identity is not None:
+        exact_tag = await resolve_identity(db, identity)
+        if exact_tag is not None:
+            label = f"{identity.site} {identity.external_id}"
+            existing = next((h for h in hits if h.tag_id == exact_tag.tag_id), None)
+            if existing is not None:
+                hits.remove(existing)
+                existing.matched_identity = label
+                hits.insert(0, existing)
+            else:
+                exact_hit = TagSearchHit.model_validate(exact_tag)
+                exact_hit.matched_identity = label
+                hits.insert(0, exact_hit)
+                total += 1
+
     return SearchResponse(
         query=q,
         entity="tags",
         hits=hits,
-        total=result.total,
+        total=total,
         limit=limit,
         offset=offset,
     )

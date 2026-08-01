@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.search import get_search_service
 from app.config import TagType
 from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 from app.services.search import TagSearchResult
 
 
@@ -385,3 +386,93 @@ class TestSearchEndpoint:
         # Total comes from Meilisearch, but hits only include DB-verified tags
         assert data["total"] == 2
         assert data["hits"] == []
+
+    async def test_exact_identity_query_prepends_artist_hit(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A bare pixiv ID returns the owning artist first, flagged with matched_identity."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Meilisearch has nothing for the bare-ID query — the exact layer is the
+        # only source of this hit.
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert hits[0]["tag_id"] == artist.tag_id
+        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        # The exact hit wasn't already counted by Meilisearch, so total gains one.
+        assert data["total"] == 1
+
+    async def test_exact_hit_not_duplicated_when_meili_also_returns_it(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """If the fuzzy layer already found the artist, it appears once, flagged."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[artist.tag_id], total=1
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert [h["tag_id"] for h in hits].count(artist.tag_id) == 1
+        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        # The hit was already in the Meilisearch results, so total is unchanged.
+        assert data["total"] == 1
+
+    async def test_text_query_has_no_matched_identity(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A regular text query never sets matched_identity on its hits."""
+        tag = Tags(title="Sakura", type=TagType.CHARACTER)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[tag.tag_id], total=1
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "sakura"})
+        assert response.status_code == 200
+        assert all(h["matched_identity"] is None for h in response.json()["hits"])
