@@ -1773,6 +1773,33 @@ async def update_tag(
         )
         existing_urls = {row[0] for row in existing_urls_result}
 
+        # Audit before the bulk delete/update erase the evidence. Every one of the
+        # alias's links leaves it: colliding URLs are deleted, the rest move. A
+        # moved link is also an add on the canonical side, so each tag's history
+        # stays self-consistent — no link silently appears or vanishes.
+        alias_link_urls = [
+            row[0]
+            for row in await db.execute(
+                select(TagExternalLinks.url).where(TagExternalLinks.tag_id == tag_id)  # type: ignore[call-overload]
+            )
+        ]
+        for url in alias_link_urls:
+            _record_link_audit(
+                db,
+                tag_id=tag_id,
+                action_type=TagAuditActionType.LINK_REMOVED,
+                link_url=url,
+                user_id=current_user.user_id,
+            )
+            if url not in existing_urls:
+                _record_link_audit(
+                    db,
+                    tag_id=canonical_id,
+                    action_type=TagAuditActionType.LINK_ADDED,
+                    link_url=url,
+                    user_id=current_user.user_id,
+                )
+
         # Delete alias external links that would conflict (same URL on canonical)
         if existing_urls:
             await db.execute(

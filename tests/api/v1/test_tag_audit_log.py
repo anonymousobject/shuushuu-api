@@ -1814,6 +1814,7 @@ class TestTagAuditLogExternalLinks:
                 select(TagAuditLog)
                 .where(TagAuditLog.tag_id == tag_id)
                 .where(TagAuditLog.action_type == action)
+                .order_by(TagAuditLog.id)
             )
         ).scalars().all()
 
@@ -1960,3 +1961,48 @@ class TestTagAuditLogExternalLinks:
         )
         assert len(archive) == 1
         assert archive[0].new_archive_url == "https://web.archive.org/both"
+
+    async def test_alias_migration_audits_moved_and_deleted_links(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # Setting an alias silently moves the alias's external links onto the
+        # canonical tag and drops URL collisions. Without these rows a link
+        # appears on the canonical tag with no history explaining how.
+        _, token = await self._admin_and_token(client, db_session, "linkaudit11")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        canonical = await self._tag(db_session, "alias migration canonical")
+        alias = await self._tag(db_session, "alias migration alias")
+
+        shared = "https://example.com/shared"
+        unique = "https://example.com/unique"
+
+        for tag_id, url in ((canonical.tag_id, shared), (alias.tag_id, shared), (alias.tag_id, unique)):
+            created = await client.post(
+                f"/api/v1/tags/{tag_id}/links", json={"url": url}, headers=headers
+            )
+            assert created.status_code == 201
+
+        response = await client.put(
+            f"/api/v1/tags/{alias.tag_id}",
+            json={
+                "title": "alias migration alias",
+                "type": TagType.THEME,
+                "alias_of": canonical.tag_id,
+            },
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+        removed = await self._link_entries(
+            db_session, alias.tag_id, TagAuditActionType.LINK_REMOVED
+        )
+        # Both of the alias's links leave it: one deleted as a collision, one moved.
+        assert sorted(e.link_url for e in removed) == [shared, unique]
+
+        added = await self._link_entries(
+            db_session, canonical.tag_id, TagAuditActionType.LINK_ADDED
+        )
+        # The canonical tag's own setup link, plus the one that moved. The
+        # colliding URL must NOT be added again.
+        assert sorted(e.link_url for e in added) == [shared, unique]
