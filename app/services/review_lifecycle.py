@@ -26,7 +26,7 @@ async def supersede_open_reviews_for_status_change(
     image_id: int,
     actor_id: int | None,
     new_status: int,
-) -> list[int]:
+) -> None:
     """Close any open review on ``image_id`` as SUPERSEDED.
 
     Called only when the status change is NOT itself a review action — see the
@@ -36,7 +36,7 @@ async def supersede_open_reviews_for_status_change(
     Only one review per image may be open (enforced at application level), but
     legacy rows predate that rule, so every open one is closed.
 
-    Flush-only; the caller owns the transaction. Returns the closed review_ids.
+    Flush-only; the caller owns the transaction.
     """
     reviews = (
         (
@@ -50,11 +50,7 @@ async def supersede_open_reviews_for_status_change(
         .scalars()
         .all()
     )
-    if not reviews:
-        return []
-
     now = datetime.now(UTC)
-    closed_ids: list[int] = []
     for review in reviews:
         review.status = ReviewStatus.CLOSED
         review.outcome = ReviewOutcome.SUPERSEDED
@@ -75,6 +71,3 @@ async def supersede_open_reviews_for_status_change(
                 },
             )
         )
-        closed_ids.append(review.review_id)  # type: ignore[arg-type]
-
-    return closed_ids

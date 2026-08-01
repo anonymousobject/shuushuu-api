@@ -237,7 +237,14 @@ class TestGetImageReviews:
             outcome=ReviewOutcome.REMOVE,
             initiated_by=user.user_id,
         )
-        db_session.add_all([review_keep, review_remove])
+        review_superseded = ImageReviews(
+            image_id=image.image_id,
+            reason_category=DeactivationReason.INAPPROPRIATE,
+            status=ReviewStatus.CLOSED,
+            outcome=ReviewOutcome.SUPERSEDED,
+            initiated_by=user.user_id,
+        )
+        db_session.add_all([review_keep, review_remove, review_superseded])
         await db_session.commit()
 
         # GET image reviews
@@ -245,7 +252,7 @@ class TestGetImageReviews:
         assert response.status_code == 200
 
         data = response.json()
-        assert data["total"] == 2
+        assert data["total"] == 3
 
         # Build map by outcome for verification
         items_by_outcome = {item["outcome"]: item for item in data["items"]}
@@ -257,6 +264,9 @@ class TestGetImageReviews:
         # Check outcome_label
         assert items_by_outcome[ReviewOutcome.KEEP]["outcome_label"] == "keep"
         assert items_by_outcome[ReviewOutcome.REMOVE]["outcome_label"] == "remove"
+        # This public map is a second copy of the one on ReviewResponse; both have
+        # to learn every new outcome or the label silently degrades to "unknown".
+        assert items_by_outcome[ReviewOutcome.SUPERSEDED]["outcome_label"] == "superseded"
 
     async def test_does_not_include_hidden_fields(
         self, client: AsyncClient, db_session: AsyncSession
