@@ -476,3 +476,42 @@ class TestSearchEndpoint:
         response = await client_with_search.get("/api/v1/search", params={"q": "sakura"})
         assert response.status_code == 200
         assert all(h["matched_identity"] is None for h in response.json()["hits"])
+
+    async def test_exact_hit_insertion_respects_limit(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """Prepending a new exact hit to an already-full page doesn't exceed limit."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        other = Tags(title="Other Tag", type=TagType.THEME)
+        db_session.add_all([artist, other])
+        await db_session.commit()
+        await db_session.refresh(artist)
+        await db_session.refresh(other)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Meilisearch already fills the requested page with an unrelated tag.
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[other.tag_id], total=1
+        )
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "limit": 1}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert len(hits) == 1
+        assert hits[0]["tag_id"] == artist.tag_id
+        assert hits[0]["matched_identity"] == "pixiv 21412050"

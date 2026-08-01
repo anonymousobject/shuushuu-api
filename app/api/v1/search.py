@@ -129,6 +129,10 @@ async def search(
                 exact_hit.matched_identity = label
                 hits.insert(0, exact_hit)
                 total += 1
+                # Prepending onto an already-full page would exceed the
+                # requested page size; drop the lowest-ranked meili hit to
+                # keep the limit contract.
+                hits = hits[:limit]
 
     return SearchResponse(
         query=q,
