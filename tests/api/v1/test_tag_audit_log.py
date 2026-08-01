@@ -2278,3 +2278,101 @@ class TestTagHistoryIncomingRelations:
         assert item["link_url"] == "https://example.com/subject"
         assert item["old_archive_url"] is None
         assert item["new_archive_url"] == "https://web.archive.org/x"
+
+    async def test_canonical_tag_sees_incoming_removed_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # A tag that a *removed* alias used to point at must still see the
+        # alias_removed row, via the old_alias_of disjunct.
+        canonical = Tags(title="incoming canonical removed", type=TagType.THEME)
+        former_alias = Tags(title="incoming former alias", type=TagType.THEME)
+        db_session.add_all([canonical, former_alias])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(former_alias)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=former_alias.tag_id,
+                action_type=TagAuditActionType.ALIAS_REMOVED,
+                old_alias_of=canonical.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{canonical.tag_id}/history")
+        assert response.status_code == 200
+        items = response.json()["items"]
+
+        assert len(items) == 1
+        assert items[0]["action_type"] == TagAuditActionType.ALIAS_REMOVED
+        assert items[0]["subject_tag"]["tag_id"] == former_alias.tag_id
+
+    async def test_parent_tag_sees_incoming_removed_child(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # Same as above, but for a removed parent link via old_parent_id.
+        parent = Tags(title="incoming parent removed", type=TagType.THEME)
+        former_child = Tags(title="incoming former child", type=TagType.THEME)
+        db_session.add_all([parent, former_child])
+        await db_session.commit()
+        await db_session.refresh(parent)
+        await db_session.refresh(former_child)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=former_child.tag_id,
+                action_type=TagAuditActionType.PARENT_REMOVED,
+                old_parent_id=parent.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{parent.tag_id}/history")
+        assert response.status_code == 200
+        items = response.json()["items"]
+
+        assert len(items) == 1
+        assert items[0]["action_type"] == TagAuditActionType.PARENT_REMOVED
+        assert items[0]["subject_tag"]["tag_id"] == former_child.tag_id
+
+
+@pytest.mark.api
+class TestUserHistoryLinkEvents:
+    """Link rows reach the user activity feed whether or not we plan for it."""
+
+    async def test_user_history_exposes_link_fields(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        actor = Users(
+            username="feedlinkuser",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="feedlinkuser@example.com",
+            active=1,
+        )
+        tag = Tags(title="feed link tag", type=TagType.THEME)
+        db_session.add_all([actor, tag])
+        await db_session.commit()
+        await db_session.refresh(actor)
+        await db_session.refresh(tag)
+
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                action_type=TagAuditActionType.LINK_ADDED,
+                link_url="https://example.com/feed",
+                user_id=actor.user_id,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{actor.user_id}/history")
+        assert response.status_code == 200
+
+        items = [i for i in response.json()["items"] if i["type"] == "tag_metadata"]
+        assert len(items) == 1
+        assert items[0]["action_type"] == TagAuditActionType.LINK_ADDED
+        assert items[0]["link_url"] == "https://example.com/feed"
+        assert items[0]["tag"]["tag_id"] == tag.tag_id

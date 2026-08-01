@@ -239,7 +239,9 @@ class UserHistoryItem(BaseModel):
     - tag_metadata: action_type, tag, old_title/new_title (for rename),
       old_type/new_type (for type_change), old_desc/new_desc (for
       description_change), alias_tag/parent_tag/source_tag/character_tag
-      (for the corresponding link/unlink actions), created_at
+      (for the corresponding link/unlink actions),
+      link_url/old_archive_url/new_archive_url (for the link_* actions),
+      created_at
     - tag_usage: action, tag, image_id, date
     - status_change: image_id, old_status, new_status, new_status_label, created_at
     """
@@ -286,6 +288,13 @@ class UserHistoryItem(BaseModel):
     parent_tag: LinkedTag | None = None
     source_tag: LinkedTag | None = None
     character_tag: LinkedTag | None = None
+
+    # For tag_metadata: external-link actions. The feed is scoped to one user's
+    # own actions, so the row's tag_id is always the right subject and no
+    # perspective flip is needed here.
+    link_url: str | None = None
+    old_archive_url: str | None = None
+    new_archive_url: str | None = None
 
 
 class UserHistoryListResponse(BaseModel):
