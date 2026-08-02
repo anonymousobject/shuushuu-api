@@ -19,13 +19,14 @@ already OWNS via a link:
 2. **Strip + tidy the desc.** The full identity text is removed (a pasted
    URL's full extent, trailing query string and all -- not just the id
    digits the parser needs), orphaned `/` `|` `,` `-` separators left
-   dangling at the edges or doubled by the removal are collapsed, and
-   whitespace is normalized. An empty result is stored as NULL, matching the
-   site's "no description" convention (see `TagCreate.sanitize_desc`). URL
-   expansion beyond the id digits only ever consumes characters we're
-   confident are a real continuation (`_CONFIDENT_URL_TAIL_CHARS`) -- never
-   adjacent prose, and never non-ASCII text glued directly against the URL
-   with no separator at all.
+   dangling at the edges or doubled by the removal are collapsed, orphaned
+   trailing `.` `!` `?` with nothing following are dropped (never left
+   behind as a lone "."), and whitespace is normalized. An empty result is
+   stored as NULL, matching the site's "no description" convention (see
+   `TagCreate.sanitize_desc`). URL expansion beyond the id digits only ever
+   consumes characters we're confident are a real continuation
+   (`_CONFIDENT_URL_TAIL_CHARS`) -- never adjacent prose, and never
+   non-ASCII text glued directly against the URL with no separator at all.
 3. **Bare "pixiv <id>" text** (no URL) is moved the same way; nothing
    link-side changes since there's no URL to preserve.
 4. **Anything ambiguous is an anomaly, not a guess:** the desc's identity
@@ -34,11 +35,12 @@ already OWNS via a link:
    URL, or the remainder touching the removed span doesn't look confidently
    clean -- a label character immediately adjacent ("profile:", "see;"), an
    emptied bracket pair ("()"), mismatched delimiters on either side, or text
-   glued directly to the removed span on *both* sides with no whitespace
-   anywhere nearby (joining would guess a separator that was never there).
-   This is all checked locally around the removed span, not just at the
-   whole desc's start/end, so a mid-string "profile:" is caught exactly like
-   one at the very start. No write happens for an anomaly.
+   glued directly to the removed span on *either* side with no whitespace
+   nearby (joining would fabricate a separator that was never there, even if
+   the other side had a real gap). This is all checked locally around the
+   removed span, not just at the whole desc's start/end, so a mid-string
+   "profile:" is caught exactly like one at the very start. No write happens
+   for an anomaly.
 
 Dry-run by default; `apply=True` writes. Counts and the before/after
 `samples` list (which also carries any pending link-URL rewrite, so the
@@ -90,17 +92,27 @@ _URL_TOKEN_STOP_CHARS = frozenset(" \t\r\n\"'()<>[]{}")
 # though the URL spec technically permits them).
 _TRAILING_PROSE_PUNCTUATION = ".,;:!?"
 # Characters we're confident belong to a real trailing query-string/path
-# continuation (e.g. "&ref=abc") rather than adjacent prose that happens to
-# be URL-legal. Deliberately tight: excludes punctuation (",", ";", ":", "!",
-# "?", "'", "@", "*", "$", ...) that's technically valid in a URL per RFC
-# 3986 but is far more often just prose touching the URL in this dataset's
-# informal artist-bio descs. Never widen this to "guess more" -- if the tail
-# beyond the id-focused regex match isn't made entirely of these characters,
+# continuation (e.g. "&ref=abc", "?ref=abc") rather than adjacent prose that
+# happens to be URL-legal. Deliberately tight: excludes punctuation (",",
+# ";", ":", "!", "'", "@", "*", "$", ...) that's technically valid in a URL
+# per RFC 3986 but is far more often just prose touching the URL in this
+# dataset's informal artist-bio descs. "?" IS included -- it's the standard
+# query-string separator, and the CJK/non-ASCII protection in
+# _expand_url_span comes from the isascii() stop, not from excluding "?".
+# Never widen this further to "guess more" -- if the tail beyond the
+# id-focused regex match isn't made entirely of these characters,
 # _expand_url_span reports it as unconfident and the caller flags an anomaly
 # instead of persisting a guess.
 _CONFIDENT_URL_TAIL_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789&=%_.~-"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789&=%_.~-?"
 )
+# Trailing prose punctuation _expand_url_span itself right-trims off a URL
+# span (see _TRAILING_PROSE_PUNCTUATION above) lands, unconsumed, in the text
+# immediately after the span -- an orphaned mark that's neither a separator
+# nor real content. _strip_and_tidy treats a lone run of these with nothing
+# else following as if it weren't there at all, the same way it already
+# treats a dangling delimiter.
+_ORPHANED_EDGE_PUNCTUATION = frozenset(".!?")
 
 
 class _AmbiguousRemnant(Exception):
@@ -171,12 +183,14 @@ def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
     the whole desc's global boundaries -- a dangling label or an orphaned
     separator is just as much a problem mid-string as at the edges).
     Confidently resolves: nothing left at all (-> None), a delimiter
-    ("/|,-") doubled by the removal or dangling at a true edge, and ordinary
+    ("/|,-") doubled by the removal or dangling at a true edge, orphaned
+    trailing punctuation (".!?") with nothing following it, and ordinary
     prose (the whitespace gap left by the removal is closed). Raises
     `_AmbiguousRemnant` for anything else: a label character ("profile:")
     touching the span, an emptied bracket pair, mismatched delimiters on
-    either side, or real content glued to the span on both sides with no
-    whitespace anywhere nearby.
+    either side, or real content glued to the span on either side with no
+    whitespace nearby (joining would fabricate a separator that was never
+    there).
     """
     before = desc[:start]
     after = desc[end:]
@@ -185,7 +199,19 @@ def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
     before_char = before_stripped[-1] if before_stripped else None
     after_char = after_stripped[0] if after_stripped else None
 
-    # Nothing but whitespace on either side: the mention was the whole desc.
+    # A lone run of orphaned trailing punctuation right after the span, with
+    # nothing else following it, is either _expand_url_span's own trim
+    # artifact (it right-trims ".!?" off the URL span itself, which lands,
+    # unconsumed, right here) or was always just sitting immediately after a
+    # bare id. Either way it's neither a separator nor real content --
+    # normalize it away so every check below sees the desc's *true* shape,
+    # including the empty-desc-> None case just below.
+    if after_stripped and all(c in _ORPHANED_EDGE_PUNCTUATION for c in after_stripped):
+        after_stripped = ""
+        after_char = None
+
+    # Nothing but whitespace (or now-normalized orphaned punctuation) on
+    # either side: the mention was the whole desc.
     if not before_stripped and not after_stripped:
         return None
 
@@ -228,12 +254,13 @@ def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
     if not after_stripped:
         return before_stripped
 
-    # The removed text was glued directly to real content on *both* sides --
-    # no whitespace anywhere nearby at all (e.g. CJK prose immediately
-    # abutting a pasted URL on both ends). Joining with a space would guess
-    # at a separator convention that clearly wasn't there; gluing the two
-    # sides together would guess the opposite. Flag rather than pick.
-    if before == before_stripped and after == after_stripped:
+    # The removed text was glued directly to real content on *either* side --
+    # no whitespace between the span and that side at all (e.g. CJK prose
+    # immediately abutting a pasted URL). Joining with a fabricated space
+    # would guess at a separator convention that clearly wasn't there on
+    # that side, whether or not the other side had a real gap. Flag rather
+    # than pick.
+    if before == before_stripped or after == after_stripped:
         raise _AmbiguousRemnant(f"{before_stripped!r} | {after_stripped!r}")
 
     return f"{before_stripped} {after_stripped}"

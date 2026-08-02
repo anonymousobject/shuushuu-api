@@ -268,6 +268,127 @@ class TestDescMoverUrlOnlyDesc:
         assert artist.desc is None
         assert report.descs_emptied == 1
 
+    async def test_url_only_desc_with_trailing_period_becomes_null(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A trailing '.' right-trimmed off the URL span by
+        _expand_url_span lands, unconsumed, in the text immediately after
+        the span -- it must not survive as an orphaned '.' where the desc
+        should have gone fully to NULL."""
+        artist = Tags(
+            title="OrphanPunctPeriod",
+            type=TagType.ARTIST,
+            desc="http://www.pixiv.net/users/1000121.",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/users/1000121",
+                site="pixiv",
+                external_id="1000121",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc is None
+        assert report.descs_emptied == 1
+        assert report.anomalies == []
+
+    async def test_url_only_desc_with_trailing_exclamation_becomes_null(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Same as the trailing-period case but with '!'."""
+        artist = Tags(
+            title="OrphanPunctExclamation",
+            type=TagType.ARTIST,
+            desc="http://www.pixiv.net/users/1000121!",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/users/1000121",
+                site="pixiv",
+                external_id="1000121",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc is None
+        assert report.descs_emptied == 1
+        assert report.anomalies == []
+
+    async def test_url_only_desc_with_trailing_question_mark_becomes_null(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Same as the trailing-period case but with a lone '?' (no query
+        string following it -- distinct from the confident '?ref=abc'
+        case, which is real query content and stays on the link)."""
+        artist = Tags(
+            title="OrphanPunctQuestion",
+            type=TagType.ARTIST,
+            desc="http://www.pixiv.net/users/1000121?",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/users/1000121",
+                site="pixiv",
+                external_id="1000121",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc is None
+        assert report.descs_emptied == 1
+        assert report.anomalies == []
+
+    async def test_orphaned_trailing_period_after_dangling_separator_is_tidied(
+        self, db_session: AsyncSession
+    ) -> None:
+        """'クロネコ / <url>.' combines two cleanup rules: the trailing
+        period is an orphaned _expand_url_span trim artifact, and once it's
+        normalized away the '/' in front of it is a delimiter dangling at a
+        (now) true edge -- both must resolve to a single clean 'クロネコ',
+        not 'クロネコ / .'."""
+        artist = Tags(
+            title="OrphanPunctAfterSlash",
+            type=TagType.ARTIST,
+            desc="クロネコ / http://www.pixiv.net/member.php?id=1000121.",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="https://www.pixiv.net/users/1000121",
+                site="pixiv",
+                external_id="1000121",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "クロネコ"
+        assert report.descs_cleaned == 1
+        assert report.anomalies == []
+
 
 @pytest.mark.integration
 class TestDescMoverDuplicateUrlGuard:
@@ -692,6 +813,104 @@ class TestDescMoverUrlSpanExpansionSafety:
         assert report.descs_cleaned == 0
         assert len(report.anomalies) == 1
         assert str(artist.tag_id) in report.anomalies[0]
+
+    async def test_glued_after_side_only_is_flagged_not_joined_with_a_space(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Only the *after* side is glued (no whitespace between the id
+        digits and 'です'); the *before* side has a real space. Joining
+        would still fabricate a separator on the glued side that was never
+        there -- must flag, not silently produce 'see です'."""
+        artist = Tags(
+            title="GluedAfterOnly",
+            type=TagType.ARTIST,
+            desc="see http://www.pixiv.net/users/123です",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/users/123",
+                site="pixiv",
+                external_id="123",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "see http://www.pixiv.net/users/123です"
+        assert report.descs_cleaned == 0
+        assert len(report.anomalies) == 1
+        assert str(artist.tag_id) in report.anomalies[0]
+
+    async def test_glued_before_side_only_is_flagged_not_joined_with_a_space(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Symmetric case: only the *before* side is glued (no whitespace
+        between '見て' and the URL); 'end' follows with a real space. Must
+        flag, not silently produce '見て end'."""
+        artist = Tags(
+            title="GluedBeforeOnly",
+            type=TagType.ARTIST,
+            desc="見てhttp://www.pixiv.net/users/123 end",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/users/123",
+                site="pixiv",
+                external_id="123",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "見てhttp://www.pixiv.net/users/123 end"
+        assert report.descs_cleaned == 0
+        assert len(report.anomalies) == 1
+        assert str(artist.tag_id) in report.anomalies[0]
+
+    async def test_question_mark_query_string_is_confident_and_moves_cleanly(
+        self, db_session: AsyncSession
+    ) -> None:
+        """'?' is the standard query-string separator -- excluding it from
+        _CONFIDENT_URL_TAIL_CHARS was a regression (round 1 handled this
+        correctly; round 2's tightening over-corrected). The CJK/prose
+        protection comes from the non-ASCII stop and whitespace boundary,
+        not from excluding '?' -- a whitespace-separated desc with a real
+        '?ref=abc' query string must still move the full URL onto the
+        link."""
+        artist = Tags(
+            title="QueryStringArtist",
+            type=TagType.ARTIST,
+            desc="見て http://www.pixiv.net/users/123?ref=abc 見て",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/123",
+            site="pixiv",
+            external_id="123",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        await db_session.refresh(link)
+        assert artist.desc == "見て 見て"
+        assert link.url == "http://www.pixiv.net/users/123?ref=abc"
+        assert report.links_rewritten_to_verbatim == 1
+        assert report.anomalies == []
 
 
 @pytest.mark.integration
