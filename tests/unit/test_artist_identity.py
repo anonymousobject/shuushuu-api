@@ -8,6 +8,7 @@ from app.services.artist_identity import (
     canonical_profile_url,
     parse_identity_query,
     parse_identity_url,
+    site_display_name,
 )
 
 
@@ -79,3 +80,15 @@ class TestCanonicalProfileUrl:
         identity = ArtistIdentity(site="twitter", external_id="21412050")
         with pytest.raises(ValueError, match="twitter"):
             canonical_profile_url(identity)
+
+
+class TestSiteDisplayName:
+    def test_pixiv_is_capitalized(self):
+        """Mods capitalize 'Pixiv' everywhere; the stored site column stays
+        lowercase, but any label built for display must use this form."""
+        assert site_display_name(SITE_PIXIV) == "Pixiv"
+
+    def test_unknown_site_falls_back_to_raw_string(self):
+        """No display mapping registered yet -- fall back rather than raise,
+        since this is a display concern, not a validation one."""
+        assert site_display_name("twitter") == "twitter"

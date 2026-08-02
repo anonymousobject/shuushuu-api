@@ -14,7 +14,7 @@ from app.core.database import get_db
 from app.core.logging import get_logger
 from app.models.tag import Tags
 from app.schemas.search import SearchResponse, TagSearchHit
-from app.services.artist_identity import parse_identity_query, resolve_identity
+from app.services.artist_identity import parse_identity_query, resolve_identity, site_display_name
 from app.services.search import SearchService
 
 logger = get_logger(__name__)
@@ -173,7 +173,7 @@ async def search(
             and (type_id is None or exact_tag.type == type_id)
             and not (exclude_aliases and exact_tag.alias_of is not None)
         ):
-            label = f"{identity.site} {identity.external_id}"
+            label = f"{site_display_name(identity.site)} {identity.external_id}"
 
             # Alias rows of the matched canonical are redundant with the
             # flagged canonical hit (shown first) -- during the

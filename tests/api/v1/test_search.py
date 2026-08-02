@@ -418,7 +418,7 @@ class TestSearchEndpoint:
         data = response.json()
         hits = data["hits"]
         assert hits[0]["tag_id"] == artist.tag_id
-        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
         # The exact hit wasn't already counted by Meilisearch, so total gains one.
         assert data["total"] == 1
 
@@ -453,7 +453,7 @@ class TestSearchEndpoint:
         data = response.json()
         hits = data["hits"]
         assert [h["tag_id"] for h in hits].count(artist.tag_id) == 1
-        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
         # The hit was already in the Meilisearch results, so total is unchanged.
         assert data["total"] == 1
 
@@ -514,7 +514,7 @@ class TestSearchEndpoint:
         hits = data["hits"]
         assert len(hits) == 1
         assert hits[0]["tag_id"] == artist.tag_id
-        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
 
     async def test_identity_query_on_later_page_does_not_inject_exact_hit(
         self,
@@ -683,7 +683,7 @@ class TestSearchEndpoint:
 
         data = response.json()
         assert data["hits"][0]["tag_id"] == artist.tag_id
-        assert data["hits"][0]["matched_identity"] == "pixiv 21412050"
+        assert data["hits"][0]["matched_identity"] == "Pixiv 21412050"
         assert data["total"] == 1
 
     async def test_exact_identity_query_respects_exclude_aliases(
@@ -762,7 +762,7 @@ class TestSearchEndpoint:
         data = response.json()
         hits = data["hits"]
         assert [h["tag_id"] for h in hits] == [canonical.tag_id]
-        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
         # Meilisearch's raw total (2) minus the dropped alias row.
         assert data["total"] == 1
 
@@ -803,7 +803,7 @@ class TestSearchEndpoint:
         data = response.json()
         hits = data["hits"]
         assert [h["tag_id"] for h in hits] == [canonical.tag_id]
-        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
         # Meilisearch total (1) minus the dropped alias, plus the newly
         # counted canonical: 1 - 1 + 1 == 1.
         assert data["total"] == 1

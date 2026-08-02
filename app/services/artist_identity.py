@@ -17,6 +17,18 @@ from app.models.tag_external_link import TagExternalLinks
 
 SITE_PIXIV = "pixiv"
 
+# The stored `site` column value is always lowercase (used for lookups and a
+# future UNIQUE(site, external_id) index); this maps it to the case mods
+# actually want shown -- they capitalize "Pixiv" everywhere.
+SITE_DISPLAY_NAMES = {SITE_PIXIV: "Pixiv"}
+
+
+def site_display_name(site: str) -> str:
+    """The display form of a site name, falling back to the raw value for any
+    site without a registered mapping."""
+    return SITE_DISPLAY_NAMES.get(site, site)
+
+
 # Every pixiv profile-URL form in the wild. Old descs/links use the legacy
 # member.php forms; modern URLs may carry a language prefix (/en/users/...).
 _PIXIV_URL_PATTERNS = [
