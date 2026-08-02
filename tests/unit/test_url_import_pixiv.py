@@ -137,6 +137,54 @@ class TestResolve:
             with pytest.raises(UpstreamError):
                 await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
 
+    @pytest.mark.parametrize(
+        "gate",
+        [
+            {"sl": 4},  # flagged sensitive
+            {"sl": 6},  # flagged more sensitive
+            {"isLoginOnly": True},  # artist restricted it to logged-in viewers
+        ],
+    )
+    async def test_login_gated_work_rejected_as_restricted(self, gate):
+        """pixiv answers 200/error:false with every `urls` value null for works
+        behind its login gate, and leaves xRestrict at 0 (live-verified
+        2026-08-01). Must not surface as a 502."""
+        body = _illust_body(urls=dict.fromkeys(["small", "original"]), **gate)
+        async with _client(body) as client:
+            with pytest.raises(RestrictedContentError, match="logged in to pixiv"):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+
+    async def test_login_gated_multi_page_work_rejected_without_pages_fetch(self):
+        pages_requested = []
+
+        def handler(request):
+            path = request.url.path
+            if path == "/ajax/illust/138823691":
+                body = _illust_body(pageCount=3, sl=4, urls=dict.fromkeys(["small", "original"]))
+                return httpx.Response(200, json={"error": False, "body": body})
+            pages_requested.append(path)
+            return httpx.Response(200, json={"error": False, "body": []})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(RestrictedContentError, match="logged in to pixiv"):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+        assert pages_requested == []
+
+    async def test_null_urls_without_gate_flags_stays_upstream_error(self):
+        """No gate flag means pixiv changed something we don't understand —
+        that is a 502, not a restriction we can explain to the user."""
+        body = _illust_body(urls=dict.fromkeys(["small", "original"]), sl=2)
+        async with _client(body) as client:
+            with pytest.raises(UpstreamError):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+
+    async def test_gate_flags_ignored_when_urls_are_present(self):
+        """Only the missing-URL case is a restriction. If pixiv ever serves
+        originals for sensitive works, keep importing them."""
+        async with _client(_illust_body(sl=4)) as client:
+            post = await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+        assert post.images[0].full_url.endswith("_p0.png")
+
     async def test_off_host_original_url_rejects_whole_post(self):
         body = _illust_body(urls={
             "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p0_master1200.jpg",
