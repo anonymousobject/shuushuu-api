@@ -724,3 +724,173 @@ class TestSearchEndpoint:
         data = response.json()
         assert data["hits"] == []
         assert data["total"] == 0
+
+    async def test_identity_query_drops_alias_row_when_meili_returns_both(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A legacy alias tag of the matched canonical is redundant with the
+        flagged canonical hit and must not also appear as its own row."""
+        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        link = TagExternalLinks(
+            tag_id=canonical.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[alias.tag_id, canonical.tag_id], total=2
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert [h["tag_id"] for h in hits] == [canonical.tag_id]
+        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        # Meilisearch's raw total (2) minus the dropped alias row.
+        assert data["total"] == 1
+
+    async def test_identity_query_drops_alias_row_when_meili_returns_alias_only(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """If Meilisearch only surfaced the alias (not the canonical), the
+        exact layer still prepends the canonical and drops the alias row."""
+        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        link = TagExternalLinks(
+            tag_id=canonical.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[alias.tag_id], total=1
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert [h["tag_id"] for h in hits] == [canonical.tag_id]
+        assert hits[0]["matched_identity"] == "pixiv 21412050"
+        # Meilisearch total (1) minus the dropped alias, plus the newly
+        # counted canonical: 1 - 1 + 1 == 1.
+        assert data["total"] == 1
+
+    async def test_text_query_leaves_alias_rows_untouched(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A non-identity text query never triggers alias dedup — aliases of
+        an unrelated tag are ordinary, independent search results."""
+        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[alias.tag_id, canonical.tag_id], total=2
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "tsunekichi"})
+        assert response.status_code == 200
+
+        data = response.json()
+        assert {h["tag_id"] for h in data["hits"]} == {alias.tag_id, canonical.tag_id}
+        assert data["total"] == 2
+        assert all(h["matched_identity"] is None for h in data["hits"])
+
+    async def test_identity_query_drops_alias_row_on_later_page(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """An alias row of the matched canonical is dropped even on a
+        page > 0 request, even though the canonical itself is only ever
+        injected/flagged on the first page."""
+        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
+        other = Tags(title="Other Tag", type=TagType.THEME)
+        db_session.add_all([canonical, other])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(other)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        link = TagExternalLinks(
+            tag_id=canonical.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # The requested (later) page has the alias plus an unrelated tag; the
+        # first-page reference lookup (offset=0, used to decide whether the
+        # canonical itself is "new") finds neither the canonical nor the
+        # alias — the canonical is genuinely outside Meilisearch's match set.
+        def fake_search_tags(_q, *, limit, offset, type_filter, exclude_aliases, sort):
+            if offset == 0:
+                return TagSearchResult(tag_ids=[other.tag_id], total=5)
+            return TagSearchResult(tag_ids=[alias.tag_id, other.tag_id], total=5)
+
+        mock_search_service.search_tags.side_effect = fake_search_tags
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "offset": 20, "limit": 2}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        # The alias is dropped; the canonical is never injected into a later
+        # page; the unrelated tag is untouched.
+        assert [h["tag_id"] for h in hits] == [other.tag_id]
+        assert all(h["matched_identity"] is None for h in hits)
+        # Meilisearch's total (5) minus the dropped alias, plus the
+        # canonical counted as new (not found on the first-page reference
+        # lookup): 5 - 1 + 1 == 5.
+        assert data["total"] == 5

@@ -174,6 +174,25 @@ async def search(
             and not (exclude_aliases and exact_tag.alias_of is not None)
         ):
             label = f"{identity.site} {identity.external_id}"
+
+            # Alias rows of the matched canonical are redundant with the
+            # flagged canonical hit (shown first) -- during the
+            # alias-coexistence period, Meilisearch can independently match
+            # both the canonical and a legacy alias tag (e.g. one titled
+            # "Pixiv 21412050") for the same identity query, rendering as
+            # two visually-identical suggestion rows. Drop them from THIS
+            # page's hits regardless of offset -- an alias row can land on
+            # a later page even when the canonical itself is only ever
+            # injected/flagged on the first page (see below). `total` is
+            # adjusted down by exactly what's dropped from this page: a
+            # per-page estimate, the same spirit as Meilisearch's own
+            # estimated_total_hits, since these rows disappear entirely
+            # once aliases are fully retired.
+            alias_rows = [h for h in hits if h.alias_of == exact_tag.tag_id]
+            if alias_rows:
+                hits = [h for h in hits if h.alias_of != exact_tag.tag_id]
+                total -= len(alias_rows)
+
             if offset == 0:
                 already_found = exact_tag.tag_id in result.tag_ids
             else:
