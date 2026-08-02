@@ -5,6 +5,7 @@ spike-verified 2026-07-06 (see the design doc).
 """
 
 import re
+from typing import Any
 
 import httpx
 
@@ -20,6 +21,22 @@ from app.services.url_import.base import (
 
 _URL_RE = re.compile(r"^https?://(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?artworks/(\d+)")
 _REFERER = {"Referer": "https://www.pixiv.net/"}
+
+# pixiv's "sanity level"; 4 and up is flagged sensitive (but not R-18 — that is
+# xRestrict). Verified 2026-08-01 against 11 works that failed in production.
+_SENSITIVE_SANITY_LEVEL = 4
+
+
+def _is_login_gated(body: dict[str, Any]) -> bool:
+    """True if pixiv withheld this work's image URLs pending a login.
+
+    For works behind the login gate the ajax API still answers 200 with
+    error:false and a full metadata body, but every value in `urls` is null.
+    Two conditions trigger it, neither of which sets xRestrict, so the R-18
+    check misses both: the artist restricting the work to logged-in viewers,
+    and pixiv flagging it sensitive (sl >= 4).
+    """
+    return bool(body.get("isLoginOnly")) or (body.get("sl") or 0) >= _SENSITIVE_SANITY_LEVEL
 
 
 class PixivResolver:
@@ -47,6 +64,15 @@ class PixivResolver:
             raise RestrictedContentError("Restricted (R-18) pixiv works cannot be imported")
         if body.get("illustType") == 2:
             raise RestrictedContentError("Ugoira (animated) pixiv works cannot be imported")
+        # Checked before the pageCount branch: pixiv nulls the whole `urls` block
+        # on the illust body, which carries p0 even for multi-page works — so this
+        # covers both shapes and spares a pointless /pages round-trip.
+        if not (body.get("urls") or {}).get("original") and _is_login_gated(body):
+            raise RestrictedContentError(
+                "This pixiv work is only viewable while logged in to pixiv. "
+                "Save the image and upload it manually, or paste a mirror URL "
+                "(danbooru, gelbooru, zerochan) if one exists."
+            )
 
         if body.get("pageCount", 1) > 1:
             pages = await fetch_json(
