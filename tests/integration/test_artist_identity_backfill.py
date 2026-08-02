@@ -143,6 +143,76 @@ class TestBackfillFromAliases:
             )
         ).first() is None
 
+    async def test_unparseable_pixiv_alias_title_is_an_anomaly(
+        self, db_session: AsyncSession
+    ) -> None:
+        """An alias title that's clearly *trying* to be 'Pixiv <id>' but
+        doesn't match the strict pattern is worth flagging for hand-review —
+        silently skipping it would hide a real identity mods could recover
+        by fixing the title."""
+        artist = Tags(title="SomeArtist", type=TagType.ARTIST, usage_count=1)
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(Tags(title="Pixiv-21412050", type=TagType.ARTIST, alias_of=artist.tag_id))
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        assert any("21412050" in a and "Pixiv-21412050" in a for a in report.anomalies)
+        assert (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
+            )
+        ).first() is None
+        assert report.links_created_from_aliases == 0
+
+    async def test_plain_non_pixiv_alias_titles_stay_silent(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A regular alias title unrelated to pixiv shouldn't trip the loose
+        probe and shouldn't appear in the anomaly report at all."""
+        artist = Tags(title="SomeArtist", type=TagType.ARTIST, usage_count=1)
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(Tags(title="Some Nickname", type=TagType.ARTIST, alias_of=artist.tag_id))
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+        assert report.anomalies == []
+
+    async def test_alias_pointing_at_non_artist_canonical_is_an_anomaly(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A strict-matched 'Pixiv <id>' alias whose canonical isn't an
+        artist tag is a data-modeling problem worth a human's attention —
+        writing the identity link onto a non-artist canonical would be
+        wrong, so the link must not be created."""
+        non_artist_canonical = Tags(title="SomeTheme", type=TagType.THEME, usage_count=1)
+        db_session.add(non_artist_canonical)
+        await db_session.flush()
+        db_session.add(
+            Tags(
+                title="Pixiv 55555",
+                type=TagType.THEME,
+                alias_of=non_artist_canonical.tag_id,
+            )
+        )
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        assert any(
+            "55555" in a and str(non_artist_canonical.tag_id) in a for a in report.anomalies
+        )
+        assert (
+            await db_session.execute(
+                select(TagExternalLinks).where(
+                    TagExternalLinks.tag_id == non_artist_canonical.tag_id
+                )
+            )
+        ).first() is None
+        assert report.links_created_from_aliases == 0
+
 
 @pytest.mark.integration
 class TestBackfillFromDesc:

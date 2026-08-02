@@ -23,6 +23,10 @@ from app.services.artist_identity import (
 )
 
 _ALIAS_TITLE = re.compile(r"^pixiv\s+(\d+)$", re.IGNORECASE)
+# Loose probe: anything that's clearly *trying* to name a pixiv id but
+# doesn't match the strict form above — worth an anomaly rather than silent
+# skipping. Plain non-pixiv alias titles never match this and stay silent.
+_ALIAS_TITLE_LOOSE = re.compile(r"^pixiv\b", re.IGNORECASE)
 # Non-anchored forms of the URL patterns, for scanning desc text.
 _DESC_URL = re.compile(
     r"https?://(?:www\.|touch\.)?pixiv\.net/"
@@ -99,11 +103,31 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
         .scalars()
         .all()
     )
+    canonical_ids = {alias.alias_of for alias in aliases if alias.alias_of is not None}
+    canonical_types: dict[int, int] = {}
+    if canonical_ids:
+        canonical_rows = await db.execute(
+            select(Tags.tag_id, Tags.type).where(  # type: ignore[call-overload]
+                Tags.tag_id.in_(canonical_ids)  # type: ignore[union-attr]
+            )
+        )
+        canonical_types = {r.tag_id: r.type for r in canonical_rows.all()}
     for alias in aliases:
         if alias.title is None:
             continue
         match = _ALIAS_TITLE.match(alias.title)
         if not match:
+            if _ALIAS_TITLE_LOOSE.match(alias.title):
+                report.anomalies.append(
+                    f"alias tag {alias.tag_id} '{alias.title}': looks like a pixiv id "
+                    "but doesn't match the expected 'Pixiv <id>' title format"
+                )
+            continue
+        if canonical_types.get(alias.alias_of) != TagType.ARTIST:  # type: ignore[arg-type]
+            report.anomalies.append(
+                f"alias tag {alias.tag_id} '{alias.title}' -> tag {alias.alias_of}: "
+                "canonical tag is not an artist tag, skipping link creation"
+            )
             continue
         identity = ArtistIdentity(site=SITE_PIXIV, external_id=match.group(1))
         key = (identity.site, identity.external_id)
