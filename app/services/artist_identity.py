@@ -62,6 +62,8 @@ def parse_identity_query(q: str) -> ArtistIdentity | None:
 
 def canonical_profile_url(identity: ArtistIdentity) -> str:
     """The URL to create when backfilling an identity that has no link yet."""
+    if identity.site != SITE_PIXIV:
+        raise ValueError(f"No canonical profile URL scheme registered for site {identity.site!r}")
     return f"https://www.pixiv.net/users/{identity.external_id}"
 
 

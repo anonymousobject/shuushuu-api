@@ -70,3 +70,12 @@ class TestCanonicalProfileUrl:
     def test_pixiv(self):
         identity = ArtistIdentity(site=SITE_PIXIV, external_id="21412050")
         assert canonical_profile_url(identity) == "https://www.pixiv.net/users/21412050"
+
+    def test_non_pixiv_site_raises(self):
+        """No other site's URL scheme has been registered yet — minting a
+        pixiv URL for it would silently write a wrong link. This guard is a
+        tripwire for the day a second parser is added without updating this
+        function too."""
+        identity = ArtistIdentity(site="twitter", external_id="21412050")
+        with pytest.raises(ValueError, match="twitter"):
+            canonical_profile_url(identity)
