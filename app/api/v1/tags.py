@@ -1997,8 +1997,16 @@ async def add_tag_link(
                     f"tag '{claimed_by.title}' (id {claimed_by.tag_id})"
                 ),
             )
-        new_link.site = identity.site
-        new_link.external_id = identity.external_id
+        # Only populate site/external_id when this tag doesn't already own the
+        # identity. Mods deliberately keep multiple URL forms of the same
+        # account on one tag (x.com + twitter.com; legacy member.php + modern
+        # /users/) for archive reasons -- a future UNIQUE(site, external_id)
+        # index requires identity to live on only one link row per tag, so an
+        # alternate form for an identity this tag already owns is stored as a
+        # plain archival URL instead.
+        if claimed_by is None:
+            new_link.site = identity.site
+            new_link.external_id = identity.external_id
     if _is_shuu_wiki_url(link_data.url):
         min_pos = (
             await db.execute(

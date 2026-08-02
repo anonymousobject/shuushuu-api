@@ -4691,6 +4691,90 @@ class TestAddTagLink:
         assert "21412050" in response.json()["detail"]
         assert tag.title in response.json()["detail"]
 
+    async def test_second_url_form_for_same_tag_leaves_identity_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A second URL form of an identity the SAME tag already owns (e.g. the
+        legacy member.php form alongside the modern /users/ form) is stored as a
+        plain archival link with NULL site/external_id. Mods deliberately keep
+        both forms on one tag for archive reasons, and a future UNIQUE(site,
+        external_id) index requires identity to live on only one link row per
+        tag. The first link's identity must be untouched."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminaltform",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaltform@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="alt form artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaltform", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # First link claims the identity
+        first_response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/users/21412050"},
+            headers=headers,
+        )
+        assert first_response.status_code == 201
+        first_body = first_response.json()
+        assert first_body["site"] == "pixiv"
+        assert first_body["external_id"] == "21412050"
+
+        # Second URL form of the SAME identity, on the SAME tag
+        second_response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/member.php?id=21412050"},
+            headers=headers,
+        )
+        assert second_response.status_code == 201
+        second_body = second_response.json()
+        assert second_body["site"] is None
+        assert second_body["external_id"] is None
+
+        # The first link's identity is unchanged
+        first_link_result = await db_session.execute(
+            select(TagExternalLinks).where(
+                TagExternalLinks.link_id == first_body["link_id"]  # type: ignore[arg-type]
+            )
+        )
+        first_link = first_link_result.scalar_one()
+        assert first_link.site == "pixiv"
+        assert first_link.external_id == "21412050"
+
 
 @pytest.mark.api
 class TestDeleteTagLink:
