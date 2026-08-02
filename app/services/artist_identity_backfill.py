@@ -1,6 +1,7 @@
-"""Backfill (site, external_id) identity from links, alias titles, and descs.
+"""Backfill (site, external_id) identity from links, alias titles, descs,
+title suffixes, and bare desc text.
 
-Three sources in confidence order; see the design doc §5. Dry-run by default —
+Five sources in confidence order; see the design doc §5. Dry-run by default —
 `apply=False` computes the full report without writing.
 """
 
@@ -33,6 +34,15 @@ _DESC_URL = re.compile(
     r"(?:(?:[a-z]{2}/)?users/(\d+)|member(?:_illust)?\.php\?(?:[^\s#]*&)?id=(\d+))",
     re.IGNORECASE,
 )
+# "(Pixiv N)" suffix convention on canonical artist titles, e.g.
+# "Kuroneko (Pixiv 1000121)". Anchored to the end of the title.
+_TITLE_PIXIV_SUFFIX = re.compile(r"\(Pixiv[\s#:]*(\d{1,12})\)$", re.IGNORECASE)
+# Bare "pixiv 97567" / "pixiv #97567" / "pixiv: 97567" text in a desc, with no
+# URL involved. Minimum 4 digits to avoid matching prose like "pixiv 100
+# followers". The literal "." in "pixiv.net" immediately after "pixiv" is not
+# in the [\s#:] class, so this never re-matches ids already handled by
+# _DESC_URL (verified with a dedicated test rather than assumed).
+_DESC_BARE_ID = re.compile(r"\bpixiv[\s#:]*(\d{4,12})\b", re.IGNORECASE)
 
 
 @dataclass
@@ -40,6 +50,8 @@ class BackfillReport:
     links_parsed: int = 0
     links_created_from_aliases: int = 0
     links_created_from_desc: int = 0
+    links_created_from_titles: int = 0
+    links_created_from_desc_text: int = 0
     artist_tags_without_identity: int = 0
     anomalies: list[str] = field(default_factory=list)
 
@@ -152,24 +164,27 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
                 )
             )
 
-    # --- Source 3: pixiv URLs embedded in artist descs ---
-    artists = (
+    # --- Canonical artist tags, reused by sources 3-5 ---
+    canonical_artists = (
         (
             await db.execute(
                 select(Tags)
                 .where(Tags.type == TagType.ARTIST)  # type: ignore[arg-type]
                 .where(Tags.alias_of.is_(None))  # type: ignore[union-attr]
-                .where(Tags.desc.is_not(None))  # type: ignore[union-attr]
             )
         )
         .scalars()
         .all()
     )
+
+    # --- Source 3: pixiv URLs embedded in artist descs ---
     claimed_tags = {tag_id for (_site, _eid), tag_id in owners.items()}
-    for artist in artists:
+    for artist in canonical_artists:
         if artist.tag_id in claimed_tags:
             continue
-        ids = {m.group(1) or m.group(2) for m in _DESC_URL.finditer(artist.desc or "")}
+        if not artist.desc:
+            continue
+        ids = {m.group(1) or m.group(2) for m in _DESC_URL.finditer(artist.desc)}
         if not ids:
             continue
         if len(ids) > 1:
@@ -187,6 +202,74 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
             )
             continue
         report.links_created_from_desc += 1
+        owners[key] = artist.tag_id  # type: ignore[assignment]
+        if apply:
+            db.add(
+                TagExternalLinks(
+                    tag_id=artist.tag_id,
+                    url=canonical_profile_url(identity),
+                    site=identity.site,
+                    external_id=identity.external_id,
+                )
+            )
+
+    # --- Source 4: "(Pixiv <id>)" suffix on canonical artist titles ---
+    claimed_tags = {tag_id for (_site, _eid), tag_id in owners.items()}
+    for artist in canonical_artists:
+        if artist.tag_id in claimed_tags:
+            continue
+        if artist.title is None:
+            continue
+        match = _TITLE_PIXIV_SUFFIX.search(artist.title)
+        if not match:
+            continue
+        identity = ArtistIdentity(site=SITE_PIXIV, external_id=match.group(1))
+        key = (identity.site, identity.external_id)
+        owner = owners.get(key)
+        if owner is not None:
+            report.anomalies.append(
+                f"tag {artist.tag_id} '{artist.title}': title pixiv id "
+                f"{identity.external_id} already owned by tag {owner}"
+            )
+            continue
+        report.links_created_from_titles += 1
+        owners[key] = artist.tag_id  # type: ignore[assignment]
+        if apply:
+            db.add(
+                TagExternalLinks(
+                    tag_id=artist.tag_id,
+                    url=canonical_profile_url(identity),
+                    site=identity.site,
+                    external_id=identity.external_id,
+                )
+            )
+
+    # --- Source 5: bare "pixiv <id>" text in artist descs (no URL) ---
+    claimed_tags = {tag_id for (_site, _eid), tag_id in owners.items()}
+    for artist in canonical_artists:
+        if artist.tag_id in claimed_tags:
+            continue
+        if not artist.desc:
+            continue
+        ids = {m.group(1) for m in _DESC_BARE_ID.finditer(artist.desc)}
+        if not ids:
+            continue
+        if len(ids) > 1:
+            report.anomalies.append(
+                f"tag {artist.tag_id} '{artist.title}': desc names multiple bare "
+                f"pixiv ids {sorted(ids)}"
+            )
+            continue
+        identity = ArtistIdentity(site=SITE_PIXIV, external_id=ids.pop())
+        key = (identity.site, identity.external_id)
+        owner = owners.get(key)
+        if owner is not None:
+            report.anomalies.append(
+                f"tag {artist.tag_id} '{artist.title}': bare desc pixiv id "
+                f"{identity.external_id} already owned by tag {owner}"
+            )
+            continue
+        report.links_created_from_desc_text += 1
         owners[key] = artist.tag_id  # type: ignore[assignment]
         if apply:
             db.add(

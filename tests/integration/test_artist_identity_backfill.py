@@ -260,6 +260,185 @@ class TestBackfillFromDesc:
 
 
 @pytest.mark.integration
+class TestBackfillFromTitleSuffix:
+    async def test_title_suffix_creates_link_on_canonical(
+        self, db_session: AsyncSession
+    ) -> None:
+        artist = Tags(title="Kuroneko (Pixiv 1000121)", type=TagType.ARTIST, usage_count=1)
+        db_session.add(artist)
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        link = (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
+            )
+        ).scalar_one()
+        assert link.url == "https://www.pixiv.net/users/1000121"
+        assert (link.site, link.external_id) == ("pixiv", "1000121")
+        assert report.links_created_from_titles == 1
+
+    async def test_title_id_owned_elsewhere_is_an_anomaly(
+        self, db_session: AsyncSession
+    ) -> None:
+        artist_a = Tags(title="ArtistA", type=TagType.ARTIST, usage_count=1)
+        artist_b = Tags(title="ArtistB (Pixiv 222)", type=TagType.ARTIST, usage_count=1)
+        db_session.add_all([artist_a, artist_b])
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(tag_id=artist_a.tag_id, url="https://www.pixiv.net/users/222")
+        )
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        assert any("222" in a for a in report.anomalies)
+        assert (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == artist_b.tag_id)
+            )
+        ).first() is None
+        assert report.links_created_from_titles == 0
+
+
+@pytest.mark.integration
+class TestBackfillFromBareDescText:
+    async def test_bare_desc_text_creates_link(self, db_session: AsyncSession) -> None:
+        artist = Tags(
+            title="SomeArtist",
+            type=TagType.ARTIST,
+            desc="find me at pixiv 97567 thanks",
+        )
+        db_session.add(artist)
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        link = (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
+            )
+        ).scalar_one()
+        assert link.url == "https://www.pixiv.net/users/97567"
+        assert (link.site, link.external_id) == ("pixiv", "97567")
+        assert report.links_created_from_desc_text == 1
+
+    async def test_bare_text_does_not_double_fire_on_url_descs(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A desc containing only a pixiv URL is fully handled by the
+        existing URL-regex source (source 3); the bare-text source must not
+        also match the digits embedded in that URL."""
+        artist = Tags(
+            title="OldArtist",
+            type=TagType.ARTIST,
+            desc="profile: https://www.pixiv.net/member.php?id=555",
+        )
+        db_session.add(artist)
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        links = (
+            (
+                await db_session.execute(
+                    select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(links) == 1
+        assert (links[0].site, links[0].external_id) == ("pixiv", "555")
+        assert report.links_created_from_desc == 1
+        assert report.links_created_from_desc_text == 0
+
+    async def test_multiple_distinct_bare_ids_is_an_anomaly(
+        self, db_session: AsyncSession
+    ) -> None:
+        artist = Tags(
+            title="ConfusedArtist2",
+            type=TagType.ARTIST,
+            desc="pixiv 111111 or maybe pixiv 222222",
+        )
+        db_session.add(artist)
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        assert len(report.anomalies) == 1
+        assert "111111" in report.anomalies[0] and "222222" in report.anomalies[0]
+        assert (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
+            )
+        ).first() is None
+        assert report.links_created_from_desc_text == 0
+
+    async def test_short_number_prose_is_ignored_silently(
+        self, db_session: AsyncSession
+    ) -> None:
+        """'pixiv 100 followers' shouldn't be mistaken for an id — the
+        minimum-4-digit rule must skip it with no anomaly at all."""
+        artist = Tags(
+            title="PopularArtist",
+            type=TagType.ARTIST,
+            desc="pixiv 100 followers and rising",
+        )
+        db_session.add(artist)
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        assert report.anomalies == []
+        assert report.links_created_from_desc_text == 0
+        assert (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
+            )
+        ).first() is None
+
+
+@pytest.mark.integration
+class TestTitleAndDescTextRespectEarlierSources:
+    async def test_alias_derived_identity_skips_title_and_desc_text_harvest(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A tag that already has an identity from source 2 (alias title)
+        must not have sources 4/5 fire on unrelated pixiv-looking text
+        elsewhere on the same tag — no second link, no anomaly."""
+        artist = Tags(
+            title="AliasedArtist (Pixiv 999999)",
+            type=TagType.ARTIST,
+            desc="also pixiv 888888",
+            usage_count=1,
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(Tags(title="Pixiv 12345", type=TagType.ARTIST, alias_of=artist.tag_id))
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        links = (
+            (
+                await db_session.execute(
+                    select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(links) == 1
+        assert (links[0].site, links[0].external_id) == ("pixiv", "12345")
+        assert report.links_created_from_aliases == 1
+        assert report.links_created_from_titles == 0
+        assert report.links_created_from_desc_text == 0
+        assert report.anomalies == []
+
+
+@pytest.mark.integration
 class TestArtistTagsWithoutIdentity:
     async def test_counts_canonical_artists_missing_from_every_source(
         self, db_session: AsyncSession
