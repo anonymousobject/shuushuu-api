@@ -76,6 +76,13 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
                 f"{identity.external_id} already owned by tag {owner}"
             )
             continue
+        if owner == link.tag_id:
+            report.anomalies.append(
+                f"link {link.link_id} (tag {link.tag_id}): duplicate identity "
+                f"{identity.site} {identity.external_id} — tag already owns it "
+                "via another link"
+            )
+            continue
         report.links_parsed += 1
         owners[key] = link.tag_id
         if apply:

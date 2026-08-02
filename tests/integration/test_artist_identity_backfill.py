@@ -34,6 +34,52 @@ class TestBackfillExistingLinks:
         assert report.links_parsed == 1
         assert report.artist_tags_without_identity == 0
 
+    async def test_same_tag_duplicate_link_is_an_anomaly_not_a_second_row(
+        self, db_session: AsyncSession
+    ) -> None:
+        """One tag with both the legacy member.php link and the modern
+        /users/ link for the *same* pixiv id must not end up owning the
+        identity twice — that'd leave two rows with an identical
+        (site, external_id), which the future UNIQUE(site, external_id)
+        migration can't tolerate, and it's invisible in the report unless
+        flagged as an anomaly for mods to hand-review."""
+        artist = Tags(title="TKennshou", type=TagType.ARTIST, usage_count=1)
+        db_session.add(artist)
+        await db_session.flush()
+        legacy_link = TagExternalLinks(
+            tag_id=artist.tag_id, url="https://www.pixiv.net/member.php?id=21412050"
+        )
+        modern_link = TagExternalLinks(
+            tag_id=artist.tag_id, url="https://www.pixiv.net/users/21412050"
+        )
+        db_session.add_all([legacy_link, modern_link])
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        links = (
+            (
+                await db_session.execute(
+                    select(TagExternalLinks)
+                    .where(TagExternalLinks.tag_id == artist.tag_id)
+                    .order_by(TagExternalLinks.link_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(links) == 2
+        parsed = [link for link in links if link.site is not None]
+        unparsed = [link for link in links if link.site is None]
+        assert len(parsed) == 1
+        assert (parsed[0].site, parsed[0].external_id) == ("pixiv", "21412050")
+        assert len(unparsed) == 1
+        assert report.links_parsed == 1
+        assert any(
+            "duplicate identity" in a and "21412050" in a and str(artist.tag_id) in a
+            for a in report.anomalies
+        )
+
     async def test_dry_run_changes_nothing(self, db_session: AsyncSession) -> None:
         artist = Tags(title="TKennshou", type=TagType.ARTIST, usage_count=1)
         db_session.add(artist)
