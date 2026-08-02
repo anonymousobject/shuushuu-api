@@ -4690,6 +4690,10 @@ class TestAddTagLink:
         assert response.status_code == 409
         assert "21412050" in response.json()["detail"]
         assert tag.title in response.json()["detail"]
+        # Pinned in the site's display case -- consistent with search's
+        # matched_identity labels ("Pixiv 21412267"), not the raw lowercase
+        # site column.
+        assert "Pixiv ID 21412050" in response.json()["detail"]
 
     async def test_second_url_form_for_same_tag_leaves_identity_null(
         self, client: AsyncClient, db_session: AsyncSession

@@ -69,7 +69,7 @@ from app.schemas.tag import (
     TagWithStats,
 )
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
-from app.services.artist_identity import parse_identity_url, resolve_identity
+from app.services.artist_identity import parse_identity_url, resolve_identity, site_display_name
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
@@ -1993,8 +1993,8 @@ async def add_tag_link(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"{identity.site} ID {identity.external_id} already belongs to "
-                    f"tag '{claimed_by.title}' (id {claimed_by.tag_id})"
+                    f"{site_display_name(identity.site)} ID {identity.external_id} "
+                    f"already belongs to tag '{claimed_by.title}' (id {claimed_by.tag_id})"
                 ),
             )
         # Only populate site/external_id when this tag doesn't already own the
