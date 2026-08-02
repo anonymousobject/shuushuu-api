@@ -23,7 +23,7 @@ _URL_RE = re.compile(r"^https?://(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?artworks/(\d
 _REFERER = {"Referer": "https://www.pixiv.net/"}
 
 # pixiv's "sanity level"; 4 and up is flagged sensitive (but not R-18 — that is
-# xRestrict). Verified 2026-08-01 against 11 works that failed in production.
+# xRestrict). Verified 2026-08-01 against 12 works that failed in production.
 _SENSITIVE_SANITY_LEVEL = 4
 
 
