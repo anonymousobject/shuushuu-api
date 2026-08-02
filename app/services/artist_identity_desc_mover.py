@@ -21,21 +21,30 @@ already OWNS via a link:
    digits the parser needs), orphaned `/` `|` `,` `-` separators left
    dangling at the edges or doubled by the removal are collapsed, and
    whitespace is normalized. An empty result is stored as NULL, matching the
-   site's "no description" convention (see `TagCreate.sanitize_desc`).
+   site's "no description" convention (see `TagCreate.sanitize_desc`). URL
+   expansion beyond the id digits only ever consumes characters we're
+   confident are a real continuation (`_CONFIDENT_URL_TAIL_CHARS`) -- never
+   adjacent prose, and never non-ASCII text glued directly against the URL
+   with no separator at all.
 3. **Bare "pixiv <id>" text** (no URL) is moved the same way; nothing
    link-side changes since there's no URL to preserve.
 4. **Anything ambiguous is an anomaly, not a guess:** the desc's identity
    isn't owned by this tag, the desc names/mentions more than one pixiv
-   occurrence, or the remainder touching the removed span doesn't look
-   confidently clean -- a label character immediately adjacent ("profile:",
-   "see;"), an emptied bracket pair ("()"), or mismatched delimiters on
-   either side. This is checked locally around the removed span, not just at
-   the whole desc's start/end, so a mid-string "profile:" is caught exactly
-   like one at the very start. No write happens for an anomaly.
+   occurrence, the text right after a URL's id digits isn't confidently more
+   URL, or the remainder touching the removed span doesn't look confidently
+   clean -- a label character immediately adjacent ("profile:", "see;"), an
+   emptied bracket pair ("()"), mismatched delimiters on either side, or text
+   glued directly to the removed span on *both* sides with no whitespace
+   anywhere nearby (joining would guess a separator that was never there).
+   This is all checked locally around the removed span, not just at the
+   whole desc's start/end, so a mid-string "profile:" is caught exactly like
+   one at the very start. No write happens for an anomaly.
 
 Dry-run by default; `apply=True` writes. Counts and the before/after
-`samples` list are always computed (even dry-run) so the caller can render a
-review report before committing to `--apply`.
+`samples` list (which also carries any pending link-URL rewrite, so the
+review report covers both sides of a change) are always computed (even
+dry-run) so the caller can render a review report before committing to
+`--apply`.
 """
 
 from __future__ import annotations
@@ -71,8 +80,27 @@ _DELIMITER_CHARS = frozenset("/|,-")
 # touching the removed span (on either side, at any position in the desc)
 # is flagged.
 _LABEL_CHARS = frozenset(":;")
-# Boundary/whitespace characters that end a URL token pasted into free text.
+# Boundary characters that end a URL token pasted into free text -- these
+# (plus any non-ASCII character, checked separately) stop the expansion walk
+# in _expand_url_span.
 _URL_TOKEN_STOP_CHARS = frozenset(" \t\r\n\"'()<>[]{}")
+# Trailing punctuation that is overwhelmingly a sentence/clause ending rather
+# than intentionally part of a pasted URL -- the standard "linkifier"
+# convention (auto-link tools exclude these from a URL's trailing edge even
+# though the URL spec technically permits them).
+_TRAILING_PROSE_PUNCTUATION = ".,;:!?"
+# Characters we're confident belong to a real trailing query-string/path
+# continuation (e.g. "&ref=abc") rather than adjacent prose that happens to
+# be URL-legal. Deliberately tight: excludes punctuation (",", ";", ":", "!",
+# "?", "'", "@", "*", "$", ...) that's technically valid in a URL per RFC
+# 3986 but is far more often just prose touching the URL in this dataset's
+# informal artist-bio descs. Never widen this to "guess more" -- if the tail
+# beyond the id-focused regex match isn't made entirely of these characters,
+# _expand_url_span reports it as unconfident and the caller flags an anomaly
+# instead of persisting a guess.
+_CONFIDENT_URL_TAIL_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789&=%_.~-"
+)
 
 
 class _AmbiguousRemnant(Exception):
@@ -81,20 +109,44 @@ class _AmbiguousRemnant(Exception):
     should look at these rather than have the mover guess."""
 
 
-def _expand_url_span(desc: str, match: re.Match[str]) -> tuple[int, int]:
+def _expand_url_span(desc: str, match: re.Match[str]) -> tuple[int, int] | None:
     """DESC_URL_PATTERN only captures through the id digits -- that's all
     identity *parsing* needs -- but the mover has to move the FULL pasted
     URL, trailing query string and all (e.g. '&ref=abc'), so the verbatim
     link rewrite doesn't truncate it and the desc strip doesn't leave the
-    tail behind as garbage. The pattern's start is anchored to the literal
-    "http(s)://" scheme, which is always the true start of the URL, so only
-    the end needs extending -- forward through any run of non-boundary
-    characters.
+    tail behind as garbage.
+
+    The pattern's start is anchored to the literal "http(s)://" scheme,
+    always the true start of a pasted URL, so only the end needs extending.
+    The walk stops at whitespace, a quote/bracket, or (critically) any
+    non-ASCII character -- CJK text glued directly after the id digits (no
+    separator at all) must never be pulled into the URL. Trailing prose
+    punctuation (a sentence period, a list comma) is then trimmed off
+    regardless of how far the walk reached, since a pasted URL essentially
+    never legitimately *ends* in one of those right before whitespace even
+    though the URL spec permits them.
+
+    Returns None if what's left beyond the original match, after that trim,
+    still isn't made entirely of characters we're confident are a real URL
+    continuation -- the caller flags an anomaly rather than persisting a
+    guess.
     """
     end = match.end()
-    while end < len(desc) and desc[end] not in _URL_TOKEN_STOP_CHARS:
+    while end < len(desc):
+        ch = desc[end]
+        if not ch.isascii() or ch in _URL_TOKEN_STOP_CHARS:
+            break
         end += 1
-    return match.start(), end
+
+    trimmed_end = end
+    while trimmed_end > match.end() and desc[trimmed_end - 1] in _TRAILING_PROSE_PUNCTUATION:
+        trimmed_end -= 1
+
+    tail = desc[match.end() : trimmed_end]
+    if tail and not all(c in _CONFIDENT_URL_TAIL_CHARS for c in tail):
+        return None
+
+    return match.start(), trimmed_end
 
 
 def _join(before: str, sep: str, after: str) -> str | None:
@@ -104,6 +156,11 @@ def _join(before: str, sep: str, after: str) -> str | None:
         return after
     if not after:
         return before
+    if sep == ",":
+        # English convention: no space before a comma, one space after --
+        # unlike "/", "|", "-" which read naturally with a space on both
+        # sides ("A / B", "A - B"), "A , B" looks like a typo.
+        return f"{before}, {after}"
     return f"{before} {sep} {after}"
 
 
@@ -117,8 +174,9 @@ def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
     ("/|,-") doubled by the removal or dangling at a true edge, and ordinary
     prose (the whitespace gap left by the removal is closed). Raises
     `_AmbiguousRemnant` for anything else: a label character ("profile:")
-    touching the span, an emptied bracket pair, or mismatched delimiters on
-    either side.
+    touching the span, an emptied bracket pair, mismatched delimiters on
+    either side, or real content glued to the span on both sides with no
+    whitespace anywhere nearby.
     """
     before = desc[:start]
     after = desc[end:]
@@ -169,17 +227,33 @@ def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
         return after_stripped
     if not after_stripped:
         return before_stripped
+
+    # The removed text was glued directly to real content on *both* sides --
+    # no whitespace anywhere nearby at all (e.g. CJK prose immediately
+    # abutting a pasted URL on both ends). Joining with a space would guess
+    # at a separator convention that clearly wasn't there; gluing the two
+    # sides together would guess the opposite. Flag rather than pick.
+    if before == before_stripped and after == after_stripped:
+        raise _AmbiguousRemnant(f"{before_stripped!r} | {after_stripped!r}")
+
     return f"{before_stripped} {after_stripped}"
 
 
 @dataclass
 class DescMoveSample:
-    """A before/after pair for the dry-run review report."""
+    """A before/after pair for the dry-run review report.
+
+    Covers both the desc text and, when a verbatim link-URL rewrite is
+    pending (link_url_before is not None), the link's URL -- mods reviewing
+    the report before --apply need to see the link side too, not just desc.
+    """
 
     tag_id: int
     title: str | None
     before: str
     after: str | None
+    link_url_before: str | None = None
+    link_url_after: str | None = None
 
 
 @dataclass
@@ -275,7 +349,14 @@ async def run_desc_mover(db: AsyncSession, *, apply: bool) -> DescMoverReport:
             continue
 
         if kind == "url":
-            span_start, span_end = _expand_url_span(artist.desc, match)
+            expanded = _expand_url_span(artist.desc, match)
+            if expanded is None:
+                report.anomalies.append(
+                    f"tag {artist.tag_id} '{artist.title}': text right after the pixiv "
+                    "URL doesn't look confidently like more URL -- skipping"
+                )
+                continue
+            span_start, span_end = expanded
         else:
             span_start, span_end = match.start(), match.end()
 
@@ -288,17 +369,9 @@ async def run_desc_mover(db: AsyncSession, *, apply: bool) -> DescMoverReport:
             )
             continue
 
-        report.samples.append(
-            DescMoveSample(
-                tag_id=artist.tag_id,  # type: ignore[arg-type]
-                title=artist.title,
-                before=artist.desc,
-                after=new_desc,
-            )
-        )
-
+        link_url_before: str | None = None
+        link_url_after: str | None = None
         if kind == "url":
-            report.descs_cleaned += 1
             desc_url_text = artist.desc[span_start:span_end]
             if own_link.url != desc_url_text:
                 duplicate = (
@@ -313,10 +386,24 @@ async def run_desc_mover(db: AsyncSession, *, apply: bool) -> DescMoverReport:
                     report.links_verbatim_skipped_duplicate += 1
                 else:
                     report.links_rewritten_to_verbatim += 1
+                    link_url_before = own_link.url
+                    link_url_after = desc_url_text
                     if apply:
                         own_link.url = desc_url_text
+            report.descs_cleaned += 1
         else:
             report.bare_text_stripped += 1
+
+        report.samples.append(
+            DescMoveSample(
+                tag_id=artist.tag_id,  # type: ignore[arg-type]
+                title=artist.title,
+                before=artist.desc,
+                after=new_desc,
+                link_url_before=link_url_before,
+                link_url_after=link_url_after,
+            )
+        )
 
         if new_desc is None:
             report.descs_emptied += 1

@@ -54,8 +54,11 @@ async def main() -> None:
     print(f"\nsample changes ({len(report.samples)}) -- review before --apply:")
     for sample in report.samples:
         print(f"  tag {sample.tag_id} '{sample.title}':")
-        print(f"    before: {_truncate(sample.before)!r}")
-        print(f"    after:  {_truncate(sample.after)!r}")
+        print(f"    desc before: {_truncate(sample.before)!r}")
+        print(f"    desc after:  {_truncate(sample.after)!r}")
+        if sample.link_url_before is not None:
+            print(f"    link before: {sample.link_url_before!r}")
+            print(f"    link after:  {sample.link_url_after!r}")
 
     print(f"\nanomalies ({len(report.anomalies)}):")
     for line in report.anomalies:

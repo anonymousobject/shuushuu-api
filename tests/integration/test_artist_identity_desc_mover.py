@@ -207,6 +207,9 @@ class TestDescMoverUrlIdenticalToLink:
         assert link.url == "https://pixiv.net/member.php?id=100022"
         assert report.descs_cleaned == 1
         assert report.links_rewritten_to_verbatim == 0
+        # No rewrite happened, so the sample shouldn't claim a pending one.
+        assert report.samples[0].link_url_before is None
+        assert report.samples[0].link_url_after is None
 
 
 @pytest.mark.integration
@@ -589,7 +592,13 @@ class TestDescMoverSymmetricDelimiterCollapse:
     async def test_doubled_comma_separator_is_collapsed(self, db_session: AsyncSession) -> None:
         """A comma on both sides of the removed URL (a list-style aside) is
         an unambiguous doubling -- confidently collapse to one, unlike the
-        label-colon case above."""
+        label-colon case above.
+
+        DB-backed regression case: an earlier version of _expand_url_span
+        treated the trailing comma as URL-plausible and baked it into
+        link.url ('.../users/123,') -- assert the persisted link URL is
+        exactly clean, not just the desc.
+        """
         artist = Tags(
             title="CommaArtist",
             type=TagType.ARTIST,
@@ -597,20 +606,21 @@ class TestDescMoverSymmetricDelimiterCollapse:
         )
         db_session.add(artist)
         await db_session.flush()
-        db_session.add(
-            TagExternalLinks(
-                tag_id=artist.tag_id,
-                url="http://www.pixiv.net/users/123",
-                site="pixiv",
-                external_id="123",
-            )
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="http://www.pixiv.net/users/123",
+            site="pixiv",
+            external_id="123",
         )
+        db_session.add(link)
         await db_session.commit()
 
         report = await run_desc_mover(db_session, apply=True)
 
         await db_session.refresh(artist)
+        await db_session.refresh(link)
         assert artist.desc == "hello, world"
+        assert link.url == "http://www.pixiv.net/users/123"
         assert report.descs_cleaned == 1
         assert report.anomalies == []
 
@@ -641,6 +651,50 @@ class TestDescMoverSymmetricDelimiterCollapse:
 
 
 @pytest.mark.integration
+class TestDescMoverUrlSpanExpansionSafety:
+    async def test_non_ascii_text_glued_to_url_is_not_absorbed(
+        self, db_session: AsyncSession
+    ) -> None:
+        """CJK text glued directly onto the URL with zero separator on
+        either side, on both ends, is a case _strip_and_tidy can't
+        confidently resolve (joining would guess a separator that clearly
+        wasn't there). The regression under test is narrower and more
+        important than the anomaly outcome itself: DESC_URL_PATTERN's
+        non-ASCII-unaware expansion must never pull 'です' into link.url --
+        assert that regardless of which desc/anomaly path is taken."""
+        artist = Tags(
+            title="GluedCJK",
+            type=TagType.ARTIST,
+            desc="見てhttp://www.pixiv.net/users/456です",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="http://www.pixiv.net/users/456",
+            site="pixiv",
+            external_id="456",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        await db_session.refresh(link)
+        # The link was already clean and must stay exactly that -- never
+        # corrupted with the glued-on "です".
+        assert link.url == "http://www.pixiv.net/users/456"
+        # Conservative choice: glued-on-both-sides content is ambiguous
+        # enough to flag rather than guess how to join "見て" and "です", so
+        # nothing is written at all (desc stays exactly as it was).
+        assert artist.desc == "見てhttp://www.pixiv.net/users/456です"
+        assert report.descs_cleaned == 0
+        assert len(report.anomalies) == 1
+        assert str(artist.tag_id) in report.anomalies[0]
+
+
+@pytest.mark.integration
 class TestDescMoverDryRun:
     async def test_dry_run_writes_nothing(self, db_session: AsyncSession) -> None:
         artist = Tags(
@@ -661,12 +715,15 @@ class TestDescMoverDryRun:
 
         report = await run_desc_mover(db_session, apply=False)
 
-        # Report reflects what *would* happen...
+        # Report reflects what *would* happen, including the link-side change
+        # (the sample must cover both, not just the desc) ...
         assert report.descs_cleaned == 1
         assert report.links_rewritten_to_verbatim == 1
         assert len(report.samples) == 1
         assert report.samples[0].before == "クロネコ / http://www.pixiv.net/member.php?id=1000121"
         assert report.samples[0].after == "クロネコ"
+        assert report.samples[0].link_url_before == "https://www.pixiv.net/users/1000121"
+        assert report.samples[0].link_url_after == "http://www.pixiv.net/member.php?id=1000121"
 
         # ...but nothing was actually written. Re-fetch fresh rows rather
         # than trusting the in-session objects (which a stray flush could
