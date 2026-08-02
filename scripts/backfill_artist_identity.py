@@ -29,10 +29,10 @@ async def main() -> None:
         report = await run_backfill(db, apply=args.apply)
 
     mode = "APPLIED" if args.apply else "DRY RUN"
-    print(f"[{mode}] links parsed in place:      {report.links_parsed}")
-    print(f"[{mode}] links created from aliases: {report.links_created_from_aliases}")
-    print(f"[{mode}] links created from descs:   {report.links_created_from_desc}")
-    print(f"[{mode}] links created from titles:  {report.links_created_from_titles}")
+    print(f"[{mode}] links parsed in place:        {report.links_parsed}")
+    print(f"[{mode}] links created from aliases:   {report.links_created_from_aliases}")
+    print(f"[{mode}] links created from descs:     {report.links_created_from_desc}")
+    print(f"[{mode}] links created from titles:    {report.links_created_from_titles}")
     print(f"[{mode}] links created from desc text: {report.links_created_from_desc_text}")
     print(f"artist tags still without identity:  {report.artist_tags_without_identity}")
     print(f"\nanomalies ({len(report.anomalies)}):")
