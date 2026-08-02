@@ -148,6 +148,12 @@ async def search(
     # Runs after the Meilisearch call above, so Meilisearch downtime still
     # 503s exactly as before this layer existed.
     #
+    # The owning tag must still satisfy the request's own `type`/
+    # `exclude_aliases` filters before it's surfaced — this layer supplements
+    # Meilisearch's ranking, it doesn't bypass the filters Meilisearch itself
+    # enforced. Skipping this check would leak the tag into type-filtered or
+    # alias-excluded result sets it doesn't belong in.
+    #
     # Pagination semantics: the hit is only ever injected/reflagged into the
     # FIRST page (offset == 0). Doing this on later pages too would make the
     # tag appear to "jump" into view on every page as a user paginates, and
@@ -162,7 +168,11 @@ async def search(
     identity = parse_identity_query(q) if q else None
     if identity is not None:
         exact_tag = await resolve_identity(db, identity)
-        if exact_tag is not None:
+        if (
+            exact_tag is not None
+            and (type_id is None or exact_tag.type == type_id)
+            and not (exclude_aliases and exact_tag.alias_of is not None)
+        ):
             label = f"{identity.site} {identity.external_id}"
             if offset == 0:
                 already_found = exact_tag.tag_id in result.tag_ids

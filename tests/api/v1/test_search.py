@@ -617,3 +617,110 @@ class TestSearchEndpoint:
         # The second lookup made an extra reference call (page 1, offset=0)
         # to answer "already found by Meilisearch" consistently.
         assert mock_search_service.search_tags.call_count == 3
+
+    async def test_exact_identity_query_respects_mismatched_type_filter(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """An identity query filtered to a type the owning tag isn't never
+        surfaces the exact-identity hit — it's not reachable through that
+        type's filter, so injecting it would leak a result across types."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "type": TagType.THEME}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["hits"] == []
+        assert data["total"] == 0
+
+    async def test_exact_identity_query_present_with_matching_type_filter(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """The same identity query, filtered to the owning tag's own type,
+        still surfaces the exact-identity hit."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "type": TagType.ARTIST}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["hits"][0]["tag_id"] == artist.tag_id
+        assert data["hits"][0]["matched_identity"] == "pixiv 21412050"
+        assert data["total"] == 1
+
+    async def test_exact_identity_query_respects_exclude_aliases(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """exclude_aliases=true must suppress an exact-identity hit that
+        resolves to an alias tag, the same as it suppresses alias tags from
+        the fuzzy layer."""
+        canonical = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        link = TagExternalLinks(
+            tag_id=alias.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "exclude_aliases": True}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["hits"] == []
+        assert data["total"] == 0
