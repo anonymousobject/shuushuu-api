@@ -17,6 +17,8 @@ from app.config import TagType
 from app.models.tag import Tags
 from app.models.tag_external_link import TagExternalLinks
 from app.services.artist_identity import (
+    DESC_BARE_ID_PATTERN,
+    DESC_URL_PATTERN,
     SITE_PIXIV,
     ArtistIdentity,
     canonical_profile_url,
@@ -28,21 +30,9 @@ _ALIAS_TITLE = re.compile(r"^pixiv\s+(\d+)$", re.IGNORECASE)
 # doesn't match the strict form above — worth an anomaly rather than silent
 # skipping. Plain non-pixiv alias titles never match this and stay silent.
 _ALIAS_TITLE_LOOSE = re.compile(r"^pixiv\b", re.IGNORECASE)
-# Non-anchored forms of the URL patterns, for scanning desc text.
-_DESC_URL = re.compile(
-    r"https?://(?:www\.|touch\.)?pixiv\.net/"
-    r"(?:(?:[a-z]{2}/)?users/(\d+)|member(?:_illust)?\.php\?(?:[^\s#]*&)?id=(\d+))",
-    re.IGNORECASE,
-)
 # "(Pixiv N)" suffix convention on canonical artist titles, e.g.
 # "Kuroneko (Pixiv 1000121)". Anchored to the end of the title.
 _TITLE_PIXIV_SUFFIX = re.compile(r"\(Pixiv[\s#:]*(\d{1,12})\)$", re.IGNORECASE)
-# Bare "pixiv 97567" / "pixiv #97567" / "pixiv: 97567" text in a desc, with no
-# URL involved. Minimum 4 digits to avoid matching prose like "pixiv 100
-# followers". The literal "." in "pixiv.net" immediately after "pixiv" is not
-# in the [\s#:] class, so this never re-matches ids already handled by
-# _DESC_URL (verified with a dedicated test rather than assumed).
-_DESC_BARE_ID = re.compile(r"\bpixiv[\s#:]*(\d{4,12})\b", re.IGNORECASE)
 
 
 @dataclass
@@ -184,7 +174,7 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
             continue
         if not artist.desc:
             continue
-        ids = {m.group(1) or m.group(2) for m in _DESC_URL.finditer(artist.desc)}
+        ids = {m.group(1) or m.group(2) for m in DESC_URL_PATTERN.finditer(artist.desc)}
         if not ids:
             continue
         if len(ids) > 1:
@@ -251,7 +241,7 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
             continue
         if not artist.desc:
             continue
-        ids = {m.group(1) for m in _DESC_BARE_ID.finditer(artist.desc)}
+        ids = {m.group(1) for m in DESC_BARE_ID_PATTERN.finditer(artist.desc)}
         if not ids:
             continue
         if len(ids) > 1:

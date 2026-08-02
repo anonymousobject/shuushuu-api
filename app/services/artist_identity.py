@@ -42,6 +42,21 @@ _PIXIV_URL_PATTERNS = [
 _BARE_ID = re.compile(r"^\d{1,12}$")
 _PIXIV_PREFIXED = re.compile(r"^pixiv[\s:]+(\d{1,12})$", re.IGNORECASE)
 
+# Non-anchored form of the URL patterns above, for scanning free-text desc
+# content rather than validating a whole field. Shared by the backfill (reads
+# desc, leaves it alone) and the desc mover (reads desc, then strips it).
+DESC_URL_PATTERN = re.compile(
+    r"https?://(?:www\.|touch\.)?pixiv\.net/"
+    r"(?:(?:[a-z]{2}/)?users/(\d+)|member(?:_illust)?\.php\?(?:[^\s#]*&)?id=(\d+))",
+    re.IGNORECASE,
+)
+# Bare "pixiv 97567" / "pixiv #97567" / "pixiv: 97567" text in a desc, with no
+# URL involved. Minimum 4 digits to avoid matching prose like "pixiv 100
+# followers". The literal "." in "pixiv.net" immediately after "pixiv" is not
+# in the [\s#:] class, so this never re-matches ids already handled by
+# DESC_URL_PATTERN (verified with a dedicated test rather than assumed).
+DESC_BARE_ID_PATTERN = re.compile(r"\bpixiv[\s#:]*(\d{4,12})\b", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class ArtistIdentity:
