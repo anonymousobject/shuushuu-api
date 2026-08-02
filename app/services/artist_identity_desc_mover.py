@@ -20,13 +20,15 @@ already OWNS via a link:
    URL's full extent, trailing query string and all -- not just the id
    digits the parser needs), orphaned `/` `|` `,` `-` separators left
    dangling at the edges or doubled by the removal are collapsed, orphaned
-   trailing `.` `!` `?` with nothing following are dropped (never left
-   behind as a lone "."), and whitespace is normalized. An empty result is
-   stored as NULL, matching the site's "no description" convention (see
+   trailing `.` `!` `?` *glued* to the span with nothing following are
+   dropped (never left behind as a lone "."), and whitespace is
+   normalized. Punctuation separated from the span by real whitespace is
+   the user's own prose and is always preserved. An empty result is stored
+   as NULL, matching the site's "no description" convention (see
    `TagCreate.sanitize_desc`). URL expansion beyond the id digits only ever
-   consumes characters we're confident are a real continuation
-   (`_CONFIDENT_URL_TAIL_CHARS`) -- never adjacent prose, and never
-   non-ASCII text glued directly against the URL with no separator at all.
+   consumes a real query-string continuation (opening with `?` or `&`, made
+   of `_CONFIDENT_URL_TAIL_CHARS`) -- never adjacent prose, whether it's
+   non-ASCII or a plain ASCII word glued against the URL with no separator.
 3. **Bare "pixiv <id>" text** (no URL) is moved the same way; nothing
    link-side changes since there's no URL to preserve.
 4. **Anything ambiguous is an anomaly, not a guess:** the desc's identity
@@ -106,12 +108,25 @@ _TRAILING_PROSE_PUNCTUATION = ".,;:!?"
 _CONFIDENT_URL_TAIL_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789&=%_.~-?"
 )
+# A real URL continuation past the id digits always *opens* with a
+# query-string structural character -- the id-focused patterns consume every
+# digit of the id, so anything more can only be a new query parameter ("?..."
+# / "&..."). A tail opening with anything else is adjacent prose glued to the
+# URL with no separator: a word ("...users/123world"), or a dash doing
+# separator duty ("...users/123- end"). Those characters are all legal
+# *inside* a query value, which is why _CONFIDENT_URL_TAIL_CHARS admits them,
+# but none of them can legitimately *start* a continuation. Without this the
+# ASCII walk silently absorbed prose into link.url -- the same defect the
+# isascii() stop fixed for CJK, which never fired for ASCII text.
+_CONFIDENT_URL_TAIL_STARTERS = frozenset("?&")
 # Trailing prose punctuation _expand_url_span itself right-trims off a URL
-# span (see _TRAILING_PROSE_PUNCTUATION above) lands, unconsumed, in the text
-# immediately after the span -- an orphaned mark that's neither a separator
-# nor real content. _strip_and_tidy treats a lone run of these with nothing
-# else following as if it weren't there at all, the same way it already
-# treats a dangling delimiter.
+# span (see _TRAILING_PROSE_PUNCTUATION above) lands, unconsumed, GLUED to
+# the end of the shortened span -- an orphaned mark that's neither a
+# separator nor real content. _strip_and_tidy treats a lone glued run of
+# these with nothing else following as if it weren't there at all, the same
+# way it already treats a dangling delimiter. Only when glued: the same
+# characters with real whitespace between them and the span are ordinary
+# user prose ("見て <url> !!!") and must survive.
 _ORPHANED_EDGE_PUNCTUATION = frozenset(".!?")
 
 
@@ -139,9 +154,10 @@ def _expand_url_span(desc: str, match: re.Match[str]) -> tuple[int, int] | None:
     though the URL spec permits them.
 
     Returns None if what's left beyond the original match, after that trim,
-    still isn't made entirely of characters we're confident are a real URL
-    continuation -- the caller flags an anomaly rather than persisting a
-    guess.
+    isn't a confident continuation -- it must both open with a query-string
+    structural character ("?" or "&") and be made entirely of characters we're
+    confident belong to a query string. Anything else is prose glued to the
+    URL, and the caller flags an anomaly rather than persisting a guess.
     """
     end = match.end()
     while end < len(desc):
@@ -155,7 +171,10 @@ def _expand_url_span(desc: str, match: re.Match[str]) -> tuple[int, int] | None:
         trimmed_end -= 1
 
     tail = desc[match.end() : trimmed_end]
-    if tail and not all(c in _CONFIDENT_URL_TAIL_CHARS for c in tail):
+    if tail and (
+        tail[0] not in _CONFIDENT_URL_TAIL_STARTERS
+        or not all(c in _CONFIDENT_URL_TAIL_CHARS for c in tail)
+    ):
         return None
 
     return match.start(), trimmed_end
@@ -184,7 +203,8 @@ def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
     separator is just as much a problem mid-string as at the edges).
     Confidently resolves: nothing left at all (-> None), a delimiter
     ("/|,-") doubled by the removal or dangling at a true edge, orphaned
-    trailing punctuation (".!?") with nothing following it, and ordinary
+    trailing punctuation (".!?") glued to the span with nothing following
+    it (whitespace-separated punctuation is prose and survives), and ordinary
     prose (the whitespace gap left by the removal is closed). Raises
     `_AmbiguousRemnant` for anything else: a label character ("profile:")
     touching the span, an emptied bracket pair, mismatched delimiters on
@@ -196,17 +216,34 @@ def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
     after = desc[end:]
     before_stripped = before.rstrip()
     after_stripped = after.lstrip()
+    # Read the whitespace gap *before* the lstrip above erases the evidence:
+    # this is the same "nothing was stripped getting here" signal the glue
+    # check at the bottom uses, and the only thing that distinguishes a trim
+    # artifact from the user's own prose.
+    after_is_glued = after == after_stripped
+    before_is_glued = before == before_stripped
     before_char = before_stripped[-1] if before_stripped else None
     after_char = after_stripped[0] if after_stripped else None
 
-    # A lone run of orphaned trailing punctuation right after the span, with
+    # A lone run of orphaned trailing punctuation GLUED to the span, with
     # nothing else following it, is either _expand_url_span's own trim
     # artifact (it right-trims ".!?" off the URL span itself, which lands,
-    # unconsumed, right here) or was always just sitting immediately after a
-    # bare id. Either way it's neither a separator nor real content --
-    # normalize it away so every check below sees the desc's *true* shape,
-    # including the empty-desc-> None case just below.
-    if after_stripped and all(c in _ORPHANED_EDGE_PUNCTUATION for c in after_stripped):
+    # unconsumed, immediately after the shortened span -- always glued, since
+    # the trim only ever pulls the span's own end backwards) or was always
+    # just sitting immediately after a bare id. Either way it's neither a
+    # separator nor real content -- normalize it away so every check below
+    # sees the desc's *true* shape, including the empty-desc-> None case just
+    # below.
+    #
+    # The glue requirement is load-bearing: whitespace-separated punctuation
+    # ("見て <url> !!!") is the user's own prose and can never be a trim
+    # artifact, so it must survive untouched. Without the gate the two shapes
+    # are indistinguishable here and real desc content gets silently deleted.
+    if (
+        after_is_glued
+        and after_stripped
+        and all(c in _ORPHANED_EDGE_PUNCTUATION for c in after_stripped)
+    ):
         after_stripped = ""
         after_char = None
 
@@ -260,7 +297,7 @@ def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
     # would guess at a separator convention that clearly wasn't there on
     # that side, whether or not the other side had a real gap. Flag rather
     # than pick.
-    if before == before_stripped or after == after_stripped:
+    if before_is_glued or after_is_glued:
         raise _AmbiguousRemnant(f"{before_stripped!r} | {after_stripped!r}")
 
     return f"{before_stripped} {after_stripped}"
