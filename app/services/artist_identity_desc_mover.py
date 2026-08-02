@@ -16,18 +16,22 @@ already OWNS via a link:
    actually used must survive somewhere -- the link row is the durable home
    for it. Never deletes a link: if that exact URL already exists as another
    row on the tag, the rewrite is skipped (both forms are already kept).
-2. **Strip + tidy the desc.** The identity text is removed, orphaned
-   `/`-or-`|` separators left dangling at the ends or doubled mid-string are
-   collapsed, and whitespace is normalized. An empty result is stored as
-   NULL, matching the site's "no description" convention (see
-   `TagCreate.sanitize_desc`).
+2. **Strip + tidy the desc.** The full identity text is removed (a pasted
+   URL's full extent, trailing query string and all -- not just the id
+   digits the parser needs), orphaned `/` `|` `,` `-` separators left
+   dangling at the edges or doubled by the removal are collapsed, and
+   whitespace is normalized. An empty result is stored as NULL, matching the
+   site's "no description" convention (see `TagCreate.sanitize_desc`).
 3. **Bare "pixiv <id>" text** (no URL) is moved the same way; nothing
    link-side changes since there's no URL to preserve.
 4. **Anything ambiguous is an anomaly, not a guess:** the desc's identity
    isn't owned by this tag, the desc names/mentions more than one pixiv
-   occurrence, or the stripped remainder doesn't look confidently clean (a
-   leftover separator we couldn't merge, or a dangling label like
-   "profile:"). No write happens for an anomaly.
+   occurrence, or the remainder touching the removed span doesn't look
+   confidently clean -- a label character immediately adjacent ("profile:",
+   "see;"), an emptied bracket pair ("()"), or mismatched delimiters on
+   either side. This is checked locally around the removed span, not just at
+   the whole desc's start/end, so a mid-string "profile:" is caught exactly
+   like one at the very start. No write happens for an anomaly.
 
 Dry-run by default; `apply=True` writes. Counts and the before/after
 `samples` list are always computed (even dry-run) so the caller can render a
@@ -53,12 +57,22 @@ from app.services.artist_identity import (
     ArtistIdentity,
 )
 
-# Punctuation that looks like an orphaned connector/label when left at the
-# very start or end of a tidied desc (e.g. "profile:", "see -", "-, "). Only
-# "/" and "|" are documented separator conventions we know how to merge
-# confidently (handled structurally below); anything else surviving at a
-# boundary is flagged rather than guessed away.
-_BOUNDARY_REMNANT_CHARS = ":/|,-;"
+# Characters that separate two independent chunks of desc text. A single one
+# of these left mid-string with real content on both sides is left alone (it
+# was probably always doing its job as a separator); doubled by the removal
+# (the same character on both sides of the removed span) it's confidently
+# collapsed to one; dangling at a true edge (nothing on the other side) it's
+# confidently trimmed.
+_DELIMITER_CHARS = frozenset("/|,-")
+# Label/connector punctuation that implies something follows or precedes it
+# ("profile:", "see;") -- never auto-resolved. Whether the intended fix drops
+# the label entirely, replaces it, or joins the surrounding text with or
+# without a space isn't something we can guess confidently, so any of these
+# touching the removed span (on either side, at any position in the desc)
+# is flagged.
+_LABEL_CHARS = frozenset(":;")
+# Boundary/whitespace characters that end a URL token pasted into free text.
+_URL_TOKEN_STOP_CHARS = frozenset(" \t\r\n\"'()<>[]{}")
 
 
 class _AmbiguousRemnant(Exception):
@@ -67,42 +81,95 @@ class _AmbiguousRemnant(Exception):
     should look at these rather than have the mover guess."""
 
 
+def _expand_url_span(desc: str, match: re.Match[str]) -> tuple[int, int]:
+    """DESC_URL_PATTERN only captures through the id digits -- that's all
+    identity *parsing* needs -- but the mover has to move the FULL pasted
+    URL, trailing query string and all (e.g. '&ref=abc'), so the verbatim
+    link rewrite doesn't truncate it and the desc strip doesn't leave the
+    tail behind as garbage. The pattern's start is anchored to the literal
+    "http(s)://" scheme, which is always the true start of the URL, so only
+    the end needs extending -- forward through any run of non-boundary
+    characters.
+    """
+    end = match.end()
+    while end < len(desc) and desc[end] not in _URL_TOKEN_STOP_CHARS:
+        end += 1
+    return match.start(), end
+
+
+def _join(before: str, sep: str, after: str) -> str | None:
+    if not before and not after:
+        return None
+    if not before:
+        return after
+    if not after:
+        return before
+    return f"{before} {sep} {after}"
+
+
 def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
     """Remove desc[start:end] and tidy what's left.
 
-    Collapses a same-character '/' or '|' separator left dangling at either
-    end of the desc, or doubled mid-string (both sides of the removed span
-    had one), then normalizes whitespace. Returns None if nothing is left
-    (caller stores NULL). Raises `_AmbiguousRemnant` if the result still
-    looks broken.
+    Looks only at the text immediately touching the removed span (not just
+    the whole desc's global boundaries -- a dangling label or an orphaned
+    separator is just as much a problem mid-string as at the edges).
+    Confidently resolves: nothing left at all (-> None), a delimiter
+    ("/|,-") doubled by the removal or dangling at a true edge, and ordinary
+    prose (the whitespace gap left by the removal is closed). Raises
+    `_AmbiguousRemnant` for anything else: a label character ("profile:")
+    touching the span, an emptied bracket pair, or mismatched delimiters on
+    either side.
     """
-    remaining = desc[:start] + desc[end:]
+    before = desc[:start]
+    after = desc[end:]
+    before_stripped = before.rstrip()
+    after_stripped = after.lstrip()
+    before_char = before_stripped[-1] if before_stripped else None
+    after_char = after_stripped[0] if after_stripped else None
 
-    # A same-character separator left adjacent by the removal, e.g.
-    # "name / <removed> / more" -> "name /  / more" -> "name / more".
-    remaining = re.sub(r"[ \t]*/[ \t]*/[ \t]*", " / ", remaining)
-    remaining = re.sub(r"[ \t]*\|[ \t]*\|[ \t]*", " | ", remaining)
-
-    # A separator left dangling at either end, e.g. "name / " or " / name".
-    remaining = re.sub(r"^[ \t]*[/|][ \t]*", "", remaining)
-    remaining = re.sub(r"[ \t]*[/|][ \t]*$", "", remaining)
-
-    # Collapse the whitespace hole the removal itself may have left
-    # mid-string (bare-text removal from prose has no separator at all).
-    remaining = re.sub(r"\s+", " ", remaining).strip()
-
-    if not remaining:
+    # Nothing but whitespace on either side: the mention was the whole desc.
+    if not before_stripped and not after_stripped:
         return None
 
-    mixed_doubled_separator = re.search(r"[/|]\s*[/|]", remaining)
-    if (
-        mixed_doubled_separator
-        or remaining[0] in _BOUNDARY_REMNANT_CHARS
-        or remaining[-1] in _BOUNDARY_REMNANT_CHARS
-    ):
-        raise _AmbiguousRemnant(remaining)
+    # A label/connector immediately touching the span -- never auto-resolved,
+    # regardless of whether real content follows/precedes it.
+    if before_char in _LABEL_CHARS or after_char in _LABEL_CHARS:
+        raise _AmbiguousRemnant(f"{before_stripped!r} | {after_stripped!r}")
 
-    return remaining
+    # A bracket pair left wrapping nothing -- ambiguous whether collapsing it
+    # should also join the outer text with or without a space.
+    if before_char == "(" and after_char == ")":
+        raise _AmbiguousRemnant(f"{before_stripped!r} | {after_stripped!r}")
+
+    # Same delimiter on both sides -- the removal doubled it; collapse to one.
+    if before_char is not None and before_char == after_char and before_char in _DELIMITER_CHARS:
+        new_before = before_stripped[:-1].rstrip()
+        new_after = after_stripped[1:].lstrip()
+        return _join(new_before, before_char, new_after)
+
+    # Different delimiters on both sides ("A / <removed> | B") -- ambiguous
+    # which one to keep.
+    if (
+        before_char in _DELIMITER_CHARS
+        and after_char in _DELIMITER_CHARS
+        and before_char != after_char
+    ):
+        raise _AmbiguousRemnant(f"{before_stripped!r} | {after_stripped!r}")
+
+    # A delimiter dangling at a true edge (nothing on the other side) is safe
+    # to trim, e.g. "name / <removed>" with nothing following.
+    if not after_stripped and before_char in _DELIMITER_CHARS:
+        return before_stripped[:-1].rstrip() or None
+    if not before_stripped and after_char in _DELIMITER_CHARS:
+        return after_stripped[1:].lstrip() or None
+
+    # Ordinary prose, or a lone mid-string delimiter still separating two
+    # real chunks (left as-is) -- just close the whitespace gap.
+    if not before_stripped:
+        return after_stripped
+    if not after_stripped:
+        return before_stripped
+    return f"{before_stripped} {after_stripped}"
 
 
 @dataclass
@@ -207,8 +274,13 @@ async def run_desc_mover(db: AsyncSession, *, apply: bool) -> DescMoverReport:
                 )
             continue
 
+        if kind == "url":
+            span_start, span_end = _expand_url_span(artist.desc, match)
+        else:
+            span_start, span_end = match.start(), match.end()
+
         try:
-            new_desc = _strip_and_tidy(artist.desc, match.start(), match.end())
+            new_desc = _strip_and_tidy(artist.desc, span_start, span_end)
         except _AmbiguousRemnant as exc:
             report.anomalies.append(
                 f"tag {artist.tag_id} '{artist.title}': stripping the identity text would "
@@ -227,7 +299,7 @@ async def run_desc_mover(db: AsyncSession, *, apply: bool) -> DescMoverReport:
 
         if kind == "url":
             report.descs_cleaned += 1
-            desc_url_text = match.group(0)
+            desc_url_text = artist.desc[span_start:span_end]
             if own_link.url != desc_url_text:
                 duplicate = (
                     await db.execute(

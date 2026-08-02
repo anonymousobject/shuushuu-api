@@ -21,7 +21,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.core.database import get_async_session
 from app.services.artist_identity_desc_mover import run_desc_mover
 
-_SAMPLE_WIDTH = 60
+# Tags.desc is VARCHAR(200) -- a legitimate value can never exceed this, so
+# this is a safety cap for corrupt/oversized data, not a display truncation.
+# The report is the mod-review artifact; truncating at a shorter width would
+# hide a corrupted tail from the very review this report exists for.
+_SAMPLE_WIDTH = 200
 
 
 def _truncate(text: str | None, width: int = _SAMPLE_WIDTH) -> str:

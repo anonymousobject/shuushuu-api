@@ -145,6 +145,38 @@ class TestDescMoverUrlDifferentFromLink:
         assert artist.desc == "佐 / more info"
         assert report.descs_cleaned == 1
 
+    async def test_trailing_query_params_preserved_in_verbatim_rewrite(
+        self, db_session: AsyncSession
+    ) -> None:
+        """DESC_URL_PATTERN only needs the id digits to parse identity, but
+        the mover has to move the FULL pasted URL. A trailing '&ref=abc' the
+        id-focused pattern doesn't capture must not be truncated off the
+        verbatim string that lands on the link, nor left behind as garbage
+        in the desc."""
+        artist = Tags(
+            title="OldArtist5",
+            type=TagType.ARTIST,
+            desc="クロネコ / http://www.pixiv.net/member.php?id=1000121&ref=abc",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/1000121",
+            site="pixiv",
+            external_id="1000121",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        await db_session.refresh(link)
+        assert artist.desc == "クロネコ"
+        assert link.url == "http://www.pixiv.net/member.php?id=1000121&ref=abc"
+        assert report.links_rewritten_to_verbatim == 1
+
 
 @pytest.mark.integration
 class TestDescMoverUrlIdenticalToLink:
@@ -202,6 +234,35 @@ class TestDescMoverUrlOnlyDesc:
         await db_session.refresh(artist)
         assert artist.desc is None
         assert report.descs_cleaned == 1
+        assert report.descs_emptied == 1
+
+    async def test_url_only_desc_with_trailing_params_becomes_null(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A URL-only desc with a query string the id-focused pattern
+        doesn't capture must still empty to NULL, not leave '&ref=abc'
+        garbage behind."""
+        artist = Tags(
+            title="OldArtist6",
+            type=TagType.ARTIST,
+            desc="http://www.pixiv.net/member.php?id=1000121&ref=abc",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/member.php?id=1000121&ref=abc",
+                site="pixiv",
+                external_id="1000121",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc is None
         assert report.descs_emptied == 1
 
 
@@ -459,6 +520,124 @@ class TestDescMoverAmbiguousRemnant:
         assert report.descs_cleaned == 0
         assert len(report.anomalies) == 1
         assert str(artist.tag_id) in report.anomalies[0]
+
+    async def test_mid_string_label_remnant_is_flagged_same_as_position_zero(
+        self, db_session: AsyncSession
+    ) -> None:
+        """The same 'profile:' label dangling mid-string (not at the very
+        start of the desc) must be flagged exactly like the position-0 case
+        above -- the remnant check has to look at the text immediately
+        touching the removed span, not just the whole desc's global
+        boundaries."""
+        artist = Tags(
+            title="MidStringLabel",
+            type=TagType.ARTIST,
+            desc="見て profile: http://www.pixiv.net/member.php?id=555 desu",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/member.php?id=555",
+                site="pixiv",
+                external_id="555",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "見て profile: http://www.pixiv.net/member.php?id=555 desu"
+        assert report.descs_cleaned == 0
+        assert len(report.anomalies) == 1
+        assert str(artist.tag_id) in report.anomalies[0]
+
+    async def test_empty_parens_remnant_is_flagged(self, db_session: AsyncSession) -> None:
+        """A URL that was itself wrapped in parens leaves an empty '()'
+        behind -- collapsing it would require guessing whether the outer
+        text should be joined with or without a space, so it's flagged."""
+        artist = Tags(
+            title="ParenWrapped",
+            type=TagType.ARTIST,
+            desc="アーティスト(http://www.pixiv.net/users/123)prof",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/users/123",
+                site="pixiv",
+                external_id="123",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "アーティスト(http://www.pixiv.net/users/123)prof"
+        assert report.descs_cleaned == 0
+        assert len(report.anomalies) == 1
+        assert str(artist.tag_id) in report.anomalies[0]
+
+
+@pytest.mark.integration
+class TestDescMoverSymmetricDelimiterCollapse:
+    async def test_doubled_comma_separator_is_collapsed(self, db_session: AsyncSession) -> None:
+        """A comma on both sides of the removed URL (a list-style aside) is
+        an unambiguous doubling -- confidently collapse to one, unlike the
+        label-colon case above."""
+        artist = Tags(
+            title="CommaArtist",
+            type=TagType.ARTIST,
+            desc="hello, http://www.pixiv.net/users/123, world",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/users/123",
+                site="pixiv",
+                external_id="123",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "hello, world"
+        assert report.descs_cleaned == 1
+        assert report.anomalies == []
+
+    async def test_doubled_dash_separator_is_collapsed(self, db_session: AsyncSession) -> None:
+        artist = Tags(
+            title="DashArtist",
+            type=TagType.ARTIST,
+            desc="see - http://www.pixiv.net/users/123 - end",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/users/123",
+                site="pixiv",
+                external_id="123",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "see - end"
+        assert report.descs_cleaned == 1
+        assert report.anomalies == []
 
 
 @pytest.mark.integration
