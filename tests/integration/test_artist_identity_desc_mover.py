@@ -1,0 +1,509 @@
+"""Integration tests for the artist-identity desc mover.
+
+Follow-up to the backfill (`test_artist_identity_backfill.py`, same fixture
+style): the backfill copies pixiv identity out of a desc into a link but
+leaves the desc text untouched. This mover moves the copy instead of
+duplicating it -- see docs/plans/2026-08-01-external-artist-identity-design.md
+and the mods' explicit ask ("shame if we can't move the links").
+"""
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import TagAuditActionType, TagType
+from app.models.tag import Tags
+from app.models.tag_audit_log import TagAuditLog
+from app.models.tag_external_link import TagExternalLinks
+from app.services.artist_identity_desc_mover import run_desc_mover
+
+
+@pytest.mark.integration
+class TestDescMoverUrlDifferentFromLink:
+    async def test_url_desc_moved_and_link_rewritten_to_verbatim(
+        self, db_session: AsyncSession
+    ) -> None:
+        """The tag owns the identity via a modern-form link (e.g. created by
+        the backfill), but the desc still carries the legacy URL text mods
+        may have archived. The link's URL must be rewritten to that verbatim
+        legacy string -- not the other way around -- so the archived form
+        survives."""
+        artist = Tags(
+            title="OldArtist",
+            type=TagType.ARTIST,
+            desc="クロネコ / http://www.pixiv.net/member.php?id=1000121",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/1000121",
+            site="pixiv",
+            external_id="1000121",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        await db_session.refresh(link)
+        assert artist.desc == "クロネコ"
+        assert link.url == "http://www.pixiv.net/member.php?id=1000121"
+        assert report.descs_cleaned == 1
+        assert report.links_rewritten_to_verbatim == 1
+        assert report.anomalies == []
+
+    async def test_audit_row_recorded_for_desc_change(self, db_session: AsyncSession) -> None:
+        artist = Tags(
+            title="OldArtist",
+            type=TagType.ARTIST,
+            desc="クロネコ / http://www.pixiv.net/member.php?id=1000121",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="https://www.pixiv.net/users/1000121",
+                site="pixiv",
+                external_id="1000121",
+            )
+        )
+        await db_session.commit()
+
+        await run_desc_mover(db_session, apply=True)
+
+        audit_rows = (
+            (
+                await db_session.execute(
+                    select(TagAuditLog).where(TagAuditLog.tag_id == artist.tag_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Only the desc change is audited (DESCRIPTION_CHANGE fits exactly);
+        # no existing TagAuditActionType cleanly represents a link's *url*
+        # being rewritten (LINK_ARCHIVE_CHANGED is specifically archive_url),
+        # so the link rewrite itself is not separately audited -- see report.
+        assert len(audit_rows) == 1
+        assert audit_rows[0].action_type == TagAuditActionType.DESCRIPTION_CHANGE
+        assert audit_rows[0].old_desc == "クロネコ / http://www.pixiv.net/member.php?id=1000121"
+        assert audit_rows[0].new_desc == "クロネコ"
+        assert audit_rows[0].user_id is None
+
+    async def test_leading_separator_dangling_is_tidied(self, db_session: AsyncSession) -> None:
+        artist = Tags(
+            title="Artist2",
+            type=TagType.ARTIST,
+            desc="https://pixiv.net/member.php?id=100022 / 佐",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="https://pixiv.net/member.php?id=100022",
+                site="pixiv",
+                external_id="100022",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "佐"
+        assert report.descs_cleaned == 1
+        # URL identical to the link already -- no rewrite needed.
+        assert report.links_rewritten_to_verbatim == 0
+
+    async def test_doubled_mid_string_separator_is_collapsed(
+        self, db_session: AsyncSession
+    ) -> None:
+        artist = Tags(
+            title="Artist3",
+            type=TagType.ARTIST,
+            desc="佐 / https://pixiv.net/member.php?id=100022 / more info",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="https://pixiv.net/member.php?id=100022",
+                site="pixiv",
+                external_id="100022",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "佐 / more info"
+        assert report.descs_cleaned == 1
+
+
+@pytest.mark.integration
+class TestDescMoverUrlIdenticalToLink:
+    async def test_identical_url_strips_desc_without_rewriting_link(
+        self, db_session: AsyncSession
+    ) -> None:
+        artist = Tags(
+            title="佐",
+            type=TagType.ARTIST,
+            desc="佐 / https://pixiv.net/member.php?id=100022",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://pixiv.net/member.php?id=100022",
+            site="pixiv",
+            external_id="100022",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        await db_session.refresh(link)
+        assert artist.desc == "佐"
+        assert link.url == "https://pixiv.net/member.php?id=100022"
+        assert report.descs_cleaned == 1
+        assert report.links_rewritten_to_verbatim == 0
+
+
+@pytest.mark.integration
+class TestDescMoverUrlOnlyDesc:
+    async def test_url_only_desc_becomes_null(self, db_session: AsyncSession) -> None:
+        artist = Tags(
+            title="OldArtist2",
+            type=TagType.ARTIST,
+            desc="http://www.pixiv.net/member.php?id=1000121",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="http://www.pixiv.net/member.php?id=1000121",
+                site="pixiv",
+                external_id="1000121",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc is None
+        assert report.descs_cleaned == 1
+        assert report.descs_emptied == 1
+
+
+@pytest.mark.integration
+class TestDescMoverDuplicateUrlGuard:
+    async def test_verbatim_rewrite_skipped_when_url_already_exists_on_tag(
+        self, db_session: AsyncSession
+    ) -> None:
+        """The tag already keeps both URL forms as separate link rows (a
+        common mod pattern for archive reasons). Rewriting the identity
+        link's URL to the desc's legacy form would collide with
+        unique_tag_url -- skip the rewrite, never delete either link, but
+        still strip the now-redundant desc text."""
+        artist = Tags(
+            title="OldArtist3",
+            type=TagType.ARTIST,
+            desc="クロネコ / http://www.pixiv.net/member.php?id=1000121",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        identity_link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/1000121",
+            site="pixiv",
+            external_id="1000121",
+        )
+        archival_link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="http://www.pixiv.net/member.php?id=1000121",
+        )
+        db_session.add_all([identity_link, archival_link])
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        await db_session.refresh(identity_link)
+        links = (
+            (
+                await db_session.execute(
+                    select(TagExternalLinks).where(TagExternalLinks.tag_id == artist.tag_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(links) == 2
+        assert identity_link.url == "https://www.pixiv.net/users/1000121"
+        assert artist.desc == "クロネコ"
+        assert report.descs_cleaned == 1
+        assert report.links_rewritten_to_verbatim == 0
+        assert report.links_verbatim_skipped_duplicate == 1
+
+
+@pytest.mark.integration
+class TestDescMoverIdentityNotOwned:
+    async def test_identity_owned_by_another_tag_is_an_anomaly(
+        self, db_session: AsyncSession
+    ) -> None:
+        owner = Tags(title="RealOwner", type=TagType.ARTIST, usage_count=1)
+        confused = Tags(
+            title="ConfusedArtist",
+            type=TagType.ARTIST,
+            desc="see https://www.pixiv.net/users/42",
+        )
+        db_session.add_all([owner, confused])
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=owner.tag_id,
+                url="https://www.pixiv.net/users/42",
+                site="pixiv",
+                external_id="42",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(confused)
+        assert confused.desc == "see https://www.pixiv.net/users/42"
+        assert report.descs_cleaned == 0
+        assert any("42" in a and str(confused.tag_id) in a for a in report.anomalies)
+
+    async def test_identity_unclaimed_by_anyone_is_an_anomaly(
+        self, db_session: AsyncSession
+    ) -> None:
+        artist = Tags(
+            title="NoLinkYet",
+            type=TagType.ARTIST,
+            desc="https://www.pixiv.net/users/999",
+        )
+        db_session.add(artist)
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "https://www.pixiv.net/users/999"
+        assert report.descs_cleaned == 0
+        assert any("999" in a for a in report.anomalies)
+
+
+@pytest.mark.integration
+class TestDescMoverMultipleIdentities:
+    async def test_two_distinct_urls_is_an_anomaly(self, db_session: AsyncSession) -> None:
+        artist = Tags(
+            title="ConfusedArtist2",
+            type=TagType.ARTIST,
+            desc="https://www.pixiv.net/users/1 https://www.pixiv.net/users/2",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add_all(
+            [
+                TagExternalLinks(
+                    tag_id=artist.tag_id,
+                    url="https://www.pixiv.net/users/1",
+                    site="pixiv",
+                    external_id="1",
+                ),
+                TagExternalLinks(
+                    tag_id=artist.tag_id,
+                    url="https://www.pixiv.net/users/2",
+                    site="pixiv",
+                    external_id="2",
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "https://www.pixiv.net/users/1 https://www.pixiv.net/users/2"
+        assert len(report.anomalies) == 1
+        assert "1" in report.anomalies[0] and "2" in report.anomalies[0]
+
+    async def test_same_identity_mentioned_twice_is_an_anomaly(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A URL mention plus a separate bare-text mention of the *same* id
+        is still two occurrences in the desc text -- the mover strips a
+        single span, so picking one and leaving the other would be a silent
+        half-fix. Conservative: flag rather than guess."""
+        artist = Tags(
+            title="RepeatedMention",
+            type=TagType.ARTIST,
+            desc="pixiv 1000121, also https://www.pixiv.net/users/1000121",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="https://www.pixiv.net/users/1000121",
+                site="pixiv",
+                external_id="1000121",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "pixiv 1000121, also https://www.pixiv.net/users/1000121"
+        assert len(report.anomalies) == 1
+        assert report.descs_cleaned == 0
+        assert report.bare_text_stripped == 0
+
+
+@pytest.mark.integration
+class TestDescMoverBareText:
+    async def test_bare_text_stripped_when_tag_owns_identity(
+        self, db_session: AsyncSession
+    ) -> None:
+        artist = Tags(
+            title="SomeArtist",
+            type=TagType.ARTIST,
+            desc="find me at pixiv 97567 thanks",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="https://www.pixiv.net/users/97567",
+                site="pixiv",
+                external_id="97567",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "find me at thanks"
+        assert report.bare_text_stripped == 1
+        assert report.links_rewritten_to_verbatim == 0
+        assert report.anomalies == []
+
+    async def test_bare_text_only_desc_becomes_null(self, db_session: AsyncSession) -> None:
+        artist = Tags(
+            title="BareOnly",
+            type=TagType.ARTIST,
+            desc="pixiv 97567",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="https://www.pixiv.net/users/97567",
+                site="pixiv",
+                external_id="97567",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc is None
+        assert report.bare_text_stripped == 1
+        assert report.descs_emptied == 1
+
+
+@pytest.mark.integration
+class TestDescMoverAmbiguousRemnant:
+    async def test_dangling_label_remnant_is_an_anomaly(self, db_session: AsyncSession) -> None:
+        """'profile: <url>' isn't one of the documented '/'-or-'|' separator
+        conventions -- the mover doesn't know how to confidently drop the
+        now-dangling 'profile:' label, so it must flag rather than guess."""
+        artist = Tags(
+            title="LabeledArtist",
+            type=TagType.ARTIST,
+            desc="profile: https://www.pixiv.net/member.php?id=555",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(
+                tag_id=artist.tag_id,
+                url="https://www.pixiv.net/member.php?id=555",
+                site="pixiv",
+                external_id="555",
+            )
+        )
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=True)
+
+        await db_session.refresh(artist)
+        assert artist.desc == "profile: https://www.pixiv.net/member.php?id=555"
+        assert report.descs_cleaned == 0
+        assert len(report.anomalies) == 1
+        assert str(artist.tag_id) in report.anomalies[0]
+
+
+@pytest.mark.integration
+class TestDescMoverDryRun:
+    async def test_dry_run_writes_nothing(self, db_session: AsyncSession) -> None:
+        artist = Tags(
+            title="OldArtist4",
+            type=TagType.ARTIST,
+            desc="クロネコ / http://www.pixiv.net/member.php?id=1000121",
+        )
+        db_session.add(artist)
+        await db_session.flush()
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/1000121",
+            site="pixiv",
+            external_id="1000121",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        report = await run_desc_mover(db_session, apply=False)
+
+        # Report reflects what *would* happen...
+        assert report.descs_cleaned == 1
+        assert report.links_rewritten_to_verbatim == 1
+        assert len(report.samples) == 1
+        assert report.samples[0].before == "クロネコ / http://www.pixiv.net/member.php?id=1000121"
+        assert report.samples[0].after == "クロネコ"
+
+        # ...but nothing was actually written. Re-fetch fresh rows rather
+        # than trusting the in-session objects (which a stray flush could
+        # have already mutated).
+        refetched_artist = (
+            await db_session.execute(select(Tags).where(Tags.tag_id == artist.tag_id))
+        ).scalar_one()
+        refetched_link = (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.link_id == link.link_id)
+            )
+        ).scalar_one()
+        assert refetched_artist.desc == "クロネコ / http://www.pixiv.net/member.php?id=1000121"
+        assert refetched_link.url == "https://www.pixiv.net/users/1000121"
+
+        audit_count = (
+            await db_session.execute(select(TagAuditLog).where(TagAuditLog.tag_id == artist.tag_id))
+        ).first()
+        assert audit_count is None
