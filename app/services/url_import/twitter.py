@@ -39,6 +39,7 @@ def _variant(photo_url: str, name: str) -> str:
 
 class TwitterResolver:
     site = "twitter"
+    example_url: str | None = "https://x.com/username/status/1234567890123456789"
 
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None

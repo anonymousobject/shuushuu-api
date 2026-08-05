@@ -1,7 +1,7 @@
 """Ordered resolver registry; first match wins."""
 
 from app.config import settings
-from app.services.url_import.base import Resolver
+from app.services.url_import.base import ImportSite, Resolver
 from app.services.url_import.bluesky import BlueskyResolver
 from app.services.url_import.danbooru import DanbooruResolver
 from app.services.url_import.gelbooru import GelbooruResolver
@@ -42,5 +42,15 @@ def get_resolver(url: str) -> Resolver | None:
     return None
 
 
+def advertised_sites() -> list[ImportSite]:
+    """Sites shown to users. Resolvers with no example_url are registered but
+    unadvertised (the dev-only fixture)."""
+    return [
+        ImportSite(site=resolver.site, example_url=resolver.example_url)
+        for resolver in _RESOLVERS
+        if resolver.example_url
+    ]
+
+
 def supported_sites() -> list[str]:
-    return [resolver.site for resolver in _RESOLVERS]
+    return [entry.site for entry in advertised_sites()]

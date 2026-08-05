@@ -41,6 +41,7 @@ def _is_login_gated(body: dict[str, Any]) -> bool:
 
 class PixivResolver:
     site = "pixiv"
+    example_url: str | None = "https://www.pixiv.net/artworks/12345678"
 
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None

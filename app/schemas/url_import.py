@@ -30,3 +30,8 @@ class UrlResolveResponse(BaseModel):
     title: str | None = None
     artist_name: str | None = None
     images: list[ResolvedImageOut]
+
+
+class ImportSiteResponse(BaseModel):
+    site: str
+    example_url: str

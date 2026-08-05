@@ -402,6 +402,27 @@ class TestFetchExternal:
         assert response.status_code == 502
 
 
+class TestImportSites:
+    async def test_lists_advertised_sites_without_auth(self, client):
+        # Public on purpose: a static capability list with no user data, so it
+        # can be cached and fetched during SSR of the upload page.
+        response = await client.get("/api/v1/images/import-sites")
+        assert response.status_code == 200
+        body = response.json()
+        sites = {entry["site"]: entry["example_url"] for entry in body}
+        assert sites["pixiv"] == "https://www.pixiv.net/artworks/12345678"
+        assert sites["yande.re"] == "https://yande.re/post/show/123456"
+
+    async def test_excludes_the_dev_fixture_resolver(self, client):
+        response = await client.get("/api/v1/images/import-sites")
+        assert response.status_code == 200
+        assert "fixture" not in {entry["site"] for entry in response.json()}
+
+    async def test_sets_a_cache_header(self, client):
+        response = await client.get("/api/v1/images/import-sites")
+        assert response.headers["cache-control"] == "public, max-age=3600"
+
+
 class TestFixtureImageEndpoint:
     async def test_serves_unique_pngs(self, client):
         first = await client.get("/api/v1/images/url-import-fixture/single-0.png")
