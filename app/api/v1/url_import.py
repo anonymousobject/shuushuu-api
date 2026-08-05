@@ -121,10 +121,7 @@ async def resolve_url(
     if resolver is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                "Unsupported site. Supported: "
-                + ", ".join(site for site in supported_sites() if site != "fixture")
-            ),
+            detail=("Unsupported site. Supported: " + ", ".join(supported_sites())),
         )
     try:
         async with _make_http_client(RESOLVE_TIMEOUT_SECONDS) as client:

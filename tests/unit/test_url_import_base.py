@@ -143,5 +143,8 @@ class TestAdvertisedSites:
         assert any(r.site == "fixture" for r in _RESOLVERS)
         assert "fixture" not in [entry.site for entry in advertised_sites()]
 
-    def test_supported_sites_projects_advertised_sites(self):
-        assert supported_sites() == [entry.site for entry in advertised_sites()]
+    def test_every_live_resolver_is_advertised(self):
+        # example_url is load-bearing twice over: the popover AND the
+        # "Unsupported site. Supported: ..." message both derive from it.
+        unadvertised = {r.site for r in _RESOLVERS} - {e.site for e in advertised_sites()}
+        assert unadvertised == {"fixture"}
