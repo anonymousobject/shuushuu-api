@@ -14,13 +14,19 @@ from PIL import Image as PILImage
 from app.config import settings
 from app.core.auth import VerifiedUser
 from app.core.redis import get_redis
-from app.schemas.url_import import ResolvedImageOut, UrlResolveRequest, UrlResolveResponse
+from app.schemas.url_import import (
+    ImportSiteResponse,
+    ResolvedImageOut,
+    UrlResolveRequest,
+    UrlResolveResponse,
+)
 from app.services.rate_limit import check_external_fetch_rate_limit, check_url_resolve_rate_limit
 from app.services.url_import import (
     BROWSER_USER_AGENT,
     PostNotFoundError,
     RestrictedContentError,
     UpstreamError,
+    advertised_sites,
     get_resolver,
     supported_sites,
 )
@@ -30,6 +36,21 @@ router = APIRouter(prefix="/images", tags=["url-import"])
 
 RESOLVE_TIMEOUT_SECONDS = 15.0
 FETCH_TIMEOUT_SECONDS = 30.0
+
+
+@router.get("/import-sites", response_model=list[ImportSiteResponse])
+async def list_import_sites(response: Response) -> list[ImportSiteResponse]:
+    """Sites the URL importer accepts, with a sample URL shape for each.
+
+    Public and cacheable: a static capability list with no user data. The
+    upload page fetches this during SSR to populate its supported-sites
+    popover, so the list can never drift from the resolver registry.
+    """
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return [
+        ImportSiteResponse(site=entry.site, example_url=entry.example_url)
+        for entry in advertised_sites()
+    ]
 
 
 def _make_http_client(timeout: float) -> httpx.AsyncClient:
