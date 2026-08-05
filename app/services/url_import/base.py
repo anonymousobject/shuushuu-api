@@ -60,8 +60,20 @@ class ResolvedPost:
     artist_id: str | None = None
 
 
+@dataclass(frozen=True)
+class ImportSite:
+    """A site advertised to users as importable, with a sample URL shape."""
+
+    site: str
+    example_url: str
+
+
 class Resolver(Protocol):
     site: str
+    # A synthetic sample URL this resolver accepts, shown to users so they can
+    # check their link's shape. None means "registered but not advertised"
+    # (the dev-only fixture resolver).
+    example_url: str | None
 
     def match(self, url: str) -> bool: ...
 

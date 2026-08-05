@@ -28,6 +28,7 @@ _TOOL_UA_HEADER = {"User-Agent": _TOOL_USER_AGENT}
 
 class DanbooruResolver:
     site = "danbooru"
+    example_url: str | None = "https://danbooru.donmai.us/posts/1234567"
 
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None

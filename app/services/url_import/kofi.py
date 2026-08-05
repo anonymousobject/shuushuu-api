@@ -22,6 +22,7 @@ def _is_kofi_host(image_url: str) -> bool:
 
 class KofiResolver:
     site = "ko-fi"
+    example_url: str | None = "https://ko-fi.com/i/ABC123XYZ"
 
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None

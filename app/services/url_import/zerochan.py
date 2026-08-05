@@ -34,6 +34,7 @@ def _user_agent() -> str:
 
 class ZerochanResolver:
     site = "zerochan"
+    example_url: str | None = "https://www.zerochan.net/1234567"
 
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None

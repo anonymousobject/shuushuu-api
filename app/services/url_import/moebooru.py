@@ -19,6 +19,7 @@ _URL_RE = re.compile(r"^https?://yande\.re/post/show/(\d+)")
 
 class MoebooruResolver:
     site = "yande.re"
+    example_url: str | None = "https://yande.re/post/show/123456"
 
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None
