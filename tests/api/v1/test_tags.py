@@ -4006,6 +4006,136 @@ class TestUpdateTag:
         post_img = post_result.scalar_one()
         assert post_img.has_artist is True, "has_artist should still be True after alias reassignment"
 
+    async def test_setting_alias_reparents_incoming_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Aliasing a tag that itself has an incoming alias re-points that alias
+        at the new canonical tag, instead of leaving a P -> A -> B chain."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminchainreparent",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminchainreparent@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # A (canonical artist tag, about to become an alias of B), P (existing
+        # incoming alias of A, e.g. a pixiv-name alias), B (new canonical target)
+        tag_a = Tags(title="Tag A", desc="", type=TagType.ARTIST)
+        tag_b = Tags(title="Tag B", desc="", type=TagType.ARTIST)
+        db_session.add_all([tag_a, tag_b])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_b)
+
+        tag_p = Tags(title="Tag P", desc="", type=TagType.ARTIST, alias_of=tag_a.tag_id)
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminchainreparent", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Alias A -> B
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "Tag A", "alias_of": tag_b.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # P must now point directly at B, not at A (no P -> A -> B chain)
+        await db_session.refresh(tag_p)
+        assert tag_p.alias_of == tag_b.tag_id
+
+    async def test_setting_alias_reparents_all_incoming_aliases(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Generalization of the single-incoming-alias case: every alias
+        pointed at A gets re-pointed at B, not just the first one found."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminchainreparentmulti",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminchainreparentmulti@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # A (about to be aliased to B), P1 and P2 (both existing incoming
+        # aliases of A), B (new canonical target)
+        tag_a = Tags(title="Tag A multi", desc="", type=TagType.ARTIST)
+        tag_b = Tags(title="Tag B multi", desc="", type=TagType.ARTIST)
+        db_session.add_all([tag_a, tag_b])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_b)
+
+        tag_p1 = Tags(title="Tag P1 multi", desc="", type=TagType.ARTIST, alias_of=tag_a.tag_id)
+        tag_p2 = Tags(title="Tag P2 multi", desc="", type=TagType.ARTIST, alias_of=tag_a.tag_id)
+        db_session.add_all([tag_p1, tag_p2])
+        await db_session.commit()
+        await db_session.refresh(tag_p1)
+        await db_session.refresh(tag_p2)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminchainreparentmulti", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Alias A -> B
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "Tag A multi", "alias_of": tag_b.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # Both P1 and P2 must now point directly at B
+        await db_session.refresh(tag_p1)
+        await db_session.refresh(tag_p2)
+        assert tag_p1.alias_of == tag_b.tag_id
+        assert tag_p2.alias_of == tag_b.tag_id
+
 
 @pytest.mark.api
 class TestDeleteTag:

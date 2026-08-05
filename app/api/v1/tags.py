@@ -1911,6 +1911,39 @@ async def update_tag(
                 .values(character_tag_id=canonical_id)
             )
 
+        # Re-point incoming aliases (tags that were aliased to this tag) so they
+        # follow straight to the new canonical tag instead of chaining through
+        # a tag that's now itself an alias (P -> A -> B, not P -> A, A -> B).
+        incoming_aliases_result = await db.execute(
+            select(Tags).where(
+                Tags.alias_of == tag_id,  # type: ignore[arg-type]
+                Tags.tag_id != tag_id,  # type: ignore[arg-type]
+            )
+        )
+        incoming_aliases = incoming_aliases_result.scalars().all()
+        reparented_alias_ids = [incoming_alias.tag_id for incoming_alias in incoming_aliases]
+        for incoming_alias in incoming_aliases:
+            db.add(
+                TagAuditLog(
+                    tag_id=incoming_alias.tag_id,
+                    action_type=TagAuditActionType.ALIAS_REMOVED,
+                    old_alias_of=tag_id,
+                    new_alias_of=None,
+                    user_id=current_user.user_id,
+                )
+            )
+            db.add(
+                TagAuditLog(
+                    tag_id=incoming_alias.tag_id,
+                    action_type=TagAuditActionType.ALIAS_SET,
+                    old_alias_of=None,
+                    new_alias_of=canonical_id,
+                    user_id=current_user.user_id,
+                )
+            )
+            incoming_alias.alias_of = canonical_id
+            db.add(incoming_alias)
+
     db.add(tag)
     await db.commit()
     await db.refresh(tag)
@@ -1926,6 +1959,15 @@ async def update_tag(
         canonical_tag = canonical_result.scalar_one_or_none()
         if canonical_tag:
             await sync_tag_to_search(canonical_tag, db=db)
+
+        # Re-pointed incoming aliases also need re-syncing: their indexed
+        # parent_usage_count must reflect the new canonical tag.
+        if reparented_alias_ids:
+            reparented_result = await db.execute(
+                select(Tags).where(Tags.tag_id.in_(reparented_alias_ids))  # type: ignore[union-attr]
+            )
+            for reparented_alias in reparented_result.scalars().all():
+                await sync_tag_to_search(reparented_alias, db=db)
 
     return TagResponse.model_validate(tag)
 

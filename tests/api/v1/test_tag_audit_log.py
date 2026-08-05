@@ -751,6 +751,83 @@ class TestTagAuditLogAliasChange:
         assert audit_entry.new_alias_of is None
         assert audit_entry.user_id == admin.user_id
 
+    async def test_reparenting_incoming_alias_creates_audit_log_pair(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """When A gets aliased to B, an existing alias P of A (P -> A) is
+        re-pointed to B and gets its own ALIAS_REMOVED/ALIAS_SET pair, logged
+        as a system-initiated side effect of the acting admin's edit."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="chainreparentauditadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="chainreparentauditadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # A (about to be aliased to B), P (existing incoming alias of A), B (new canonical)
+        tag_a = Tags(title="chain audit A", desc="", type=TagType.ARTIST)
+        tag_b = Tags(title="chain audit B", desc="", type=TagType.ARTIST)
+        db_session.add_all([tag_a, tag_b])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_b)
+
+        tag_p = Tags(title="chain audit P", desc="", type=TagType.ARTIST, alias_of=tag_a.tag_id)
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "chainreparentauditadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Alias A -> B
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "chain audit A", "alias_of": tag_b.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # P's audit trail should show ALIAS_REMOVED (P -> A) then ALIAS_SET (P -> B)
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(TagAuditLog.tag_id == tag_p.tag_id).order_by(TagAuditLog.id)
+        )
+        audit_entries = audit_result.scalars().all()
+
+        assert len(audit_entries) == 2
+        removed_entry, set_entry = audit_entries
+        assert removed_entry.action_type == TagAuditActionType.ALIAS_REMOVED
+        assert removed_entry.old_alias_of == tag_a.tag_id
+        assert removed_entry.new_alias_of is None
+        assert removed_entry.user_id == admin.user_id
+
+        assert set_entry.action_type == TagAuditActionType.ALIAS_SET
+        assert set_entry.old_alias_of is None
+        assert set_entry.new_alias_of == tag_b.tag_id
+        assert set_entry.user_id == admin.user_id
+
 
 @pytest.mark.api
 class TestTagAuditLogParentChange:
