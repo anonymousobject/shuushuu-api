@@ -42,7 +42,7 @@ help:
 	@echo "  prod-build   Build all production images"
 	@echo "  prod-build-frontend  Rebuild frontend image"
 	@echo "  prod-migrate Apply DB migrations (run BEFORE prod-deploy when a release has one)"
-	@echo "  prod-deploy  Zero-downtime rollout of app service(s) (default: api frontend)"
+	@echo "  prod-deploy  Zero-downtime rollout of app service(s) (default: api frontend arq-worker)"
 	@echo "  prod-restart Force-recreate service(s) — CAUSES DOWNTIME; use for nginx/infra"
 	@echo ""
 	@echo "Other:"
@@ -72,10 +72,13 @@ COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml
 # and self-documents the expected window (plugin default is only 60s).
 ROLLOUT_PROD = docker rollout --timeout 90 -f docker-compose.yml -f docker-compose.prod.yml
 
-# App services that support zero-downtime rollout: stateless, fronted by nginx
-# which re-resolves their service name via Docker DNS at request time. Override
-# by passing service names, e.g. `make prod-deploy api`.
-ROLLOUT_SERVICES = api frontend
+# App services that support zero-downtime rollout. api/frontend are stateless
+# and fronted by nginx, which re-resolves their service name via Docker DNS at
+# request time. arq-worker is queue-fed rather than nginx-fronted, but rolls
+# just as safely: arq claims jobs atomically and cron jobs dedup via
+# deterministic ids, so the transient two-replica overlap never double-runs
+# anything. Override by passing service names, e.g. `make prod-deploy api`.
+ROLLOUT_SERVICES = api frontend arq-worker
 DEPLOY_SERVICES = $(if $(ARGS),$(ARGS),$(ROLLOUT_SERVICES))
 
 # Development targets
@@ -193,8 +196,14 @@ prod-migrate: check-env-prod
 # time. docker-rollout starts a new replica, waits for its healthcheck, then
 # drains the old one — nginx re-resolves the service name via Docker DNS, so no
 # requests are dropped. Does NOT run migrations (see prod-migrate).
+#
+# arq-worker is always built, even when ARGS narrows the rollout set: skipping
+# its rebuild is how the worker once kept running an image whose deps predated
+# a uv.lock bump until its freshness check crash-looped it (2026-08). The
+# rollout no-ops when the built image is unchanged, so this costs nothing on
+# deploys that don't touch Python code.
 prod-deploy: check-env-prod
-	$(COMPOSE_PROD) build $(DEPLOY_SERVICES)
+	$(COMPOSE_PROD) build $(sort $(DEPLOY_SERVICES) arq-worker)
 	@for svc in $(DEPLOY_SERVICES); do \
 		echo "==> Rolling out $$svc (zero-downtime)"; \
 		$(ROLLOUT_PROD) $$svc || exit 1; \
