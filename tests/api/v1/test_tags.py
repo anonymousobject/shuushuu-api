@@ -4136,6 +4136,142 @@ class TestUpdateTag:
         assert tag_p1.alias_of == tag_b.tag_id
         assert tag_p2.alias_of == tag_b.tag_id
 
+    async def test_changing_type_cascades_to_incoming_alias(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A tag's type change cascades to its incoming aliases: aliases are
+        synonyms of the canonical tag, so they're the same concept and must
+        share its type."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admintypecascade",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admintypecascade@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # A (about to change type), P (existing incoming alias of A, same type as A)
+        tag_a = Tags(title="Tag A type cascade", desc="", type=TagType.THEME)
+        db_session.add(tag_a)
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+
+        tag_p = Tags(
+            title="Tag P type cascade", desc="", type=TagType.THEME, alias_of=tag_a.tag_id
+        )
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admintypecascade", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change A's type only (no alias_of change)
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "Tag A type cascade", "type": TagType.ARTIST},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # P's type must follow A's new type
+        await db_session.refresh(tag_p)
+        assert tag_p.type == TagType.ARTIST
+
+    async def test_changing_type_and_alias_together_cascades_both(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Regression for the combined-request edge: a single PUT that changes
+        A's type AND aliases A to B (B already of the new type) must leave the
+        incoming alias P with the new type AND pointed straight at B."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admincombinedcascade",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admincombinedcascade@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # A (about to change type AND become an alias of B), P (existing
+        # incoming alias of A, A's old type), B (new canonical, already of
+        # A's new type -- required for the combined PUT to validate)
+        tag_a = Tags(title="Tag A combined cascade", desc="", type=TagType.THEME)
+        tag_b = Tags(title="Tag B combined cascade", desc="", type=TagType.ARTIST)
+        db_session.add_all([tag_a, tag_b])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_b)
+
+        tag_p = Tags(
+            title="Tag P combined cascade", desc="", type=TagType.THEME, alias_of=tag_a.tag_id
+        )
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admincombinedcascade", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change A's type AND alias A -> B in one request
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={
+                "title": "Tag A combined cascade",
+                "type": TagType.ARTIST,
+                "alias_of": tag_b.tag_id,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # P must have the new type AND point straight at B (no type-mismatched
+        # chain, no stale type)
+        await db_session.refresh(tag_p)
+        assert tag_p.type == TagType.ARTIST
+        assert tag_p.alias_of == tag_b.tag_id
+
 
 @pytest.mark.api
 class TestDeleteTag:

@@ -579,6 +579,80 @@ class TestTagAuditLogTypeChange:
         assert audit_entry.new_type == TagType.CHARACTER
         assert audit_entry.user_id == admin.user_id
 
+    async def test_type_change_cascaded_to_incoming_alias_creates_audit_log_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Changing A's type cascades to incoming alias P's type, and that
+        cascade gets its own TYPE_CHANGE audit entry attributed to the admin
+        who made the edit on A."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="typecascadeauditadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="typecascadeauditadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # A (about to change type), P (existing incoming alias of A)
+        tag_a = Tags(title="type cascade audit A", desc="", type=TagType.THEME)
+        db_session.add(tag_a)
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+
+        tag_p = Tags(
+            title="type cascade audit P", desc="", type=TagType.THEME, alias_of=tag_a.tag_id
+        )
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "typecascadeauditadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change A's type only
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "type cascade audit A", "type": TagType.CHARACTER},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # P's audit trail should show a TYPE_CHANGE entry (THEME -> CHARACTER)
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == tag_p.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.TYPE_CHANGE,
+            )
+        )
+        audit_entries = audit_result.scalars().all()
+
+        assert len(audit_entries) == 1
+        audit_entry = audit_entries[0]
+        assert audit_entry.old_type == TagType.THEME
+        assert audit_entry.new_type == TagType.CHARACTER
+        assert audit_entry.user_id == admin.user_id
+
 
 @pytest.mark.api
 class TestTagAuditLogAliasChange:
