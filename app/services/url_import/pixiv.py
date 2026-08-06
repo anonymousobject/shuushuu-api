@@ -57,14 +57,14 @@ class PixivResolver:
             headers=_REFERER,
         )
         if data.get("error"):
-            raise PostNotFoundError(data.get("message") or "pixiv artwork not available")
+            raise PostNotFoundError(data.get("message") or "Pixiv artwork not available")
         body = data.get("body")
         if not body:
-            raise UpstreamError("pixiv response missing expected fields")
+            raise UpstreamError("Pixiv response missing expected fields")
         if body.get("xRestrict", 0) != 0:
-            raise RestrictedContentError("Restricted (R-18) pixiv works cannot be imported")
+            raise RestrictedContentError("Restricted (R-18) Pixiv works cannot be imported")
         if body.get("illustType") == 2:
-            raise RestrictedContentError("Ugoira (animated) pixiv works cannot be imported")
+            raise RestrictedContentError("Ugoira (animated) Pixiv works cannot be imported")
         # Checked before the pageCount branch: pixiv nulls the whole `urls` block
         # on the illust body, which carries p0 even for multi-page works — so this
         # covers both shapes and spares a pointless /pages round-trip.
@@ -83,13 +83,13 @@ class PixivResolver:
                 headers=_REFERER,
             )
             if pages.get("error"):
-                raise PostNotFoundError(pages.get("message") or "pixiv artwork not available")
+                raise PostNotFoundError(pages.get("message") or "Pixiv artwork not available")
             images = []
             for page in pages.get("body") or []:
                 urls = page.get("urls") or {}
                 original = urls.get("original")
                 if not original:
-                    raise UpstreamError("pixiv response missing expected fields")
+                    raise UpstreamError("Pixiv response missing expected fields")
                 images.append(
                     ResolvedImage(
                         full_url=original,
@@ -103,7 +103,7 @@ class PixivResolver:
             urls = body.get("urls") or {}
             original = urls.get("original")
             if not original:
-                raise UpstreamError("pixiv response missing expected fields")
+                raise UpstreamError("Pixiv response missing expected fields")
             images = [
                 ResolvedImage(
                     full_url=original,
@@ -117,7 +117,7 @@ class PixivResolver:
             if not host_allowed(image.full_url, "pximg.net") or (
                 image.thumb_url is not None and not host_allowed(image.thumb_url, "pximg.net")
             ):
-                raise UpstreamError("pixiv returned an unexpected image host")
+                raise UpstreamError("Pixiv returned an unexpected image host")
         return ResolvedPost(
             site=self.site,
             canonical_url=f"https://www.pixiv.net/artworks/{illust_id}",
