@@ -151,7 +151,7 @@ class TestResolve:
         2026-08-01). Must not surface as a 502."""
         body = _illust_body(urls=dict.fromkeys(["small", "original"]), **gate)
         async with _client(body) as client:
-            with pytest.raises(RestrictedContentError, match="logged in to pixiv"):
+            with pytest.raises(RestrictedContentError, match="logged in to Pixiv"):
                 await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
 
     async def test_login_gated_multi_page_work_rejected_without_pages_fetch(self):
@@ -166,7 +166,7 @@ class TestResolve:
             return httpx.Response(200, json={"error": False, "body": []})
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            with pytest.raises(RestrictedContentError, match="logged in to pixiv"):
+            with pytest.raises(RestrictedContentError, match="logged in to Pixiv"):
                 await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
         assert pages_requested == []
 
