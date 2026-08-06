@@ -1671,6 +1671,7 @@ async def update_tag(
         db.add(audit_entry)
 
     # Check for type change
+    type_cascaded_alias_ids: list[int | None] = []
     if tag.type != original_type:
         audit_entry = TagAuditLog(
             tag_id=tag_id,
@@ -1687,6 +1688,30 @@ async def update_tag(
             select(TagLinks.image_id).where(TagLinks.tag_id == tag_id)  # type: ignore[call-overload]
         )
         await refresh_images_tag_type_flags(db, [row[0] for row in affected])
+
+        # Aliases are synonyms of their canonical tag -- same concept, same
+        # type by definition -- so a type change cascades to incoming aliases.
+        # They carry no tag_links (invariant), so no flag recompute needed.
+        type_cascade_result = await db.execute(
+            select(Tags).where(
+                Tags.alias_of == tag_id,  # type: ignore[arg-type]
+                Tags.tag_id != tag_id,  # type: ignore[arg-type]
+            )
+        )
+        type_cascade_aliases = type_cascade_result.scalars().all()
+        for cascade_alias in type_cascade_aliases:
+            db.add(
+                TagAuditLog(
+                    tag_id=cascade_alias.tag_id,
+                    action_type=TagAuditActionType.TYPE_CHANGE,
+                    old_type=cascade_alias.type,
+                    new_type=tag.type,
+                    user_id=current_user.user_id,
+                )
+            )
+            cascade_alias.type = tag.type
+            db.add(cascade_alias)
+        type_cascaded_alias_ids = [alias.tag_id for alias in type_cascade_aliases]
 
     # Check for alias change
     if tag.alias_of != original_alias_of:
@@ -1773,6 +1798,7 @@ async def update_tag(
             db.add(audit_entry)
 
     # Migrate tag_links when alias is set
+    reparented_alias_ids: list[int | None] = []
     if tag.alias_of is not None and tag.alias_of != original_alias_of:
         canonical_id = tag.alias_of
 
@@ -1911,6 +1937,39 @@ async def update_tag(
                 .values(character_tag_id=canonical_id)
             )
 
+        # Re-point incoming aliases (tags that were aliased to this tag) so they
+        # follow straight to the new canonical tag instead of chaining through
+        # a tag that's now itself an alias (P -> A -> B, not P -> A, A -> B).
+        incoming_aliases_result = await db.execute(
+            select(Tags).where(
+                Tags.alias_of == tag_id,  # type: ignore[arg-type]
+                Tags.tag_id != tag_id,  # type: ignore[arg-type]
+            )
+        )
+        incoming_aliases = incoming_aliases_result.scalars().all()
+        reparented_alias_ids = [incoming_alias.tag_id for incoming_alias in incoming_aliases]
+        for incoming_alias in incoming_aliases:
+            db.add(
+                TagAuditLog(
+                    tag_id=incoming_alias.tag_id,
+                    action_type=TagAuditActionType.ALIAS_REMOVED,
+                    old_alias_of=tag_id,
+                    new_alias_of=None,
+                    user_id=current_user.user_id,
+                )
+            )
+            db.add(
+                TagAuditLog(
+                    tag_id=incoming_alias.tag_id,
+                    action_type=TagAuditActionType.ALIAS_SET,
+                    old_alias_of=None,
+                    new_alias_of=canonical_id,
+                    user_id=current_user.user_id,
+                )
+            )
+            incoming_alias.alias_of = canonical_id
+            db.add(incoming_alias)
+
     db.add(tag)
     await db.commit()
     await db.refresh(tag)
@@ -1926,6 +1985,17 @@ async def update_tag(
         canonical_tag = canonical_result.scalar_one_or_none()
         if canonical_tag:
             await sync_tag_to_search(canonical_tag, db=db)
+
+    # Re-pointed and type-cascaded incoming aliases also need re-syncing: their
+    # indexed canonical tag / type changed. A combined type+alias request can
+    # cascade the same alias into both sets, so dedupe before syncing.
+    cascaded_alias_ids = set(reparented_alias_ids) | set(type_cascaded_alias_ids)
+    if cascaded_alias_ids:
+        cascaded_result = await db.execute(
+            select(Tags).where(Tags.tag_id.in_(cascaded_alias_ids))  # type: ignore[union-attr]
+        )
+        for cascaded_alias in cascaded_result.scalars().all():
+            await sync_tag_to_search(cascaded_alias, db=db)
 
     return TagResponse.model_validate(tag)
 
