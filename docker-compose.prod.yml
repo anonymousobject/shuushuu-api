@@ -78,12 +78,19 @@ services:
       - NODE_OPTIONS=--max-old-space-size=4096
     depends_on:
       - api
+    # The production image starts via a warm-before-listen entry
+    # (server.production.js in the frontend repo): the server renders the
+    # homepage through the real SSR path BEFORE binding :3000, so this check
+    # can only pass — and docker-rollout can only drain the old replica — once
+    # the container is genuinely warm. Until then connections are refused and
+    # nginx fails over to the old replica. start_period covers node start +
+    # the warmup render on a loaded host.
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 60s
     restart: unless-stopped
     networks:
       - default
@@ -180,7 +187,12 @@ services:
     logging: *default-logging
 
   arq-worker:
-    container_name: shuushuu-arq-worker-prod
+    # No container_name: like api, docker-rollout scales this service to two
+    # replicas transiently during a deploy, so its name can't be fixed. The
+    # overlap is safe: arq claims jobs atomically and cron jobs enqueue with
+    # deterministic ids (name + scheduled time), so two live workers never
+    # double-run anything.
+    container_name: !reset null
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
     ports: []
     environment:
@@ -191,6 +203,18 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
+    # docker-rollout waits for this healthcheck on the new replica before
+    # draining the old one. `arq --check` reads a per-container health key that
+    # the worker refreshes every 15s (see WorkerSettings) — per-container so the
+    # old replica's heartbeat can't vouch for a broken new one. start_period
+    # covers Meilisearch config + ML model load (~5s observed; headroom for a
+    # loaded host).
+    healthcheck:
+      test: ["CMD", "uv", "run", "--no-project", "arq", "--check", "app.tasks.worker.WorkerSettings"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     # List form replaces base depends_on entirely (removes mariadb dependency)
     depends_on:
       - redis
