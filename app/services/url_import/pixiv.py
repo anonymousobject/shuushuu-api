@@ -70,7 +70,7 @@ class PixivResolver:
         # covers both shapes and spares a pointless /pages round-trip.
         if not (body.get("urls") or {}).get("original") and _is_login_gated(body):
             raise RestrictedContentError(
-                "This pixiv work is only viewable while logged in to pixiv. "
+                "This Pixiv URL is only viewable while logged in to Pixiv. "
                 "Save the image and upload it manually, or paste a mirror URL "
                 "(danbooru, gelbooru, zerochan) if one exists."
             )
