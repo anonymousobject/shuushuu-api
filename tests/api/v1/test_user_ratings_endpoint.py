@@ -152,3 +152,76 @@ class TestUserRatingsAuthorization:
         response = await _authenticate(client, viewer).get("/api/v1/users/99999999/ratings")
 
         assert response.status_code == 404
+
+
+from app.config import ImageStatus
+
+
+class TestUserRatingsVisibility:
+    async def test_subject_does_not_see_rating_on_deactivated_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        rater = await _make_user(db_session, "rater_vis_self")
+        uploader = await _make_user(db_session, "rater_vis_owner")
+        visible = await _make_image(db_session, uploader, "ggg", status=ImageStatus.ACTIVE)
+        hidden = await _make_image(db_session, uploader, "hhh", status=ImageStatus.DEACTIVATED)
+        await _rate(db_session, rater, visible, 3)
+        await _rate(db_session, rater, hidden, 8)
+
+        response = await _authenticate(client, rater).get(
+            f"/api/v1/users/{rater.user_id}/ratings"
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert [img["image_id"] for img in body["images"]] == [visible.image_id]
+
+    async def test_moderator_sees_rating_on_deactivated_image(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        rater = await _make_user(db_session, "rater_vis_subject")
+        uploader = await _make_user(db_session, "rater_vis_up2")
+        mod = await _make_user(db_session, "rater_vis_mod")
+        await grant_user_permission(db_session, mod.user_id, "user_edit_profile")
+        visible = await _make_image(db_session, uploader, "iii", status=ImageStatus.ACTIVE)
+        hidden = await _make_image(db_session, uploader, "jjj", status=ImageStatus.DEACTIVATED)
+        await _rate(db_session, rater, visible, 3)
+        await _rate(db_session, rater, hidden, 8)
+
+        response = await _authenticate(client, mod).get(
+            f"/api/v1/users/{rater.user_id}/ratings"
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 2
+        assert {img["image_id"] for img in body["images"]} == {visible.image_id, hidden.image_id}
+
+    async def test_hide_reposts_applies_to_self_and_is_ignored_for_moderators(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        uploader = await _make_user(db_session, "rater_rp_owner")
+        repost = await _make_image(db_session, uploader, "kkk", status=ImageStatus.REPOST)
+
+        rater = await _make_user(db_session, "rater_rp_self")
+        rater.hide_reposts = 1
+        mod = await _make_user(db_session, "rater_rp_mod")
+        mod.hide_reposts = 1
+        db_session.add_all([rater, mod])
+        await db_session.commit()
+        await grant_user_permission(db_session, mod.user_id, "user_edit_profile")
+        await _rate(db_session, rater, repost, 2)
+
+        self_response = await _authenticate(client, rater).get(
+            f"/api/v1/users/{rater.user_id}/ratings"
+        )
+        assert self_response.status_code == 200
+        assert self_response.json()["total"] == 0
+
+        client.headers.pop("Authorization", None)
+        mod_response = await _authenticate(client, mod).get(
+            f"/api/v1/users/{rater.user_id}/ratings"
+        )
+        assert mod_response.status_code == 200
+        assert mod_response.json()["total"] == 1
