@@ -101,3 +101,54 @@ class TestUserRatingsHappyPath:
         body = response.json()
         assert body["total"] == 1
         assert [img["image_id"] for img in body["images"]] == [mine.image_id]
+
+
+from tests.api.v1.test_users import grant_user_permission
+
+
+class TestUserRatingsAuthorization:
+    async def test_anonymous_is_rejected(self, client: AsyncClient, db_session: AsyncSession):
+        rater = await _make_user(db_session, "rater_anon")
+        image = await _make_image(db_session, rater, "ddd")
+        await _rate(db_session, rater, image, 4)
+
+        response = await client.get(f"/api/v1/users/{rater.user_id}/ratings")
+
+        assert response.status_code == 401
+
+    async def test_other_user_is_forbidden(self, client: AsyncClient, db_session: AsyncSession):
+        rater = await _make_user(db_session, "rater_subject")
+        nosy = await _make_user(db_session, "rater_nosy")
+        image = await _make_image(db_session, rater, "eee")
+        await _rate(db_session, rater, image, 6)
+
+        response = await _authenticate(client, nosy).get(
+            f"/api/v1/users/{rater.user_id}/ratings"
+        )
+
+        assert response.status_code == 403
+
+    async def test_moderator_can_view_another_users_ratings(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        rater = await _make_user(db_session, "rater_audited")
+        mod = await _make_user(db_session, "rater_mod")
+        await grant_user_permission(db_session, mod.user_id, "user_edit_profile")
+        image = await _make_image(db_session, rater, "fff")
+        await _rate(db_session, rater, image, 10)
+
+        response = await _authenticate(client, mod).get(
+            f"/api/v1/users/{rater.user_id}/ratings"
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert body["images"][0]["subject_rating"] == 10
+
+    async def test_unknown_user_is_404(self, client: AsyncClient, db_session: AsyncSession):
+        viewer = await _make_user(db_session, "rater_viewer")
+
+        response = await _authenticate(client, viewer).get("/api/v1/users/99999999/ratings")
+
+        assert response.status_code == 404
