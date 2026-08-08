@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, computed_field, field_validator
 from app.config import TagType, settings
 from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
 from app.models.image import ImageBase, VariantStatus
-from app.schemas.base import UTCDatetime
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.common import UserSummary
 
 # Sort order for tags in image responses: artist → source → character → theme
@@ -228,6 +228,33 @@ class ImageDetailedResponse(ImageResponse):
             data["status_reason"] = getattr(image, "status_reason", None)
 
         return cls(**data)
+
+
+class ImageWithRatingResponse(ImageDetailedResponse):
+    """An image plus the rating the subject user gave it.
+
+    Mirrors ``UserWithRatingResponse`` (app/schemas/user.py), which serves the
+    opposite direction of the same relation. ``rating`` defaults to 0 — outside
+    the valid 1-10 range — because ``from_db_model`` has no rating parameter, so
+    the endpoint assigns it after construction the way ``list_images`` assigns
+    ``ml_suggestion_count``.
+
+    Do NOT use the inherited ``user_rating`` field for this: it means "the rating
+    *you* gave" everywhere else, and a moderator viewing someone else's ratings
+    would then read the subject's score under a name that says "yours".
+    """
+
+    rating: int = 0
+    rated_at: UTCDatetimeOptional = None
+
+
+class UserRatingsListResponse(BaseModel):
+    """Schema for a paginated list of images a user has rated."""
+
+    total: int
+    page: int
+    per_page: int
+    images: list[ImageWithRatingResponse]
 
 
 class ImageListResponse(BaseModel):
