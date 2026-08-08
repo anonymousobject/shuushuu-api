@@ -78,6 +78,20 @@ class ImageRatingsSortParams(BaseModel):
     sort_order: SortOrder = Field(default="DESC", description="Sort order")
 
 
+class UserRatingsSortParams(BaseModel):
+    """Sorting parameters for the per-user ratings list.
+
+    Defaults to ``image_id`` rather than ``rated_at``: ``image_ratings.date`` is
+    NULL on 98% of rows (the legacy import carried no timestamps), so ordering by
+    it is a near-total tie. ``image_id`` is the usable proxy for recency.
+    """
+
+    sort_by: Literal["image_id", "rating", "rated_at"] = Field(
+        default="image_id", description="Sort field"
+    )
+    sort_order: SortOrder = Field(default="DESC", description="Sort order")
+
+
 TagSortBy = Literal["usage_count", "title", "date_added", "tag_id", "type"]
 """Allowed tag sort fields. Must be a subset of `sortableAttributes`
 configured in `app/services/search.py::configure_tags_index`."""

@@ -26,7 +26,12 @@ from sqlalchemy import asc, case, delete, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
+from app.api.dependencies import (
+    ImageSortParams,
+    PaginationParams,
+    UserRatingsSortParams,
+    UserSortParams,
+)
 from app.config import ImageStatus, SuspensionAction, settings
 from app.core.auth import (
     get_client_ip,
@@ -42,12 +47,17 @@ from app.core.r2_client import get_r2_storage
 from app.core.redis import get_redis
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
 from app.core.user_loader import image_uploader_load
-from app.models import Favorites, Images, TagLinks, Tags, Users
+from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 from app.models.permissions import UserGroups
 from app.models.refresh_token import RefreshTokens
 from app.models.user_suspension import UserSuspensions
 from app.models.user_tag_affinity import UserTagAffinity
-from app.schemas.image import ImageDetailedListResponse, ImageDetailedResponse
+from app.schemas.image import (
+    ImageDetailedListResponse,
+    ImageDetailedResponse,
+    ImageWithRatingResponse,
+    UserRatingsListResponse,
+)
 from app.schemas.taste_profile import TasteProfileResponse, TasteProfileSummary, TasteProfileTag
 from app.schemas.user import (
     AcknowledgeWarningsResponse,
@@ -938,6 +948,137 @@ async def get_user_favorites(
         page=pagination.page,
         per_page=pagination.per_page,
         images=[ImageDetailedResponse.model_validate(img) for img in images],
+    )
+
+
+@router.get("/{user_id}/ratings", response_model=UserRatingsListResponse)
+async def get_user_ratings(
+    user_id: Annotated[int, Path(description="User ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    sorting: Annotated[UserRatingsSortParams, Depends()],
+    min_rating: Annotated[
+        int | None, Query(ge=1, le=10, description="Only ratings at or above this value")
+    ] = None,
+    max_rating: Annotated[
+        int | None, Query(ge=1, le=10, description="Only ratings at or below this value")
+    ] = None,
+    db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    current_user: Users | None = Depends(get_optional_current_user),
+) -> UserRatingsListResponse:
+    """
+    Get all images a user has rated, with the rating they gave.
+
+    Private: visible only to the user themselves and to moderators holding
+    USER_EDIT_PROFILE. Moderators see every rated image regardless of status,
+    because an audit for rating-bombing needs the deactivated ones.
+
+    `min_rating` / `max_rating` filter on the subject user's own score. Note that
+    `/images?min_rating=` means something different — the image's *average*.
+    """
+    # Existence first: user existence is already public via GET /users/{id}, so a
+    # 404 ahead of the gate leaks nothing new. Matches /users/{id}/favorites.
+    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    if not user_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to view ratings",
+        )
+
+    is_self = current_user.user_id == user_id
+    is_mod = await has_permission(db, current_user.id, Permission.USER_EDIT_PROFILE, redis_client)
+    if not (is_self or is_mod):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view your own ratings",
+        )
+
+    query = (
+        select(
+            Images,
+            ImageRatings.rating.label("rating_value"),  # type: ignore[attr-defined]
+            ImageRatings.date.label("rated_at"),  # type: ignore[union-attr]
+        )
+        .join(ImageRatings, ImageRatings.image_id == Images.image_id)  # type: ignore[arg-type]
+        .where(ImageRatings.user_id == user_id)  # type: ignore[arg-type]
+        .options(
+            image_uploader_load(),
+            selectinload(Images.tag_links).selectinload(TagLinks.tag),  # type: ignore[arg-type]
+        )
+    )
+
+    # Moderators bypass both filters — hiding deactivated images would hide the
+    # evidence a rating-bombing audit is looking for.
+    if not is_mod:
+        query = query.where(
+            or_(
+                Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+            )
+        )
+        if current_user.hide_reposts == 1:
+            query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
+
+    if min_rating is not None:
+        query = query.where(ImageRatings.rating >= min_rating)  # type: ignore[arg-type]
+    if max_rating is not None:
+        query = query.where(ImageRatings.rating <= max_rating)  # type: ignore[arg-type]
+
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    sort_columns: dict[str, Any] = {
+        "image_id": Images.image_id,
+        "rating": ImageRatings.rating,
+        "rated_at": ImageRatings.date,
+    }
+    sort_column = sort_columns[sorting.sort_by]
+    primary = desc(sort_column) if sorting.sort_order == "DESC" else asc(sort_column)
+    # Tiebreaker: `rated_at` ties on 98% of rows and `rating` has ten distinct
+    # values, so without this pagination would return unstable pages.
+    tiebreaker: list[Any] = (
+        [] if sorting.sort_by == "image_id" else [desc(Images.image_id)]  # type: ignore[arg-type]
+    )
+    query = (
+        query.order_by(primary, *tiebreaker).offset(pagination.offset).limit(pagination.per_page)
+    )
+
+    rows = (await db.execute(query)).all()
+
+    # Favorite status reflects the *viewer's* favorites, not the ratings subject's —
+    # a mod auditing someone else's ratings sees their own hearts, not the subject's.
+    page_ids = [image.image_id for image, _, _ in rows]
+    favorited_ids: set[int] = set()
+    if page_ids:
+        fav_result = await db.execute(
+            select(Favorites.image_id).where(  # type: ignore[call-overload]
+                Favorites.user_id == current_user.user_id,
+                Favorites.image_id.in_(page_ids),  # type: ignore[attr-defined]
+            )
+        )
+        favorited_ids = set(fav_result.scalars().all())
+
+    items: list[ImageWithRatingResponse] = []
+    for image, rating_value, rated_at in rows:
+        item = ImageWithRatingResponse.from_db_model(
+            image,
+            is_favorited=image.image_id in favorited_ids,
+            can_see_reason=is_mod or image.user_id == current_user.user_id,
+        )
+        # from_db_model has no rating parameter, so assign after construction —
+        # the same pattern list_images uses for ml_suggestion_count.
+        item.subject_rating = rating_value
+        item.rated_at = rated_at
+        items.append(item)
+
+    return UserRatingsListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        images=items,
     )
 
 
