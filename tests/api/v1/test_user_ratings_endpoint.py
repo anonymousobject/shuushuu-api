@@ -263,9 +263,13 @@ class TestUserRatingsFiltersAndSorting:
     ):
         rater = await _make_user(db_session, "rater_sort")
         images = []
-        for index in range(3):
+        # Ratings must be distinct AND assigned out of image_id creation order.
+        # If they were all equal (or monotonic with creation order), a
+        # regression of the default `sort_by` to "rating" would tie (or
+        # coincide) with `image_id` DESC and this test would pass either way.
+        for index, score in enumerate([7, 3, 9]):
             image = await _make_image(db_session, rater, f"srt{index}")
-            await _rate(db_session, rater, image, 5)
+            await _rate(db_session, rater, image, score)
             images.append(image)
 
         response = await _authenticate(client, rater).get(
@@ -276,11 +280,22 @@ class TestUserRatingsFiltersAndSorting:
         returned = [img["image_id"] for img in response.json()["images"]]
         assert returned == sorted([img.image_id for img in images], reverse=True)
 
-    async def test_sort_by_rating_is_stable_across_pages(
+    async def test_pagination_returns_disjoint_complete_pages(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """All three rows share one rating value; the image_id tiebreaker must
-        keep pagination from repeating or dropping a row."""
+        """All three rows share one rating value, so this exercises `sort_by=rating`
+        paging under a tie on the primary sort key.
+
+        This proves pagination doesn't repeat or drop rows across pages — it
+        does NOT prove the `image_id` tiebreaker is doing anything: verified
+        empirically (see task-4-report.md) that this test still passes with
+        the tiebreaker removed, because `image_ratings`' primary key is
+        `(user_id, image_id)`, so InnoDB's clustered-index scan for
+        `WHERE user_id = X` already returns rows in `image_id` order. The
+        tiebreaker is belt-and-braces: `image_id` is already unique within a
+        single user's result set, so no ORDER BY tie is actually possible here
+        regardless of whether the tiebreaker clause is present.
+        """
         rater = await _make_user(db_session, "rater_stable")
         for index in range(3):
             image = await _make_image(db_session, rater, f"stb{index}")
