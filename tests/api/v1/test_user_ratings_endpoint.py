@@ -4,7 +4,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ImageRatings, Images, Users
+from app.models import Favorites, ImageRatings, Images, Users
 
 pytestmark = pytest.mark.anyio
 
@@ -101,6 +101,26 @@ class TestUserRatingsHappyPath:
         body = response.json()
         assert body["total"] == 1
         assert [img["image_id"] for img in body["images"]] == [mine.image_id]
+
+    async def test_is_favorited_reflects_the_viewers_own_favorites(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        rater = await _make_user(db_session, "rater_favs")
+        loved = await _make_image(db_session, rater, "fv0")
+        plain = await _make_image(db_session, rater, "fv1")
+        await _rate(db_session, rater, loved, 6)
+        await _rate(db_session, rater, plain, 6)
+        db_session.add(Favorites(user_id=rater.user_id, image_id=loved.image_id))
+        await db_session.commit()
+
+        response = await _authenticate(client, rater).get(
+            f"/api/v1/users/{rater.user_id}/ratings"
+        )
+
+        assert response.status_code == 200
+        by_id = {img["image_id"]: img["is_favorited"] for img in response.json()["images"]}
+        assert by_id[loved.image_id] is True
+        assert by_id[plain.image_id] is False
 
 
 from tests.api.v1.test_users import grant_user_permission

@@ -1048,10 +1048,24 @@ async def get_user_ratings(
 
     rows = (await db.execute(query)).all()
 
+    # Favorite status reflects the *viewer's* favorites, not the ratings subject's —
+    # a mod auditing someone else's ratings sees their own hearts, not the subject's.
+    page_ids = [image.image_id for image, _, _ in rows]
+    favorited_ids: set[int] = set()
+    if page_ids:
+        fav_result = await db.execute(
+            select(Favorites.image_id).where(  # type: ignore[call-overload]
+                Favorites.user_id == current_user.user_id,
+                Favorites.image_id.in_(page_ids),  # type: ignore[attr-defined]
+            )
+        )
+        favorited_ids = set(fav_result.scalars().all())
+
     items: list[ImageWithRatingResponse] = []
     for image, rating_value, rated_at in rows:
         item = ImageWithRatingResponse.from_db_model(
             image,
+            is_favorited=image.image_id in favorited_ids,
             can_see_reason=is_mod or image.user_id == current_user.user_id,
         )
         # from_db_model has no rating parameter, so assign after construction —
