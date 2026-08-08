@@ -225,3 +225,91 @@ class TestUserRatingsVisibility:
         )
         assert mod_response.status_code == 200
         assert mod_response.json()["total"] == 1
+
+
+class TestUserRatingsFiltersAndSorting:
+    async def test_min_and_max_rating_bound_the_results(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        rater = await _make_user(db_session, "rater_filter")
+        for index, score in enumerate([2, 5, 9]):
+            image = await _make_image(db_session, rater, f"flt{index}")
+            await _rate(db_session, rater, image, score)
+
+        authed = _authenticate(client, rater)
+        base = f"/api/v1/users/{rater.user_id}/ratings"
+
+        high = await authed.get(f"{base}?min_rating=5")
+        assert high.status_code == 200
+        assert sorted(img["subject_rating"] for img in high.json()["images"]) == [5, 9]
+
+        mid = await authed.get(f"{base}?min_rating=5&max_rating=5")
+        assert mid.status_code == 200
+        assert [img["subject_rating"] for img in mid.json()["images"]] == [5]
+
+    async def test_out_of_range_rating_filter_is_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        rater = await _make_user(db_session, "rater_range")
+
+        response = await _authenticate(client, rater).get(
+            f"/api/v1/users/{rater.user_id}/ratings?min_rating=11"
+        )
+
+        assert response.status_code == 422
+
+    async def test_default_sort_is_image_id_descending(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        rater = await _make_user(db_session, "rater_sort")
+        images = []
+        for index in range(3):
+            image = await _make_image(db_session, rater, f"srt{index}")
+            await _rate(db_session, rater, image, 5)
+            images.append(image)
+
+        response = await _authenticate(client, rater).get(
+            f"/api/v1/users/{rater.user_id}/ratings"
+        )
+
+        assert response.status_code == 200
+        returned = [img["image_id"] for img in response.json()["images"]]
+        assert returned == sorted([img.image_id for img in images], reverse=True)
+
+    async def test_sort_by_rating_is_stable_across_pages(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """All three rows share one rating value; the image_id tiebreaker must
+        keep pagination from repeating or dropping a row."""
+        rater = await _make_user(db_session, "rater_stable")
+        for index in range(3):
+            image = await _make_image(db_session, rater, f"stb{index}")
+            await _rate(db_session, rater, image, 6)
+
+        authed = _authenticate(client, rater)
+        base = f"/api/v1/users/{rater.user_id}/ratings?sort_by=rating&per_page=2"
+
+        first = await authed.get(f"{base}&page=1")
+        second = await authed.get(f"{base}&page=2")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_ids = [img["image_id"] for img in first.json()["images"]]
+        second_ids = [img["image_id"] for img in second.json()["images"]]
+        assert len(first_ids) == 2
+        assert len(second_ids) == 1
+        assert set(first_ids).isdisjoint(second_ids)
+
+    async def test_sort_by_rated_at_is_accepted_despite_null_dates(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        rater = await _make_user(db_session, "rater_dates")
+        image = await _make_image(db_session, rater, "dts")
+        await _rate(db_session, rater, image, 1)
+
+        response = await _authenticate(client, rater).get(
+            f"/api/v1/users/{rater.user_id}/ratings?sort_by=rated_at"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
