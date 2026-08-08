@@ -242,10 +242,12 @@ class TestUserRatingsFiltersAndSorting:
         high = await authed.get(f"{base}?min_rating=5")
         assert high.status_code == 200
         assert sorted(img["subject_rating"] for img in high.json()["images"]) == [5, 9]
+        assert high.json()["total"] == 2
 
         mid = await authed.get(f"{base}?min_rating=5&max_rating=5")
         assert mid.status_code == 200
         assert [img["subject_rating"] for img in mid.json()["images"]] == [5]
+        assert mid.json()["total"] == 1
 
     async def test_out_of_range_rating_filter_is_rejected(
         self, client: AsyncClient, db_session: AsyncSession
@@ -292,9 +294,7 @@ class TestUserRatingsFiltersAndSorting:
         the tiebreaker removed, because `image_ratings`' primary key is
         `(user_id, image_id)`, so InnoDB's clustered-index scan for
         `WHERE user_id = X` already returns rows in `image_id` order. The
-        tiebreaker is belt-and-braces: `image_id` is already unique within a
-        single user's result set, so no ORDER BY tie is actually possible here
-        regardless of whether the tiebreaker clause is present.
+        tiebreaker is belt-and-braces.
         """
         rater = await _make_user(db_session, "rater_stable")
         for index in range(3):
