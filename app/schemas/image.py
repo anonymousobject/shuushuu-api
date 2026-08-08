@@ -234,17 +234,21 @@ class ImageWithRatingResponse(ImageDetailedResponse):
     """An image plus the rating the subject user gave it.
 
     Mirrors ``UserWithRatingResponse`` (app/schemas/user.py), which serves the
-    opposite direction of the same relation. ``rating`` defaults to 0 — outside
-    the valid 1-10 range — because ``from_db_model`` has no rating parameter, so
-    the endpoint assigns it after construction the way ``list_images`` assigns
-    ``ml_suggestion_count``.
+    opposite direction of the same relation. ``subject_rating`` defaults to 0 —
+    outside the valid 1-10 range — because ``from_db_model`` has no rating
+    parameter, so the endpoint assigns it after construction the way
+    ``list_images`` assigns ``ml_suggestion_count``.
 
-    Do NOT use the inherited ``user_rating`` field for this: it means "the rating
-    *you* gave" everywhere else, and a moderator viewing someone else's ratings
-    would then read the subject's score under a name that says "yours".
+    The name is ``subject_rating`` for two reasons. It cannot be ``rating``:
+    ``ImageBase.rating`` is already the image's own average, inherited here as a
+    float, and redeclaring it would drop the average from the response. It
+    cannot be ``user_rating`` either: that means "the rating *you* gave"
+    everywhere else, so a moderator would read the subject's score under a name
+    that says "yours". "Subject" is right in both cases — the user whose list
+    this is, who is the viewer when self and someone else when a moderator.
     """
 
-    rating: int = 0
+    subject_rating: int = 0
     rated_at: UTCDatetimeOptional = None
 
 

@@ -77,7 +77,11 @@ class TestUserRatingsHappyPath:
         assert body["page"] == 1
         assert len(body["images"]) == 1
         assert body["images"][0]["image_id"] == image.image_id
-        assert body["images"][0]["rating"] == 7
+        # The inherited `rating` (the image's own average) must still be present
+        # and distinct from the subject's score — this is the field the old name
+        # was silently shadowing.
+        assert "rating" in body["images"][0]
+        assert body["images"][0]["subject_rating"] == 7
 
     async def test_other_users_ratings_are_excluded(
         self, client: AsyncClient, db_session: AsyncSession

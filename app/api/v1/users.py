@@ -1056,7 +1056,7 @@ async def get_user_ratings(
         )
         # from_db_model has no rating parameter, so assign after construction —
         # the same pattern list_images uses for ml_suggestion_count.
-        item.rating = rating_value
+        item.subject_rating = rating_value
         item.rated_at = rated_at
         items.append(item)
 
