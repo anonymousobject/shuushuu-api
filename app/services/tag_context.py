@@ -36,12 +36,13 @@ async def stamp_context_sources(
     # Canonicalize alias tags among them (usually zero rows).
     alias_rows = (
         await db.execute(
-            select(Tags.tag_id, Tags.alias_of).where(
-                Tags.tag_id.in_(page_tag_ids), Tags.alias_of.is_not(None)
+            select(Tags.tag_id, Tags.alias_of).where(  # type: ignore[call-overload]
+                Tags.tag_id.in_(page_tag_ids),  # type: ignore[union-attr]
+                Tags.alias_of.is_not(None),  # type: ignore[union-attr]
             )
         )
     ).all()
-    canon = dict(alias_rows)
+    canon: dict[int, int] = dict(alias_rows)  # type: ignore[arg-type]
 
     char_ids = {
         canon.get(t.tag_id, t.tag_id)
@@ -54,10 +55,10 @@ async def stamp_context_sources(
 
     link_rows = (
         await db.execute(
-            select(
+            select(  # type: ignore[call-overload]
                 CharacterSourceLinks.character_tag_id,
                 CharacterSourceLinks.source_tag_id,
-            ).where(CharacterSourceLinks.character_tag_id.in_(char_ids))
+            ).where(CharacterSourceLinks.character_tag_id.in_(char_ids))  # type: ignore[attr-defined]
         )
     ).all()
     links: dict[int, set[int]] = {}
