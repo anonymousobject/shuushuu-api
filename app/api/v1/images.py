@@ -133,6 +133,7 @@ from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import RatingStats, recalculate_image_ratings
 from app.services.recommendations import get_recommended_images
 from app.services.search import sync_tag_to_search
+from app.services.tag_context import stamp_context_sources
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
@@ -1004,6 +1005,8 @@ async def list_images(
             item.ml_suggestion_count = pending_counts.get(img.image_id, 0)  # type: ignore[arg-type]
         response_items.append(item)
 
+    await stamp_context_sources(db, response_items)
+
     return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
@@ -1109,6 +1112,7 @@ async def get_recommended(
         item = RecommendedImageResponse.from_db_model(img, is_favorited=False)
         item.because_tags = rec.because.get(iid, [])
         items.append(item)
+    await stamp_context_sources(db, items)
     return RecommendedImagesResponse(
         total=rec.total,
         page=pagination.page,
@@ -1218,7 +1222,7 @@ async def get_image(
             )
         )
     )
-    return ImageDetailedResponse.from_db_model(
+    response = ImageDetailedResponse.from_db_model(
         image,
         is_favorited=is_favorited,
         user_rating=user_rating,
@@ -1227,6 +1231,8 @@ async def get_image(
         has_open_report=image_id in open_report_ids,
         can_see_reason=can_see_reason,
     )
+    await stamp_context_sources(db, [response])
+    return response
 
 
 @router.delete("/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1510,7 +1516,9 @@ async def update_image(
     )
     image = result.scalar_one()
 
-    return ImageDetailedResponse.from_db_model(image)
+    response = ImageDetailedResponse.from_db_model(image)
+    await stamp_context_sources(db, [response])
+    return response
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)
