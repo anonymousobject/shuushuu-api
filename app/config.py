@@ -528,6 +528,11 @@ class TagAuditActionType:
     SOURCE_LINKED = "source_linked"
     SOURCE_UNLINKED = "source_unlinked"
 
+    # Character-source link picture events. Rows carry character_tag_id +
+    # source_tag_id, same shape as SOURCE_LINKED/UNLINKED.
+    PICTURE_SET = "picture_set"
+    PICTURE_REMOVED = "picture_removed"
+
     # External-link events. link_url on the audit row identifies the affected
     # link; reordering is deliberately not audited (cosmetic display order).
     LINK_ADDED = "link_added"

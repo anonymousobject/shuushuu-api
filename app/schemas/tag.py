@@ -145,6 +145,24 @@ class LinkedTag(BaseModel):
     usage_count: int | None = None  # Nullable: None means usage count not loaded
 
 
+class LinkPictureInfo(BaseModel):
+    """A link's representative picture as embedded in tag detail responses"""
+
+    image_id: int
+    thumbnail_url: str
+    crop_x: float
+    crop_y: float
+    crop_w: float
+    crop_h: float
+
+
+class LinkedTagWithPicture(LinkedTag):
+    """LinkedTag + the character-source link's id and optional picture"""
+
+    link_id: int
+    picture: LinkPictureInfo | None = None
+
+
 class TagWithStats(TagResponse):
     """Schema for tag response with usage statistics"""
 
@@ -158,8 +176,8 @@ class TagWithStats(TagResponse):
     date_added: UTCDatetime  # When the tag was created
     links: list[TagExternalLinkResponse] = []  # External links associated with this tag
     # Character-source links
-    sources: list[LinkedTag] = []  # For character tags: linked sources
-    characters: list[LinkedTag] = []  # For source tags: linked characters
+    sources: list[LinkedTagWithPicture] = []  # For character tags: linked sources
+    characters: list[LinkedTagWithPicture] = []  # For source tags: linked characters
 
 
 class TagListResponse(BaseModel):
@@ -265,6 +283,36 @@ class CharacterSourceLinkWithTitles(CharacterSourceLinkResponse):
 
     character_title: str | None = None
     source_title: str | None = None
+
+
+class LinkPictureSet(BaseModel):
+    """Request body for setting a character-source link's picture.
+
+    Crop values are normalized 0-1 fractions of the image's natural
+    dimensions. Per-field ranges are enforced here (422); cross-field sums
+    and pixel-space squareness are checked in the endpoint (400).
+    """
+
+    image_id: int
+    crop_x: float = Field(ge=0.0, lt=1.0)
+    crop_y: float = Field(ge=0.0, lt=1.0)
+    crop_w: float = Field(gt=0.0, le=1.0)
+    crop_h: float = Field(gt=0.0, le=1.0)
+
+
+class LinkPictureResponse(BaseModel):
+    """Schema for a link picture (PUT response)"""
+
+    link_id: int
+    image_id: int
+    crop_x: float
+    crop_y: float
+    crop_w: float
+    crop_h: float
+    set_by_user_id: int | None = None
+    set_at: UTCDatetime
+
+    model_config = {"from_attributes": True}
 
 
 class BatchTagAction(StrEnum):

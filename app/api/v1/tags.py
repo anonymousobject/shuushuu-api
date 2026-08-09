@@ -38,6 +38,7 @@ from app.core.redis import get_redis
 from app.core.user_loader import image_uploader_load
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
+from app.models.character_source_link_picture import CharacterSourceLinkPictures
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.permissions import UserGroups
@@ -50,7 +51,7 @@ from app.schemas.audit import (
     TagHistoryResponse,
 )
 from app.schemas.common import UserSummary
-from app.schemas.image import ImageListResponse, ImageResponse
+from app.schemas.image import ImageListResponse, ImageResponse, thumbnail_url_for
 from app.schemas.tag import (
     BatchTagAction,
     BatchTagRequest,
@@ -59,6 +60,8 @@ from app.schemas.tag import (
     CharacterSourceLinkListResponse,
     CharacterSourceLinkResponse,
     LinkedTag,
+    LinkPictureResponse,
+    LinkPictureSet,
     TagCreate,
     TagExternalLinkCreate,
     TagExternalLinkReorder,
@@ -963,6 +966,44 @@ async def get_characters_for_source(
     )
 
 
+def _linked_tag_entry(row: Any) -> dict[str, Any]:
+    """Build a LinkedTagWithPicture dict from a get_tag relationship row."""
+    (
+        tag_id,
+        title,
+        tag_type,
+        usage_count,
+        link_id,
+        pic_image_id,
+        crop_x,
+        crop_y,
+        crop_w,
+        crop_h,
+        filename,
+        status,
+        r2_location,
+    ) = row
+    entry: dict[str, Any] = {
+        "tag_id": tag_id,
+        "title": title,
+        "type": tag_type,
+        "usage_count": usage_count,
+        "link_id": link_id,
+    }
+    # Re-checked at read time: an image deactivated after being chosen must
+    # not leak through the embed — the card falls back to its placeholder.
+    if pic_image_id is not None and status in PUBLIC_IMAGE_STATUSES:
+        entry["picture"] = {
+            "image_id": pic_image_id,
+            "thumbnail_url": thumbnail_url_for(filename, status, r2_location),
+            "crop_x": crop_x,
+            "crop_y": crop_y,
+            "crop_w": crop_w,
+            "crop_h": crop_h,
+        }
+    return entry
+
+
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
@@ -1091,35 +1132,67 @@ async def get_tag(
         # Get all sources linked to this character
         # Sorted by usage_count descending with title as tiebreaker
         sources_result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
+            select(  # type: ignore[call-overload]
+                Tags.tag_id,
+                Tags.title,
+                Tags.type,
+                Tags.usage_count,
+                CharacterSourceLinks.id,
+                CharacterSourceLinkPictures.image_id,
+                CharacterSourceLinkPictures.crop_x,
+                CharacterSourceLinkPictures.crop_y,
+                CharacterSourceLinkPictures.crop_w,
+                CharacterSourceLinkPictures.crop_h,
+                Images.filename,
+                Images.status,
+                Images.r2_location,
+            )
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.source_tag_id,
             )
+            .outerjoin(
+                CharacterSourceLinkPictures,
+                CharacterSourceLinkPictures.link_id == CharacterSourceLinks.id,
+            )
+            .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.character_tag_id == tag_id)
             .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
         )
-        sources = [
-            {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
-            for row in sources_result.all()
-        ]
+        sources = [_linked_tag_entry(row) for row in sources_result.all()]
 
     elif tag.type == TagType.SOURCE:
         # Get all characters linked to this source
         # Sorted by usage_count descending with title as tiebreaker
         characters_result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
+            select(  # type: ignore[call-overload]
+                Tags.tag_id,
+                Tags.title,
+                Tags.type,
+                Tags.usage_count,
+                CharacterSourceLinks.id,
+                CharacterSourceLinkPictures.image_id,
+                CharacterSourceLinkPictures.crop_x,
+                CharacterSourceLinkPictures.crop_y,
+                CharacterSourceLinkPictures.crop_w,
+                CharacterSourceLinkPictures.crop_h,
+                Images.filename,
+                Images.status,
+                Images.r2_location,
+            )
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.character_tag_id,
             )
+            .outerjoin(
+                CharacterSourceLinkPictures,
+                CharacterSourceLinkPictures.link_id == CharacterSourceLinks.id,
+            )
+            .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.source_tag_id == tag_id)
             .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
         )
-        characters = [
-            {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
-            for row in characters_result.all()
-        ]
+        characters = [_linked_tag_entry(row) for row in characters_result.all()]
 
     return TagWithStats(
         tag_id=tag.tag_id or 0,
@@ -2474,4 +2547,165 @@ async def delete_character_source_link(
     db.add(audit)
 
     await db.delete(link)
+    await db.commit()
+
+
+@character_source_links_router.put("/{link_id}/picture", response_model=LinkPictureResponse)
+async def set_character_source_link_picture(
+    link_id: Annotated[int, Path(description="Link ID")],
+    body: LinkPictureSet,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> LinkPictureResponse:
+    """Set or replace a link's representative picture. Requires TAG_CREATE."""
+    link_result = await db.execute(
+        select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)  # type: ignore[arg-type]
+    )
+    link = link_result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    # Captured now: the IntegrityError fallback below does a db.rollback(),
+    # which expires every ORM object in the session (link and current_user
+    # included). Re-reading their attributes afterwards would trigger an
+    # implicit lazy load that raises MissingGreenlet in an async session.
+    character_tag_id = link.character_tag_id
+    source_tag_id = link.source_tag_id
+    current_user_id = current_user.user_id
+
+    image_result = await db.execute(
+        select(Images).where(Images.image_id == body.image_id)  # type: ignore[arg-type]
+    )
+    image = image_result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    if image.status not in PUBLIC_IMAGE_STATUSES:
+        raise HTTPException(status_code=400, detail="Image is not publicly visible")
+
+    # The picture must actually depict this pair: the image has to carry both
+    # the character and the source tag. Alias tags deliberately don't count —
+    # links themselves are canonical-only (see create_character_source_link).
+    tag_rows = await db.execute(
+        select(TagLinks.tag_id).where(  # type: ignore[call-overload]
+            TagLinks.image_id == body.image_id,
+            TagLinks.tag_id.in_([character_tag_id, source_tag_id]),  # type: ignore[attr-defined]
+        )
+    )
+    present = {row[0] for row in tag_rows.all()}
+    missing = {character_tag_id, source_tag_id} - present
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image must carry both linked tags (missing tag ids: {sorted(missing)})",
+        )
+
+    if body.crop_x + body.crop_w > 1 or body.crop_y + body.crop_h > 1:
+        raise HTTPException(status_code=400, detail="Crop rectangle extends beyond the image")
+
+    # Roughly square in pixel terms (5% tolerance). Skipped when stored
+    # dimensions are 0 (legacy rows) — squareness is unknowable there.
+    if image.width and image.height:
+        crop_px_w = body.crop_w * image.width
+        crop_px_h = body.crop_h * image.height
+        if abs(crop_px_w - crop_px_h) > 0.05 * max(crop_px_w, crop_px_h):
+            raise HTTPException(status_code=400, detail="Crop must be square (within 5% tolerance)")
+
+    def _apply_fields(pic: CharacterSourceLinkPictures) -> None:
+        """Overwrite an existing picture row's fields and bump set_at."""
+        pic.image_id = body.image_id
+        pic.crop_x = body.crop_x
+        pic.crop_y = body.crop_y
+        pic.crop_w = body.crop_w
+        pic.crop_h = body.crop_h
+        pic.set_by_user_id = current_user_id
+        pic.set_at = datetime.now(UTC)
+
+    def _add_audit() -> None:
+        db.add(
+            TagAuditLog(
+                tag_id=character_tag_id,
+                action_type=TagAuditActionType.PICTURE_SET,
+                character_tag_id=character_tag_id,
+                source_tag_id=source_tag_id,
+                user_id=current_user_id,
+            )
+        )
+
+    existing_result = await db.execute(
+        select(CharacterSourceLinkPictures).where(
+            CharacterSourceLinkPictures.link_id == link_id  # type: ignore[arg-type]
+        )
+    )
+    picture = existing_result.scalar_one_or_none()
+    if picture:
+        _apply_fields(picture)
+    else:
+        picture = CharacterSourceLinkPictures(
+            link_id=link_id,
+            image_id=body.image_id,
+            crop_x=body.crop_x,
+            crop_y=body.crop_y,
+            crop_w=body.crop_w,
+            crop_h=body.crop_h,
+            set_by_user_id=current_user_id,
+        )
+        db.add(picture)
+
+    _add_audit()
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two concurrent PUTs on a link with no existing picture both see
+        # `picture is None` above and both try to INSERT with the same PK
+        # (link_id). The loser's INSERT collides with the winner's on
+        # commit. A 409 here would break PUT's idempotent-set semantics, so
+        # fall back to an UPDATE against the row the winner just committed —
+        # the loser's crop still lands as the final state.
+        await db.rollback()
+        existing_result = await db.execute(
+            select(CharacterSourceLinkPictures).where(
+                CharacterSourceLinkPictures.link_id == link_id  # type: ignore[arg-type]
+            )
+        )
+        picture = existing_result.scalar_one()
+        _apply_fields(picture)
+        _add_audit()
+        await db.commit()
+
+    await db.refresh(picture)
+    return LinkPictureResponse.model_validate(picture)
+
+
+@character_source_links_router.delete("/{link_id}/picture", status_code=204)
+async def delete_character_source_link_picture(
+    link_id: Annotated[int, Path(description="Link ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Remove a link's representative picture. Requires TAG_CREATE."""
+    result = await db.execute(
+        select(CharacterSourceLinkPictures).where(
+            CharacterSourceLinkPictures.link_id == link_id  # type: ignore[arg-type]
+        )
+    )
+    picture = result.scalar_one_or_none()
+    if not picture:
+        raise HTTPException(status_code=404, detail="Link has no picture")
+
+    link_result = await db.execute(
+        select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)  # type: ignore[arg-type]
+    )
+    link = link_result.scalar_one()
+    db.add(
+        TagAuditLog(
+            tag_id=link.character_tag_id,
+            action_type=TagAuditActionType.PICTURE_REMOVED,
+            character_tag_id=link.character_tag_id,
+            source_tag_id=link.source_tag_id,
+            user_id=current_user.user_id,
+        )
+    )
+    await db.delete(picture)
     await db.commit()

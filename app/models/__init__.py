@@ -16,6 +16,7 @@ from app.models.admin_action import AdminActions
 # User-related models
 from app.models.ban import Bans
 from app.models.character_source_link import CharacterSourceLinks
+from app.models.character_source_link_picture import CharacterSourceLinkPictures
 from app.models.comment import Comments
 from app.models.comment_report import CommentReports
 
@@ -74,6 +75,7 @@ __all__ = [
     "TagExternalLinks",
     "TagMappings",
     "CharacterSourceLinks",
+    "CharacterSourceLinkPictures",
     "TagAuditLog",
     "TagHistory",
     "ImageRatings",
