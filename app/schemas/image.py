@@ -38,6 +38,27 @@ def sort_tag_links_for_display(tag_links: list) -> list:  # type: ignore[type-ar
     )
 
 
+def _cdn_eligible(status: int, r2_location: int) -> bool:
+    """True when a direct-CDN URL can be emitted for these storage fields.
+
+    All three must hold: R2 enabled, status publicly-viewable, and the
+    canonical object in the public bucket. A mismatch falls back to the
+    protected path, which routes on current r2_location.
+    """
+    return (
+        settings.R2_ENABLED
+        and status in PUBLIC_IMAGE_STATUSES_FOR_R2
+        and r2_location == R2Location.PUBLIC
+    )
+
+
+def thumbnail_url_for(filename: str | None, status: int, r2_location: int) -> str:
+    """Thumbnail URL (always WebP). Shared by ImageResponse and tag embeds."""
+    if _cdn_eligible(status, r2_location):
+        return f"{settings.R2_PUBLIC_CDN_URL}/thumbs/{filename}.webp"
+    return f"{settings.IMAGE_BASE_URL}/thumbs/{filename}.webp"
+
+
 class TagSummary(BaseModel):
     """Minimal tag info for embedding"""
 
@@ -127,11 +148,7 @@ class ImageResponse(ImageBase):
         status but PRIVATE location during a bucket move) falls back to the
         /images/ path, which the endpoint routes based on current r2_location.
         """
-        return (
-            settings.R2_ENABLED
-            and self.status in PUBLIC_IMAGE_STATUSES_FOR_R2
-            and self.r2_location == R2Location.PUBLIC
-        )
+        return _cdn_eligible(self.status, self.r2_location)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -145,9 +162,7 @@ class ImageResponse(ImageBase):
     @property
     def thumbnail_url(self) -> str:
         """Thumbnail URL (always WebP)."""
-        if self._should_use_cdn():
-            return f"{settings.R2_PUBLIC_CDN_URL}/thumbs/{self.filename}.webp"
-        return f"{settings.IMAGE_BASE_URL}/thumbs/{self.filename}.webp"
+        return thumbnail_url_for(self.filename, self.status, self.r2_location)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

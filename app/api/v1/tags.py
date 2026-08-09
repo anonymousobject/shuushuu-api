@@ -51,7 +51,7 @@ from app.schemas.audit import (
     TagHistoryResponse,
 )
 from app.schemas.common import UserSummary
-from app.schemas.image import ImageListResponse, ImageResponse
+from app.schemas.image import ImageListResponse, ImageResponse, thumbnail_url_for
 from app.schemas.tag import (
     BatchTagAction,
     BatchTagRequest,
@@ -966,6 +966,44 @@ async def get_characters_for_source(
     )
 
 
+def _linked_tag_entry(row: Any) -> dict[str, Any]:
+    """Build a LinkedTagWithPicture dict from a get_tag relationship row."""
+    (
+        tag_id,
+        title,
+        tag_type,
+        usage_count,
+        link_id,
+        pic_image_id,
+        crop_x,
+        crop_y,
+        crop_w,
+        crop_h,
+        filename,
+        status,
+        r2_location,
+    ) = row
+    entry: dict[str, Any] = {
+        "tag_id": tag_id,
+        "title": title,
+        "type": tag_type,
+        "usage_count": usage_count,
+        "link_id": link_id,
+    }
+    # Re-checked at read time: an image deactivated after being chosen must
+    # not leak through the embed — the card falls back to its placeholder.
+    if pic_image_id is not None and status in PUBLIC_IMAGE_STATUSES:
+        entry["picture"] = {
+            "image_id": pic_image_id,
+            "thumbnail_url": thumbnail_url_for(filename, status, r2_location),
+            "crop_x": crop_x,
+            "crop_y": crop_y,
+            "crop_w": crop_w,
+            "crop_h": crop_h,
+        }
+    return entry
+
+
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
@@ -1094,35 +1132,67 @@ async def get_tag(
         # Get all sources linked to this character
         # Sorted by usage_count descending with title as tiebreaker
         sources_result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
+            select(  # type: ignore[call-overload]
+                Tags.tag_id,
+                Tags.title,
+                Tags.type,
+                Tags.usage_count,
+                CharacterSourceLinks.id,
+                CharacterSourceLinkPictures.image_id,
+                CharacterSourceLinkPictures.crop_x,
+                CharacterSourceLinkPictures.crop_y,
+                CharacterSourceLinkPictures.crop_w,
+                CharacterSourceLinkPictures.crop_h,
+                Images.filename,
+                Images.status,
+                Images.r2_location,
+            )
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.source_tag_id,
             )
+            .outerjoin(
+                CharacterSourceLinkPictures,
+                CharacterSourceLinkPictures.link_id == CharacterSourceLinks.id,
+            )
+            .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.character_tag_id == tag_id)
             .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
         )
-        sources = [
-            {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
-            for row in sources_result.all()
-        ]
+        sources = [_linked_tag_entry(row) for row in sources_result.all()]
 
     elif tag.type == TagType.SOURCE:
         # Get all characters linked to this source
         # Sorted by usage_count descending with title as tiebreaker
         characters_result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
+            select(  # type: ignore[call-overload]
+                Tags.tag_id,
+                Tags.title,
+                Tags.type,
+                Tags.usage_count,
+                CharacterSourceLinks.id,
+                CharacterSourceLinkPictures.image_id,
+                CharacterSourceLinkPictures.crop_x,
+                CharacterSourceLinkPictures.crop_y,
+                CharacterSourceLinkPictures.crop_w,
+                CharacterSourceLinkPictures.crop_h,
+                Images.filename,
+                Images.status,
+                Images.r2_location,
+            )
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.character_tag_id,
             )
+            .outerjoin(
+                CharacterSourceLinkPictures,
+                CharacterSourceLinkPictures.link_id == CharacterSourceLinks.id,
+            )
+            .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.source_tag_id == tag_id)
             .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
         )
-        characters = [
-            {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
-            for row in characters_result.all()
-        ]
+        characters = [_linked_tag_entry(row) for row in characters_result.all()]
 
     return TagWithStats(
         tag_id=tag.tag_id or 0,

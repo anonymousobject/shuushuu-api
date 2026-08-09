@@ -145,6 +145,24 @@ class LinkedTag(BaseModel):
     usage_count: int | None = None  # Nullable: None means usage count not loaded
 
 
+class LinkPictureInfo(BaseModel):
+    """A link's representative picture as embedded in tag detail responses"""
+
+    image_id: int
+    thumbnail_url: str
+    crop_x: float
+    crop_y: float
+    crop_w: float
+    crop_h: float
+
+
+class LinkedTagWithPicture(LinkedTag):
+    """LinkedTag + the character-source link's id and optional picture"""
+
+    link_id: int
+    picture: LinkPictureInfo | None = None
+
+
 class TagWithStats(TagResponse):
     """Schema for tag response with usage statistics"""
 
@@ -158,8 +176,8 @@ class TagWithStats(TagResponse):
     date_added: UTCDatetime  # When the tag was created
     links: list[TagExternalLinkResponse] = []  # External links associated with this tag
     # Character-source links
-    sources: list[LinkedTag] = []  # For character tags: linked sources
-    characters: list[LinkedTag] = []  # For source tags: linked characters
+    sources: list[LinkedTagWithPicture] = []  # For character tags: linked sources
+    characters: list[LinkedTagWithPicture] = []  # For source tags: linked characters
 
 
 class TagListResponse(BaseModel):

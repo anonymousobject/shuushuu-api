@@ -346,3 +346,67 @@ class TestDeleteLinkPicture:
             f"/api/v1/character-source-links/{link_id}/picture", headers=headers
         )
         assert response.status_code == 404
+
+
+class TestTagDetailEmbed:
+    async def test_sources_carry_link_id_and_picture(
+        self, client: AsyncClient, db_session: AsyncSession, tag_create_admin: Users
+    ) -> None:
+        link_id = await _setup(db_session)
+        headers = await _login(client, "lp_admin", "AdminPassword123!")
+        put = await client.put(
+            f"/api/v1/character-source-links/{link_id}/picture",
+            json={"image_id": IMG_OK, **GOOD_CROP},
+            headers=headers,
+        )
+        assert put.status_code == 200, put.text
+
+        # Character page: sources[] carries link_id + picture
+        char_page = await client.get(f"/api/v1/tags/{CHAR_ID}")
+        assert char_page.status_code == 200
+        sources = char_page.json()["sources"]
+        assert len(sources) == 1
+        assert sources[0]["link_id"] == link_id
+        picture = sources[0]["picture"]
+        assert picture is not None
+        assert picture["image_id"] == IMG_OK
+        assert picture["crop_w"] == GOOD_CROP["crop_w"]
+        assert picture["thumbnail_url"].endswith(".webp")
+        assert "/thumbs/" in picture["thumbnail_url"]
+
+        # Source page: characters[] carries the same
+        src_page = await client.get(f"/api/v1/tags/{SRC_ID}")
+        characters = src_page.json()["characters"]
+        assert characters[0]["link_id"] == link_id
+        assert characters[0]["picture"]["image_id"] == IMG_OK
+
+    async def test_pictureless_link_has_null_picture(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        link_id = await _setup(db_session)
+        response = await client.get(f"/api/v1/tags/{CHAR_ID}")
+        sources = response.json()["sources"]
+        assert sources[0]["link_id"] == link_id
+        assert sources[0]["picture"] is None
+
+    async def test_picture_omitted_when_image_leaves_public_status(
+        self, client: AsyncClient, db_session: AsyncSession, tag_create_admin: Users
+    ) -> None:
+        link_id = await _setup(db_session)
+        headers = await _login(client, "lp_admin", "AdminPassword123!")
+        put = await client.put(
+            f"/api/v1/character-source-links/{link_id}/picture",
+            json={"image_id": IMG_OK, **GOOD_CROP},
+            headers=headers,
+        )
+        assert put.status_code == 200, put.text
+        image = (
+            await db_session.execute(
+                select(Images).where(Images.image_id == IMG_OK)  # type: ignore[arg-type]
+            )
+        ).scalar_one()
+        image.status = ImageStatus.DEACTIVATED  # deactivated after being chosen
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{CHAR_ID}")
+        assert response.json()["sources"][0]["picture"] is None
