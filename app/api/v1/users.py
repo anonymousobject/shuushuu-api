@@ -80,6 +80,7 @@ from app.services.avatar import (
 from app.services.feeds import TAG_TYPE_NAME
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.rate_limit import check_registration_rate_limit
+from app.services.tag_context import stamp_context_sources
 from app.services.turnstile import verify_turnstile_token
 from app.services.user import build_user_private_response
 from app.tasks.queue import enqueue_job
@@ -1073,6 +1074,8 @@ async def get_user_ratings(
         item.subject_rating = rating_value
         item.rated_at = rated_at
         items.append(item)
+
+    await stamp_context_sources(db, items)
 
     return UserRatingsListResponse(
         total=total,

@@ -46,6 +46,12 @@ class TagSummary(BaseModel):
     type_id: int = Field(alias="type")  # Maps from Tags.type
     usage_count: int = 0  # Needed by feed title composer; non-breaking.
 
+    # Set only on character-type entries when the image carries EXACTLY ONE
+    # source linked to this character (character_source_links) — the
+    # contextual compound-search rule; None otherwise. Stamped post-build by
+    # app.services.tag_context.stamp_context_sources.
+    context_source_tag_id: int | None = None
+
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True, "populate_by_name": True}
 
