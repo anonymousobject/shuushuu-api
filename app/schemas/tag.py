@@ -267,6 +267,36 @@ class CharacterSourceLinkWithTitles(CharacterSourceLinkResponse):
     source_title: str | None = None
 
 
+class LinkPictureSet(BaseModel):
+    """Request body for setting a character-source link's picture.
+
+    Crop values are normalized 0-1 fractions of the image's natural
+    dimensions. Per-field ranges are enforced here (422); cross-field sums
+    and pixel-space squareness are checked in the endpoint (400).
+    """
+
+    image_id: int
+    crop_x: float = Field(ge=0.0, lt=1.0)
+    crop_y: float = Field(ge=0.0, lt=1.0)
+    crop_w: float = Field(gt=0.0, le=1.0)
+    crop_h: float = Field(gt=0.0, le=1.0)
+
+
+class LinkPictureResponse(BaseModel):
+    """Schema for a link picture (PUT response)"""
+
+    link_id: int
+    image_id: int
+    crop_x: float
+    crop_y: float
+    crop_w: float
+    crop_h: float
+    set_by_user_id: int | None = None
+    set_at: UTCDatetime
+
+    model_config = {"from_attributes": True}
+
+
 class BatchTagAction(StrEnum):
     """Supported batch tag actions."""
 
