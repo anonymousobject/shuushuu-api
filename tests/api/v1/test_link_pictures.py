@@ -346,6 +346,7 @@ class TestDeleteLinkPicture:
             f"/api/v1/character-source-links/{link_id}/picture", headers=headers
         )
         assert response.status_code == 404
+        assert "Link has no picture" in response.json()["detail"]
 
 
 class TestTagDetailEmbed:

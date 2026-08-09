@@ -2565,6 +2565,13 @@ async def set_character_source_link_picture(
     link = link_result.scalar_one_or_none()
     if not link:
         raise HTTPException(status_code=404, detail="Link not found")
+    # Captured now: the IntegrityError fallback below does a db.rollback(),
+    # which expires every ORM object in the session (link and current_user
+    # included). Re-reading their attributes afterwards would trigger an
+    # implicit lazy load that raises MissingGreenlet in an async session.
+    character_tag_id = link.character_tag_id
+    source_tag_id = link.source_tag_id
+    current_user_id = current_user.user_id
 
     image_result = await db.execute(
         select(Images).where(Images.image_id == body.image_id)  # type: ignore[arg-type]
@@ -2581,11 +2588,11 @@ async def set_character_source_link_picture(
     tag_rows = await db.execute(
         select(TagLinks.tag_id).where(  # type: ignore[call-overload]
             TagLinks.image_id == body.image_id,
-            TagLinks.tag_id.in_([link.character_tag_id, link.source_tag_id]),  # type: ignore[attr-defined]
+            TagLinks.tag_id.in_([character_tag_id, source_tag_id]),  # type: ignore[attr-defined]
         )
     )
     present = {row[0] for row in tag_rows.all()}
-    missing = {link.character_tag_id, link.source_tag_id} - present
+    missing = {character_tag_id, source_tag_id} - present
     if missing:
         raise HTTPException(
             status_code=400,
@@ -2603,6 +2610,27 @@ async def set_character_source_link_picture(
         if abs(crop_px_w - crop_px_h) > 0.05 * max(crop_px_w, crop_px_h):
             raise HTTPException(status_code=400, detail="Crop must be square (within 5% tolerance)")
 
+    def _apply_fields(pic: CharacterSourceLinkPictures) -> None:
+        """Overwrite an existing picture row's fields and bump set_at."""
+        pic.image_id = body.image_id
+        pic.crop_x = body.crop_x
+        pic.crop_y = body.crop_y
+        pic.crop_w = body.crop_w
+        pic.crop_h = body.crop_h
+        pic.set_by_user_id = current_user_id
+        pic.set_at = datetime.now(UTC)
+
+    def _add_audit() -> None:
+        db.add(
+            TagAuditLog(
+                tag_id=character_tag_id,
+                action_type=TagAuditActionType.PICTURE_SET,
+                character_tag_id=character_tag_id,
+                source_tag_id=source_tag_id,
+                user_id=current_user_id,
+            )
+        )
+
     existing_result = await db.execute(
         select(CharacterSourceLinkPictures).where(
             CharacterSourceLinkPictures.link_id == link_id  # type: ignore[arg-type]
@@ -2610,13 +2638,7 @@ async def set_character_source_link_picture(
     )
     picture = existing_result.scalar_one_or_none()
     if picture:
-        picture.image_id = body.image_id
-        picture.crop_x = body.crop_x
-        picture.crop_y = body.crop_y
-        picture.crop_w = body.crop_w
-        picture.crop_h = body.crop_h
-        picture.set_by_user_id = current_user.user_id
-        picture.set_at = datetime.now(UTC)
+        _apply_fields(picture)
     else:
         picture = CharacterSourceLinkPictures(
             link_id=link_id,
@@ -2625,21 +2647,32 @@ async def set_character_source_link_picture(
             crop_y=body.crop_y,
             crop_w=body.crop_w,
             crop_h=body.crop_h,
-            set_by_user_id=current_user.user_id,
+            set_by_user_id=current_user_id,
         )
         db.add(picture)
 
-    db.add(
-        TagAuditLog(
-            tag_id=link.character_tag_id,
-            action_type=TagAuditActionType.PICTURE_SET,
-            character_tag_id=link.character_tag_id,
-            source_tag_id=link.source_tag_id,
-            user_id=current_user.user_id,
-        )
-    )
+    _add_audit()
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two concurrent PUTs on a link with no existing picture both see
+        # `picture is None` above and both try to INSERT with the same PK
+        # (link_id). The loser's INSERT collides with the winner's on
+        # commit. A 409 here would break PUT's idempotent-set semantics, so
+        # fall back to an UPDATE against the row the winner just committed —
+        # the loser's crop still lands as the final state.
+        await db.rollback()
+        existing_result = await db.execute(
+            select(CharacterSourceLinkPictures).where(
+                CharacterSourceLinkPictures.link_id == link_id  # type: ignore[arg-type]
+            )
+        )
+        picture = existing_result.scalar_one()
+        _apply_fields(picture)
+        _add_audit()
+        await db.commit()
+
     await db.refresh(picture)
     return LinkPictureResponse.model_validate(picture)
 
