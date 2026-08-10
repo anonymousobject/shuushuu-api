@@ -21,6 +21,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy import Select
+from sqlalchemy import text as sql_text
+
+from app.models import Comments
 
 # Must match innodb_ft_min_token_size on the server. Anything shorter is
 # absent from the index, so `+ab` matches nothing at all.
@@ -151,3 +157,43 @@ def parse_comment_search(raw: str) -> CommentSearchQuery:
         parsed.not_like_terms.extend(n.strip('"') for n in negatives)
 
     return parsed
+
+
+def apply_comment_text_search(query: Select[Any], raw: str, mode: str | None) -> Select[Any]:
+    """Add comment-text predicates to `query`.
+
+    `query` must already select from / join the Comments table. The bind
+    parameter is named `comment_q` so it cannot collide with a caller's own
+    parameters.
+    """
+    effective_mode = mode or "all_words"
+
+    if effective_mode == "boolean":
+        return query.where(sql_text("MATCH(post_text) AGAINST(:comment_q IN BOOLEAN MODE)")).params(
+            comment_q=raw
+        )
+
+    if effective_mode == "natural":
+        return query.where(
+            sql_text("MATCH(post_text) AGAINST(:comment_q IN NATURAL LANGUAGE MODE)")
+        ).params(comment_q=raw)
+
+    if effective_mode == "like":
+        return query.where(Comments.post_text.like(like_pattern(raw), escape="\\"))  # type: ignore[attr-defined]
+
+    parsed = parse_comment_search(raw)
+    if parsed.is_empty:
+        # Nothing searchable in the input (e.g. "!!!"). The caller has already
+        # joined Comments, so this degrades to "images that have comments".
+        return query
+
+    if parsed.boolean_query:
+        query = query.where(
+            sql_text("MATCH(post_text) AGAINST(:comment_q IN BOOLEAN MODE)")
+        ).params(comment_q=parsed.boolean_query)
+    for term in parsed.like_terms:
+        query = query.where(Comments.post_text.like(like_pattern(term), escape="\\"))  # type: ignore[attr-defined]
+    for term in parsed.not_like_terms:
+        # post_text is NOT NULL (verified), so NOT LIKE needs no NULL guard.
+        query = query.where(~Comments.post_text.like(like_pattern(term), escape="\\"))  # type: ignore[attr-defined]
+    return query

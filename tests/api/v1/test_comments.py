@@ -152,6 +152,34 @@ class TestListComments:
         assert data["total"] == 1
         assert "awesome" in data["comments"][0]["post_text"].lower()
 
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_search_text_defaults_to_all_words(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """/comments text search requires all words too."""
+        from app.models import Comments
+
+        user = Users(
+            username="csearch_user",
+            email="csearch@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000014",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        both = Comments(user_id=user.user_id, post_text="happy birthday to you")
+        one = Comments(user_id=user.user_id, post_text="such a happy picture")
+        db_session.add_all([both, one])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/comments?search_text=happy birthday")
+        assert response.status_code == 200
+        returned = {c["post_id"] for c in response.json()["comments"]}
+        assert both.post_id in returned
+        assert one.post_id not in returned
+
 
 @pytest.mark.api
 class TestGetComment:

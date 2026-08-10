@@ -30,6 +30,7 @@ from app.schemas.comment import (
 )
 from app.schemas.comment_report import CommentReportCreate, CommentReportResponse
 from app.schemas.common import UserSummary
+from app.utils.comment_search import apply_comment_text_search
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -49,8 +50,11 @@ async def list_comments(
     search_mode: Annotated[
         str | None,
         Query(
-            pattern="^(natural|boolean|like)$",
-            description="Search mode: natural (default), boolean fulltext, or LIKE",
+            pattern="^(all_words|natural|boolean|like)$",
+            description=(
+                "Search mode: all_words (default, every term required), "
+                "natural language fulltext (any term), boolean fulltext, or LIKE"
+            ),
         ),
     ] = None,
     # Date filtering
@@ -70,8 +74,11 @@ async def list_comments(
     - Multiple search modes (LIKE, natural fulltext, boolean fulltext)
 
     **Search Modes:**
-    - `natural` (default): MySQL fulltext natural language search (10-100x faster, relevance ranking)
-    - `boolean`: MySQL fulltext boolean search with operators
+    - `all_words` (default): every term must appear. Index-backed where the
+      fulltext index can see the term, LIKE where it cannot (short words,
+      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`.
+    - `natural`: MySQL fulltext natural language search — matches ANY term
+    - `boolean`: MySQL fulltext boolean search with raw operators
     - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`
 
     **Boolean Mode Examples:**
@@ -83,14 +90,12 @@ async def list_comments(
     - `/comments?image_id=123` - All comments on image 123
     - `/comments?image_ids=123,456,789` - All comments on multiple images (efficient for N images)
     - `/comments?user_id=5` - All comments by user 5
-    - `/comments?search_text=awesome` - Fast fulltext search
+    - `/comments?search_text=happy birthday` - Comments containing BOTH words
     - `/comments?search_text=awesome&search_mode=like` - Simple search using LIKE
-    - `/comments?search_text=awesome&search_mode=natural` - Fast fulltext search, same as default
+    - `/comments?search_text=awesome&search_mode=natural` - Any-term match
     - `/comments?search_text=+great -bad&search_mode=boolean` - Boolean fulltext
     - `/comments?date_from=2024-01-01` - Comments from 2024 onwards
     """
-    from sqlalchemy import text as sql_text
-
     # Build base query - exclude deleted comments
     query = select(Comments).where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
 
@@ -110,20 +115,7 @@ async def list_comments(
 
     # Text search with mode selection
     if search_text:
-        # Default to natural if no mode specified
-        effective_mode = search_mode or "natural"
-
-        if effective_mode == "boolean":
-            # Boolean fulltext: supports +word, -word, "phrase", word*
-            match_expr = sql_text("MATCH(post_text) AGAINST(:query IN BOOLEAN MODE)")
-            query = query.where(match_expr).params(query=search_text)
-        elif effective_mode == "natural":
-            # Natural language fulltext: ranks by relevance
-            match_expr = sql_text("MATCH(post_text) AGAINST(:query IN NATURAL LANGUAGE MODE)")
-            query = query.where(match_expr).params(query=search_text)
-        else:  # like
-            # Simple pattern matching (slowest but works everywhere)
-            query = query.where(Comments.post_text.like(f"%{search_text}%"))  # type: ignore
+        query = apply_comment_text_search(query, search_text, search_mode)
 
     # Date filtering
     if date_from:

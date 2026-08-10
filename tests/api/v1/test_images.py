@@ -3016,16 +3016,173 @@ class TestCommentFilters:
         assert data["total"] == 1
         assert data["images"][0]["filename"] == "img1"
 
-    async def test_commentsearch_boolean_mode(
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_defaults_to_all_words(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
-        """Test comment search with boolean fulltext mode (requires FULLTEXT index)."""
-        import pytest
+        """Multi-word search requires ALL words, not any of them."""
+        from app.models import Comments
 
-        # Skip this test if running in environment without FULLTEXT index
-        # In production, the fulltext index is created by Alembic migration
-        # This test is primarily for documenting the feature
-        pytest.skip("Requires FULLTEXT index on posts.post_text - test in production environment")
+        user = Users(
+            username="allwords_user",
+            email="allwords@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000010",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        both = Images(**{**sample_image_data, "user_id": user.user_id})
+        happy_only = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add_all([both, happy_only])
+        await db_session.flush()
+
+        db_session.add_all(
+            [
+                Comments(
+                    image_id=both.image_id,
+                    user_id=user.user_id,
+                    post_text="happy birthday to you",
+                ),
+                Comments(
+                    image_id=happy_only.image_id,
+                    user_id=user.user_id,
+                    post_text="such a happy picture",
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=happy birthday")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert both.image_id in returned
+        assert happy_only.image_id not in returned
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_short_token_does_not_zero_results(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A sub-min-token-size word must narrow via LIKE, not wipe the results.
+
+        `MATCH(...) AGAINST('+happy +bd' IN BOOLEAN MODE)` returns 0 rows.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="shorttok_user",
+            email="shorttok@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000011",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        match = Images(**{**sample_image_data, "user_id": user.user_id})
+        no_match = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add_all([match, no_match])
+        await db_session.flush()
+
+        db_session.add_all(
+            [
+                Comments(
+                    image_id=match.image_id,
+                    user_id=user.user_id,
+                    post_text="happy bd friend",
+                ),
+                Comments(
+                    image_id=no_match.image_id,
+                    user_id=user.user_id,
+                    post_text="happy day friend",
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=happy bd")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert match.image_id in returned
+        assert no_match.image_id not in returned
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_stopword_does_not_zero_results(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """`the` is an InnoDB stopword; `+the +cat` returns 0 rows."""
+        from app.models import Comments
+
+        user = Users(
+            username="stopword_user",
+            email="stopword@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000012",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                post_text="the cat is sitting",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=the cat")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert image.image_id in returned
+
+    async def test_commentsearch_special_characters_do_not_500(
+        self, client: AsyncClient, sample_image_data: dict
+    ):
+        """`@` and `)` are ERROR 1064 in boolean mode if passed through raw."""
+        response = await client.get("/api/v1/images?commentsearch=happy@birthday)")
+        assert response.status_code == 200
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_natural_mode_still_available(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """The old OR behaviour remains reachable via an explicit mode."""
+        from app.models import Comments
+
+        user = Users(
+            username="natural_user",
+            email="natural@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000013",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                post_text="such a happy picture",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/images?commentsearch=happy birthday&commentsearch_mode=natural"
+        )
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert image.image_id in returned
 
     async def test_commentsearch_like_mode(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict

@@ -27,7 +27,6 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import and_, asc, delete, desc, func, or_, select
-from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -137,6 +136,7 @@ from app.services.tag_context import stamp_context_sources
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
+from app.utils.comment_search import apply_comment_text_search
 
 logger = get_logger(__name__)
 
@@ -482,8 +482,11 @@ async def list_images(
     commentsearch_mode: Annotated[
         str | None,
         Query(
-            pattern="^(natural|boolean|like)$",
-            description="Search mode: natural (default), boolean fulltext, or LIKE",
+            pattern="^(all_words|natural|boolean|like)$",
+            description=(
+                "Search mode: all_words (default, every term required), "
+                "natural language fulltext (any term), boolean fulltext, or LIKE"
+            ),
         ),
     ] = None,
     hascomments: Annotated[
@@ -514,8 +517,11 @@ async def list_images(
     - Comment filtering (by commenter user ID, text search, or presence)
 
     **Comment Search Modes:**
-    - `natural` (default): MySQL fulltext natural language search (10-100x faster, relevance ranking)
-    - `boolean`: MySQL fulltext boolean search with operators
+    - `all_words` (default): every term must appear. Index-backed where the
+      fulltext index can see the term, LIKE where it cannot (short words,
+      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`.
+    - `natural`: MySQL fulltext natural language search — matches ANY term
+    - `boolean`: MySQL fulltext boolean search with raw operators
     - `like`: Simple pattern matching, works anywhere
 
     **Boolean Mode Examples:**
@@ -530,9 +536,10 @@ async def list_images(
     - `/images?date_from=2024-01-01&sort_by=favorites` - Images from 2024, sorted by popularity
     - `/images?user_id=5&min_rating=4.0` - High-rated images by user 5
     - `/images?commenter=10` - Images commented on by user 10
-    - `/images?commentsearch=awesome` - Images with "awesome" in comments (natural fulltext)
-    - `/images?commentsearch=awesome&commentsearch_mode=like` - Simple search using LIKE
-    - `/images?commentsearch=+great -bad&commentsearch_mode=boolean` - Boolean fulltext
+    - `/images?commentsearch=happy birthday` - Comments containing BOTH words
+    - `/images?commentsearch="happy birthday"` - Comments containing the phrase
+    - `/images?commentsearch=happy -sad` - Has "happy", not "sad"
+    - `/images?commentsearch=awesome&commentsearch_mode=natural` - Any-term match
     - `/images?hascomments=true` - Images that have comments
     - `/images?hascomments=false` - Images with no comments
     - `/images?exclude_user_id=5,6` - Hide uploads by users 5 and 6
@@ -760,21 +767,7 @@ async def list_images(
         if commenter is not None:
             query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
         if commentsearch is not None:
-            # Text search with mode selection (default to natural language fulltext)
-            effective_mode = commentsearch_mode or "natural"
-
-            if effective_mode == "boolean":
-                # Boolean fulltext: supports +word, -word, "phrase", word*
-                match_expr = sql_text("MATCH(post_text) AGAINST(:query IN BOOLEAN MODE)")
-                query = query.where(match_expr).params(query=commentsearch)
-            elif effective_mode == "natural":
-                # Natural language fulltext: ranks by relevance (default, fastest)
-                match_expr = sql_text("MATCH(post_text) AGAINST(:query IN NATURAL LANGUAGE MODE)")
-                query = query.where(match_expr).params(query=commentsearch)
-            else:  # like
-                # Simple pattern matching (slowest but works everywhere)
-                search_pattern = f"%{commentsearch}%"
-                query = query.where(Comments.post_text.like(search_pattern))  # type: ignore[attr-defined]
+            query = apply_comment_text_search(query, commentsearch, commentsearch_mode)
     elif hascomments is True:
         # Use posts counter field (fast indexed lookup)
         query = query.where(Images.posts > 0)  # type: ignore[arg-type]
