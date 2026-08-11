@@ -541,7 +541,11 @@ async def list_images(
     - `/images?commenter=10` - Images commented on by user 10
     - `/images?commentsearch=happy birthday` - Comments containing BOTH words
     - `/images?commentsearch="happy birthday"` - Comments containing the phrase
-    - `/images?commentsearch=happy -sad` - Has "happy", not "sad"
+    - `/images?commentsearch=happy -sad` - Some ONE comment has "happy" and not "sad".
+      Every term is evaluated against a single comment row, not against the image's
+      comments collectively, so an image with a "happy" comment and a separate "sad"
+      comment still matches. This is what keeps the image-level filter in agreement
+      with the per-comment filter on /comments.
     - `/images?commentsearch=awesome&commentsearch_mode=natural` - Any-term match
     - `/images?hascomments=true` - Images that have comments
     - `/images?hascomments=false` - Images with no comments
@@ -772,8 +776,13 @@ async def list_images(
     # Note: We use distinct() to avoid duplicate rows when an image has multiple comments
     # The distinct is applied to the subquery stage for efficiency
     if commenter is not None or commentsearch is not None:
-        # Join with Comments table for filtering when we need to filter by comment attributes
-        query = query.join(Comments, Images.image_id == Comments.image_id)  # type: ignore[arg-type]
+        # Join with Comments table for filtering when we need to filter by comment attributes.
+        # Soft-deleted comments are excluded here so this join agrees with /comments, which
+        # filters them everywhere. Without it an image can match on a comment the comment
+        # endpoint will never return, producing a result whose match is invisible.
+        query = query.join(Comments, Images.image_id == Comments.image_id).where(  # type: ignore[arg-type]
+            Comments.deleted == False  # type: ignore[arg-type]  # noqa: E712
+        )
         if commenter is not None:
             query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
         if commentsearch is not None:
