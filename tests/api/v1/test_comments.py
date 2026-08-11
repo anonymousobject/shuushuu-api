@@ -180,6 +180,22 @@ class TestListComments:
         assert both.post_id in returned
         assert one.post_id not in returned
 
+        # Pin the literal mode string the frontend sends explicitly
+        # (+page.server.ts) -- it must be accepted and behave like the
+        # implicit default, or the two repos silently drift apart.
+        response = await client.get(
+            "/api/v1/comments?search_text=happy birthday&search_mode=all_words"
+        )
+        assert response.status_code == 200
+        returned = {c["post_id"] for c in response.json()["comments"]}
+        assert both.post_id in returned
+        assert one.post_id not in returned
+
+    async def test_search_mode_rejects_unknown_value(self, client: AsyncClient):
+        """A typo'd mode must 422, not silently fall through to the default."""
+        response = await client.get("/api/v1/comments?search_text=happy&search_mode=bogus")
+        assert response.status_code == 422
+
     async def test_search_text_unsearchable_query_returns_zero_rows(
         self, client: AsyncClient, db_session: AsyncSession
     ):

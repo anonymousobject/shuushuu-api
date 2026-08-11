@@ -3060,6 +3060,22 @@ class TestCommentFilters:
         assert both.image_id in returned
         assert happy_only.image_id not in returned
 
+        # Pin the literal mode string the frontend sends explicitly
+        # (+page.server.ts) -- it must be accepted and behave like the
+        # implicit default, or the two repos silently drift apart.
+        response = await client.get(
+            "/api/v1/images?commentsearch=happy birthday&commentsearch_mode=all_words"
+        )
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert both.image_id in returned
+        assert happy_only.image_id not in returned
+
+    async def test_commentsearch_mode_rejects_unknown_value(self, client: AsyncClient):
+        """A typo'd mode must 422, not silently fall through to the default."""
+        response = await client.get("/api/v1/images?commentsearch=happy&commentsearch_mode=bogus")
+        assert response.status_code == 422
+
     @pytest.mark.needs_commit  # FULLTEXT search requires committed data
     async def test_commentsearch_short_token_does_not_zero_results(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
