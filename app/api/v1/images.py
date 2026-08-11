@@ -541,7 +541,7 @@ async def list_images(
     - `/images?commenter=10` - Images commented on by user 10
     - `/images?commentsearch=happy birthday` - Comments containing BOTH words
     - `/images?commentsearch="happy birthday"` - Comments containing the phrase
-    - `/images?commentsearch=happy -sad` - Some ONE comment has "happy" and not "sad".
+    - `/images?commentsearch=happy -sad` - A single comment has "happy" and not "sad".
       Every term is evaluated against a single comment row, not against the image's
       comments collectively, so an image with a "happy" comment and a separate "sad"
       comment still matches. This is what keeps the image-level filter in agreement
@@ -805,6 +805,9 @@ async def list_images(
                 select(Comments.image_id).where(  # type: ignore[call-overload]
                     Comments.user_id.in_(exclude_commenter_ids),  # type: ignore[attr-defined]
                     Comments.image_id.is_not(None),  # type: ignore[union-attr]
+                    # Deleted comments must not hide an image, for the same reason
+                    # they must not surface one: /comments never shows them.
+                    Comments.deleted == False,  # noqa: E712
                 )
             )
         )

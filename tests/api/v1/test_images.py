@@ -3223,6 +3223,45 @@ class TestCommentFilters:
         assert still_visible.image_id in returned
         assert only_deleted.image_id not in returned
 
+    async def test_exclude_commenter_ignores_soft_deleted_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A deleted comment must not exclude an image either.
+
+        The anti-join is the third place that reasons about who commented, and it
+        had the same gap: a comment /comments will never show could still hide an
+        image from someone's results.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="softdel_excl",
+            email="softdele@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000018",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                post_text="retracted",
+                deleted=True,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?exclude_commenter={user.user_id}")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert image.image_id in returned
+
     async def test_commenter_ignores_soft_deleted_comments(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
