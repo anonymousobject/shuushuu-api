@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import Select
+from sqlalchemy import Select, false
 from sqlalchemy import text as sql_text
 
 from app.models import Comments
@@ -165,6 +165,13 @@ def apply_comment_text_search(query: Select[Any], raw: str, mode: str | None) ->
     `query` must already select from / join the Comments table. The bind
     parameter is named `comment_q` so it cannot collide with a caller's own
     parameters.
+
+    Callers are expected to skip calling this at all for a blank/whitespace-only
+    `raw` -- that means "not searching," not "search for nothing" (see the
+    `commentsearch`/`search_text` guards in images.py/comments.py). A non-blank
+    `raw` that still has nothing searchable (e.g. "!!!") is a query the user typed
+    that can never match a comment, so it returns zero rows rather than silently
+    falling back to "no filter."
     """
     effective_mode = mode or "all_words"
 
@@ -183,9 +190,11 @@ def apply_comment_text_search(query: Select[Any], raw: str, mode: str | None) ->
 
     parsed = parse_comment_search(raw)
     if parsed.is_empty:
-        # Nothing searchable in the input (e.g. "!!!"). The caller has already
-        # joined Comments, so this degrades to "images that have comments".
-        return query
+        # Nothing searchable in a non-blank input (e.g. "!!!"): no comment can
+        # ever match, so this must return zero rows. A blank/whitespace-only
+        # `raw` is also is_empty here, but callers guard against calling this
+        # helper with one at all (blank means "no filter", not "zero rows").
+        return query.where(false())
 
     if parsed.boolean_query:
         query = query.where(

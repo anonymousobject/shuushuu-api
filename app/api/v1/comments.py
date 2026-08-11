@@ -71,15 +71,18 @@ async def list_comments(
     - Sorting by date, post_id, or update_count
     - Filter by image, user, or text search
     - Date range filtering
-    - Multiple search modes (LIKE, natural fulltext, boolean fulltext)
+    - Multiple search modes (all_words, natural fulltext, boolean fulltext, LIKE)
 
     **Search Modes:**
     - `all_words` (default): every term must appear. Index-backed where the
       fulltext index can see the term, LIKE where it cannot (short words,
-      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`.
+      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
+      or whitespace-only `search_text` applies no filter at all; a non-blank
+      value with nothing searchable in it (e.g. `!!!`) matches zero comments.
     - `natural`: MySQL fulltext natural language search — matches ANY term
     - `boolean`: MySQL fulltext boolean search with raw operators
-    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`
+    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`.
+      `%` and `_` in the query are escaped to literals, not treated as wildcards.
 
     **Boolean Mode Examples:**
     - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
@@ -113,8 +116,10 @@ async def list_comments(
     if user_id is not None:
         query = query.where(Comments.user_id == user_id)  # type: ignore[arg-type]
 
-    # Text search with mode selection
-    if search_text:
+    # Text search with mode selection. A blank/whitespace-only search_text means
+    # "not searching," not "search for nothing" -- `if search_text:` alone would
+    # still call apply_comment_text_search for e.g. "   ".
+    if search_text and search_text.strip():
         query = apply_comment_text_search(query, search_text, search_mode)
 
     # Date filtering

@@ -180,6 +180,59 @@ class TestListComments:
         assert both.post_id in returned
         assert one.post_id not in returned
 
+    async def test_search_text_unsearchable_query_returns_zero_rows(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A non-blank query with nothing indexable or LIKE-able (e.g. "!!!") must
+        match nothing -- not silently degrade to "no filter"."""
+        from app.models import Comments
+
+        user = Users(
+            username="unsearch_user",
+            email="unsearch@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000017",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        db_session.add(Comments(user_id=user.user_id, post_text="happy birthday"))
+        await db_session.commit()
+
+        response = await client.get("/api/v1/comments?search_text=!!!")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["comments"] == []
+        assert data["total"] == 0
+
+    async def test_search_text_blank_applies_no_filter(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A blank/whitespace-only query means "not searching"."""
+        from app.models import Comments
+
+        user = Users(
+            username="blanktxt_user",
+            email="blanktxt@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000018",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        comment = Comments(user_id=user.user_id, post_text="anything at all")
+        db_session.add(comment)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/comments", params={"search_text": "   "})
+        assert response.status_code == 200
+        data = response.json()
+        returned = {c["post_id"] for c in data["comments"]}
+        assert comment.post_id in returned
+        assert data["total"] == 1
+
 
 @pytest.mark.api
 class TestGetComment:

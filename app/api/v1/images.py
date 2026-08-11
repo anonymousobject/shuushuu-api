@@ -519,10 +519,13 @@ async def list_images(
     **Comment Search Modes:**
     - `all_words` (default): every term must appear. Index-backed where the
       fulltext index can see the term, LIKE where it cannot (short words,
-      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`.
+      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
+      or whitespace-only `commentsearch` applies no filter at all; a non-blank
+      value with nothing searchable in it (e.g. `!!!`) matches zero comments.
     - `natural`: MySQL fulltext natural language search — matches ANY term
     - `boolean`: MySQL fulltext boolean search with raw operators
-    - `like`: Simple pattern matching, works anywhere
+    - `like`: Simple pattern matching, works anywhere. `%` and `_` in the query
+      are escaped to literals, not treated as wildcards.
 
     **Boolean Mode Examples:**
     - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
@@ -546,6 +549,13 @@ async def list_images(
     - `/images?exclude_commenter=10` - Hide images user 10 commented on
     - `/images?exclude_favorited_by_user_id=7` - Hide images user 7 favorited
     """
+    # A blank/whitespace-only commentsearch means "not searching," not "search for
+    # nothing" -- normalize it to None up front so it reads as absent everywhere
+    # below: the Comments JOIN guard, the count's JOIN guard, and the _FeedFilters
+    # entry all key off `commentsearch is not None`.
+    if commentsearch is not None and not commentsearch.strip():
+        commentsearch = None
+
     # Build base query
     query = select(Images)
 

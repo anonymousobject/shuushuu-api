@@ -3184,6 +3184,68 @@ class TestCommentFilters:
         returned = {img["image_id"] for img in response.json()["images"]}
         assert image.image_id in returned
 
+    async def test_commentsearch_unsearchable_query_returns_zero_rows(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A non-blank query with nothing indexable or LIKE-able (e.g. "!!!") must
+        match nothing -- not silently degrade to "images that have comments"."""
+        from app.models import Comments
+
+        user = Users(
+            username="unsearchable_user",
+            email="unsearchable@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000015",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(image_id=image.image_id, user_id=user.user_id, post_text="happy birthday")
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=!!!")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["images"] == []
+        # The count and the page must agree, or pagination lies.
+        assert data["total"] == 0
+
+    async def test_commentsearch_blank_applies_no_filter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A blank/whitespace-only query means "not searching" -- an image with no
+        comments at all must still be returned, unlike a real comment filter (which
+        would exclude it via the Comments JOIN)."""
+        user = Users(
+            username="blanksearch_user",
+            email="blanksearch@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000016",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        no_comments = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(no_comments)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images", params={"commentsearch": "   "})
+        assert response.status_code == 200
+        data = response.json()
+        returned = {img["image_id"] for img in data["images"]}
+        assert no_comments.image_id in returned
+        # A blank commentsearch must also fall into the bare-default-feed fast
+        # count path (no JOIN), not the exact-subquery count -- both must agree
+        # with the page, or pagination lies.
+        assert data["total"] == 1
+
     async def test_commentsearch_like_mode(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
