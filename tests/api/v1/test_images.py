@@ -3124,6 +3124,179 @@ class TestCommentFilters:
         assert no_match.image_id not in returned
 
     @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_boolean_mode_passes_operators_through(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """`boolean` mode hands raw operators to MySQL rather than parsing them.
+
+        Pinned because it was the only mode with no coverage. A trailing wildcard is
+        the discriminator: MySQL expands `wombat*` to the token "wombats", whereas
+        the all_words parser strips `*` as a non-word character and searches for the
+        exact token "wombat", which does not match. So this test fails if boolean
+        mode ever falls through to the default — asserted explicitly below.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="boolmode_user",
+            email="boolmode@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000017",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        wanted = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(wanted)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=wanted.image_id,
+                user_id=user.user_id,
+                post_text="wombats appreciation thread",
+            )
+        )
+        await db_session.commit()
+
+        boolean_hit = await client.get(
+            "/api/v1/images?commentsearch=wombat*&commentsearch_mode=boolean"
+        )
+        assert boolean_hit.status_code == 200
+        assert wanted.image_id in {img["image_id"] for img in boolean_hit.json()["images"]}
+
+        # The same string under the default mode must NOT match, or the test above
+        # would pass even if boolean mode stopped being wired up at all.
+        default_miss = await client.get("/api/v1/images?commentsearch=wombat*")
+        assert default_miss.status_code == 200
+        assert wanted.image_id not in {img["image_id"] for img in default_miss.json()["images"]}
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_ignores_soft_deleted_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A soft-deleted comment must not make its image match.
+
+        /comments filters `deleted == False` everywhere, so a match found only in a
+        deleted comment yields a card with no visible matching comment. Reachable
+        today by searching the word "deleted", because soft-delete rewrites
+        post_text to "[deleted]": 56 images on the dev copy match only that way.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="softdel_user",
+            email="softdel@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000015",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        only_deleted = Images(**{**sample_image_data, "user_id": user.user_id})
+        still_visible = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add_all([only_deleted, still_visible])
+        await db_session.flush()
+
+        db_session.add_all(
+            [
+                Comments(
+                    image_id=only_deleted.image_id,
+                    user_id=user.user_id,
+                    post_text="quokka sighting",
+                    deleted=True,
+                ),
+                Comments(
+                    image_id=still_visible.image_id,
+                    user_id=user.user_id,
+                    post_text="quokka sighting",
+                    deleted=False,
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=quokka sighting")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert still_visible.image_id in returned
+        assert only_deleted.image_id not in returned
+
+    async def test_exclude_commenter_ignores_soft_deleted_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A deleted comment must not exclude an image either.
+
+        The anti-join is the third place that reasons about who commented, and it
+        had the same gap: a comment /comments will never show could still hide an
+        image from someone's results.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="softdel_excl",
+            email="softdele@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000018",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                post_text="retracted",
+                deleted=True,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?exclude_commenter={user.user_id}")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert image.image_id in returned
+
+    async def test_commenter_ignores_soft_deleted_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """The same join backs `commenter`, so it must agree about deletion too."""
+        from app.models import Comments
+
+        user = Users(
+            username="softdel_commenter",
+            email="softdelc@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000016",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        only_deleted = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(only_deleted)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=only_deleted.image_id,
+                user_id=user.user_id,
+                post_text="gone",
+                deleted=True,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?commenter={user.user_id}")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert only_deleted.image_id not in returned
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
     async def test_commentsearch_stopword_does_not_zero_results(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3436,9 +3609,7 @@ class TestCommentFilters:
         await db_session.flush()
 
         for text in ["First!", "Also this.", "And one more."]:
-            db_session.add(
-                Comments(image_id=image.image_id, user_id=user.id, post_text=text)
-            )
+            db_session.add(Comments(image_id=image.image_id, user_id=user.id, post_text=text))
         await db_session.commit()
 
         response = await client.get(f"/api/v1/images?commenter={user.id}")
@@ -4911,9 +5082,16 @@ class TestHideReposts:
         # results — matrix tests must exercise the PUBLIC-status path, not own-image.
         from app.config import ImageStatus
         from app.core.security import get_password_hash
+
         if owner_id is None:
-            owner = Users(username="hr_seed_owner", password=get_password_hash("TestPassword123!"),
-                          password_type="bcrypt", salt="", email="hr_seed_owner@test.com", active=1)
+            owner = Users(
+                username="hr_seed_owner",
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email="hr_seed_owner@test.com",
+                active=1,
+            )
             db.add(owner)
             await db.commit()
             await db.refresh(owner)
@@ -4926,15 +5104,33 @@ class TestHideReposts:
             (ImageStatus.DEACTIVATED, "deact_img"),
         ]
         for i, (st, fn) in enumerate(rows):
-            db.add(Images(filename=fn, ext="jpg", md5_hash=f"hr{i:030d}",
-                          user_id=owner_id, width=10, height=10, filesize=100, status=st))
+            db.add(
+                Images(
+                    filename=fn,
+                    ext="jpg",
+                    md5_hash=f"hr{i:030d}",
+                    user_id=owner_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=st,
+                )
+            )
         await db.commit()
 
     async def _user(self, db, name, show_all=0, hide_reposts=0):
         from app.core.security import get_password_hash
-        u = Users(username=name, password=get_password_hash("TestPassword123!"),
-                  password_type="bcrypt", salt="", email=f"{name}@test.com",
-                  active=1, show_all_images=show_all, hide_reposts=hide_reposts)
+
+        u = Users(
+            username=name,
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email=f"{name}@test.com",
+            active=1,
+            show_all_images=show_all,
+            hide_reposts=hide_reposts,
+        )
         db.add(u)
         await db.commit()
         await db.refresh(u)
@@ -4942,6 +5138,7 @@ class TestHideReposts:
 
     def _hdr(self, user):
         from app.core.security import create_access_token
+
         return {"Authorization": f"Bearer {create_access_token(user.user_id)}"}
 
     async def test_show_all_0_hide_0_shows_repost(self, client, db_session):
@@ -4988,38 +5185,68 @@ class TestHideReposts:
 
     async def test_random_excludes_reposts_when_hiding(self, client, db_session):
         from app.config import ImageStatus
+
         owner = await self._user(db_session, "hr_rand_owner")
         viewer = await self._user(db_session, "hr_rand", show_all=0, hide_reposts=1)
         for i in range(3):
-            db_session.add(Images(filename=f"r_rep{i}", ext="jpg", md5_hash=f"rr{i:030d}",
-                                  user_id=owner.user_id, width=10, height=10, filesize=100,
-                                  status=ImageStatus.REPOST))
+            db_session.add(
+                Images(
+                    filename=f"r_rep{i}",
+                    ext="jpg",
+                    md5_hash=f"rr{i:030d}",
+                    user_id=owner.user_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=ImageStatus.REPOST,
+                )
+            )
         await db_session.commit()
         # Only reposts exist; with hide_reposts the visible count is 0 -> /random 404s.
-        resp = await client.get("/api/v1/images/random?per_page=1",
-                                headers=self._hdr(viewer), follow_redirects=False)
+        resp = await client.get(
+            "/api/v1/images/random?per_page=1", headers=self._hdr(viewer), follow_redirects=False
+        )
         assert resp.status_code == 404
 
     async def test_random_counts_reposts_when_not_hiding(self, client, db_session):
         from app.config import ImageStatus
+
         owner = await self._user(db_session, "hr_rand_owner2")
         viewer = await self._user(db_session, "hr_rand2", show_all=0, hide_reposts=0)
         for i in range(3):
-            db_session.add(Images(filename=f"r2_rep{i}", ext="jpg", md5_hash=f"rs{i:030d}",
-                                  user_id=owner.user_id, width=10, height=10, filesize=100,
-                                  status=ImageStatus.REPOST))
+            db_session.add(
+                Images(
+                    filename=f"r2_rep{i}",
+                    ext="jpg",
+                    md5_hash=f"rs{i:030d}",
+                    user_id=owner.user_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=ImageStatus.REPOST,
+                )
+            )
         await db_session.commit()
         # Control: reposts are public, so without hiding they ARE counted -> a page exists.
-        resp = await client.get("/api/v1/images/random?per_page=1",
-                                headers=self._hdr(viewer), follow_redirects=False)
+        resp = await client.get(
+            "/api/v1/images/random?per_page=1", headers=self._hdr(viewer), follow_redirects=False
+        )
         assert resp.status_code == 302
 
     async def test_repost_bookmark_returns_null_page(self, client, db_session):
         from app.config import ImageStatus
+
         viewer = await self._user(db_session, "hr_bm", show_all=0, hide_reposts=1)
-        rep = Images(filename="bm_rep", ext="jpg", md5_hash="bm" + "0" * 30,
-                     user_id=viewer.user_id, width=10, height=10, filesize=100,
-                     status=ImageStatus.REPOST)
+        rep = Images(
+            filename="bm_rep",
+            ext="jpg",
+            md5_hash="bm" + "0" * 30,
+            user_id=viewer.user_id,
+            width=10,
+            height=10,
+            filesize=100,
+            status=ImageStatus.REPOST,
+        )
         db_session.add(rep)
         await db_session.commit()
         await db_session.refresh(rep)
@@ -5030,20 +5257,37 @@ class TestHideReposts:
 
     async def test_bookmark_position_excludes_reposts_when_hiding(self, client, db_session):
         from app.config import ImageStatus
+
         owner = await self._user(db_session, "hr_bm_pos_owner")
         viewer = await self._user(db_session, "hr_bm_pos", show_all=0, hide_reposts=1)
         viewer.images_per_page = 2
-        bm = Images(filename="bm_active", ext="jpg", md5_hash="bp" + "0" * 30,
-                    user_id=owner.user_id, width=10, height=10, filesize=100,
-                    status=ImageStatus.ACTIVE)
+        bm = Images(
+            filename="bm_active",
+            ext="jpg",
+            md5_hash="bp" + "0" * 30,
+            user_id=owner.user_id,
+            width=10,
+            height=10,
+            filesize=100,
+            status=ImageStatus.ACTIVE,
+        )
         db_session.add(bm)
         await db_session.commit()
         await db_session.refresh(bm)
         # 3 reposts created AFTER bm -> higher image_ids -> sort BEFORE bm in DESC order.
         for i in range(3):
-            db_session.add(Images(filename=f"bp_rep{i}", ext="jpg", md5_hash=f"bq{i:030d}",
-                                  user_id=owner.user_id, width=10, height=10, filesize=100,
-                                  status=ImageStatus.REPOST))
+            db_session.add(
+                Images(
+                    filename=f"bp_rep{i}",
+                    ext="jpg",
+                    md5_hash=f"bq{i:030d}",
+                    user_id=owner.user_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=ImageStatus.REPOST,
+                )
+            )
         viewer.bookmark = bm.image_id
         await db_session.commit()
         # hide_reposts: the 3 reposts before bm aren't counted -> position 0 -> page 1.
@@ -5052,19 +5296,36 @@ class TestHideReposts:
 
     async def test_bookmark_position_counts_reposts_when_not_hiding(self, client, db_session):
         from app.config import ImageStatus
+
         owner = await self._user(db_session, "hr_bm_pos_owner2")
         viewer = await self._user(db_session, "hr_bm_pos2", show_all=0, hide_reposts=0)
         viewer.images_per_page = 2
-        bm = Images(filename="bm_active2", ext="jpg", md5_hash="bp2" + "0" * 29,
-                    user_id=owner.user_id, width=10, height=10, filesize=100,
-                    status=ImageStatus.ACTIVE)
+        bm = Images(
+            filename="bm_active2",
+            ext="jpg",
+            md5_hash="bp2" + "0" * 29,
+            user_id=owner.user_id,
+            width=10,
+            height=10,
+            filesize=100,
+            status=ImageStatus.ACTIVE,
+        )
         db_session.add(bm)
         await db_session.commit()
         await db_session.refresh(bm)
         for i in range(3):
-            db_session.add(Images(filename=f"bp2_rep{i}", ext="jpg", md5_hash=f"bz{i:030d}",
-                                  user_id=owner.user_id, width=10, height=10, filesize=100,
-                                  status=ImageStatus.REPOST))
+            db_session.add(
+                Images(
+                    filename=f"bp2_rep{i}",
+                    ext="jpg",
+                    md5_hash=f"bz{i:030d}",
+                    user_id=owner.user_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=ImageStatus.REPOST,
+                )
+            )
         viewer.bookmark = bm.image_id
         await db_session.commit()
         # Control: reposts counted -> 3 before bm -> position 3 -> page ceil(4/2)=2.
@@ -5121,9 +5382,7 @@ class TestExcludeFavoritedByUserId:
         """Excluding user1 drops images 0 and 1, keeps 2 and 3."""
         user1, _user2, images = await self._setup(db_session, sample_image_data)
 
-        response = await client.get(
-            f"/api/v1/images?exclude_favorited_by_user_id={user1.user_id}"
-        )
+        response = await client.get(f"/api/v1/images?exclude_favorited_by_user_id={user1.user_id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
@@ -5163,9 +5422,7 @@ class TestExcludeFavoritedByUserId:
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         too_many = ",".join(str(i) for i in range(1, settings.MAX_SEARCH_USERS + 2))
-        response = await client.get(
-            f"/api/v1/images?exclude_favorited_by_user_id={too_many}"
-        )
+        response = await client.get(f"/api/v1/images?exclude_favorited_by_user_id={too_many}")
         assert response.status_code == 400
         assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]
 
@@ -5208,15 +5465,9 @@ class TestExcludeCommenter:
             images.append(image)
         await db_session.flush()
 
-        db_session.add(
-            Comments(image_id=images[0].image_id, user_id=user1.id, post_text="First!")
-        )
-        db_session.add(
-            Comments(image_id=images[0].image_id, user_id=user2.id, post_text="Second!")
-        )
-        db_session.add(
-            Comments(image_id=images[1].image_id, user_id=user2.id, post_text="Nice!")
-        )
+        db_session.add(Comments(image_id=images[0].image_id, user_id=user1.id, post_text="First!"))
+        db_session.add(Comments(image_id=images[0].image_id, user_id=user2.id, post_text="Second!"))
+        db_session.add(Comments(image_id=images[1].image_id, user_id=user2.id, post_text="Nice!"))
         await db_session.commit()
         return user1, user2, images
 
