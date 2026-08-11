@@ -30,6 +30,7 @@ from app.schemas.comment import (
 )
 from app.schemas.comment_report import CommentReportCreate, CommentReportResponse
 from app.schemas.common import UserSummary
+from app.utils.comment_search import apply_comment_text_search
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -49,8 +50,11 @@ async def list_comments(
     search_mode: Annotated[
         str | None,
         Query(
-            pattern="^(natural|boolean|like)$",
-            description="Search mode: natural (default), boolean fulltext, or LIKE",
+            pattern="^(all_words|natural|boolean|like)$",
+            description=(
+                "Search mode: all_words (default, every term required), "
+                "natural language fulltext (any term), boolean fulltext, or LIKE"
+            ),
         ),
     ] = None,
     # Date filtering
@@ -67,12 +71,18 @@ async def list_comments(
     - Sorting by date, post_id, or update_count
     - Filter by image, user, or text search
     - Date range filtering
-    - Multiple search modes (LIKE, natural fulltext, boolean fulltext)
+    - Multiple search modes (all_words, natural fulltext, boolean fulltext, LIKE)
 
     **Search Modes:**
-    - `natural` (default): MySQL fulltext natural language search (10-100x faster, relevance ranking)
-    - `boolean`: MySQL fulltext boolean search with operators
-    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`
+    - `all_words` (default): every term must appear. Index-backed where the
+      fulltext index can see the term, LIKE where it cannot (short words,
+      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
+      or whitespace-only `search_text` applies no filter at all; a non-blank
+      value with nothing searchable in it (e.g. `!!!`) matches zero comments.
+    - `natural`: MySQL fulltext natural language search — matches ANY term
+    - `boolean`: MySQL fulltext boolean search with raw operators
+    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`.
+      `%` and `_` in the query are escaped to literals, not treated as wildcards.
 
     **Boolean Mode Examples:**
     - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
@@ -83,14 +93,12 @@ async def list_comments(
     - `/comments?image_id=123` - All comments on image 123
     - `/comments?image_ids=123,456,789` - All comments on multiple images (efficient for N images)
     - `/comments?user_id=5` - All comments by user 5
-    - `/comments?search_text=awesome` - Fast fulltext search
+    - `/comments?search_text=happy birthday` - Comments containing BOTH words
     - `/comments?search_text=awesome&search_mode=like` - Simple search using LIKE
-    - `/comments?search_text=awesome&search_mode=natural` - Fast fulltext search, same as default
+    - `/comments?search_text=awesome&search_mode=natural` - Any-term match
     - `/comments?search_text=+great -bad&search_mode=boolean` - Boolean fulltext
     - `/comments?date_from=2024-01-01` - Comments from 2024 onwards
     """
-    from sqlalchemy import text as sql_text
-
     # Build base query - exclude deleted comments
     query = select(Comments).where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
 
@@ -108,22 +116,11 @@ async def list_comments(
     if user_id is not None:
         query = query.where(Comments.user_id == user_id)  # type: ignore[arg-type]
 
-    # Text search with mode selection
-    if search_text:
-        # Default to natural if no mode specified
-        effective_mode = search_mode or "natural"
-
-        if effective_mode == "boolean":
-            # Boolean fulltext: supports +word, -word, "phrase", word*
-            match_expr = sql_text("MATCH(post_text) AGAINST(:query IN BOOLEAN MODE)")
-            query = query.where(match_expr).params(query=search_text)
-        elif effective_mode == "natural":
-            # Natural language fulltext: ranks by relevance
-            match_expr = sql_text("MATCH(post_text) AGAINST(:query IN NATURAL LANGUAGE MODE)")
-            query = query.where(match_expr).params(query=search_text)
-        else:  # like
-            # Simple pattern matching (slowest but works everywhere)
-            query = query.where(Comments.post_text.like(f"%{search_text}%"))  # type: ignore
+    # Text search with mode selection. A blank/whitespace-only search_text means
+    # "not searching," not "search for nothing" -- `if search_text:` alone would
+    # still call apply_comment_text_search for e.g. "   ".
+    if search_text and search_text.strip():
+        query = apply_comment_text_search(query, search_text, search_mode)
 
     # Date filtering
     if date_from:

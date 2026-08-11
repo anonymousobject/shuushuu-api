@@ -152,6 +152,103 @@ class TestListComments:
         assert data["total"] == 1
         assert "awesome" in data["comments"][0]["post_text"].lower()
 
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_search_text_defaults_to_all_words(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """/comments text search requires all words too."""
+        from app.models import Comments
+
+        user = Users(
+            username="csearch_user",
+            email="csearch@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000014",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        both = Comments(user_id=user.user_id, post_text="happy birthday to you")
+        one = Comments(user_id=user.user_id, post_text="such a happy picture")
+        db_session.add_all([both, one])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/comments?search_text=happy birthday")
+        assert response.status_code == 200
+        returned = {c["post_id"] for c in response.json()["comments"]}
+        assert both.post_id in returned
+        assert one.post_id not in returned
+
+        # Pin the literal mode string the frontend sends explicitly
+        # (+page.server.ts) -- it must be accepted and behave like the
+        # implicit default, or the two repos silently drift apart.
+        response = await client.get(
+            "/api/v1/comments?search_text=happy birthday&search_mode=all_words"
+        )
+        assert response.status_code == 200
+        returned = {c["post_id"] for c in response.json()["comments"]}
+        assert both.post_id in returned
+        assert one.post_id not in returned
+
+    async def test_search_mode_rejects_unknown_value(self, client: AsyncClient):
+        """A typo'd mode must 422, not silently fall through to the default."""
+        response = await client.get("/api/v1/comments?search_text=happy&search_mode=bogus")
+        assert response.status_code == 422
+
+    async def test_search_text_unsearchable_query_returns_zero_rows(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A non-blank query with nothing indexable or LIKE-able (e.g. "!!!") must
+        match nothing -- not silently degrade to "no filter"."""
+        from app.models import Comments
+
+        user = Users(
+            username="unsearch_user",
+            email="unsearch@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000017",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        db_session.add(Comments(user_id=user.user_id, post_text="happy birthday"))
+        await db_session.commit()
+
+        response = await client.get("/api/v1/comments?search_text=!!!")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["comments"] == []
+        assert data["total"] == 0
+
+    async def test_search_text_blank_applies_no_filter(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A blank/whitespace-only query means "not searching"."""
+        from app.models import Comments
+
+        user = Users(
+            username="blanktxt_user",
+            email="blanktxt@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000018",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        comment = Comments(user_id=user.user_id, post_text="anything at all")
+        db_session.add(comment)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/comments", params={"search_text": "   "})
+        assert response.status_code == 200
+        data = response.json()
+        returned = {c["post_id"] for c in data["comments"]}
+        assert comment.post_id in returned
+        assert data["total"] == 1
+
 
 @pytest.mark.api
 class TestGetComment:
