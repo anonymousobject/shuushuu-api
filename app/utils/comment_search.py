@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import Select, false
 from sqlalchemy import text as sql_text
 
@@ -31,6 +32,21 @@ from app.models import Comments
 # Must match innodb_ft_min_token_size on the server. Anything shorter is
 # absent from the index, so `+ab` matches nothing at all.
 MIN_TOKEN_SIZE = 3
+
+# Ceiling on a single comment-search statement, in seconds.
+#
+# A circuit breaker, not a performance policy. The slowest legitimate search is
+# an all-unindexable one (CJK, or short/stopword-only terms), which falls back to
+# an unindexed LIKE scan. Measured warm on a 536k-comment corpus: ~0.5s for the
+# count and ~0.8s for the page query, and — importantly — flat regardless of how
+# many rows match, because the cost is the scan rather than the result set.
+#
+# 5s leaves roughly 6x headroom for a cold buffer pool, concurrency and corpus
+# growth. That margin is the point: if this ever fires on a real search it
+# becomes a hard failure for Japanese comment search, which has no indexed path
+# at all (MariaDB has no ngram parser). It exists to turn a plan regression from
+# minutes into an error, nothing more.
+COMMENT_SEARCH_TIMEOUT_SECONDS = 5.0
 
 # information_schema.INNODB_FT_DEFAULT_STOPWORD, verbatim. A stopword inside a
 # boolean conjunction is not ignored -- it makes the whole conjunction fail.
@@ -93,6 +109,32 @@ class CommentSearchQuery:
     @property
     def is_empty(self) -> bool:
         return not (self.boolean_query or self.like_terms or self.not_like_terms)
+
+    @property
+    def is_too_short_to_index(self) -> bool:
+        """Whether this query can only be served by an unindexed table scan
+        *and* is short enough that refusing it costs the user nothing.
+
+        The scan is a flat ~0.5s on the count and ~0.8s on the page query,
+        independent of how many rows match, so a search of nothing but one- and
+        two-character words buys a second of database time for a result nobody
+        wants. Callers refuse these with a 400.
+
+        Length-based and ASCII-only, deliberately:
+
+        * Non-ASCII is always allowed. MariaDB has no ngram parser, so the LIKE
+          fallback is the *only* path CJK has -- refusing it would break Japanese
+          comment search entirely, which is the opposite of the intent.
+        * Long-but-unindexable terms (stopwords like "the", "www", "com") are
+          allowed. They are wasteful but they are real words someone may mean.
+        * The threshold is MIN_TOKEN_SIZE, so lowering innodb_ft_min_token_size
+          and rebuilding the index automatically narrows this guard instead of
+          leaving it refusing terms the index can now see.
+        """
+        if self.boolean_query or self.is_empty:
+            return False
+        terms = self.like_terms + self.not_like_terms
+        return all(t.isascii() and len(t) < MIN_TOKEN_SIZE for t in terms)
 
 
 def like_pattern(term: str) -> str:
@@ -157,6 +199,26 @@ def parse_comment_search(raw: str) -> CommentSearchQuery:
         parsed.not_like_terms.extend(n.strip('"') for n in negatives)
 
     return parsed
+
+
+def reject_unindexable_comment_search(raw: str, mode: str | None) -> None:
+    """Raise 400 for a search of nothing but very short ASCII words.
+
+    Only applies to the parsed `all_words` path; the explicit legacy modes hand
+    their string straight to MySQL and are left alone. See
+    `CommentSearchQuery.is_too_short_to_index` for why the rule is length-based
+    and never touches non-ASCII.
+    """
+    if (mode or "all_words") != "all_words":
+        return
+    if parse_comment_search(raw).is_too_short_to_index:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Comment search terms must be at least {MIN_TOKEN_SIZE} characters. "
+                "Searching only very short words would scan every comment."
+            ),
+        )
 
 
 def apply_comment_text_search(query: Select[Any], raw: str, mode: str | None) -> Select[Any]:

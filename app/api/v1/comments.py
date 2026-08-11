@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies import CommentSortParams, PaginationParams
 from app.config import AdminActionType, ReportStatus
 from app.core.auth import get_current_user
-from app.core.database import get_db
+from app.core.database import get_db, statement_timeout
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Comments, Images, Users
@@ -30,7 +30,11 @@ from app.schemas.comment import (
 )
 from app.schemas.comment_report import CommentReportCreate, CommentReportResponse
 from app.schemas.common import UserSummary
-from app.utils.comment_search import apply_comment_text_search
+from app.utils.comment_search import (
+    COMMENT_SEARCH_TIMEOUT_SECONDS,
+    apply_comment_text_search,
+    reject_unindexable_comment_search,
+)
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -119,8 +123,13 @@ async def list_comments(
     # Text search with mode selection. A blank/whitespace-only search_text means
     # "not searching," not "search for nothing" -- `if search_text:` alone would
     # still call apply_comment_text_search for e.g. "   ".
-    if search_text and search_text.strip():
-        query = apply_comment_text_search(query, search_text, search_mode)
+    searching = bool(search_text and search_text.strip())
+    if searching:
+        reject_unindexable_comment_search(search_text, search_mode)  # type: ignore[arg-type]
+        query = apply_comment_text_search(query, search_text, search_mode)  # type: ignore[arg-type]
+    # Only the text-search path can degrade to an unindexed scan; None makes the
+    # bound a no-op so plain image_ids/user_id listings are untouched.
+    search_timeout = COMMENT_SEARCH_TIMEOUT_SECONDS if searching else None
 
     # Date filtering
     if date_from:
@@ -130,7 +139,8 @@ async def list_comments(
 
     # Count total results
     count_query = select(func.count()).select_from(query.subquery())
-    total_result = await db.execute(count_query)
+    async with statement_timeout(db, search_timeout):
+        total_result = await db.execute(count_query)
     total = total_result.scalar()
 
     # Apply sorting
@@ -152,7 +162,8 @@ async def list_comments(
     )
 
     # Execute query
-    result = await db.execute(query)
+    async with statement_timeout(db, search_timeout):
+        result = await db.execute(query)
     comments = result.scalars().all()
 
     return CommentListResponse(

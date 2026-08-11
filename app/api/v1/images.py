@@ -48,7 +48,7 @@ from app.config import (
     settings,
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
-from app.core.database import get_db
+from app.core.database import get_db, statement_timeout
 from app.core.db_retry import retry_on_snapshot_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
@@ -136,7 +136,11 @@ from app.services.tag_context import stamp_context_sources
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
 from app.tasks.queue import enqueue_job
-from app.utils.comment_search import apply_comment_text_search
+from app.utils.comment_search import (
+    COMMENT_SEARCH_TIMEOUT_SECONDS,
+    apply_comment_text_search,
+    reject_unindexable_comment_search,
+)
 
 logger = get_logger(__name__)
 
@@ -559,6 +563,12 @@ async def list_images(
     # entry all key off `commentsearch is not None`.
     if commentsearch is not None and not commentsearch.strip():
         commentsearch = None
+    if commentsearch is not None:
+        reject_unindexable_comment_search(commentsearch, commentsearch_mode)
+    # Only the comment-text path can degrade to an unindexed scan, so only it
+    # carries the bound; every other filter here is index-backed. None elsewhere
+    # makes statement_timeout a no-op, leaving the fast paths untouched.
+    search_timeout = COMMENT_SEARCH_TIMEOUT_SECONDS if commentsearch is not None else None
 
     # Build base query
     query = select(Images)
@@ -876,7 +886,8 @@ async def list_images(
             count_query = select(func.count()).select_from(distinct_ids.subquery())
         else:
             count_query = select(func.count()).select_from(query.subquery())
-        total = (await db.execute(count_query)).scalar() or 0
+        async with statement_timeout(db, search_timeout):
+            total = (await db.execute(count_query)).scalar() or 0
 
     # Performance optimization: Two-stage query for fast filtering and sorting
     #
@@ -944,7 +955,8 @@ async def list_images(
     )
 
     # Execute query
-    result = await db.execute(final_query)
+    async with statement_timeout(db, search_timeout):
+        result = await db.execute(final_query)
     images = result.scalars().all()
 
     # Get favorite status for authenticated users (separate query for clean separation)
