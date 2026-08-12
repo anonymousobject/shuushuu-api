@@ -126,3 +126,68 @@ class TestIsEmpty:
         assert not CommentSearchQuery(boolean_query="+cat").is_empty
         assert not CommentSearchQuery(like_terms=["ab"]).is_empty
         assert not CommentSearchQuery(not_like_terms=["ab"]).is_empty
+
+
+class TestIsTooShortToIndex:
+    """The guard for searches worth refusing rather than table-scanning for.
+
+    Deliberately length-based and ASCII-only. Non-ASCII must always be allowed
+    through: MariaDB has no ngram parser, so CJK can only ever be served by the
+    LIKE fallback, and refusing it would break Japanese comment search outright.
+    """
+
+    def test_single_short_ascii_term_is_too_short(self):
+        assert parse_comment_search("ab").is_too_short_to_index
+
+    def test_all_short_ascii_terms_are_too_short(self):
+        assert parse_comment_search("ab cd").is_too_short_to_index
+
+    def test_one_indexable_term_is_enough(self):
+        assert not parse_comment_search("ab happy").is_too_short_to_index
+
+    def test_non_ascii_is_never_too_short(self):
+        # LIKE is the only path CJK has; refusing it would break Japanese search.
+        assert not parse_comment_search("かわいい").is_too_short_to_index
+        assert not parse_comment_search("猫").is_too_short_to_index
+
+    def test_short_ascii_alongside_non_ascii_is_allowed(self):
+        assert not parse_comment_search("ab かわいい").is_too_short_to_index
+
+    def test_a_quoted_phrase_of_short_words_is_too_short(self):
+        """Quoting must not smuggle a short-word search past the guard.
+
+        A phrase is stored as one joined `like_terms` entry, so `"ab cd"` looks
+        five characters long even though it is the same two two-letter words that
+        `ab cd` is refused for. Both run the identical unindexed scan.
+        """
+        assert parse_comment_search('"ab cd"').is_too_short_to_index
+
+    def test_a_quoted_phrase_with_a_long_word_is_allowed(self):
+        assert not parse_comment_search('"ab happy"').is_too_short_to_index
+
+    def test_a_quoted_phrase_containing_non_ascii_is_allowed(self):
+        assert not parse_comment_search('"ab かわいい"').is_too_short_to_index
+
+    def test_a_quoted_phrase_of_long_stopwords_is_allowed(self):
+        # Same reasoning as the bare-word case: unindexable, but not short.
+        assert not parse_comment_search('"the cat"').is_too_short_to_index
+
+    def test_a_long_stopword_is_not_too_short(self):
+        # `the` is unindexable, but it is not *short*. This guard is about length
+        # only -- widening it to stopwords would also refuse "www" and "com".
+        assert not parse_comment_search("the").is_too_short_to_index
+
+    def test_nothing_searchable_is_not_reported_as_too_short(self):
+        # "!!!" has no terms at all; that is the zero-rows case, not this one.
+        assert not parse_comment_search("!!!").is_too_short_to_index
+        assert not parse_comment_search("").is_too_short_to_index
+
+    def test_threshold_follows_min_token_size(self):
+        # Tuning innodb_ft_min_token_size must not leave this guard refusing
+        # terms the index can now see.
+        from app.utils.comment_search import MIN_TOKEN_SIZE
+
+        just_short = "a" * (MIN_TOKEN_SIZE - 1)
+        just_long = "a" * MIN_TOKEN_SIZE
+        assert parse_comment_search(just_short).is_too_short_to_index
+        assert not parse_comment_search(just_long).is_too_short_to_index

@@ -2,8 +2,10 @@
 Database configuration and session management
 """
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 
+from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 
@@ -65,3 +67,34 @@ def get_async_session() -> AsyncSession:
     Note: Caller is responsible for committing/rolling back.
     """
     return AsyncSessionLocal()
+
+
+@asynccontextmanager
+async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIterator[None]:
+    """Bound how long each statement inside the block may run.
+
+    A circuit breaker for query plans that go wrong, not a performance policy:
+    the limit should sit well clear of the slowest legitimate query so it never
+    fires on real traffic. MariaDB's `max_statement_time` is per *statement*, so
+    a request issuing several still has a total ceiling of the limit times the
+    statement count.
+
+    Restoring on exit is not optional. Connections are pooled and returned to the
+    pool without resetting session variables, so a limit left set would silently
+    apply to whatever request picks that connection up next. `DEFAULT` restores
+    the server's global value rather than assuming it is 0.
+
+    Passing `seconds=None` is a no-op, so callers can wrap a statement
+    unconditionally and decide per request whether the bound applies.
+    """
+    if seconds is None:
+        yield
+        return
+
+    # float() coerces the value: SET does not take bind parameters, so this is
+    # interpolated, and the coercion is what keeps that safe.
+    await db.execute(sql_text(f"SET SESSION max_statement_time = {float(seconds)}"))
+    try:
+        yield
+    finally:
+        await db.execute(sql_text("SET SESSION max_statement_time = DEFAULT"))

@@ -3123,6 +3123,59 @@ class TestCommentFilters:
         assert match.image_id in returned
         assert no_match.image_id not in returned
 
+    async def test_commentsearch_rejects_only_short_ascii_terms(self, client: AsyncClient):
+        """A search of nothing but 1-2 character ASCII words is refused.
+
+        It can only be served by an unindexed scan (~0.5s on the count, ~0.8s on
+        the page, flat regardless of match count) for a result nobody wants.
+        """
+        response = await client.get("/api/v1/images?commentsearch=ab")
+        assert response.status_code == 400
+        assert "at least" in response.json()["detail"].lower()
+
+        response = await client.get("/api/v1/images?commentsearch=ab cd")
+        assert response.status_code == 400
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_allows_short_non_ascii_terms(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """CJK must never be refused: LIKE is the only path it has.
+
+        MariaDB has no ngram parser, so a short Japanese term is unindexable by
+        definition. Refusing it would break Japanese comment search outright.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="cjk_user",
+            email="cjk@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000019",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(image_id=image.image_id, user_id=user.user_id, post_text="とても猫")
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=猫")
+        assert response.status_code == 200
+        assert image.image_id in {img["image_id"] for img in response.json()["images"]}
+
+    async def test_commentsearch_allows_a_short_term_beside_an_indexable_one(
+        self, client: AsyncClient
+    ):
+        """One indexable term is enough to keep the query index-backed."""
+        response = await client.get("/api/v1/images?commentsearch=happy bd")
+        assert response.status_code == 200
+
     @pytest.mark.needs_commit  # FULLTEXT search requires committed data
     async def test_commentsearch_boolean_mode_passes_operators_through(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
