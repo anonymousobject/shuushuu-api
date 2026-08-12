@@ -153,6 +153,25 @@ class TestIsTooShortToIndex:
     def test_short_ascii_alongside_non_ascii_is_allowed(self):
         assert not parse_comment_search("ab かわいい").is_too_short_to_index
 
+    def test_a_quoted_phrase_of_short_words_is_too_short(self):
+        """Quoting must not smuggle a short-word search past the guard.
+
+        A phrase is stored as one joined `like_terms` entry, so `"ab cd"` looks
+        five characters long even though it is the same two two-letter words that
+        `ab cd` is refused for. Both run the identical unindexed scan.
+        """
+        assert parse_comment_search('"ab cd"').is_too_short_to_index
+
+    def test_a_quoted_phrase_with_a_long_word_is_allowed(self):
+        assert not parse_comment_search('"ab happy"').is_too_short_to_index
+
+    def test_a_quoted_phrase_containing_non_ascii_is_allowed(self):
+        assert not parse_comment_search('"ab かわいい"').is_too_short_to_index
+
+    def test_a_quoted_phrase_of_long_stopwords_is_allowed(self):
+        # Same reasoning as the bare-word case: unindexable, but not short.
+        assert not parse_comment_search('"the cat"').is_too_short_to_index
+
     def test_a_long_stopword_is_not_too_short(self):
         # `the` is unindexable, but it is not *short*. This guard is about length
         # only -- widening it to stopwords would also refuse "www" and "com".

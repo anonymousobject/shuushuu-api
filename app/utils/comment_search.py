@@ -133,8 +133,16 @@ class CommentSearchQuery:
         """
         if self.boolean_query or self.is_empty:
             return False
-        terms = self.like_terms + self.not_like_terms
-        return all(t.isascii() and len(t) < MIN_TOKEN_SIZE for t in terms)
+        # Split back into words rather than measuring the stored entry: a quoted
+        # phrase is kept as one joined string, so `"ab cd"` would otherwise
+        # measure five characters and slip past the guard that refuses the very
+        # same two words unquoted.
+        words = [
+            word
+            for term in self.like_terms + self.not_like_terms
+            for word in _WORD_RE.findall(term)
+        ]
+        return bool(words) and all(w.isascii() and len(w) < MIN_TOKEN_SIZE for w in words)
 
 
 def like_pattern(term: str) -> str:
