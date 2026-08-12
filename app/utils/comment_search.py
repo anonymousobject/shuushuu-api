@@ -214,10 +214,7 @@ def reject_unindexable_comment_search(raw: str, mode: str | None) -> None:
     if parse_comment_search(raw).is_too_short_to_index:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Comment search terms must be at least {MIN_TOKEN_SIZE} characters. "
-                "Searching only very short words would scan every comment."
-            ),
+            detail=f"Comment search terms must be at least {MIN_TOKEN_SIZE} characters.",
         )
 
 
