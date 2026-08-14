@@ -168,7 +168,9 @@ class Users(UserBase, table=True):
     # User preferences (private)
     email_pm_pref: int = Field(default=1)
     spoiler_warning_pref: int = Field(default=1)
-    thumb_layout: int = Field(default=0)
+    # 0=list, 1=grid. Grid matches what anonymous visitors see, so signing up
+    # no longer changes the layout out from under a new user (FE #309).
+    thumb_layout: int = Field(default=1)
     # Grid thumbnail size step in CSS pixels. Stored as the pixel value rather
     # than an ordinal so that adding steps stays additive — an ordinal would
     # silently change the meaning of existing rows. Validated against the
