@@ -1,12 +1,19 @@
-"""Tests for GET /api/v1/users/{user_id}/ratings."""
+"""Tests for GET /api/v1/users/{user_id}/ratings.
 
-import pytest
+No `pytest.mark.anyio` here: the suite runs on pytest-asyncio
+(`asyncio_mode = "auto"`), and the anyio marker makes both plugins claim
+the same test. anyio then runs the test body in a runner of its own while
+pytest-asyncio sets up `engine`/`db_session` in the per-test asyncio loop --
+or the reverse, depending on which plugin registered first, which is not
+stable across environments. The loser's connection belongs to a dead loop
+and every test in the file dies on "got Future attached to a different
+loop" (see the `engine` fixture docstring in tests/conftest.py).
+"""
+
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Favorites, ImageRatings, Images, Users
-
-pytestmark = pytest.mark.anyio
 
 
 async def _make_user(db_session: AsyncSession, username: str) -> Users:
