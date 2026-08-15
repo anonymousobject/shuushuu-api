@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 
 import bcrypt
 
-
 # Development/test databases where test users should be created
 DEV_TEST_DATABASES = {"shuushuu_dev", "shuushuu_test"}
 
@@ -22,8 +21,8 @@ DEV_TEST_DATABASES = {"shuushuu_dev", "shuushuu_test"}
 # Typed as list[dict[str, Any]] to avoid mypy issues with mixed value types
 TEST_ACCOUNTS: list[dict[str, Any]] = [
     {
-        "username": "test1",
-        "password": "shuutest1",
+        "username": "testUser",
+        "password": "shuutestuser",
         "email": "test1@shuushuu.com",
         "admin": 0,
         "group": None,
@@ -33,6 +32,13 @@ TEST_ACCOUNTS: list[dict[str, Any]] = [
         "password": "shuutestadmin",
         "email": "testadmin@shuushuu.com",
         "admin": 1,
+        "group": "Admins",
+    },
+    {
+        "username": "testmod",
+        "password": "shuutestmod",
+        "email": "testmod@shuushuu.com",
+        "admin": 0,
         "group": "Mods",
     },
     {
@@ -87,7 +93,9 @@ def get_database_url() -> str:
     return os.environ.get("DATABASE_URL", "")
 
 
-async def run_command(cmd: list[str], description: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> bool:
+async def run_command(
+    cmd: list[str], description: str, cwd: Path | None = None, env: dict[str, str] | None = None
+) -> bool:
     """
     Run a shell command and return success status.
 
@@ -101,10 +109,7 @@ async def run_command(cmd: list[str], description: str, cwd: Path | None = None,
         True if successful, False otherwise
     """
     print(f"Running: {description}")
-    safe_cmd = [
-        arg if not arg.startswith("--password=") else "--password=***"
-        for arg in cmd
-    ]
+    safe_cmd = [arg if not arg.startswith("--password=") else "--password=***" for arg in cmd]
     print(f"Command: {' '.join(safe_cmd)}\n")
 
     try:
@@ -133,7 +138,28 @@ async def run_command(cmd: list[str], description: str, cwd: Path | None = None,
         return False
 
 
-def _build_mysql_cmd(db_config: dict[str, str]) -> list[str]:
+# Compose service name of the MariaDB container (see docker-compose.yml)
+MARIADB_SERVICE = "mariadb"
+
+
+def _maybe_docker_exec(cmd: list[str], use_docker: bool) -> list[str]:
+    """
+    Optionally run a mariadb client command inside the compose MariaDB service.
+
+    When use_docker is True the command is prefixed with
+    `docker compose exec -T mariadb` so the client bundled in the running
+    container is used instead of a host-installed binary. `-T` disables
+    pseudo-TTY allocation so piped stdin (e.g. a SQL dump) is forwarded.
+
+    The command must run from the project root so docker compose resolves the
+    correct project; run_command defaults cwd to the project root.
+    """
+    if use_docker:
+        return ["docker", "compose", "exec", "-T", MARIADB_SERVICE, *cmd]
+    return cmd
+
+
+def _build_mysql_cmd(db_config: dict[str, str], use_docker: bool = False) -> list[str]:
     """Build base mariadb CLI command from db config."""
     host = db_config["host"]
     if host == "mariadb":
@@ -150,7 +176,7 @@ def _build_mysql_cmd(db_config: dict[str, str]) -> list[str]:
         cmd.append(f"--password={db_config['password']}")
 
     cmd.append(db_config["database"])
-    return cmd
+    return _maybe_docker_exec(cmd, use_docker)
 
 
 def _hash_password(password: str) -> str:
@@ -158,12 +184,14 @@ def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
-async def drop_and_create_database(db_config: dict[str, str]) -> bool:
+async def drop_and_create_database(db_config: dict[str, str], use_docker: bool = False) -> bool:
     """
     Drop and recreate the database.
 
     Args:
         db_config: Database connection parameters
+        use_docker: If True, run the mariadb client inside the compose
+            MariaDB service instead of using the host binary
 
     Returns:
         True if successful, False otherwise
@@ -173,12 +201,13 @@ async def drop_and_create_database(db_config: dict[str, str]) -> bool:
     print(f"⚠️  Dropping database '{database_name}' if it exists...")
 
     # Replace Docker hostname 'mariadb' with 'localhost' when running from host
-    host = db_config['host']
-    if host == 'mariadb':
-        host = 'localhost'
-        print(f"Note: Replacing Docker hostname 'mariadb' with 'localhost' for host execution")
+    host = db_config["host"]
+    if host == "mariadb":
+        host = "localhost"
+        print("Note: Replacing Docker hostname 'mariadb' with 'localhost' for host execution")
 
-    # Build mysql command for drop/create
+    # Build mysql command for drop/create (no database name appended: the
+    # target database is being dropped, so connect to the server itself)
     mysql_cmd = [
         "mariadb",
         f"--host={host}",
@@ -196,20 +225,24 @@ async def drop_and_create_database(db_config: dict[str, str]) -> bool:
     ]
 
     success = await run_command(
-        drop_cmd,
+        _maybe_docker_exec(drop_cmd, use_docker),
         f"Drop and create database '{database_name}'",
     )
 
     return success
 
 
-async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
+async def import_sql_dump(
+    sql_file: Path, db_config: dict[str, str], use_docker: bool = False
+) -> bool:
     """
     Import SQL dump file into database.
 
     Args:
         sql_file: Path to SQL dump file
         db_config: Database connection parameters
+        use_docker: If True, run the mariadb client inside the compose
+            MariaDB service instead of using the host binary
 
     Returns:
         True if successful, False otherwise
@@ -222,9 +255,9 @@ async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
     print(f"Into database: {db_config['database']}")
 
     # Replace Docker hostname 'mariadb' with 'localhost' when running from host
-    host = db_config['host']
-    if host == 'mariadb':
-        host = 'localhost'
+    host = db_config["host"]
+    if host == "mariadb":
+        host = "localhost"
 
     # Build mysql import command with optimizations for large imports
     # Use 1GB for max-allowed-packet (in bytes)
@@ -240,10 +273,17 @@ async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
     if db_config["password"]:
         mysql_cmd.append(f"--password={db_config['password']}")
 
-    mysql_cmd.extend([
-        db_config["database"],
-        "--max-allowed-packet=1073741824",  # 1GB in bytes
-    ])
+    mysql_cmd.extend(
+        [
+            db_config["database"],
+            "--max-allowed-packet=1073741824",  # 1GB in bytes
+        ]
+    )
+
+    # Run the client inside the container when requested; sed still runs on the
+    # host (the dump file lives on the host) and pipes into the container's
+    # stdin via `docker compose exec -T`.
+    mysql_cmd = _maybe_docker_exec(mysql_cmd, use_docker)
 
     database = db_config["database"]
 
@@ -290,11 +330,7 @@ async def stamp_initial_migration(project_root: Path, database_url: str, revisio
 
     # Use alembic's -x option to override the database URL directly
     # This avoids issues with environment variables being overridden by .env
-    cmd = [
-        "uv", "run", "alembic",
-        "-x", f"dbUrl={sync_url}",
-        "stamp", revision
-    ]
+    cmd = ["uv", "run", "alembic", "-x", f"dbUrl={sync_url}", "stamp", revision]
 
     success = await run_command(
         cmd,
@@ -321,11 +357,7 @@ async def run_alembic_upgrade(project_root: Path, database_url: str) -> bool:
 
     # Use alembic's -x option to override the database URL directly
     # This avoids issues with environment variables being overridden by .env
-    cmd = [
-        "uv", "run", "alembic",
-        "-x", f"dbUrl={sync_url}",
-        "upgrade", "head"
-    ]
+    cmd = ["uv", "run", "alembic", "-x", f"dbUrl={sync_url}", "upgrade", "head"]
 
     success = await run_command(
         cmd,
@@ -378,7 +410,9 @@ async def start_docker_services(project_root: Path) -> bool:
     return success
 
 
-async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> bool:
+async def create_test_user(
+    db_config: dict[str, str], dry_run: bool = False, use_docker: bool = False
+) -> bool:
     """
     Create test users for development/test databases.
 
@@ -388,6 +422,8 @@ async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> 
     Args:
         db_config: Database connection parameters
         dry_run: If True, only show what would be done
+        use_docker: If True, run the mariadb client inside the compose
+            MariaDB service instead of using the host binary
 
     Returns:
         True if successful (or skipped for non-dev databases), False on error
@@ -396,20 +432,22 @@ async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> 
 
     # Only create test users for dev/test databases
     if database_name not in DEV_TEST_DATABASES:
-        print(f"Skipping test user creation (database '{database_name}' is not a dev/test database)")
+        print(
+            f"Skipping test user creation (database '{database_name}' is not a dev/test database)"
+        )
         return True
 
     print(f"Creating test users for database '{database_name}'...")
 
     if dry_run:
         for account in TEST_ACCOUNTS:
-            role = f"admin, group={account['group']}" if account["admin"] else "regular user"
+            role = f"admin={account['admin']}, group={account['group'] or 'none'}"
             print(f"  Would create user: {account['username']} ({role})")
             print(f"  Email: {account['email']}")
             print(f"  Password: {account['password']}")
         return True
 
-    mysql_cmd = _build_mysql_cmd(db_config)
+    mysql_cmd = _build_mysql_cmd(db_config, use_docker=use_docker)
 
     for account in TEST_ACCOUNTS:
         hashed_password = _hash_password(account["password"])
@@ -439,8 +477,10 @@ async def create_test_user(db_config: dict[str, str], dry_run: bool = False) -> 
         )
 
         if success:
-            role = f"admin, group={account['group']}" if account["admin"] else "regular user"
-            print(f"  ✓ Test user '{account['username']}' created ({role}, password: {account['password']})")
+            role = f"admin={account['admin']}, group={account['group'] or 'none'}"
+            print(
+                f"  ✓ Test user '{account['username']}' created ({role}, password: {account['password']})"
+            )
         else:
             return False
 

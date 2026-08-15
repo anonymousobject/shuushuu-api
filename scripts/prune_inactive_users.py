@@ -23,30 +23,29 @@ Usage:
 
     # Delete very specific: never logged in, created over 1 year ago
     uv run python scripts/prune_inactive_users.py --days-inactive 999999 --confirm
+
+    # Delete abandoned accounts: only logged in within first day, account 1+ year old
+    uv run python scripts/prune_inactive_users.py --login-window 1 --min-account-age 365 --confirm
 """
 
-import asyncio
 import argparse
+import asyncio
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Optional
+from typing import Any
 
-from sqlalchemy import select, func, and_, case, text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import CursorResult, Row, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models.user import Users
-from app.models.image import Images
-from app.models.comment import Comments
-from app.models.favorite import Favorites
-from app.models.image_rating import ImageRatings
-from app.models.tag_link import TagLinks
-from app.models.tag_history import TagHistory
 from app.config import settings
+from app.models.user import Users
 
 
 async def find_inactive_users(
     db: AsyncSession,
-    days_inactive: Optional[int] = None,
+    days_inactive: int | None = None,
+    login_window: int | None = None,
+    min_account_age: int | None = None,
 ) -> list[int]:
     """
     Find users that should be pruned using efficient subqueries.
@@ -60,6 +59,9 @@ async def find_inactive_users(
     - They have no tag links
     - If days_inactive specified: last_login is older than threshold
       (or NULL if never logged in)
+    - If login_window + min_account_age specified: last_login is within
+      login_window days of registration, and account is at least
+      min_account_age days old (catches bot/abandoned registrations)
 
     This uses a UNION-based approach to check for content across tables,
     which is much faster than LEFT JOINs for this use case.
@@ -68,6 +70,10 @@ async def find_inactive_users(
         db: AsyncSession for database queries
         days_inactive: Optional threshold for last login (in days)
                        If None, doesn't check login recency
+        login_window: Optional days after registration within which the
+                      user last logged in (catches abandoned accounts)
+        min_account_age: Required with login_window; minimum account age
+                         in days to avoid pruning fresh accounts
 
     Returns:
         List of user_ids that can be safely deleted
@@ -76,14 +82,29 @@ async def find_inactive_users(
     print("SCANNING FOR INACTIVE USERS")
     print("=" * 70)
 
-    # Build WHERE conditions
-    where_clauses = "u.image_posts = 0"
+    # Build login activity filter
+    login_filter = ""
+    params: dict[str, Any] = {}
 
     if days_inactive is not None:
         cutoff_date = datetime.now(UTC) - timedelta(days=days_inactive)
         print(f"\nInactivity threshold: {days_inactive} days (before {cutoff_date.date()})")
-        cutoff_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
-        where_clauses += f" AND (u.last_login IS NULL OR u.last_login < '{cutoff_str}')"
+        login_filter = "AND (u.last_login IS NULL OR u.last_login < :cutoff)"
+        params["cutoff"] = cutoff_date
+
+    if login_window is not None:
+        assert min_account_age is not None
+        age_cutoff = datetime.now(UTC) - timedelta(days=min_account_age)
+        print("\nAbandoned account mode:")
+        print(f"  Login window: {login_window} day(s) after registration")
+        print(f"  Min account age: {min_account_age} days (registered before {age_cutoff.date()})")
+        login_filter = (
+            "AND u.date_joined < :age_cutoff "
+            "AND (u.last_login IS NULL "
+            "     OR u.last_login < u.date_joined + INTERVAL :window DAY)"
+        )
+        params["age_cutoff"] = age_cutoff
+        params["window"] = login_window
 
     # Use raw SQL with UNION to find users with content in ANY table
     # Much faster than LEFT JOINs with GROUP BY
@@ -93,7 +114,7 @@ async def find_inactive_users(
         SELECT DISTINCT u.user_id
         FROM users u
         WHERE u.image_posts = 0
-          {f"AND (u.last_login IS NULL OR u.last_login < :cutoff)" if days_inactive else ""}
+          {login_filter}
           AND u.user_id NOT IN (
               SELECT DISTINCT user_id FROM posts WHERE user_id IS NOT NULL
               UNION
@@ -108,33 +129,22 @@ async def find_inactive_users(
         ORDER BY u.user_id
     """)
 
-    params = {}
-    if days_inactive is not None:
-        cutoff_date = datetime.now(UTC) - timedelta(days=days_inactive)
-        params["cutoff"] = cutoff_date
-
     result = await db.execute(sql_query, params)
     pruneable_users = [row[0] for row in result.all()]
 
-    print(f"Found {len(pruneable_users)} users with image_posts=0", end="")
-    if days_inactive:
-        print(f" and inactive for {days_inactive}+ days")
-    else:
-        print()
-
-    print(f"Verified {len(pruneable_users)} users with NO content in any table")
+    print(f"\nFound {len(pruneable_users)} pruneable users (no content in any table)")
 
     return pruneable_users
 
 
-async def get_user_details(db: AsyncSession, user_ids: list[int]) -> list[tuple]:
+async def get_user_details(db: AsyncSession, user_ids: list[int]) -> Sequence[Row[Any]]:
     """Fetch user details for display."""
     if not user_ids:
         return []
 
     stmt = (
-        select(Users.user_id, Users.username, Users.date_joined, Users.last_login)
-        .where(Users.user_id.in_(user_ids))
+        select(Users.user_id, Users.username, Users.date_joined, Users.last_login)  # type: ignore[call-overload]
+        .where(Users.user_id.in_(user_ids))  # type: ignore[union-attr]
         .order_by(Users.date_joined)
     )
     result = await db.execute(stmt)
@@ -164,12 +174,17 @@ async def delete_users(db: AsyncSession, user_ids: list[int]) -> int:
     batch_size = 1000
     total_deleted = 0
     for i in range(0, len(user_ids), batch_size):
-        batch = user_ids[i:i + batch_size]
+        batch = user_ids[i : i + batch_size]
         placeholders = ",".join([":id_" + str(j) for j in range(len(batch))])
         params = {f"id_{j}": uid for j, uid in enumerate(batch)}
         # Delete from user_groups first (no CASCADE on this table)
         await db.execute(text(f"DELETE FROM user_groups WHERE user_id IN ({placeholders})"), params)
-        result = await db.execute(text(f"DELETE FROM users WHERE user_id IN ({placeholders})"), params)
+        result = await db.execute(
+            text(f"DELETE FROM users WHERE user_id IN ({placeholders})"), params
+        )
+        # A raw text() DELETE always comes back as a CursorResult, which is
+        # where rowcount lives; Result alone doesn't declare it.
+        assert isinstance(result, CursorResult)
         total_deleted += result.rowcount
         await db.commit()
         if (i // batch_size + 1) % 10 == 0:
@@ -179,9 +194,7 @@ async def delete_users(db: AsyncSession, user_ids: list[int]) -> int:
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Prune inactive users from the database"
-    )
+    parser = argparse.ArgumentParser(description="Prune inactive users from the database")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -198,8 +211,32 @@ async def main() -> None:
         default=None,
         help="Only delete users inactive for N+ days (optional)",
     )
+    parser.add_argument(
+        "--login-window",
+        type=int,
+        default=None,
+        help="Abandoned account mode: prune users whose last login is within N days of registration (requires --min-account-age)",
+    )
+    parser.add_argument(
+        "--min-account-age",
+        type=int,
+        default=None,
+        help="Minimum account age in days (required with --login-window)",
+    )
 
     args = parser.parse_args()
+
+    if args.login_window is not None and args.min_account_age is None:
+        print("\nERROR: --login-window requires --min-account-age")
+        return
+
+    if args.min_account_age is not None and args.login_window is None:
+        print("\nERROR: --min-account-age requires --login-window")
+        return
+
+    if args.days_inactive is not None and args.login_window is not None:
+        print("\nERROR: --days-inactive and --login-window are mutually exclusive")
+        return
 
     if not args.dry_run and not args.confirm:
         print("\nERROR: Must specify --dry-run or --confirm")
@@ -209,13 +246,16 @@ async def main() -> None:
 
     # Connect to database
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False, future=True
-    )
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as db:
         # Find inactive users
-        user_ids = await find_inactive_users(db, days_inactive=args.days_inactive)
+        user_ids = await find_inactive_users(
+            db,
+            days_inactive=args.days_inactive,
+            login_window=args.login_window,
+            min_account_age=args.min_account_age,
+        )
 
         if not user_ids:
             print("\n✓ No inactive users found to prune")
@@ -232,9 +272,7 @@ async def main() -> None:
         print("-" * 70)
         for user_id, username, date_joined, last_login in user_details:
             joined_str = date_joined.strftime("%Y-%m-%d") if date_joined else "Unknown"
-            login_str = (
-                last_login.strftime("%Y-%m-%d") if last_login else "Never"
-            )
+            login_str = last_login.strftime("%Y-%m-%d") if last_login else "Never"
             print(f"{user_id:<8} {username:<30} {joined_str:<12} {login_str:<12}")
 
         print(f"\nTotal users to delete: {len(user_ids)}")
