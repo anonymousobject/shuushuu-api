@@ -82,6 +82,9 @@ exclude = [
     "__pycache__",
     "alembic/versions",
     "*.egg-info",
+    # Prose. The formatter would otherwise reflow the Python examples in
+    # AGENTS.md, which are wrapped for reading rather than to ruff's rules.
+    "*.md",
 ]
 extend-exclude = [
     "tests",
