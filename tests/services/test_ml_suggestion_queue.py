@@ -450,7 +450,7 @@ class TestCountPendingByTagPagination:
         # 12 images so each tag gets exactly 1 pending suggestion
         images = [await _make_image(db_session, user, f"pag1_{i}") for i in range(12)]
         tags = [await _make_tag(db_session, user, f"pag1_t{i}") for i in range(12)]
-        for img, tag in zip(images, tags, strict=False):
+        for img, tag in zip(images, tags, strict=True):
             await _make_suggestion(db_session, img, tag)
         await db_session.commit()
 
@@ -471,7 +471,7 @@ class TestCountPendingByTagPagination:
         images = [await _make_image(db_session, user, f"pag2_{i}") for i in range(12)]
         tags = [await _make_tag(db_session, user, f"pag2_t{i}") for i in range(12)]
         seeded_tag_ids = {tag.tag_id for tag in tags}
-        for img, tag in zip(images, tags, strict=False):
+        for img, tag in zip(images, tags, strict=True):
             await _make_suggestion(db_session, img, tag)
         await db_session.commit()
 
