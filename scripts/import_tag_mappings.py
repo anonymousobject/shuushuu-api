@@ -82,7 +82,7 @@ async def import_mappings(db: AsyncSession, csv_path: Path) -> dict[str, object]
         res = await db.execute(
             select(Tags.tag_id, Tags.title).where(Tags.tag_id.in_(explicit_ids))  # type: ignore[attr-defined]
         )
-        id_to_title = {tag_id: title for tag_id, title in res.all()}
+        id_to_title = dict(res.all())
 
     created = 0
     updated = 0

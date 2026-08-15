@@ -161,7 +161,7 @@ def main() -> None:
     test_db = "shuushuu_migration_test"
     dev_db = os.getenv("DB_NAME", "shuushuu")
 
-    print(f"Comparing:")
+    print("Comparing:")
     print(f"  📦 Test DB:  {test_db} (fresh from SQLModel + migrations)")
     print(f"  🔧 Dev DB:   {dev_db} (current development database)")
     print()
@@ -214,6 +214,7 @@ def main() -> None:
                     for test_col, dev_col in zip(
                         sorted(test_cols, key=lambda c: c["field"]),
                         sorted(dev_cols, key=lambda c: c["field"]),
+                        strict=True,
                     ):
                         if (
                             test_col["type"] != dev_col["type"]

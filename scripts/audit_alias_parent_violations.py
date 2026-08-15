@@ -21,9 +21,7 @@ from app.models.tag import Tags
 
 async def audit() -> None:
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False, future=True
-    )
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, future=True)
 
     async with async_session() as db:
         # Violation 1: Tags whose parent is an alias

@@ -20,21 +20,18 @@ import argparse
 import asyncio
 import re
 
-
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
-from app.models import Comments
 from app.core.logging import get_logger
+from app.models import Comments
 
 logger = get_logger(__name__)
 
 # Pre-compile regex patterns for better performance
 BR_TAG_PATTERN = re.compile(r"<br\s*/?>\s*", re.IGNORECASE)
-URL_WITH_PARAM_PATTERN = re.compile(
-    r"\[url=([^\]]+)\](.+?)\[/url\]", re.DOTALL | re.IGNORECASE
-)
+URL_WITH_PARAM_PATTERN = re.compile(r"\[url=([^\]]+)\](.+?)\[/url\]", re.DOTALL | re.IGNORECASE)
 URL_PLAIN_PATTERN = re.compile(r"\[url\](.+?)\[/url\]", re.DOTALL | re.IGNORECASE)
 SPOILER_TITLE_QUOTED_PATTERN = re.compile(
     r"\[spoiler=&quot;(.+?)&quot;\](.+?)\[/spoiler\]", re.DOTALL | re.IGNORECASE
@@ -42,9 +39,7 @@ SPOILER_TITLE_QUOTED_PATTERN = re.compile(
 SPOILER_TITLE_PATTERN = re.compile(
     r'\[spoiler="(.+?)"\](.+?)\[/spoiler\]', re.DOTALL | re.IGNORECASE
 )
-SPOILER_PLAIN_PATTERN = re.compile(
-    r"\[spoiler\](.+?)\[/spoiler\]", re.DOTALL | re.IGNORECASE
-)
+SPOILER_PLAIN_PATTERN = re.compile(r"\[spoiler\](.+?)\[/spoiler\]", re.DOTALL | re.IGNORECASE)
 # Cleanup: fix already-converted markdown links with quoted URLs
 # e.g. [text]("http://...") → [text](http://...)
 BROKEN_MD_LINK_PATTERN = re.compile(r'\[([^\]]+)\]\((["\'])(.+?)\2\)')
@@ -72,7 +67,7 @@ def convert_bbcode_to_markdown(text: str) -> tuple[str, bool]:
     def convert_url_with_param(match: re.Match[str]) -> str:
         nonlocal modified
         modified = True
-        url = match.group(1).replace("&quot;", '"').strip('"\'')
+        url = match.group(1).replace("&quot;", '"').strip("\"'")
         link_text = match.group(2)
         # Handle relative URLs
         if url.startswith("/"):
@@ -154,10 +149,7 @@ async def migrate_comments(db: AsyncSession, batch_size: int, dry_run: bool) -> 
 
         # Fetch one batch at a time
         result = await db.execute(
-            select(Comments)
-            .order_by(Comments.post_id)
-            .limit(batch_size)
-            .offset(offset)
+            select(Comments).order_by(Comments.post_id).limit(batch_size).offset(offset)
         )
         comments = result.scalars().all()
 
@@ -267,4 +259,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    asyncio.run(main(dry_run=args.dry_run, batch_size=args.batch_size, auto_confirm=args.auto_confirm))
+    asyncio.run(
+        main(dry_run=args.dry_run, batch_size=args.batch_size, auto_confirm=args.auto_confirm)
+    )

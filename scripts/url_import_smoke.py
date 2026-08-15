@@ -50,9 +50,9 @@ async def check(site: str, url: str) -> bool:
     except Exception as exc:  # noqa: BLE001 — smoke tool, report everything
         print(f"[FAIL] {site}: {type(exc).__name__}: {exc}")
         return False
-    ok = response.status_code == 200 and response.headers.get(
-        "content-type", ""
-    ).startswith("image/")
+    ok = response.status_code == 200 and response.headers.get("content-type", "").startswith(
+        "image/"
+    )
     marker = "PASS" if ok else "FAIL"
     print(
         f"[{marker}] {site}: {len(post.images)} image(s), "

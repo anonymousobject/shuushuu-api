@@ -56,7 +56,7 @@ def title_of(path: Path, fallback: str) -> str:
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.startswith("# "):
                 return line[2:].strip()
-    except (UnicodeDecodeError, OSError):
+    except UnicodeDecodeError, OSError:
         pass
     return fallback.replace("-", " ").capitalize()
 
@@ -78,9 +78,7 @@ def preserved_preamble() -> str:
 
 def main() -> None:
     # quarter -> slug -> {"date": str, "docs": {kind: filename}}
-    quarters: dict[str, dict[str, dict[str, Any]]] = defaultdict(
-        lambda: defaultdict(dict)
-    )
+    quarters: dict[str, dict[str, dict[str, Any]]] = defaultdict(lambda: defaultdict(dict))
 
     for quarter_dir in PLANS_DIR.iterdir():
         if not quarter_dir.is_dir() or not QUARTER_DIR.match(quarter_dir.name):
@@ -109,8 +107,7 @@ def main() -> None:
             preferred = next(k for k in ("design", "impl", "notes") if k in docs)
             name = title_of(PLANS_DIR / quarter / docs[preferred], slug)
             links = " · ".join(
-                f"[{kind}]({quarter}/{filename})"
-                for kind, filename in sorted(docs.items())
+                f"[{kind}]({quarter}/{filename})" for kind, filename in sorted(docs.items())
             )
             lines.append(f"| {entry['date']} | {name} | {links} |")
 

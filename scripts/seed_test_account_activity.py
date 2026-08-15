@@ -42,7 +42,9 @@ from app.config import settings
 
 async def seed_activity(db: AsyncSession, username: str, tag_title: str, favorites: int) -> None:
     user_row = (
-        await db.execute(text("SELECT user_id FROM users WHERE username = :username"), {"username": username})
+        await db.execute(
+            text("SELECT user_id FROM users WHERE username = :username"), {"username": username}
+        )
     ).first()
     if user_row is None:
         print(f"Error: no user found with username '{username}'")
@@ -87,7 +89,9 @@ async def seed_activity(db: AsyncSession, username: str, tag_title: str, favorit
     rating_result = None
     if rated_ids:
         rating_result = await db.execute(
-            text("INSERT IGNORE INTO image_ratings (user_id, image_id, rating) VALUES (:user_id, :image_id, 9)"),
+            text(
+                "INSERT IGNORE INTO image_ratings (user_id, image_id, rating) VALUES (:user_id, :image_id, 9)"
+            ),
             [{"user_id": user_id, "image_id": image_id} for image_id in rated_ids],
         )
 
@@ -102,7 +106,9 @@ async def seed_activity(db: AsyncSession, username: str, tag_title: str, favorit
         f"favorites: {fav_inserted} inserted, {fav_skipped} already present "
         f"(of {len(image_ids)} tagged '{tag_title}')"
     )
-    print(f"ratings: {rating_inserted} inserted, {rating_skipped} already present (of {len(rated_ids)} attempted)")
+    print(
+        f"ratings: {rating_inserted} inserted, {rating_skipped} already present (of {len(rated_ids)} attempted)"
+    )
 
 
 async def main() -> None:
