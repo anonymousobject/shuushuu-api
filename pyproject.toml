@@ -175,7 +175,15 @@ markers = [
 # warn_unused_ignores = true
 # warn_no_return = true
 # follow_imports = "normal"
-# Disable pydantic plugin due to typing_extensions conflict in VS Code extension
+# The pydantic mypy plugin is off deliberately, and not because it fails to
+# load: CLI mypy runs it fine (checked on mypy 1.19 / pydantic 2.12). It is off
+# because it synthesises __init__ from field names and so misreports
+# alias-based construction — TagSummary(title=..., type=...) is correct at
+# runtime under populate_by_name but reads as a missing argument. Enabling it
+# trades ~11 removable ignores for new false positives, and does nothing for
+# the SQLAlchemy column-expression errors that are most of the ignores here.
+# (A direct `import pydantic.mypy` raises ImportError because mypy ships
+# compiled modules; that does not affect mypy's own plugin loading.)
 # plugins = ["pydantic.mypy"]
 # namespace_packages = true
 # Strict mode settings
