@@ -1,13 +1,13 @@
 """Tests for banners API endpoints."""
 
 import json
-from httpx import AsyncClient
 
 import pytest
 import redis.asyncio as redis
+from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.misc import BannerSize, Banners
+from app.models.misc import Banners, BannerSize
 
 
 @pytest.mark.api

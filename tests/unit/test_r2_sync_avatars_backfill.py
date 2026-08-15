@@ -111,12 +111,8 @@ async def test_backfill_uploads_and_flips_bit(
     (avatar_settings / fname_a).write_bytes(b"\x89PNG-a")
     (avatar_settings / fname_b).write_bytes(b"\x89PNG-b")
 
-    user_a = _make_user(
-        db_session, username="bf_a", email="bf_a@x.test", avatar=fname_a
-    )
-    user_b = _make_user(
-        db_session, username="bf_b", email="bf_b@x.test", avatar=fname_b
-    )
+    user_a = _make_user(db_session, username="bf_a", email="bf_a@x.test", avatar=fname_a)
+    user_b = _make_user(db_session, username="bf_b", email="bf_b@x.test", avatar=fname_b)
     await db_session.commit()
 
     report = await cmd_avatars_backfill(dry_run=False, concurrency=4)
@@ -155,9 +151,7 @@ async def test_backfill_idempotent_skips_existing(
         content_type="image/png",
     )
 
-    user = _make_user(
-        db_session, username="bf_idem", email="bf_idem@x.test", avatar=fname
-    )
+    user = _make_user(db_session, username="bf_idem", email="bf_idem@x.test", avatar=fname)
     await db_session.commit()
 
     # Spy on upload_bytes to assert the script did NOT call it.
@@ -188,9 +182,7 @@ async def test_backfill_skips_when_local_missing(
     fname = "missing0000000000000000000000000.png"
     # Intentionally do NOT write the file to disk.
 
-    user = _make_user(
-        db_session, username="bf_miss", email="bf_miss@x.test", avatar=fname
-    )
+    user = _make_user(db_session, username="bf_miss", email="bf_miss@x.test", avatar=fname)
     await db_session.commit()
 
     with caplog.at_level(logging.WARNING):
@@ -204,9 +196,7 @@ async def test_backfill_skips_when_local_missing(
     assert user.avatar_in_r2 is False
 
     # No R2 object created
-    assert not await install_r2.object_exists(
-        bucket="public", key=f"avatars/{fname}"
-    )
+    assert not await install_r2.object_exists(bucket="public", key=f"avatars/{fname}")
 
     # Warning log emitted
     log_messages = " ".join(rec.getMessage() for rec in caplog.records)
@@ -224,9 +214,7 @@ async def test_backfill_dry_run_writes_nothing(
     fname = "dryrun00000000000000000000000000.png"
     (avatar_settings / fname).write_bytes(b"\x89PNG-dry")
 
-    user = _make_user(
-        db_session, username="bf_dry", email="bf_dry@x.test", avatar=fname
-    )
+    user = _make_user(db_session, username="bf_dry", email="bf_dry@x.test", avatar=fname)
     await db_session.commit()
 
     report = await cmd_avatars_backfill(dry_run=True, concurrency=2)
@@ -240,9 +228,7 @@ async def test_backfill_dry_run_writes_nothing(
 
     await db_session.refresh(user)
     assert user.avatar_in_r2 is False
-    assert not await install_r2.object_exists(
-        bucket="public", key=f"avatars/{fname}"
-    )
+    assert not await install_r2.object_exists(bucket="public", key=f"avatars/{fname}")
 
 
 @pytest.mark.unit
@@ -258,12 +244,8 @@ async def test_backfill_dry_run_reports_would_upload(
     (avatar_settings / fname_a).write_bytes(b"\x89PNG-a")
     (avatar_settings / fname_b).write_bytes(b"\x89PNG-b")
 
-    user_a = _make_user(
-        db_session, username="bf_wa", email="bf_wa@x.test", avatar=fname_a
-    )
-    user_b = _make_user(
-        db_session, username="bf_wb", email="bf_wb@x.test", avatar=fname_b
-    )
+    user_a = _make_user(db_session, username="bf_wa", email="bf_wa@x.test", avatar=fname_a)
+    user_b = _make_user(db_session, username="bf_wb", email="bf_wb@x.test", avatar=fname_b)
     await db_session.commit()
 
     report = await cmd_avatars_backfill(dry_run=True, concurrency=4)
@@ -279,9 +261,7 @@ async def test_backfill_dry_run_reports_would_upload(
     assert user_a.avatar_in_r2 is False
     assert user_b.avatar_in_r2 is False
     for fname in (fname_a, fname_b):
-        assert not await install_r2.object_exists(
-            bucket="public", key=f"avatars/{fname}"
-        )
+        assert not await install_r2.object_exists(bucket="public", key=f"avatars/{fname}")
 
 
 @pytest.mark.unit
@@ -299,15 +279,9 @@ async def test_backfill_continues_on_upload_failure(
     for fname in (fname_a, fname_b, fname_c):
         (avatar_settings / fname).write_bytes(b"\x89PNG-" + fname[:1].encode())
 
-    user_a = _make_user(
-        db_session, username="bf_fa", email="bf_fa@x.test", avatar=fname_a
-    )
-    user_b = _make_user(
-        db_session, username="bf_fb", email="bf_fb@x.test", avatar=fname_b
-    )
-    user_c = _make_user(
-        db_session, username="bf_fc", email="bf_fc@x.test", avatar=fname_c
-    )
+    user_a = _make_user(db_session, username="bf_fa", email="bf_fa@x.test", avatar=fname_a)
+    user_b = _make_user(db_session, username="bf_fb", email="bf_fb@x.test", avatar=fname_b)
+    user_c = _make_user(db_session, username="bf_fc", email="bf_fc@x.test", avatar=fname_c)
     await db_session.commit()
 
     real_upload = install_r2.__class__.upload_bytes

@@ -28,7 +28,9 @@ def test_deactivation_reason_labels():
 
 
 def test_images_model_accepts_deactivated():
-    img = Images(user_id=1, filename="x", ext="jpg", md5_hash="a" * 32, status=ImageStatus.DEACTIVATED)
+    img = Images(
+        user_id=1, filename="x", ext="jpg", md5_hash="a" * 32, status=ImageStatus.DEACTIVATED
+    )
     assert img.status == ImageStatus.DEACTIVATED
     assert img.reason_category is None
     assert img.status_reason is None
@@ -38,7 +40,10 @@ def test_images_model_still_loads_legacy_statuses():
     # Old rows may still construct with legacy values during/after migration.
     # (0/DEACTIVATED is current, not legacy — covered by test_images_model_accepts_deactivated.)
     for legacy in (ImageStatus.INAPPROPRIATE, ImageStatus.LOW_QUALITY):
-        assert Images(user_id=1, filename="x", ext="jpg", md5_hash="a" * 32, status=legacy).status == legacy
+        assert (
+            Images(user_id=1, filename="x", ext="jpg", md5_hash="a" * 32, status=legacy).status
+            == legacy
+        )
 
 
 def test_images_model_rejects_unknown_status():
@@ -48,8 +53,11 @@ def test_images_model_rejects_unknown_status():
 
 def test_status_history_has_reason_fields():
     h = ImageStatusHistory(
-        image_id=1, old_status=ImageStatus.ACTIVE, new_status=ImageStatus.DEACTIVATED,
-        reason_category=DeactivationReason.SPAM, reason="ad spam",
+        image_id=1,
+        old_status=ImageStatus.ACTIVE,
+        new_status=ImageStatus.DEACTIVATED,
+        reason_category=DeactivationReason.SPAM,
+        reason="ad spam",
     )
     assert h.reason_category == DeactivationReason.SPAM
     assert h.reason == "ad spam"

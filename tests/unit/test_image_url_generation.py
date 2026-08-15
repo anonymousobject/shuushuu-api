@@ -62,9 +62,7 @@ class TestUrlGenerationR2Off:
     """With R2 disabled, everything goes through /images/ — no exceptions."""
 
     @pytest.mark.parametrize("status", ALL_STATUSES)
-    @pytest.mark.parametrize(
-        "location", [R2Location.NONE, R2Location.PUBLIC, R2Location.PRIVATE]
-    )
+    @pytest.mark.parametrize("location", [R2Location.NONE, R2Location.PUBLIC, R2Location.PRIVATE])
     def test_url_fallback(self, r2_off, status, location):
         img = _make_image(status=status, r2_location=location)
         assert img.url == "http://localhost:3000/images/2026-04-17-1.jpg"
@@ -101,9 +99,7 @@ class TestUrlGenerationR2On:
             ImageStatus.OTHER,
         ],
     )
-    @pytest.mark.parametrize(
-        "location", [R2Location.NONE, R2Location.PUBLIC, R2Location.PRIVATE]
-    )
+    @pytest.mark.parametrize("location", [R2Location.NONE, R2Location.PUBLIC, R2Location.PRIVATE])
     def test_protected_never_direct_cdn(self, r2_on, status, location):
         """Protected statuses must never emit a CDN URL, regardless of location."""
         img = _make_image(status=status, r2_location=location)
@@ -128,8 +124,6 @@ class TestMediumLargeUrls:
         assert img.large_url == "https://cdn.example.com/large/2026-04-17-1.jpg"
 
     def test_medium_ready_fallback_when_none_location(self, r2_on):
-        img = _make_image(
-            status=ImageStatus.ACTIVE, r2_location=R2Location.NONE, medium=1, large=1
-        )
+        img = _make_image(status=ImageStatus.ACTIVE, r2_location=R2Location.NONE, medium=1, large=1)
         assert img.medium_url == "http://localhost:3000/medium/2026-04-17-1.jpg"
         assert img.large_url == "http://localhost:3000/large/2026-04-17-1.jpg"

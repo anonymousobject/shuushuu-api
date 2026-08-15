@@ -9,9 +9,7 @@ from app.models.permissions import Groups, UserGroups
 
 
 @pytest.mark.asyncio
-async def test_list_images_includes_empty_groups(
-    client: AsyncClient, db_session: AsyncSession
-):
+async def test_list_images_includes_empty_groups(client: AsyncClient, db_session: AsyncSession):
     """Images endpoint returns empty groups array for users without groups."""
     # Create an image (user 1 exists from fixture, has no groups)
     image = Images(
@@ -36,17 +34,13 @@ async def test_list_images_includes_empty_groups(
     assert len(data["images"]) >= 1
 
     # Find our image
-    test_image = next(
-        (img for img in data["images"] if img["filename"] == "test-groups-001"), None
-    )
+    test_image = next((img for img in data["images"] if img["filename"] == "test-groups-001"), None)
     assert test_image is not None
     assert test_image["user"]["groups"] == []
 
 
 @pytest.mark.asyncio
-async def test_list_images_includes_user_groups(
-    client: AsyncClient, db_session: AsyncSession
-):
+async def test_list_images_includes_user_groups(client: AsyncClient, db_session: AsyncSession):
     """Images endpoint returns user's groups in response."""
     # Create a group and add user 1 to it
     group = Groups(title="mods", desc="Moderators")
@@ -76,17 +70,13 @@ async def test_list_images_includes_user_groups(
     assert response.status_code == 200
 
     data = response.json()
-    test_image = next(
-        (img for img in data["images"] if img["filename"] == "test-groups-002"), None
-    )
+    test_image = next((img for img in data["images"] if img["filename"] == "test-groups-002"), None)
     assert test_image is not None
     assert test_image["user"]["groups"] == ["mods"]
 
 
 @pytest.mark.asyncio
-async def test_get_image_includes_user_groups(
-    client: AsyncClient, db_session: AsyncSession
-):
+async def test_get_image_includes_user_groups(client: AsyncClient, db_session: AsyncSession):
     """Single image endpoint returns user's groups."""
     # Create a group and add user 1 to it
     group = Groups(title="testers", desc="Testers")

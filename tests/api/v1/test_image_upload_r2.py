@@ -48,9 +48,7 @@ class TestUploadEnqueuesR2Finalize:
         monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
         token = create_access_token(uploader.user_id)
 
-        with patch(
-            "app.api.v1.images.enqueue_job", new_callable=AsyncMock
-        ) as mock_enqueue:
+        with patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock) as mock_enqueue:
             response = await client.post(
                 "/api/v1/images/upload",
                 files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
@@ -58,9 +56,7 @@ class TestUploadEnqueuesR2Finalize:
             )
         assert response.status_code in (200, 201)
         finalize_calls = [
-            c
-            for c in mock_enqueue.await_args_list
-            if c.args[0] == "r2_finalize_upload_job"
+            c for c in mock_enqueue.await_args_list if c.args[0] == "r2_finalize_upload_job"
         ]
         assert len(finalize_calls) == 1
         assert finalize_calls[0].kwargs.get("_defer_by", 0) >= 60
@@ -72,17 +68,13 @@ class TestUploadEnqueuesR2Finalize:
         monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
         token = create_access_token(uploader.user_id)
 
-        with patch(
-            "app.api.v1.images.enqueue_job", new_callable=AsyncMock
-        ) as mock_enqueue:
+        with patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock) as mock_enqueue:
             await client.post(
                 "/api/v1/images/upload",
                 files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
                 headers={"Authorization": f"Bearer {token}"},
             )
         finalize_calls = [
-            c
-            for c in mock_enqueue.await_args_list
-            if c.args[0] == "r2_finalize_upload_job"
+            c for c in mock_enqueue.await_args_list if c.args[0] == "r2_finalize_upload_job"
         ]
         assert finalize_calls == []

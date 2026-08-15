@@ -7,7 +7,7 @@ import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.misc import BannerSize, Banners
+from app.models.misc import Banners, BannerSize
 
 
 @pytest.mark.integration

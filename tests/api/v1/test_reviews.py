@@ -194,9 +194,7 @@ class TestReviewsList:
 class TestCreateReview:
     """Tests for POST /api/v1/admin/images/{image_id}/review endpoint."""
 
-    async def test_create_review_success(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_create_review_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test creating a review directly on an image."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_start")
@@ -225,9 +223,7 @@ class TestCreateReview:
         await db_session.refresh(image)
         assert image.status == ImageStatus.REVIEW
 
-    async def test_create_review_with_reason(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_create_review_with_reason(self, client: AsyncClient, db_session: AsyncSession):
         """Test creating a review with an optional reason."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_start")
@@ -411,9 +407,7 @@ class TestCreateReview:
 class TestReviewVote:
     """Tests for POST /api/v1/admin/reviews/{review_id}/vote endpoint."""
 
-    async def test_cast_vote_keep(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_cast_vote_keep(self, client: AsyncClient, db_session: AsyncSession):
         """Test casting a 'keep' vote on a review."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_vote")
@@ -442,9 +436,7 @@ class TestReviewVote:
         assert data["vote_label"] == "Keep"
         assert data["comment"] == "Looks fine to me"
 
-    async def test_cast_vote_remove(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_cast_vote_remove(self, client: AsyncClient, db_session: AsyncSession):
         """Test casting a 'remove' vote on a review."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_vote")
@@ -472,9 +464,7 @@ class TestReviewVote:
         assert data["vote"] == 0
         assert data["vote_label"] == "Remove"
 
-    async def test_update_existing_vote(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_update_existing_vote(self, client: AsyncClient, db_session: AsyncSession):
         """Test updating an existing vote."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_vote")
@@ -702,9 +692,7 @@ class TestReviewVote:
         await db_session.refresh(review)
         assert review.status == ReviewStatus.OPEN
 
-    async def test_vote_on_closed_review_fails(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_vote_on_closed_review_fails(self, client: AsyncClient, db_session: AsyncSession):
         """Test voting on closed review fails."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_vote")
@@ -735,9 +723,7 @@ class TestReviewVote:
 class TestReviewClose:
     """Tests for POST /api/v1/admin/reviews/{review_id}/close endpoint."""
 
-    async def test_close_review_keep(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_close_review_keep(self, client: AsyncClient, db_session: AsyncSession):
         """Test closing review with keep outcome."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_close_early")
@@ -773,9 +759,7 @@ class TestReviewClose:
         await db_session.refresh(image)
         assert image.status == ImageStatus.ACTIVE
 
-    async def test_close_review_remove(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_close_review_remove(self, client: AsyncClient, db_session: AsyncSession):
         """Test closing review with remove outcome."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_close_early")
@@ -911,9 +895,7 @@ class TestReviewClose:
 class TestReviewExtend:
     """Tests for POST /api/v1/admin/reviews/{review_id}/extend endpoint."""
 
-    async def test_extend_review_success(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_extend_review_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test extending a review deadline."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_start")
@@ -970,9 +952,7 @@ class TestReviewExtend:
         assert response.status_code == 400
         assert "already been used" in response.json()["detail"]
 
-    async def test_extend_closed_review_fails(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_extend_closed_review_fails(self, client: AsyncClient, db_session: AsyncSession):
         """Test extending closed review fails."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_start")
@@ -1002,9 +982,7 @@ class TestReviewExtend:
 class TestReviewDetail:
     """Tests for GET /api/v1/admin/reviews/{review_id} endpoint."""
 
-    async def test_get_review_with_votes(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_review_with_votes(self, client: AsyncClient, db_session: AsyncSession):
         """Test getting review details with all votes."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_view")
@@ -1078,9 +1056,7 @@ class TestReviewDetail:
         data = response.json()
         assert data["reason"] == "Needs community review"
 
-    async def test_get_nonexistent_review(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_nonexistent_review(self, client: AsyncClient, db_session: AsyncSession):
         """Test getting non-existent review returns 404."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "review_view")

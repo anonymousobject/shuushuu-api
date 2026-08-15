@@ -44,9 +44,7 @@ class TestCheckIqdbSimilarityByHash:
         mock_client.__aexit__.return_value = False
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            results = await check_iqdb_similarity_by_hash(
-                "iqdb_deadbeef", threshold=50.0
-            )
+            results = await check_iqdb_similarity_by_hash("iqdb_deadbeef", threshold=50.0)
 
         assert results == [
             {"image_id": 1, "score": 95.0},

@@ -79,9 +79,7 @@ class TestListNews:
         assert data["total"] == 0
         assert data["news"] == []
 
-    async def test_list_returns_news_with_username(
-        self, client: AsyncClient, news_item: News
-    ):
+    async def test_list_returns_news_with_username(self, client: AsyncClient, news_item: News):
         """List returns news items with username from user join."""
         response = await client.get("/api/v1/news")
         assert response.status_code == 200
@@ -104,9 +102,7 @@ class TestListNews:
         assert data["page"] == 1
         assert data["per_page"] == 2
 
-    async def test_list_ordered_newest_first(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_list_ordered_newest_first(self, client: AsyncClient, db_session: AsyncSession):
         """List returns news ordered by news_id DESC (newest first)."""
         for i in range(3):
             db_session.add(News(user_id=1, title=f"News {i}", news_text=f"Content {i}"))
@@ -140,14 +136,10 @@ class TestCreateNews:
 
     async def test_create_requires_auth(self, client: AsyncClient):
         """Create returns 401 without authentication."""
-        response = await client.post(
-            "/api/v1/news", json={"title": "Test", "news_text": "Content"}
-        )
+        response = await client.post("/api/v1/news", json={"title": "Test", "news_text": "Content"})
         assert response.status_code == 401
 
-    async def test_create_requires_permission(
-        self, client: AsyncClient, unprivileged_token: str
-    ):
+    async def test_create_requires_permission(self, client: AsyncClient, unprivileged_token: str):
         """Create returns 403 without NEWS_CREATE permission."""
         response = await client.post(
             "/api/v1/news",
@@ -192,9 +184,7 @@ class TestUpdateNews:
 
     async def test_update_requires_auth(self, client: AsyncClient, news_item: News):
         """Update returns 401 without authentication."""
-        response = await client.put(
-            f"/api/v1/news/{news_item.news_id}", json={"title": "Updated"}
-        )
+        response = await client.put(f"/api/v1/news/{news_item.news_id}", json={"title": "Updated"})
         assert response.status_code == 401
 
     async def test_update_requires_permission(

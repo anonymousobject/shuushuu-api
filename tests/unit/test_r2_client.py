@@ -25,9 +25,7 @@ class TestGetR2Storage:
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         monkeypatch.setattr(settings, "R2_ACCESS_KEY_ID", "ak")
         monkeypatch.setattr(settings, "R2_SECRET_ACCESS_KEY", "sk")
-        monkeypatch.setattr(
-            settings, "R2_ENDPOINT", "https://example.r2.cloudflarestorage.com"
-        )
+        monkeypatch.setattr(settings, "R2_ENDPOINT", "https://example.r2.cloudflarestorage.com")
         storage = get_r2_storage()
         assert isinstance(storage, R2Storage)
 
@@ -43,6 +41,4 @@ class TestGetR2Storage:
     async def test_dummy_upload_bytes_raises(self):
         storage = DummyR2Storage()
         with pytest.raises(RuntimeError, match="R2 is disabled"):
-            await storage.upload_bytes(
-                bucket="x", key="y", body=b"z", content_type="image/png"
-            )
+            await storage.upload_bytes(bucket="x", key="y", body=b"z", content_type="image/png")

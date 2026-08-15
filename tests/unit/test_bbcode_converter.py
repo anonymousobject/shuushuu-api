@@ -23,38 +23,28 @@ class TestConvertBbcodeToMarkdown:
         assert modified is True
 
     def test_url_with_param(self):
-        text, modified = convert_bbcode_to_markdown(
-            '[url=http://example.com]click here[/url]'
-        )
+        text, modified = convert_bbcode_to_markdown("[url=http://example.com]click here[/url]")
         assert text == "[click here](http://example.com)"
         assert modified is True
 
     def test_url_with_quoted_param(self):
         """BBCode [url="http://..."] with quotes around URL."""
-        text, modified = convert_bbcode_to_markdown(
-            '[url="http://example.com"]click here[/url]'
-        )
+        text, modified = convert_bbcode_to_markdown('[url="http://example.com"]click here[/url]')
         assert text == "[click here](http://example.com)"
         assert modified is True
 
     def test_url_plain(self):
-        text, modified = convert_bbcode_to_markdown(
-            "[url]http://example.com[/url]"
-        )
+        text, modified = convert_bbcode_to_markdown("[url]http://example.com[/url]")
         assert text == "[http://example.com](http://example.com)"
         assert modified is True
 
     def test_spoiler_plain(self):
-        text, modified = convert_bbcode_to_markdown(
-            "[spoiler]hidden text[/spoiler]"
-        )
+        text, modified = convert_bbcode_to_markdown("[spoiler]hidden text[/spoiler]")
         assert text == "[spoiler]\nhidden text\n[/spoiler]"
         assert modified is True
 
     def test_spoiler_with_title(self):
-        text, modified = convert_bbcode_to_markdown(
-            '[spoiler="source"]hidden text[/spoiler]'
-        )
+        text, modified = convert_bbcode_to_markdown('[spoiler="source"]hidden text[/spoiler]')
         assert text == "[spoiler: source]\nhidden text\n[/spoiler]"
         assert modified is True
 
@@ -65,17 +55,13 @@ class TestConvertBbcodeToMarkdown:
 
     def test_already_broken_markdown_link_with_quoted_url(self):
         """Fix previously-converted links that have quotes around the URL."""
-        text, modified = convert_bbcode_to_markdown(
-            '[click here]("http://example.com")'
-        )
+        text, modified = convert_bbcode_to_markdown('[click here]("http://example.com")')
         assert text == "[click here](http://example.com)"
         assert modified is True
 
     def test_already_broken_markdown_link_single_quotes(self):
         """Fix previously-converted links with single quotes around URL."""
-        text, modified = convert_bbcode_to_markdown(
-            "[click here]('http://example.com')"
-        )
+        text, modified = convert_bbcode_to_markdown("[click here]('http://example.com')")
         assert text == "[click here](http://example.com)"
         assert modified is True
 
@@ -89,9 +75,7 @@ class TestConvertBbcodeToMarkdown:
 
     def test_multiple_broken_markdown_links(self):
         """Fix multiple broken markdown links in one text."""
-        text, modified = convert_bbcode_to_markdown(
-            '[a]("http://x.com") and [b]("http://y.com")'
-        )
+        text, modified = convert_bbcode_to_markdown('[a]("http://x.com") and [b]("http://y.com")')
         assert text == "[a](http://x.com) and [b](http://y.com)"
         assert modified is True
 
@@ -105,13 +89,13 @@ class TestConvertBbcodeToMarkdown:
     def test_real_php_bbcode_with_html_entities(self):
         """Test with actual BBCode from the legacy PHP database."""
         php_text = (
-            'Welcome. You can have an idea of the  '
-            '[url=&quot;http://e-shuushuu.net/about/tags/&quot;] tags here[/url]'
-            ' as tagging them are necessary and our '
-            '[url=&quot;http://e-shuushuu.net/about/rules/&quot;]rules here.[/url]'
-            ' If you have any questions, please do not hesitate to ask a '
-            'tagging team member [orange name] or a moderator [pink/red name]. '
-            'I hope you enjoy your stay.\n\n'
+            "Welcome. You can have an idea of the  "
+            "[url=&quot;http://e-shuushuu.net/about/tags/&quot;] tags here[/url]"
+            " as tagging them are necessary and our "
+            "[url=&quot;http://e-shuushuu.net/about/rules/&quot;]rules here.[/url]"
+            " If you have any questions, please do not hesitate to ask a "
+            "tagging team member [orange name] or a moderator [pink/red name]. "
+            "I hope you enjoy your stay.\n\n"
             "We don&#039;t allow AI-generated images on our board though, "
             "so I will need to disable these images."
         )

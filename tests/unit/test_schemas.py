@@ -9,8 +9,8 @@ from datetime import datetime
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.auth import ForgotPasswordRequest, ResetPasswordRequest
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.image import (
     ImageBase,
     ImageResponse,

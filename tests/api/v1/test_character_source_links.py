@@ -21,7 +21,6 @@ from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
 from app.models.user import Users
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

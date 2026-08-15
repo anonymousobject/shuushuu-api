@@ -642,9 +642,7 @@ async def test_generate_and_store_populates_raw_store_and_suggestions(
     class FakeService:
         model_name = "v3"
 
-        async def generate_raw_predictions(
-            self, image_path, *, include_categories, min_confidence
-        ):
+        async def generate_raw_predictions(self, image_path, *, include_categories, min_confidence):
             assert include_categories == {0, 4}  # SUGGESTION_CATEGORIES
             return list(raw)
 
@@ -828,10 +826,14 @@ async def test_store_predictions_swallows_duplicate_race(db_session, tmp_path, m
     monkeypatch.setattr(db_session, "commit", real_commit)
     monkeypatch.setattr(db_session, "rollback", real_rollback)
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert rows == []  # our aborted attempt persisted nothing
 
 

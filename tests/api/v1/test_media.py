@@ -295,7 +295,10 @@ class TestServeMediumEndpoint:
         response = await client.get(f"/medium/2026-01-02-{image_with_medium.image_id}.png")
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
-        assert f"/internal/medium/{image_with_medium.filename}.png" in response.headers["X-Accel-Redirect"]
+        assert (
+            f"/internal/medium/{image_with_medium.filename}.png"
+            in response.headers["X-Accel-Redirect"]
+        )
 
     async def test_medium_returns_404_when_variant_missing(
         self, client: AsyncClient, image_without_medium: Images
@@ -439,7 +442,10 @@ class TestServeLargeEndpoint:
         response = await client.get(f"/large/2026-01-02-{image_with_large.image_id}.jpeg")
         assert response.status_code == 200
         assert "X-Accel-Redirect" in response.headers
-        assert f"/internal/large/{image_with_large.filename}.jpeg" in response.headers["X-Accel-Redirect"]
+        assert (
+            f"/internal/large/{image_with_large.filename}.jpeg"
+            in response.headers["X-Accel-Redirect"]
+        )
 
     async def test_large_returns_404_when_variant_missing(
         self, client: AsyncClient, image_without_large: Images
@@ -472,9 +478,7 @@ class TestServeLargeEndpoint:
         self, client: AsyncClient, protected_image_with_large: Images
     ):
         """Protected large variant returns 404 for anonymous user."""
-        response = await client.get(
-            f"/large/2026-01-02-{protected_image_with_large.image_id}.jpeg"
-        )
+        response = await client.get(f"/large/2026-01-02-{protected_image_with_large.image_id}.jpeg")
         assert response.status_code == 404
 
     async def test_protected_large_owner_returns_xaccel(

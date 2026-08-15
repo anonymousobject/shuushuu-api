@@ -62,9 +62,7 @@ class TestRandomImagesRedirect:
             db_session.add(img)
         await db_session.commit()
 
-        response = await client.get(
-            "/api/v1/images/random?per_page=5", follow_redirects=False
-        )
+        response = await client.get("/api/v1/images/random?per_page=5", follow_redirects=False)
 
         assert response.status_code == 302
         location = response.headers["location"]

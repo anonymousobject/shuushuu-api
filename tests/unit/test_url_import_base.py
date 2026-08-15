@@ -46,7 +46,9 @@ class TestFetchJson:
 
         async with _client(handler) as client:
             await fetch_json(
-                client, "https://example.test/api", site="example",
+                client,
+                "https://example.test/api",
+                site="example",
                 headers={"Referer": "https://example.test/"},
             )
         assert seen["referer"] == "https://example.test/"
@@ -127,9 +129,7 @@ class TestAdvertisedSites:
         for entry in advertised_sites():
             owner = get_resolver(entry.example_url)
             assert owner is not None
-            assert owner.site == entry.site, (
-                f"{entry.site} example is claimed by {owner.site}"
-            )
+            assert owner.site == entry.site, f"{entry.site} example is claimed by {owner.site}"
 
     def test_every_advertised_entry_has_a_nonempty_example(self):
         entries = advertised_sites()

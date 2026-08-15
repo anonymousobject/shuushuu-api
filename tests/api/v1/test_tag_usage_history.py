@@ -114,9 +114,7 @@ class TestGetTagUsageHistory:
             assert item["tag_id"] == tag.tag_id
             assert item["action"] in ["added", "removed"]
 
-    async def test_includes_user_info(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_includes_user_info(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """History entries should include user info."""
         # Create a user
         user = Users(
@@ -182,9 +180,7 @@ class TestGetTagUsageHistory:
         response = await client.get("/api/v1/tags/99999999/usage-history")
         assert response.status_code == 404
 
-    async def test_pagination_works(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_pagination_works(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """Should support pagination."""
         # Create a user
         user = Users(
@@ -230,9 +226,7 @@ class TestGetTagUsageHistory:
         await db_session.commit()
 
         # Get first page with per_page=2
-        response = await client.get(
-            f"/api/v1/tags/{tag.tag_id}/usage-history?page=1&per_page=2"
-        )
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/usage-history?page=1&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 1
@@ -241,18 +235,14 @@ class TestGetTagUsageHistory:
         assert data["total"] == 5
 
         # Get second page
-        response = await client.get(
-            f"/api/v1/tags/{tag.tag_id}/usage-history?page=2&per_page=2"
-        )
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/usage-history?page=2&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 2
         assert len(data["items"]) == 2
 
         # Get third page
-        response = await client.get(
-            f"/api/v1/tags/{tag.tag_id}/usage-history?page=3&per_page=2"
-        )
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/usage-history?page=3&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 3
@@ -359,9 +349,7 @@ class TestGetTagUsageHistory:
         assert data["items"][1]["tag_history_id"] == history2.tag_history_id
         assert data["items"][2]["tag_history_id"] == history1.tag_history_id
 
-    async def test_handles_null_user(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_handles_null_user(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """Should handle history entries with null user_id gracefully."""
         # Create a tag
         tag = Tags(title="null user usage tag", type=TagType.THEME)
@@ -809,9 +797,7 @@ class TestGetTagUsageHistory:
 
         # Global rank 11 (offset=10) is history[5] (tie winner via lane DESC);
         # rank 12 (offset=11) is link[5].
-        response = await client.get(
-            f"/api/v1/tags/{tag.tag_id}/usage-history?page=11&per_page=1"
-        )
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/usage-history?page=11&per_page=1")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 20
@@ -819,9 +805,7 @@ class TestGetTagUsageHistory:
         assert data["items"][0]["image_id"] == history_images[5].image_id
         assert data["items"][0]["action"] == "removed"
 
-        response = await client.get(
-            f"/api/v1/tags/{tag.tag_id}/usage-history?page=12&per_page=1"
-        )
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/usage-history?page=12&per_page=1")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 20

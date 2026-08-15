@@ -75,9 +75,7 @@ async def grant_permission(db_session: AsyncSession, user_id: int, perm_title: s
         db_session.add(perm)
         await db_session.flush()
 
-    result = await db_session.execute(
-        select(Groups).where(Groups.title == "image_test_admin")
-    )
+    result = await db_session.execute(select(Groups).where(Groups.title == "image_test_admin"))
     group = result.scalar_one_or_none()
     if not group:
         group = Groups(title="image_test_admin", desc="Image test admin group")
@@ -135,9 +133,7 @@ async def create_test_image(db_session: AsyncSession, user_id: int) -> Images:
 class TestImageStatusChange:
     """Tests for PATCH /api/v1/admin/images/{image_id} endpoint."""
 
-    async def test_mark_image_as_spoiler(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_mark_image_as_spoiler(self, client: AsyncClient, db_session: AsyncSession):
         """Test marking an image as spoiler."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")
@@ -265,9 +261,7 @@ class TestImageStatusChange:
         assert response.status_code == 400
         assert "replacement_id" in response.json()["detail"].lower()
 
-    async def test_cannot_repost_self(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_cannot_repost_self(self, client: AsyncClient, db_session: AsyncSession):
         """Test that an image cannot be marked as a repost of itself."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")
@@ -287,9 +281,7 @@ class TestImageStatusChange:
         assert response.status_code == 400
         assert "itself" in response.json()["detail"].lower()
 
-    async def test_invalid_replacement_id(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_invalid_replacement_id(self, client: AsyncClient, db_session: AsyncSession):
         """Test that invalid replacement_id fails."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")
@@ -359,9 +351,7 @@ class TestImageStatusChange:
 
         assert response.status_code == 403
 
-    async def test_image_not_found(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_image_not_found(self, client: AsyncClient, db_session: AsyncSession):
         """Test 404 for non-existent image."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")
@@ -376,9 +366,7 @@ class TestImageStatusChange:
 
         assert response.status_code == 404
 
-    async def test_invalid_status_value(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_invalid_status_value(self, client: AsyncClient, db_session: AsyncSession):
         """Test validation error for invalid status value."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")
@@ -520,15 +508,13 @@ class TestImageStatusChangeAuditLog:
 
         # Add data to repost
         db_session.add(Favorites(user_id=user.user_id, image_id=repost_image.image_id))
-        db_session.add(ImageRatings(
-            user_id=user.user_id, image_id=repost_image.image_id, rating=8
-        ))
+        db_session.add(ImageRatings(user_id=user.user_id, image_id=repost_image.image_id, rating=8))
         tag = Tags(title="repost test tag", type=1)
         db_session.add(tag)
         await db_session.flush()
-        db_session.add(TagLinks(
-            tag_id=tag.tag_id, image_id=repost_image.image_id, user_id=user.user_id
-        ))
+        db_session.add(
+            TagLinks(tag_id=tag.tag_id, image_id=repost_image.image_id, user_id=user.user_id)
+        )
         repost_image.favorites = 1
         await db_session.commit()
 
@@ -547,31 +533,31 @@ class TestImageStatusChangeAuditLog:
 
         # Verify data migrated to original
         fav_result = await db_session.execute(
-            select(func.count()).select_from(Favorites).where(
-                Favorites.image_id == original_image.image_id
-            )
+            select(func.count())
+            .select_from(Favorites)
+            .where(Favorites.image_id == original_image.image_id)
         )
         assert fav_result.scalar() == 1
 
         rating_result = await db_session.execute(
-            select(func.count()).select_from(ImageRatings).where(
-                ImageRatings.image_id == original_image.image_id
-            )
+            select(func.count())
+            .select_from(ImageRatings)
+            .where(ImageRatings.image_id == original_image.image_id)
         )
         assert rating_result.scalar() == 1
 
         tag_result = await db_session.execute(
-            select(func.count()).select_from(TagLinks).where(
-                TagLinks.image_id == original_image.image_id
-            )
+            select(func.count())
+            .select_from(TagLinks)
+            .where(TagLinks.image_id == original_image.image_id)
         )
         assert tag_result.scalar() == 1
 
         # Verify repost is cleaned up
         fav_result = await db_session.execute(
-            select(func.count()).select_from(Favorites).where(
-                Favorites.image_id == repost_image.image_id
-            )
+            select(func.count())
+            .select_from(Favorites)
+            .where(Favorites.image_id == repost_image.image_id)
         )
         assert fav_result.scalar() == 0
 
@@ -621,12 +607,14 @@ class TestImageStatusChangeAuditLog:
         assert response.status_code == 200
 
         rows = (
-            await db_session.execute(
-                select(MlTagSuggestions).where(
-                    MlTagSuggestions.image_id == repost.image_id
+            (
+                await db_session.execute(
+                    select(MlTagSuggestions).where(MlTagSuggestions.image_id == repost.image_id)
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert rows == []
 
 
@@ -634,9 +622,7 @@ class TestImageStatusChangeAuditLog:
 class TestImageLocked:
     """Tests for locking/unlocking image comments."""
 
-    async def test_lock_image_comments(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_lock_image_comments(self, client: AsyncClient, db_session: AsyncSession):
         """Test locking comments on an image."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")
@@ -661,9 +647,7 @@ class TestImageLocked:
         await db_session.refresh(image)
         assert image.locked == 1
 
-    async def test_unlock_image_comments(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_unlock_image_comments(self, client: AsyncClient, db_session: AsyncSession):
         """Test unlocking comments on an image."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")
@@ -711,9 +695,7 @@ class TestImageLocked:
         assert data["status"] == ImageStatus.SPOILER
         assert data["locked"] == 1
 
-    async def test_locked_only_without_status(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_locked_only_without_status(self, client: AsyncClient, db_session: AsyncSession):
         """Test that locked can be changed without providing status."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")
@@ -734,9 +716,7 @@ class TestImageLocked:
         assert data["locked"] == 1
         assert data["status"] == original_status  # Status unchanged
 
-    async def test_locked_audit_log(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_locked_audit_log(self, client: AsyncClient, db_session: AsyncSession):
         """Test that locking an image creates an audit log entry."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "image_edit")

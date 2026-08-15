@@ -65,10 +65,9 @@ class TestDeleteEnqueuesR2:
         await db_session.refresh(image)
         image_id = image.image_id
 
-        with patch(
-            "app.api.v1.images.enqueue_job", new_callable=AsyncMock
-        ) as mock_enqueue, patch(
-            "app.api.v1.images.remove_from_iqdb", return_value=True
+        with (
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock) as mock_enqueue,
+            patch("app.api.v1.images.remove_from_iqdb", return_value=True),
         ):
             response = await client.delete(
                 f"/api/v1/images/{image_id}?reason=test",
@@ -76,9 +75,7 @@ class TestDeleteEnqueuesR2:
             )
         assert response.status_code == 204
         delete_calls = [
-            c
-            for c in mock_enqueue.await_args_list
-            if c.args[0] == "r2_delete_image_job"
+            c for c in mock_enqueue.await_args_list if c.args[0] == "r2_delete_image_job"
         ]
         assert len(delete_calls) == 1
         assert delete_calls[0].kwargs["r2_location"] == int(R2Location.PUBLIC)
@@ -108,18 +105,15 @@ class TestDeleteEnqueuesR2:
         await db_session.commit()
         await db_session.refresh(image)
 
-        with patch(
-            "app.api.v1.images.enqueue_job", new_callable=AsyncMock
-        ) as mock_enqueue, patch(
-            "app.api.v1.images.remove_from_iqdb", return_value=True
+        with (
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock) as mock_enqueue,
+            patch("app.api.v1.images.remove_from_iqdb", return_value=True),
         ):
             await client.delete(
                 f"/api/v1/images/{image.image_id}?reason=test",
                 headers={"Authorization": f"Bearer {token}"},
             )
         delete_calls = [
-            c
-            for c in mock_enqueue.await_args_list
-            if c.args[0] == "r2_delete_image_job"
+            c for c in mock_enqueue.await_args_list if c.args[0] == "r2_delete_image_job"
         ]
         assert delete_calls == []

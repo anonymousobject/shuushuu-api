@@ -1,9 +1,6 @@
 """API tests for daily upload limit: uploads_remaining_today and 429 enforcement."""
 
 from datetime import UTC, datetime
-from io import BytesIO
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -16,14 +13,14 @@ from app.models.user import Users
 
 def _make_user(**overrides) -> Users:
     """Create a Users instance with sensible defaults."""
-    defaults = dict(
-        password="hashed_password_here",
-        password_type="bcrypt",
-        salt="saltsalt12345678",
-        active=1,
-        email_verified=True,
-        maximgperday=15,
-    )
+    defaults = {
+        "password": "hashed_password_here",
+        "password_type": "bcrypt",
+        "salt": "saltsalt12345678",
+        "active": 1,
+        "email_verified": True,
+        "maximgperday": 15,
+    }
     defaults.update(overrides)
     return Users(**defaults)
 
@@ -66,13 +63,9 @@ class TestUploadsRemainingToday:
         data = response.json()
         assert data["uploads_remaining_today"] == 15
 
-    async def test_decrements_after_uploads(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_decrements_after_uploads(self, client: AsyncClient, db_session: AsyncSession):
         """uploads_remaining_today should decrease with each upload."""
-        user = _make_user(
-            username="remaindecr", email="remaindecr@example.com", maximgperday=10
-        )
+        user = _make_user(username="remaindecr", email="remaindecr@example.com", maximgperday=10)
         db_session.add(user)
         await db_session.commit()
         await db_session.refresh(user)
@@ -90,13 +83,9 @@ class TestUploadsRemainingToday:
         assert response.status_code == 200
         assert response.json()["uploads_remaining_today"] == 7  # 10 - 3
 
-    async def test_floors_at_zero(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_floors_at_zero(self, client: AsyncClient, db_session: AsyncSession):
         """uploads_remaining_today should never go negative."""
-        user = _make_user(
-            username="remainzero", email="remainzero@example.com", maximgperday=2
-        )
+        user = _make_user(username="remainzero", email="remainzero@example.com", maximgperday=2)
         db_session.add(user)
         await db_session.commit()
         await db_session.refresh(user)

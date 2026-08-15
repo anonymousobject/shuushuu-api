@@ -26,8 +26,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.database import get_db
@@ -41,10 +41,14 @@ from app.main import app as main_app
 # Override via environment variables if your local setup differs
 
 DEFAULT_TEST_DB_USER = "shuushuu"
-DEFAULT_TEST_DB_PASSWORD = "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
+DEFAULT_TEST_DB_PASSWORD = (
+    "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
+)
 DEFAULT_TEST_DB_HOST = "localhost"
 DEFAULT_TEST_DB_PORT = "3306"
-DEFAULT_TEST_DB_NAME = "shuushuu_pytest"  # Separate from staging environment (shuushuu_test on the test host)
+DEFAULT_TEST_DB_NAME = (
+    "shuushuu_pytest"  # Separate from staging environment (shuushuu_test on the test host)
+)
 DEFAULT_ROOT_PASSWORD = "root_password"
 
 # Under pytest-xdist each worker process gets its own database (and Redis DB)
@@ -170,7 +174,9 @@ def setup_test_database():
 
     # Get MySQL root password from environment or use default
     # First try MARIADB_ROOT_PASSWORD (from .env files), then fall back to MYSQL_ROOT_PASSWORD
-    root_password = os.getenv("MARIADB_ROOT_PASSWORD") or os.getenv("MYSQL_ROOT_PASSWORD", DEFAULT_ROOT_PASSWORD)
+    root_password = os.getenv("MARIADB_ROOT_PASSWORD") or os.getenv(
+        "MYSQL_ROOT_PASSWORD", DEFAULT_ROOT_PASSWORD
+    )
 
     # Get test user credentials (these can be overridden via environment)
     test_user = os.getenv("TEST_DB_USER", DEFAULT_TEST_DB_USER)
@@ -428,7 +434,7 @@ async def _create_test_users(session: AsyncSession) -> None:
 
 
 @pytest.fixture(scope="function")
-async def db_session(engine, request) -> AsyncGenerator[AsyncSession, None]:
+async def db_session(engine, request) -> AsyncGenerator[AsyncSession]:
     """
     Create a new database session for each test.
 
@@ -583,7 +589,7 @@ def app(db_session: AsyncSession, mock_redis) -> FastAPI:
     This overrides the database dependency to use the test session.
     """
 
-    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+    async def override_get_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def override_get_redis():
@@ -601,7 +607,7 @@ def app(db_session: AsyncSession, mock_redis) -> FastAPI:
 def app_real_redis(db_session: AsyncSession, redis_client) -> FastAPI:
     """FastAPI app wired to the real Redis client (instead of mock_redis)."""
 
-    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+    async def override_get_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def override_get_redis():
@@ -616,7 +622,7 @@ def app_real_redis(db_session: AsyncSession, redis_client) -> FastAPI:
 
 
 @pytest.fixture(scope="function")
-async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+async def client(app: FastAPI) -> AsyncGenerator[AsyncClient]:
     """
     Create async HTTP client for testing API endpoints.
 
@@ -633,7 +639,7 @@ async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture(scope="function")
-async def client_real_redis(app_real_redis: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+async def client_real_redis(app_real_redis: FastAPI) -> AsyncGenerator[AsyncClient]:
     """Async HTTP client using app_real_redis (real Redis override)."""
     async with AsyncClient(
         transport=ASGITransport(app=app_real_redis),

@@ -120,8 +120,9 @@ class TestPinBanner:
         assert pin.banner_id == banner.banner_id
 
     async def test_rejects_nonexistent_banner(self, db_session: AsyncSession):
-        from app.services.banner import pin_banner
         from fastapi import HTTPException
+
+        from app.services.banner import pin_banner
 
         with pytest.raises(HTTPException) as exc_info:
             await pin_banner(
@@ -134,8 +135,9 @@ class TestPinBanner:
         assert exc_info.value.status_code == 404
 
     async def test_rejects_inactive_banner(self, db_session: AsyncSession):
-        from app.services.banner import pin_banner
         from fastapi import HTTPException
+
+        from app.services.banner import pin_banner
 
         banner = Banners(
             name="inactive",
@@ -160,8 +162,9 @@ class TestPinBanner:
         assert exc_info.value.status_code == 400
 
     async def test_rejects_size_mismatch(self, db_session: AsyncSession):
-        from app.services.banner import pin_banner
         from fastapi import HTTPException
+
+        from app.services.banner import pin_banner
 
         banner = Banners(
             name="large_banner",
@@ -186,8 +189,9 @@ class TestPinBanner:
         assert exc_info.value.status_code == 400
 
     async def test_rejects_theme_mismatch(self, db_session: AsyncSession):
-        from app.services.banner import pin_banner
         from fastapi import HTTPException
+
+        from app.services.banner import pin_banner
 
         banner = Banners(
             name="light_only",
@@ -290,9 +294,7 @@ class TestUnpinBanner:
         db_session.add(pin)
         await db_session.commit()
 
-        await unpin_banner(
-            user_id=1, size=BannerSize.small, theme=BannerTheme.dark, db=db_session
-        )
+        await unpin_banner(user_id=1, size=BannerSize.small, theme=BannerTheme.dark, db=db_session)
 
         from sqlalchemy import select
 
@@ -306,8 +308,9 @@ class TestUnpinBanner:
         assert result.scalar_one_or_none() is None
 
     async def test_404_when_no_pin(self, db_session: AsyncSession):
-        from app.services.banner import unpin_banner
         from fastapi import HTTPException
+
+        from app.services.banner import unpin_banner
 
         with pytest.raises(HTTPException) as exc_info:
             await unpin_banner(
@@ -319,14 +322,20 @@ class TestUnpinBanner:
 @pytest.mark.integration
 class TestGetCurrentBannerWithPreferences:
     async def test_anonymous_uses_query_param_size(
-        self, db_session: AsyncSession, redis_client: redis.Redis,
+        self,
+        db_session: AsyncSession,
+        redis_client: redis.Redis,
     ):
         """Anonymous user: size comes from query param, not preferences."""
         from app.services.banner import get_current_banner
 
         banner = Banners(
-            name="small_banner", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="s.png", active=True,
+            name="small_banner",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="s.png",
+            active=True,
         )
         db_session.add(banner)
         await db_session.commit()
@@ -335,7 +344,9 @@ class TestGetCurrentBannerWithPreferences:
         assert result.size == BannerSize.small
 
     async def test_authenticated_user_preferred_size_overrides_param(
-        self, db_session: AsyncSession, redis_client: redis.Redis,
+        self,
+        db_session: AsyncSession,
+        redis_client: redis.Redis,
     ):
         """Authenticated user with preferred_size=large gets large banners."""
         from app.services.banner import get_current_banner
@@ -344,75 +355,115 @@ class TestGetCurrentBannerWithPreferences:
         db_session.add(prefs)
 
         banner = Banners(
-            name="large_banner", size=BannerSize.large, supports_dark=True,
-            supports_light=True, full_image="lg.png", active=True,
+            name="large_banner",
+            size=BannerSize.large,
+            supports_dark=True,
+            supports_light=True,
+            full_image="lg.png",
+            active=True,
         )
         db_session.add(banner)
         await db_session.commit()
 
         # Pass user_id=1; the size param "small" should be overridden by preferred_size
         result = await get_current_banner(
-            "dark", "small", db_session, redis_client, user_id=1,
+            "dark",
+            "small",
+            db_session,
+            redis_client,
+            user_id=1,
         )
         assert result.size == BannerSize.large
 
     async def test_authenticated_user_with_pin_returns_pinned(
-        self, db_session: AsyncSession, redis_client: redis.Redis,
+        self,
+        db_session: AsyncSession,
+        redis_client: redis.Redis,
     ):
         """Authenticated user with a pin for the effective size+theme gets pinned banner."""
         from app.services.banner import get_current_banner
 
         pinned = Banners(
-            name="my_fave", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="fave.png", active=True,
+            name="my_fave",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="fave.png",
+            active=True,
         )
         other = Banners(
-            name="other", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="other.png", active=True,
+            name="other",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="other.png",
+            active=True,
         )
         db_session.add_all([pinned, other])
         await db_session.commit()
         await db_session.refresh(pinned)
 
         pin = UserBannerPins(
-            user_id=1, size=BannerSize.small, theme=BannerTheme.dark,
+            user_id=1,
+            size=BannerSize.small,
+            theme=BannerTheme.dark,
             banner_id=pinned.banner_id,
         )
         db_session.add(pin)
         await db_session.commit()
 
         result = await get_current_banner(
-            "dark", "small", db_session, redis_client, user_id=1,
+            "dark",
+            "small",
+            db_session,
+            redis_client,
+            user_id=1,
         )
         assert result.banner_id == pinned.banner_id
         assert result.name == "my_fave"
 
     async def test_pinned_inactive_banner_falls_through(
-        self, db_session: AsyncSession, redis_client: redis.Redis,
+        self,
+        db_session: AsyncSession,
+        redis_client: redis.Redis,
     ):
         """Pin on inactive banner falls through to normal rotation."""
         from app.services.banner import get_current_banner
 
         inactive = Banners(
-            name="inactive_pinned", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="inactive.png", active=False,
+            name="inactive_pinned",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="inactive.png",
+            active=False,
         )
         fallback = Banners(
-            name="fallback", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="fallback.png", active=True,
+            name="fallback",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="fallback.png",
+            active=True,
         )
         db_session.add_all([inactive, fallback])
         await db_session.commit()
         await db_session.refresh(inactive)
 
         pin = UserBannerPins(
-            user_id=1, size=BannerSize.small, theme=BannerTheme.dark,
+            user_id=1,
+            size=BannerSize.small,
+            theme=BannerTheme.dark,
             banner_id=inactive.banner_id,
         )
         db_session.add(pin)
         await db_session.commit()
 
         result = await get_current_banner(
-            "dark", "small", db_session, redis_client, user_id=1,
+            "dark",
+            "small",
+            db_session,
+            redis_client,
+            user_id=1,
         )
         assert result.name == "fallback"

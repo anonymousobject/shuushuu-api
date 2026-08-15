@@ -21,7 +21,10 @@ class TestGetPreferences:
         assert data["pins"] == []
 
     async def test_returns_stored_preferences(
-        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user,
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user,
     ):
         prefs = UserBannerPreferences(user_id=sample_user.user_id, preferred_size=BannerSize.large)
         db_session.add(prefs)
@@ -32,19 +35,28 @@ class TestGetPreferences:
         assert response.json()["preferred_size"] == "large"
 
     async def test_returns_pins_with_banner_data(
-        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user,
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user,
     ):
         banner = Banners(
-            name="pinned", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="pin.png", active=True,
+            name="pinned",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="pin.png",
+            active=True,
         )
         db_session.add(banner)
         await db_session.commit()
         await db_session.refresh(banner)
 
         pin = UserBannerPins(
-            user_id=sample_user.user_id, size=BannerSize.small,
-            theme=BannerTheme.dark, banner_id=banner.banner_id,
+            user_id=sample_user.user_id,
+            size=BannerSize.small,
+            theme=BannerTheme.dark,
+            banner_id=banner.banner_id,
         )
         db_session.add(pin)
         await db_session.commit()
@@ -60,20 +72,23 @@ class TestGetPreferences:
 class TestUpdatePreferences:
     async def test_requires_auth(self, client: AsyncClient):
         response = await client.patch(
-            "/api/v1/banners/preferences", json={"preferred_size": "large"},
+            "/api/v1/banners/preferences",
+            json={"preferred_size": "large"},
         )
         assert response.status_code == 401
 
     async def test_updates_size(self, authenticated_client: AsyncClient):
         response = await authenticated_client.patch(
-            "/api/v1/banners/preferences", json={"preferred_size": "large"},
+            "/api/v1/banners/preferences",
+            json={"preferred_size": "large"},
         )
         assert response.status_code == 200
         assert response.json()["preferred_size"] == "large"
 
     async def test_rejects_invalid_size(self, authenticated_client: AsyncClient):
         response = await authenticated_client.patch(
-            "/api/v1/banners/preferences", json={"preferred_size": "huge"},
+            "/api/v1/banners/preferences",
+            json={"preferred_size": "huge"},
         )
         assert response.status_code == 422
 
@@ -88,11 +103,17 @@ class TestPinBanner:
         assert response.status_code == 401
 
     async def test_pins_banner(
-        self, authenticated_client: AsyncClient, db_session: AsyncSession,
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
     ):
         banner = Banners(
-            name="to_pin", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="pin.png", active=True,
+            name="to_pin",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="pin.png",
+            active=True,
         )
         db_session.add(banner)
         await db_session.commit()
@@ -112,11 +133,17 @@ class TestPinBanner:
         assert response.status_code == 404
 
     async def test_rejects_size_mismatch(
-        self, authenticated_client: AsyncClient, db_session: AsyncSession,
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
     ):
         banner = Banners(
-            name="large_b", size=BannerSize.large, supports_dark=True,
-            supports_light=True, full_image="lg.png", active=True,
+            name="large_b",
+            size=BannerSize.large,
+            supports_dark=True,
+            supports_light=True,
+            full_image="lg.png",
+            active=True,
         )
         db_session.add(banner)
         await db_session.commit()
@@ -150,19 +177,28 @@ class TestUnpinBanner:
         assert response.status_code == 401
 
     async def test_removes_pin(
-        self, authenticated_client: AsyncClient, db_session: AsyncSession, sample_user,
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user,
     ):
         banner = Banners(
-            name="unpin_me", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="u.png", active=True,
+            name="unpin_me",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="u.png",
+            active=True,
         )
         db_session.add(banner)
         await db_session.commit()
         await db_session.refresh(banner)
 
         pin = UserBannerPins(
-            user_id=sample_user.user_id, size=BannerSize.small,
-            theme=BannerTheme.dark, banner_id=banner.banner_id,
+            user_id=sample_user.user_id,
+            size=BannerSize.small,
+            theme=BannerTheme.dark,
+            banner_id=banner.banner_id,
         )
         db_session.add(pin)
         await db_session.commit()
@@ -182,17 +218,24 @@ class TestUnpinBanner:
 @pytest.mark.api
 class TestCurrentBannerWithAuth:
     async def test_anonymous_still_works(
-        self, client_real_redis: AsyncClient, db_session: AsyncSession,
+        self,
+        client_real_redis: AsyncClient,
+        db_session: AsyncSession,
     ):
         """Anonymous request without auth works as before."""
         banner = Banners(
-            name="anon", size=BannerSize.small, supports_dark=True,
-            supports_light=True, full_image="anon.png", active=True,
+            name="anon",
+            size=BannerSize.small,
+            supports_dark=True,
+            supports_light=True,
+            full_image="anon.png",
+            active=True,
         )
         db_session.add(banner)
         await db_session.commit()
 
         response = await client_real_redis.get(
-            "/api/v1/banners/current", params={"theme": "dark", "size": "small"},
+            "/api/v1/banners/current",
+            params={"theme": "dark", "size": "small"},
         )
         assert response.status_code == 200

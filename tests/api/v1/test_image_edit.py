@@ -68,9 +68,7 @@ async def grant_permission(db_session: AsyncSession, user_id: int, perm_title: s
         db_session.add(perm)
         await db_session.flush()
 
-    result = await db_session.execute(
-        select(Groups).where(Groups.title == "edit_test_group")
-    )
+    result = await db_session.execute(select(Groups).where(Groups.title == "edit_test_group"))
     group = result.scalar_one_or_none()
     if not group:
         group = Groups(title="edit_test_group", desc="Image edit test group")
@@ -109,9 +107,7 @@ class TestImageEdit:
     """Tests for PATCH /api/v1/images/{image_id}."""
 
     @pytest.mark.asyncio
-    async def test_owner_can_update_caption(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_owner_can_update_caption(self, client: AsyncClient, db_session: AsyncSession):
         """Image owner can update their image's caption."""
         owner = await create_user(db_session)
         image = await create_image(db_session, owner.user_id)
@@ -126,9 +122,7 @@ class TestImageEdit:
         assert response.json()["caption"] == "new caption"
 
     @pytest.mark.asyncio
-    async def test_owner_can_update_miscmeta(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_owner_can_update_miscmeta(self, client: AsyncClient, db_session: AsyncSession):
         """Image owner can update their image's miscmeta."""
         owner = await create_user(db_session)
         image = await create_image(db_session, owner.user_id)
@@ -180,14 +174,10 @@ class TestImageEdit:
         assert response.json()["caption"] == "mod edited"
 
     @pytest.mark.asyncio
-    async def test_admin_can_edit_any_image(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_admin_can_edit_any_image(self, client: AsyncClient, db_session: AsyncSession):
         """Admin users can edit any image."""
         owner = await create_user(db_session, username="owner3", email="owner3@test.com")
-        admin = await create_user(
-            db_session, username="admin", email="admin@test.com", admin=1
-        )
+        admin = await create_user(db_session, username="admin", email="admin@test.com", admin=1)
         image = await create_image(db_session, owner.user_id, caption="before")
 
         response = await client.patch(
@@ -200,9 +190,7 @@ class TestImageEdit:
         assert response.json()["caption"] == "admin edited"
 
     @pytest.mark.asyncio
-    async def test_empty_update_returns_400(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_empty_update_returns_400(self, client: AsyncClient, db_session: AsyncSession):
         """Empty update body (no fields set) returns 400."""
         owner = await create_user(db_session)
         image = await create_image(db_session, owner.user_id)
@@ -216,9 +204,7 @@ class TestImageEdit:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_image_not_found_returns_404(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_image_not_found_returns_404(self, client: AsyncClient, db_session: AsyncSession):
         """Editing a nonexistent image returns 404."""
         user = await create_user(db_session)
 
@@ -280,7 +266,9 @@ class TestImageOwnerStatusChange:
         owner = await create_user(db_session, username="repost1", email="rp1@test.com")
         original = await create_image(db_session, owner.user_id)
         repost = await create_image(
-            db_session, owner.user_id, caption="repost img",
+            db_session,
+            owner.user_id,
+            caption="repost img",
         )
         # Use a different md5 hash for the second image to keep test data distinct
         repost.md5_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -350,9 +338,7 @@ class TestImageOwnerStatusChange:
         assert "replacement_id" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_repost_of_self_fails(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_repost_of_self_fails(self, client: AsyncClient, db_session: AsyncSession):
         """Cannot mark an image as a repost of itself."""
         owner = await create_user(db_session, username="selfr1", email="sr1@test.com")
         image = await create_image(db_session, owner.user_id)
@@ -384,9 +370,7 @@ class TestImageOwnerStatusChange:
         assert "original" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_non_owner_cannot_set_status(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_non_owner_cannot_set_status(self, client: AsyncClient, db_session: AsyncSession):
         """Non-owner without admin/permissions cannot change image status."""
         owner = await create_user(db_session, username="statusown1", email="so1@test.com")
         other = await create_user(db_session, username="statusoth1", email="so2@test.com")
@@ -438,9 +422,7 @@ class TestImageOwnerStatusChange:
         assert response.status_code == 200
 
         result = await db_session.execute(
-            select(ImageStatusHistory).where(
-                ImageStatusHistory.image_id == image.image_id
-            )
+            select(ImageStatusHistory).where(ImageStatusHistory.image_id == image.image_id)
         )
         history = result.scalar_one()
         assert history.old_status == 1  # ACTIVE

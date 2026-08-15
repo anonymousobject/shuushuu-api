@@ -11,7 +11,11 @@ from fastapi import HTTPException
 from PIL import Image
 
 from app.config import settings
-from app.services.image_processing import create_large_variant, create_medium_variant, validate_image_file
+from app.services.image_processing import (
+    create_large_variant,
+    create_medium_variant,
+    validate_image_file,
+)
 
 
 # Fixtures use production-format names (`YYYY-MM-DD-<id>.<ext>`) so the
@@ -298,7 +302,9 @@ class TestFileSizeValidation:
 class TestValidateImageFile:
     """Tests for validate_image_file function."""
 
-    def _make_upload_file(self, content_type: str = "image/jpeg", filename: str = "test.jpg") -> MagicMock:
+    def _make_upload_file(
+        self, content_type: str = "image/jpeg", filename: str = "test.jpg"
+    ) -> MagicMock:
         mock = MagicMock()
         mock.content_type = content_type
         mock.filename = filename
@@ -324,7 +330,9 @@ class TestValidateImageFile:
             path = Path(f.name)
 
         try:
-            validate_image_file(self._make_upload_file(content_type="image/png", filename="test.png"), path)
+            validate_image_file(
+                self._make_upload_file(content_type="image/png", filename="test.png"), path
+            )
         finally:
             path.unlink(missing_ok=True)
 

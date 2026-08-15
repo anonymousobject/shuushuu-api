@@ -2625,7 +2625,7 @@ class TestTagUsageCount:
         """Test that usage_count tracks multiple images with the same tag."""
         # Create multiple images
         images = []
-        for i in range(3):
+        for _i in range(3):
             image_data = sample_image_data.copy()
             image_data["user_id"] = sample_user.user_id
             image = Images(**image_data)
@@ -4753,9 +4753,7 @@ class TestTagWriteSnapshotConflictRetry:
 
         flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
         with flush_patch:
-            response = await authenticated_client.delete(
-                f"/api/v1/images/{image_id}/tags/{tag_id}"
-            )
+            response = await authenticated_client.delete(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert response.status_code == 204, response.text
         assert len(calls) >= 2
@@ -4852,7 +4850,7 @@ class TestGetImageRatings:
 
         # Create ratings from multiple users
         users = []
-        for i, rating_value in enumerate([5, 8, 10]):
+        for i in range(3):
             user = Users(
                 username=f"rater_{i}",
                 password="hashed",

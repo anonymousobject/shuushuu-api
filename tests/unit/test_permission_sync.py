@@ -52,9 +52,7 @@ class TestSyncPermissions:
 
         await sync_permissions(db_session)
 
-        result = await db_session.execute(
-            select(Perms).where(Perms.title == "tag_create")
-        )
+        result = await db_session.execute(select(Perms).where(Perms.title == "tag_create"))
         perm = result.scalar_one()
 
         assert perm.desc == "Create new tags"

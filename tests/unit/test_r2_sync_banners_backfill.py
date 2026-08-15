@@ -99,9 +99,7 @@ async def test_backfill_full_image_banner(
 
     await db_session.refresh(banner)
     assert banner.in_r2 is True
-    assert await install_r2.object_exists(
-        bucket="public", key="banners/eva/full.jpg"
-    )
+    assert await install_r2.object_exists(bucket="public", key="banners/eva/full.jpg")
 
 
 @pytest.mark.unit
@@ -142,9 +140,7 @@ async def test_backfill_three_part_banner(
     # All three R2 objects exist with image/png content type
     async with moto_session.client("s3", endpoint_url=moto_server) as s3:
         for path in ("hw/l.png", "hw/m.png", "hw/r.png"):
-            head = await s3.head_object(
-                Bucket="public", Key=f"banners/{path}"
-            )
+            head = await s3.head_object(Bucket="public", Key=f"banners/{path}")
             assert head["ContentType"] == "image/png"
 
 
@@ -183,9 +179,9 @@ async def test_backfill_three_part_partial_missing_skips_row(
 
     # Critically: do NOT upload left/middle either — all-or-nothing per row.
     for path in ("partial/l.png", "partial/m.png", "partial/r.png"):
-        assert not await install_r2.object_exists(
-            bucket="public", key=f"banners/{path}"
-        ), f"unexpected R2 object for {path} (should be all-or-nothing)"
+        assert not await install_r2.object_exists(bucket="public", key=f"banners/{path}"), (
+            f"unexpected R2 object for {path} (should be all-or-nothing)"
+        )
 
     # Warning logged for the missing path
     log_messages = " ".join(rec.getMessage() for rec in caplog.records)
@@ -245,9 +241,7 @@ async def test_backfill_idempotent_skips_existing(
     assert banner.in_r2 is True
 
     # Only the two missing parts were uploaded; pre-existing one was skipped.
-    assert sorted(upload_keys) == sorted(
-        ["banners/idem/l.png", "banners/idem/r.png"]
-    )
+    assert sorted(upload_keys) == sorted(["banners/idem/l.png", "banners/idem/r.png"])
 
     # Pre-existing object preserved (its bytes were not overwritten).
     async with install_r2._acquire_client() as s3:
@@ -285,9 +279,7 @@ async def test_backfill_dry_run_writes_nothing(
 
     await db_session.refresh(banner)
     assert banner.in_r2 is False
-    assert not await install_r2.object_exists(
-        bucket="public", key="banners/dry/full.jpg"
-    )
+    assert not await install_r2.object_exists(bucket="public", key="banners/dry/full.jpg")
 
 
 @pytest.mark.unit
@@ -335,9 +327,7 @@ async def test_backfill_dry_run_reports_would_upload_parts(
 
     # No R2 writes
     for path in ("wu_full/full.jpg", "wu_3p/l.png", "wu_3p/m.png", "wu_3p/r.png"):
-        assert not await install_r2.object_exists(
-            bucket="public", key=f"banners/{path}"
-        )
+        assert not await install_r2.object_exists(bucket="public", key=f"banners/{path}")
 
     # No DB writes
     await db_session.refresh(banner_full)
@@ -401,9 +391,7 @@ async def test_backfill_dry_run_three_part_mixed(
 
     # The two missing parts were not actually uploaded.
     for path in ("drymix/l.png", "drymix/r.png"):
-        assert not await install_r2.object_exists(
-            bucket="public", key=f"banners/{path}"
-        )
+        assert not await install_r2.object_exists(bucket="public", key=f"banners/{path}")
 
     # Pre-existing middle object preserved (its bytes were not overwritten).
     async with install_r2._acquire_client() as s3:

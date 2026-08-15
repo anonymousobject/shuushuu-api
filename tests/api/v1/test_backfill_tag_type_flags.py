@@ -105,7 +105,9 @@ class TestBackfillTagTypeFlags:
         assert fresh_a.has_artist is True, "image A should have has_artist=True after backfill"
         assert fresh_a.has_theme is False, "image A should have has_theme=False (no theme tag)"
         assert fresh_a.has_source is False, "image A should have has_source=False (no source tag)"
-        assert fresh_a.has_character is False, "image A should have has_character=False (no character tag)"
+        assert fresh_a.has_character is False, (
+            "image A should have has_character=False (no character tag)"
+        )
 
         # Fresh-read image B — all flags should remain False
         fresh_b = (
@@ -120,9 +122,7 @@ class TestBackfillTagTypeFlags:
         assert fresh_b.has_source is False, "image B should have has_source=False (no tags)"
         assert fresh_b.has_character is False, "image B should have has_character=False (no tags)"
 
-    async def test_backfill_sets_all_four_flag_types(
-        self, db_session: AsyncSession
-    ):
+    async def test_backfill_sets_all_four_flag_types(self, db_session: AsyncSession):
         """Image with tags of all four types gets all four flags set after backfill."""
         user = await _create_user(db_session)
         image = await _create_image(db_session, user.user_id, "backfillAll1")
@@ -133,7 +133,9 @@ class TestBackfillTagTypeFlags:
             db_session.add(tag)
             await db_session.flush()
             await db_session.refresh(tag)
-            db_session.add(TagLinks(tag_id=tag.tag_id, image_id=image.image_id, user_id=user.user_id))
+            db_session.add(
+                TagLinks(tag_id=tag.tag_id, image_id=image.image_id, user_id=user.user_id)
+            )
         await db_session.flush()
 
         await backfill_range(db_session, lo=image.image_id, hi=image.image_id + 1)
@@ -151,9 +153,7 @@ class TestBackfillTagTypeFlags:
         assert fresh.has_artist is True
         assert fresh.has_character is True
 
-    async def test_backfill_is_idempotent(
-        self, db_session: AsyncSession
-    ):
+    async def test_backfill_is_idempotent(self, db_session: AsyncSession):
         """Running backfill_range twice produces the same result."""
         user = await _create_user(db_session)
         image = await _create_image(db_session, user.user_id, "backfillIdem1")
@@ -162,7 +162,9 @@ class TestBackfillTagTypeFlags:
         db_session.add(source_tag)
         await db_session.flush()
         await db_session.refresh(source_tag)
-        db_session.add(TagLinks(tag_id=source_tag.tag_id, image_id=image.image_id, user_id=user.user_id))
+        db_session.add(
+            TagLinks(tag_id=source_tag.tag_id, image_id=image.image_id, user_id=user.user_id)
+        )
         await db_session.flush()
 
         # Run twice

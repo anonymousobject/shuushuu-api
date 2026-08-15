@@ -68,9 +68,7 @@ async def test_get_ml_service_loads_once_under_concurrency(monkeypatch):
 
     monkeypatch.setattr("app.services.ml_service.MLTagSuggestionService", _SlowService)
 
-    first, second = await asyncio.gather(
-        ml_runtime.get_ml_service(), ml_runtime.get_ml_service()
-    )
+    first, second = await asyncio.gather(ml_runtime.get_ml_service(), ml_runtime.get_ml_service())
 
     assert instances == 1, "model must be instantiated exactly once"
     assert loads == 1, "model must be loaded exactly once"
@@ -104,10 +102,12 @@ async def test_get_ml_service_reloads_after_failed_load(monkeypatch):
 
 async def test_warm_load_calls_get_ml_service_when_enabled(monkeypatch):
     called = False
+
     async def fake_get():
         nonlocal called
         called = True
         return object()
+
     monkeypatch.setattr(ml_runtime.settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
     monkeypatch.setattr(ml_runtime, "get_ml_service", fake_get)
     await ml_runtime.warm_load_if_enabled()
@@ -116,10 +116,12 @@ async def test_warm_load_calls_get_ml_service_when_enabled(monkeypatch):
 
 async def test_warm_load_noop_when_disabled(monkeypatch):
     called = False
+
     async def fake_get():
         nonlocal called
         called = True
         return object()
+
     monkeypatch.setattr(ml_runtime.settings, "ML_TAG_SUGGESTIONS_ENABLED", False)
     monkeypatch.setattr(ml_runtime, "get_ml_service", fake_get)
     await ml_runtime.warm_load_if_enabled()

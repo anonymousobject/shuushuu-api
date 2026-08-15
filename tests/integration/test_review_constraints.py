@@ -70,9 +70,7 @@ class TestReportConstraints:
         reason="Unique constraint on (image_id, user_id) for pending reports "
         "is enforced at API level, not database level. Test via test_reports.py instead."
     )
-    async def test_duplicate_pending_report_from_same_user_fails(
-        self, db_session: AsyncSession
-    ):
+    async def test_duplicate_pending_report_from_same_user_fails(self, db_session: AsyncSession):
         """User cannot have two pending reports for the same image.
 
         Note: This constraint is enforced by the API endpoint, not the database.
@@ -81,9 +79,7 @@ class TestReportConstraints:
         """
         pass
 
-    async def test_different_users_can_report_same_image(
-        self, db_session: AsyncSession
-    ):
+    async def test_different_users_can_report_same_image(self, db_session: AsyncSession):
         """Different users can report the same image."""
         user1 = await create_test_user(db_session, 1001, "reporter2")
         user2 = await create_test_user(db_session, 1002, "reporter3")
@@ -115,9 +111,7 @@ class TestReportConstraints:
         reports = result.scalars().all()
         assert len(reports) == 2
 
-    async def test_user_can_report_after_previous_dismissed(
-        self, db_session: AsyncSession
-    ):
+    async def test_user_can_report_after_previous_dismissed(self, db_session: AsyncSession):
         """User can report again after previous report was dismissed."""
         user = await create_test_user(db_session, 1003, "reporter4")
         image = await create_test_image(db_session, user.user_id)
@@ -178,9 +172,7 @@ class TestReviewConstraints:
         """
         pass
 
-    async def test_can_create_review_after_previous_closed(
-        self, db_session: AsyncSession
-    ):
+    async def test_can_create_review_after_previous_closed(self, db_session: AsyncSession):
         """Can create new review after previous one was closed."""
         user = await create_test_user(db_session, 1011, "reviewer2")
         image = await create_test_image(db_session, user.user_id)
@@ -226,9 +218,7 @@ class TestVoteConstraints:
         "The API updates existing votes instead of creating duplicates. "
         "Test via test_reviews.py::TestReviewVote::test_update_existing_vote"
     )
-    async def test_same_user_cannot_vote_twice_on_same_review(
-        self, db_session: AsyncSession
-    ):
+    async def test_same_user_cannot_vote_twice_on_same_review(self, db_session: AsyncSession):
         """Same admin cannot have two votes on the same review.
 
         Note: The API endpoint handles this by updating the existing vote
@@ -237,9 +227,7 @@ class TestVoteConstraints:
         """
         pass
 
-    async def test_different_users_can_vote_on_same_review(
-        self, db_session: AsyncSession
-    ):
+    async def test_different_users_can_vote_on_same_review(self, db_session: AsyncSession):
         """Different admins can vote on the same review."""
         user1 = await create_test_user(db_session, 1021, "voter2")
         user2 = await create_test_user(db_session, 1022, "voter3")
@@ -283,9 +271,7 @@ class TestVoteConstraints:
         votes = result.scalars().all()
         assert len(votes) == 2
 
-    async def test_same_user_can_vote_on_different_reviews(
-        self, db_session: AsyncSession
-    ):
+    async def test_same_user_can_vote_on_different_reviews(self, db_session: AsyncSession):
         """Same admin can vote on different reviews."""
         user = await create_test_user(db_session, 1023, "voter4")
         image1 = await create_test_image(db_session, user.user_id)

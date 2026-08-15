@@ -105,8 +105,9 @@ class TestFetchExternal:
         assert response.status_code == 403
 
     async def test_streams_image_with_baked_headers(self, resolve_client):
-        import httpx
         from unittest.mock import patch
+
+        import httpx
 
         from app.services.url_import.tokens import mint_token
 
@@ -132,8 +133,9 @@ class TestFetchExternal:
         assert seen["referer"] == "https://www.pixiv.net/"
 
     async def test_non_image_content_type_502(self, resolve_client):
-        import httpx
         from unittest.mock import patch
+
+        import httpx
 
         from app.services.url_import.tokens import mint_token
 
@@ -148,8 +150,9 @@ class TestFetchExternal:
         assert response.status_code == 502
 
     async def test_oversize_content_length_413(self, resolve_client):
-        import httpx
         from unittest.mock import patch
+
+        import httpx
 
         from app.config import settings
         from app.services.url_import.tokens import mint_token
@@ -172,8 +175,9 @@ class TestFetchExternal:
         assert response.status_code == 413
 
     async def test_malformed_content_length_ignored(self, resolve_client):
-        import httpx
         from unittest.mock import patch
+
+        import httpx
 
         from app.services.url_import.tokens import mint_token
 
@@ -192,11 +196,10 @@ class TestFetchExternal:
         assert response.status_code == 200
         assert response.content == b"\x89PNG-fake-bytes"
 
-    async def test_oversize_streaming_without_content_length_413(
-        self, resolve_client, monkeypatch
-    ):
-        import httpx
+    async def test_oversize_streaming_without_content_length_413(self, resolve_client, monkeypatch):
         from unittest.mock import patch
+
+        import httpx
 
         from app.config import settings
         from app.services.url_import.tokens import mint_token
@@ -220,9 +223,9 @@ class TestFetchExternal:
         assert response.status_code == 413
 
     async def test_webp_is_transcoded_to_png(self, resolve_client):
-        import httpx
         from unittest.mock import patch
 
+        import httpx
         from PIL import Image as PILImage
 
         from app.services.url_import.tokens import mint_token
@@ -232,9 +235,7 @@ class TestFetchExternal:
         webp_bytes = buffer.getvalue()
 
         def handler(request):
-            return httpx.Response(
-                200, content=webp_bytes, headers={"content-type": "image/webp"}
-            )
+            return httpx.Response(200, content=webp_bytes, headers={"content-type": "image/webp"})
 
         token = mint_token("https://cdn.bsky.app/img/feed_fullsize/plain/x/abc")
         with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
@@ -246,9 +247,9 @@ class TestFetchExternal:
         assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
 
     async def test_webp_transcoded_despite_lying_content_type(self, resolve_client):
-        import httpx
         from unittest.mock import patch
 
+        import httpx
         from PIL import Image as PILImage
 
         from app.services.url_import.tokens import mint_token
@@ -260,9 +261,7 @@ class TestFetchExternal:
         def handler(request):
             # Upstream claims jpeg but actually serves webp bytes -- the
             # proxy must sniff the magic, not trust the header.
-            return httpx.Response(
-                200, content=webp_bytes, headers={"content-type": "image/jpeg"}
-            )
+            return httpx.Response(200, content=webp_bytes, headers={"content-type": "image/jpeg"})
 
         token = mint_token("https://example.test/lying.jpg")
         with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
@@ -274,17 +273,16 @@ class TestFetchExternal:
         assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
 
     async def test_non_webp_passes_through_unchanged(self, resolve_client):
-        import httpx
         from unittest.mock import patch
+
+        import httpx
 
         from app.services.url_import.tokens import mint_token
 
         real_png = b"\x89PNG\r\n\x1a\n" + b"not-really-png-data-but-not-webp-either"
 
         def handler(request):
-            return httpx.Response(
-                200, content=real_png, headers={"content-type": "image/png"}
-            )
+            return httpx.Response(200, content=real_png, headers={"content-type": "image/png"})
 
         token = mint_token("https://example.test/real.png")
         with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
@@ -296,9 +294,9 @@ class TestFetchExternal:
         assert response.content == real_png
 
     async def test_animated_webp_rejected(self, resolve_client):
-        import httpx
         from unittest.mock import patch
 
+        import httpx
         from PIL import Image as PILImage
 
         from app.services.url_import.tokens import mint_token
@@ -312,9 +310,7 @@ class TestFetchExternal:
         webp_bytes = buffer.getvalue()
 
         def handler(request):
-            return httpx.Response(
-                200, content=webp_bytes, headers={"content-type": "image/webp"}
-            )
+            return httpx.Response(200, content=webp_bytes, headers={"content-type": "image/webp"})
 
         token = mint_token("https://example.test/animated.webp")
         with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
@@ -326,13 +322,12 @@ class TestFetchExternal:
 
     async def test_transcoded_png_too_large_413(self, resolve_client, monkeypatch):
         import os
-
-        import httpx
         from unittest.mock import patch
 
-        from app.config import settings
+        import httpx
         from PIL import Image as PILImage
 
+        from app.config import settings
         from app.services.url_import.tokens import mint_token
 
         # Random noise barely compresses under lossy webp (quality=1) but
@@ -350,9 +345,7 @@ class TestFetchExternal:
         assert len(webp_bytes) < 2000  # sanity: raw bytes must clear the cap
 
         def handler(request):
-            return httpx.Response(
-                200, content=webp_bytes, headers={"content-type": "image/webp"}
-            )
+            return httpx.Response(200, content=webp_bytes, headers={"content-type": "image/webp"})
 
         token = mint_token("https://example.test/noise.webp")
         with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
@@ -362,8 +355,9 @@ class TestFetchExternal:
         assert response.status_code == 413
 
     async def test_webp_decode_failure_502(self, resolve_client):
-        import httpx
         from unittest.mock import patch
+
+        import httpx
 
         from app.services.url_import.tokens import mint_token
 
@@ -373,9 +367,7 @@ class TestFetchExternal:
         garbage = b"RIFFxxxxWEBPnot-a-real-webp"
 
         def handler(request):
-            return httpx.Response(
-                200, content=garbage, headers={"content-type": "image/webp"}
-            )
+            return httpx.Response(200, content=garbage, headers={"content-type": "image/webp"})
 
         token = mint_token("https://example.test/garbage.webp")
         with patch("app.api.v1.url_import._make_http_client", self._factory(handler)):
@@ -386,8 +378,9 @@ class TestFetchExternal:
         assert "unreadable" in response.json()["detail"]
 
     async def test_upstream_500_becomes_502(self, resolve_client):
-        import httpx
         from unittest.mock import patch
+
+        import httpx
 
         from app.services.url_import.tokens import mint_token
 

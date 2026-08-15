@@ -71,7 +71,9 @@ async def test_groups(db_session: AsyncSession, test_permissions: dict[str, int]
             GroupPerms(
                 group_id=group_mod.group_id, perm_id=test_permissions["image_edit"], permvalue=1
             ),
-            GroupPerms(group_id=group_mod.group_id, perm_id=test_permissions["user_ban"], permvalue=1),
+            GroupPerms(
+                group_id=group_mod.group_id, perm_id=test_permissions["user_ban"], permvalue=1
+            ),
         ]
     )
 
@@ -109,7 +111,9 @@ async def test_user_with_group(db_session: AsyncSession, test_groups: dict[str, 
 
 
 @pytest.fixture
-async def test_user_with_direct_perm(db_session: AsyncSession, test_permissions: dict[str, int]) -> Users:
+async def test_user_with_direct_perm(
+    db_session: AsyncSession, test_permissions: dict[str, int]
+) -> Users:
     """Create a test user with direct permission assignment."""
     user = Users(
         username="tagged_user",
@@ -244,28 +248,42 @@ class TestPermissionChecking:
         assert await has_permission(db_session, test_user_with_group.user_id, "image_edit")
         assert await has_permission(db_session, test_user_with_group.user_id, Permission.IMAGE_EDIT)
 
-    async def test_has_permission_false(self, db_session: AsyncSession, test_user_with_group: Users):
+    async def test_has_permission_false(
+        self, db_session: AsyncSession, test_user_with_group: Users
+    ):
         """User without permission should return False."""
         assert not await has_permission(db_session, test_user_with_group.user_id, "tag_create")
-        assert not await has_permission(db_session, test_user_with_group.user_id, Permission.TAG_CREATE)
+        assert not await has_permission(
+            db_session, test_user_with_group.user_id, Permission.TAG_CREATE
+        )
 
-    async def test_has_any_permission_true(self, db_session: AsyncSession, test_user_with_group: Users):
+    async def test_has_any_permission_true(
+        self, db_session: AsyncSession, test_user_with_group: Users
+    ):
         """User with at least one permission should return True."""
         assert await has_any_permission(
             db_session, test_user_with_group.user_id, ["tag_create", "image_edit", "user_ban"]
         )
 
-    async def test_has_any_permission_false(self, db_session: AsyncSession, test_user_with_group: Users):
+    async def test_has_any_permission_false(
+        self, db_session: AsyncSession, test_user_with_group: Users
+    ):
         """User with none of the permissions should return False."""
         assert not await has_any_permission(
             db_session, test_user_with_group.user_id, ["tag_create", "level_admin"]
         )
 
-    async def test_has_all_permissions_true(self, db_session: AsyncSession, test_user_with_group: Users):
+    async def test_has_all_permissions_true(
+        self, db_session: AsyncSession, test_user_with_group: Users
+    ):
         """User with all permissions should return True."""
-        assert await has_all_permissions(db_session, test_user_with_group.user_id, ["image_edit", "user_ban"])
+        assert await has_all_permissions(
+            db_session, test_user_with_group.user_id, ["image_edit", "user_ban"]
+        )
 
-    async def test_has_all_permissions_false(self, db_session: AsyncSession, test_user_with_group: Users):
+    async def test_has_all_permissions_false(
+        self, db_session: AsyncSession, test_user_with_group: Users
+    ):
         """User missing any permission should return False."""
         assert not await has_all_permissions(
             db_session, test_user_with_group.user_id, ["image_edit", "tag_create"]

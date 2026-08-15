@@ -64,8 +64,7 @@ async def test_client_error_logs_client_host_and_user_agent(
         if "request_complete" in record.getMessage()
     ]
     assert request_logs, (
-        "no request_complete log emitted; "
-        f"got {[record.getMessage() for record in caplog.records]}"
+        f"no request_complete log emitted; got {[record.getMessage() for record in caplog.records]}"
     )
     assert any("test-agent/9.9" in message for message in request_logs), (
         f"user agent missing from access log; got {request_logs!r}"
@@ -95,8 +94,7 @@ async def test_fast_success_request_logged_at_debug(
         record for record in caplog.records if "request_complete" in record.getMessage()
     ]
     assert request_logs, (
-        "no request_complete log emitted; "
-        f"got {[record.getMessage() for record in caplog.records]}"
+        f"no request_complete log emitted; got {[record.getMessage() for record in caplog.records]}"
     )
     assert all(record.levelno == logging.DEBUG for record in request_logs), (
         "fast 2xx request_complete should log at DEBUG; got "
