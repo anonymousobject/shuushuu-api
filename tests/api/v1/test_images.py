@@ -8,9 +8,7 @@ These tests cover the /api/v1/images endpoints including:
 """
 
 from datetime import UTC, datetime
-from unittest.mock import patch
 
-import pymysql
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -21,7 +19,9 @@ from app.config import TagType, settings
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import Groups, UserGroups
+from app.models.tag_history import TagHistory
 from app.services.tag_type_flags import refresh_image_tag_type_flags
+from tests.snapshot_conflict import _db_error, _flaky_flush, _snapshot_conflict_error
 
 
 @pytest.mark.api
@@ -4493,34 +4493,6 @@ class TestRateImage:
         assert data["num_ratings"] == 1
 
 
-def _db_error(errno: int, message: str) -> OperationalError:
-    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
-    return OperationalError("UPDATE ...", None, pymysql.err.OperationalError(errno, message))
-
-
-def _snapshot_conflict_error() -> OperationalError:
-    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD)."""
-    return _db_error(1020, "Record has changed since last read in table 'images'")
-
-
-def _flaky_flush(fail_times: int, error: OperationalError):
-    """Patch AsyncSession.flush to raise `error` for the first `fail_times`
-    calls, then delegate to the real flush. Only a route's explicit
-    ``await db.flush()`` goes through AsyncSession.flush (autoflush runs inside
-    the sync Session), so the first intercepted call is the counter write.
-    Returns (patch_ctx, calls) where calls records each intercepted flush."""
-    real_flush = AsyncSession.flush
-    calls: list[int] = []
-
-    async def flush(self, *args, **kwargs):
-        calls.append(1)
-        if len(calls) <= fail_times:
-            raise error
-        await real_flush(self, *args, **kwargs)
-
-    return patch.object(AsyncSession, "flush", flush), calls
-
-
 @pytest.mark.api
 class TestFavoriteRatingSnapshotConflictRetry:
     """favorite/unfavorite/rate do read-modify-write UPDATEs on shared
@@ -4675,6 +4647,192 @@ class TestFavoriteRatingSnapshotConflictRetry:
         flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
         with flush_patch, pytest.raises(OperationalError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
+
+        assert len(calls) == 1  # not retried
+
+
+@pytest.mark.api
+class TestTagWriteSnapshotConflictRetry:
+    """Adding or removing a tag INSERTs into tag_history, whose tag_id/image_id/
+    user_id are FK columns — so InnoDB takes a locking read on each parent row.
+    The usage_count triggers on tag_links keep the parent `tags` row moving, and
+    the image_posts trigger does the same to `users`, so under
+    innodb_snapshot_isolation a concurrent tag write aborts this one with
+    ER_CHECKREAD (errno 1020). Two users tagging at the same moment is enough.
+
+    Both paths must retry on a fresh snapshot instead of surfacing a 500.
+
+    Each test captures image_id/tag_id as ints before calling the endpoint: the
+    app under test shares this session (conftest overrides get_db with
+    db_session), so the retry's real rollback expires the fixture instances.
+    Production never sees that — the request session is nobody else's.
+    """
+
+    @pytest.mark.needs_commit
+    async def test_add_tag_retries_snapshot_conflict_and_succeeds(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """A transient 1020 during the tag add is retried and the tag lands once.
+
+        needs_commit: the retry performs a real session rollback to obtain a
+        fresh snapshot; under the default SAVEPOINT isolation that rollback
+        would unwind the fixture's committed image/tag rows too, which cannot
+        happen in production where they are durably committed.
+        """
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="snapshot_retry_add", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image_id: int = image.image_id
+        tag_id: int = tag.tag_id
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        with flush_patch:
+            response = await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
+
+        assert response.status_code == 201, response.text
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        # The link landed exactly once despite the retry.
+        links = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,
+                TagLinks.tag_id == tag_id,
+            )
+        )
+        assert len(list(links.scalars().all())) == 1
+
+        # ...and so did its history row: a replayed unit must not double-log.
+        history = await db_session.execute(
+            select(TagHistory).where(
+                TagHistory.image_id == image_id,
+                TagHistory.tag_id == tag_id,
+                TagHistory.action == "a",
+            )
+        )
+        assert len(list(history.scalars().all())) == 1
+
+    @pytest.mark.needs_commit
+    async def test_remove_tag_retries_snapshot_conflict_and_succeeds(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """A transient 1020 during the tag removal is retried and the link goes."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="snapshot_retry_remove", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image_id: int = image.image_id
+        tag_id: int = tag.tag_id
+
+        db_session.add(TagLinks(image_id=image_id, tag_id=tag_id, user_id=sample_user.user_id))
+        await db_session.commit()
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        with flush_patch:
+            response = await authenticated_client.delete(
+                f"/api/v1/images/{image_id}/tags/{tag_id}"
+            )
+
+        assert response.status_code == 204, response.text
+        assert len(calls) >= 2
+
+        links = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,
+                TagLinks.tag_id == tag_id,
+            )
+        )
+        assert links.scalar_one_or_none() is None
+
+        history = await db_session.execute(
+            select(TagHistory).where(
+                TagHistory.image_id == image_id,
+                TagHistory.tag_id == tag_id,
+                TagHistory.action == "r",
+            )
+        )
+        assert len(list(history.scalars().all())) == 1
+
+    @pytest.mark.needs_commit
+    async def test_add_tag_gives_up_after_bounded_retries(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """A persistent 1020 propagates after a bounded number of attempts."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="snapshot_retry_bounded", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image_id: int = image.image_id
+        tag_id: int = tag.tag_id
+
+        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
+        with flush_patch, pytest.raises(OperationalError):
+            await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
+
+        assert len(calls) == 3  # bounded: no infinite retry loop
+
+    async def test_add_tag_does_not_retry_other_db_errors(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """Non-1020 database errors propagate immediately with no retry."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="snapshot_retry_other_error", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image_id: int = image.image_id
+        tag_id: int = tag.tag_id
+
+        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        with flush_patch, pytest.raises(OperationalError):
+            await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert len(calls) == 1  # not retried
 

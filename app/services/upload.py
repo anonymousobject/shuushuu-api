@@ -4,6 +4,7 @@ Image upload helpers for rate limiting, file saving, and tag linking.
 
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
+from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import desc, func, select
@@ -69,14 +70,21 @@ async def check_upload_rate_limit(
             )
 
 
-async def save_uploaded_image(
-    file: UploadFile, storage_path: str, image_id: int
-) -> tuple[FilePath, str, str]:
+async def stage_uploaded_image(file: UploadFile, storage_path: str) -> tuple[FilePath, str, str]:
     """
-    Save uploaded image to storage with format: YYYY-MM-DD-{image_id}.{ext}
+    Write an upload to a staging path, validate it, and hash it.
 
     Returns:
-        Tuple of (file_path, extension, md5_hash)
+        Tuple of (staged_path, extension, md5_hash)
+
+    The file keeps its staging name until `finalize_uploaded_image` renames it:
+    the permanent name embeds the image_id, which does not exist until the row
+    is inserted. Splitting it this way keeps the file write and the duplicate
+    checks outside the database transaction, so that transaction stays short
+    enough to retry on a snapshot conflict (see app/core/db_retry.py).
+
+    The staging name is unique per upload — two users uploading files with the
+    same original name must not write to the same staging path.
     """
     # Get file extension
     if not file.filename:
@@ -91,10 +99,9 @@ async def save_uploaded_image(
     fullsize_dir = FilePath(storage_path) / "fullsize"
     fullsize_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save file temporarily to validate and calculate hash
-    temp_path = fullsize_dir / f"temp_{file.filename}"
+    staged_path = fullsize_dir / f"staged_{uuid4().hex}"
     try:
-        with open(temp_path, "wb") as f:
+        with open(staged_path, "wb") as f:
             content = await file.read()
             if len(content) > settings.MAX_IMAGE_SIZE:
                 raise HTTPException(
@@ -104,33 +111,39 @@ async def save_uploaded_image(
             f.write(content)
 
         # Validate file is actually an image (security check)
-        validate_image_file(file, temp_path)
+        validate_image_file(file, staged_path)
 
         # Calculate MD5 hash
-        md5_hash = calculate_md5(temp_path)
+        md5_hash = calculate_md5(staged_path)
 
-        # Generate filename with date prefix and image_id
-        date_prefix = datetime.now().strftime("%Y-%m-%d")
-        final_filename = f"{date_prefix}-{image_id}.{ext}"
-        final_path = fullsize_dir / final_filename
-
-        # Move to final location
-        temp_path.rename(final_path)
-
-        return final_path, ext, md5_hash
+        return staged_path, ext, md5_hash
     except HTTPException:
-        # Clean up temp file on validation error
-        if temp_path.exists():
-            temp_path.unlink()
+        # Clean up staged file on validation error
+        staged_path.unlink(missing_ok=True)
         raise
     except Exception as e:
-        # Clean up temp file on any error
-        if temp_path.exists():
-            temp_path.unlink()
+        # Clean up staged file on any error
+        staged_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to save image",
         ) from e
+
+
+def finalize_uploaded_image(
+    staged_path: FilePath, storage_path: str, image_id: int, ext: str, date_prefix: str
+) -> FilePath:
+    """
+    Give a staged upload its permanent name: YYYY-MM-DD-{image_id}.{ext}
+
+    `date_prefix` is supplied by the caller rather than recomputed here so the
+    on-disk name always matches the filename recorded on the row, even when the
+    request straddles local midnight.
+    """
+    fullsize_dir = FilePath(storage_path) / "fullsize"
+    final_path = fullsize_dir / f"{date_prefix}-{image_id}.{ext}"
+    staged_path.rename(final_path)
+    return final_path
 
 
 async def link_tags_to_image(

@@ -34,6 +34,7 @@ from app.config import (
 )
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.db_retry import retry_on_snapshot_conflict
 from app.core.permission_cache import invalidate_group_permissions, invalidate_user_permissions
 from app.core.permission_deps import require_all_permissions, require_permission
 from app.core.permissions import Permission
@@ -1503,139 +1504,163 @@ async def apply_tag_suggestions(
     if not has_report_manage and not has_tag_suggestion_apply:
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    # Get the report
-    result = await db.execute(
-        select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
-    )
-    report = result.scalar_one_or_none()
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    reviewer_id: int = current_user.user_id  # type: ignore[assignment]
 
-    if not report:
-        raise HTTPException(status_code=404, detail="Report not found")
-
-    if report.status != ReportStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Report has already been processed")
-
-    # Validate this is a TAG_SUGGESTIONS report
-    if report.category != ReportCategory.TAG_SUGGESTIONS:
-        # Taggers can only apply to TAG_SUGGESTIONS
-        if has_tag_suggestion_apply and not has_report_manage:
-            raise HTTPException(status_code=403, detail="Permission denied")
-        raise HTTPException(
-            status_code=400, detail="Tag suggestions can only be applied to TAG_SUGGESTIONS reports"
+    # The TagLinks/TagHistory writes take locking reads on their FK parents
+    # (tags, images, users) and the usage_count triggers on tag_links keep those
+    # parent rows moving, so under innodb_snapshot_isolation a concurrent tag
+    # write aborts this one with ER_CHECKREAD (1020). Retry the whole
+    # fetch-through-commit unit on a fresh snapshot (see app/core/db_retry.py).
+    # Every row is re-fetched inside the unit — the rollback between attempts
+    # expires the report and suggestion instances this mutates — and the
+    # accumulators are rebuilt so a retry cannot report a tag once per attempt.
+    async def _apply() -> tuple[list[int], list[int], list[int], list[int]]:
+        # Get the report
+        result = await db.execute(
+            select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
         )
+        report = result.scalar_one_or_none()
 
-    # Get all suggestions for this report
-    suggestions_result = await db.execute(
-        select(ImageReportTagSuggestions).where(
-            ImageReportTagSuggestions.report_id == report_id  # type: ignore[arg-type]
-        )
-    )
-    suggestions = list(suggestions_result.scalars().all())
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
 
-    if not suggestions:
-        raise HTTPException(status_code=400, detail="This report has no tag suggestions")
+        if report.status != ReportStatus.PENDING:
+            raise HTTPException(status_code=400, detail="Report has already been processed")
 
-    # Validate approved_suggestion_ids belong to this report
-    suggestion_ids = {s.suggestion_id for s in suggestions}
-    for sid in request_data.approved_suggestion_ids:
-        if sid not in suggestion_ids:
-            raise HTTPException(status_code=400, detail=f"Invalid suggestion ID: {sid}")
-
-    # Get existing tags on image
-    existing_tags_result = await db.execute(
-        select(TagLinks.tag_id).where(TagLinks.image_id == report.image_id)  # type: ignore[call-overload]
-    )
-    existing_tag_ids = set(existing_tags_result.scalars().all())
-
-    approved_ids = set(request_data.approved_suggestion_ids)
-    applied_tags: list[int] = []
-    removed_tags: list[int] = []
-    already_present: list[int] = []
-    already_absent: list[int] = []
-
-    for suggestion in suggestions:
-        if suggestion.suggestion_id in approved_ids:
-            suggestion.accepted = True
-
-            # Resolve alias to canonical tag
-            tag_result = await db.execute(
-                select(Tags).where(Tags.tag_id == suggestion.tag_id)  # type: ignore[arg-type]
+        # Validate this is a TAG_SUGGESTIONS report
+        if report.category != ReportCategory.TAG_SUGGESTIONS:
+            # Taggers can only apply to TAG_SUGGESTIONS
+            if has_tag_suggestion_apply and not has_report_manage:
+                raise HTTPException(status_code=403, detail="Permission denied")
+            raise HTTPException(
+                status_code=400,
+                detail="Tag suggestions can only be applied to TAG_SUGGESTIONS reports",
             )
-            tag = tag_result.scalar_one_or_none()
-            resolved_tag_id = tag.alias_of if tag and tag.alias_of else suggestion.tag_id
 
-            if suggestion.suggestion_type == 1:  # Add
-                if resolved_tag_id not in existing_tag_ids:
-                    tag_link = TagLinks(image_id=report.image_id, tag_id=resolved_tag_id)
-                    db.add(tag_link)
-                    db.add(
-                        TagHistory(
-                            image_id=report.image_id,
-                            tag_id=resolved_tag_id,
-                            action="a",
-                            user_id=current_user.user_id,
+        # Get all suggestions for this report
+        suggestions_result = await db.execute(
+            select(ImageReportTagSuggestions).where(
+                ImageReportTagSuggestions.report_id == report_id  # type: ignore[arg-type]
+            )
+        )
+        suggestions = list(suggestions_result.scalars().all())
+
+        if not suggestions:
+            raise HTTPException(status_code=400, detail="This report has no tag suggestions")
+
+        # Validate approved_suggestion_ids belong to this report
+        suggestion_ids = {s.suggestion_id for s in suggestions}
+        for sid in request_data.approved_suggestion_ids:
+            if sid not in suggestion_ids:
+                raise HTTPException(status_code=400, detail=f"Invalid suggestion ID: {sid}")
+
+        # Get existing tags on image
+        existing_tags_result = await db.execute(
+            select(TagLinks.tag_id).where(TagLinks.image_id == report.image_id)  # type: ignore[call-overload]
+        )
+        existing_tag_ids = set(existing_tags_result.scalars().all())
+
+        approved_ids = set(request_data.approved_suggestion_ids)
+        applied_tags: list[int] = []
+        removed_tags: list[int] = []
+        already_present: list[int] = []
+        already_absent: list[int] = []
+
+        for suggestion in suggestions:
+            if suggestion.suggestion_id in approved_ids:
+                suggestion.accepted = True
+
+                # Resolve alias to canonical tag
+                tag_result = await db.execute(
+                    select(Tags).where(Tags.tag_id == suggestion.tag_id)  # type: ignore[arg-type]
+                )
+                tag = tag_result.scalar_one_or_none()
+                resolved_tag_id = tag.alias_of if tag and tag.alias_of else suggestion.tag_id
+
+                if suggestion.suggestion_type == 1:  # Add
+                    if resolved_tag_id not in existing_tag_ids:
+                        tag_link = TagLinks(image_id=report.image_id, tag_id=resolved_tag_id)
+                        db.add(tag_link)
+                        db.add(
+                            TagHistory(
+                                image_id=report.image_id,
+                                tag_id=resolved_tag_id,
+                                action="a",
+                                user_id=reviewer_id,
+                            )
                         )
-                    )
-                    applied_tags.append(resolved_tag_id)
-                    existing_tag_ids.add(resolved_tag_id)
-                else:
-                    already_present.append(resolved_tag_id)
+                        applied_tags.append(resolved_tag_id)
+                        existing_tag_ids.add(resolved_tag_id)
+                    else:
+                        already_present.append(resolved_tag_id)
 
-            elif suggestion.suggestion_type == 2:  # Remove
-                if resolved_tag_id in existing_tag_ids:
-                    db.add(
-                        TagHistory(
-                            image_id=report.image_id,
-                            tag_id=resolved_tag_id,
-                            action="r",
-                            user_id=current_user.user_id,
+                elif suggestion.suggestion_type == 2:  # Remove
+                    if resolved_tag_id in existing_tag_ids:
+                        db.add(
+                            TagHistory(
+                                image_id=report.image_id,
+                                tag_id=resolved_tag_id,
+                                action="r",
+                                user_id=reviewer_id,
+                            )
                         )
-                    )
-                    await db.execute(
-                        delete(TagLinks).where(
-                            TagLinks.image_id == report.image_id,  # type: ignore[arg-type]
-                            TagLinks.tag_id == resolved_tag_id,  # type: ignore[arg-type]
+                        await db.execute(
+                            delete(TagLinks).where(
+                                TagLinks.image_id == report.image_id,  # type: ignore[arg-type]
+                                TagLinks.tag_id == resolved_tag_id,  # type: ignore[arg-type]
+                            )
                         )
-                    )
-                    removed_tags.append(resolved_tag_id)
-                    existing_tag_ids.discard(resolved_tag_id)
-                else:
-                    already_absent.append(resolved_tag_id)
-        else:
-            suggestion.accepted = False
+                        removed_tags.append(resolved_tag_id)
+                        existing_tag_ids.discard(resolved_tag_id)
+                    else:
+                        already_absent.append(resolved_tag_id)
+            else:
+                suggestion.accepted = False
 
-    # Resolve any matching pending ML suggestions (applying a tag out of band
-    # is an implicit approval; keeps the review queue's pending counts honest).
-    await approve_pending_suggestions_for_links(
-        db, [(report.image_id, tid) for tid in applied_tags], current_user.user_id
-    )
+        # Resolve any matching pending ML suggestions (applying a tag out of
+        # band is an implicit approval; keeps the review queue's pending counts
+        # honest).
+        await approve_pending_suggestions_for_links(
+            db, [(report.image_id, tid) for tid in applied_tags], reviewer_id
+        )
 
-    # Update report
-    report.status = ReportStatus.REVIEWED
-    report.reviewed_by = current_user.user_id
-    report.reviewed_at = datetime.now(UTC)
-    if request_data.admin_notes:
-        report.admin_notes = request_data.admin_notes
+        # Update report
+        report.status = ReportStatus.REVIEWED
+        report.reviewed_by = reviewer_id
+        report.reviewed_at = datetime.now(UTC)
+        if request_data.admin_notes:
+            report.admin_notes = request_data.admin_notes
 
-    # Log action
-    action = AdminActions(
-        user_id=current_user.user_id,
-        action_type=AdminActionType.REPORT_ACTION,
-        report_id=report_id,
-        image_id=report.image_id,
-        details={
-            "action": "apply_tag_suggestions",
-            "approved_count": len(approved_ids),
-            "rejected_count": len(suggestions) - len(approved_ids),
-            "applied_tags": applied_tags,
-            "removed_tags": removed_tags,
-        },
-    )
-    db.add(action)
+        # Log action
+        action = AdminActions(
+            user_id=reviewer_id,
+            action_type=AdminActionType.REPORT_ACTION,
+            report_id=report_id,
+            image_id=report.image_id,
+            details={
+                "action": "apply_tag_suggestions",
+                "approved_count": len(approved_ids),
+                "rejected_count": len(suggestions) - len(approved_ids),
+                "applied_tags": applied_tags,
+                "removed_tags": removed_tags,
+            },
+        )
+        db.add(action)
 
-    await refresh_image_tag_type_flags(db, report.image_id)
+        await refresh_image_tag_type_flags(db, report.image_id)
 
-    await db.commit()
+        await db.commit()
+
+        return applied_tags, removed_tags, already_present, already_absent
+
+    (
+        applied_tags,
+        removed_tags,
+        already_present,
+        already_absent,
+    ) = await retry_on_snapshot_conflict(db, _apply, what="apply_tag_suggestions")
 
     return ApplyTagSuggestionsResponse(
         message=f"Applied {len(applied_tags)} tags, removed {len(removed_tags)} tags",

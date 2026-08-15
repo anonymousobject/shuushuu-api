@@ -8,6 +8,7 @@ Tests cover:
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
@@ -31,6 +32,7 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
+from tests.snapshot_conflict import _flaky_flush, _snapshot_conflict_error
 
 
 async def create_auth_user(
@@ -2473,3 +2475,113 @@ class TestAdminApplyTagSuggestions:
         assert tags[2].tag_id in added_tag_ids
         for h in additions:
             assert h.user_id == admin.user_id
+
+
+@pytest.mark.api
+class TestApplyTagSuggestionsSnapshotConflictRetry:
+    """apply_tag_suggestions INSERTs into tag_links/tag_history, whose FK columns
+    make InnoDB locking-read the parent tags/images/users rows, and the
+    usage_count trigger on tag_links keeps those parents moving. Under
+    innodb_snapshot_isolation a concurrent tag write aborts this one with
+    ER_CHECKREAD (errno 1020), so it must retry on a fresh snapshot.
+
+    The applied_tags/removed_tags accumulators must be rebuilt per attempt, or a
+    retry reports each tag once per attempt.
+    """
+
+    @pytest.mark.needs_commit
+    async def test_apply_retries_snapshot_conflict_and_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A transient 1020 is retried; each tag is applied and reported once."""
+        admin, password = await create_auth_user(db_session, username="applyretry1", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        # Captured before the request: the app under test shares this session,
+        # so the retry's real rollback expires the fixture instances.
+        report_id: int = report.report_id
+        image_id: int = image.image_id
+        suggestion_ids = [s.suggestion_id for s in suggestions]
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        with flush_patch:
+            response = await client.post(
+                f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",
+                json={"approved_suggestion_ids": suggestion_ids},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert response.status_code == 200, response.text
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        # Reported once per tag, not once per attempt.
+        assert len(response.json()["applied_tags"]) == 2
+
+        # ...and linked once per tag.
+        tag_links = await db_session.execute(
+            select(TagLinks).where(TagLinks.image_id == image_id)
+        )
+        assert len(list(tag_links.scalars().all())) == 2
+
+        # The report transitioned exactly once.
+        await db_session.refresh(report)
+        assert report.status == ReportStatus.REVIEWED
+
+    @pytest.mark.needs_commit
+    async def test_apply_gives_up_after_bounded_retries(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A persistent 1020 propagates after a bounded number of attempts."""
+        admin, password = await create_auth_user(db_session, username="applyretry2", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=1)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestion = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tags[0].tag_id)
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+
+        report_id: int = report.report_id
+        suggestion_id: int = suggestion.suggestion_id
+
+        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
+        with flush_patch, pytest.raises(OperationalError):
+            await client.post(
+                f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",
+                json={"approved_suggestion_ids": [suggestion_id]},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert len(calls) == 3  # bounded: no infinite retry loop
