@@ -59,7 +59,7 @@ async def normalize_users(db: AsyncSession, batch_size: int, dry_run: bool) -> d
     # Fetch all users
     result = await db.execute(
         select(Users).where(
-            Users.active == 1  # Only normalize active users
+            Users.active == 1  # type: ignore[arg-type]  # Only normalize active users
         )
     )
     users = result.scalars().all()
@@ -76,6 +76,8 @@ async def normalize_users(db: AsyncSession, batch_size: int, dry_run: bool) -> d
             original = getattr(user, field)
             if original and isinstance(original, str):
                 normalized = normalize_text(original)
+                # normalize_text only returns None for falsy input, and original is truthy here
+                assert normalized is not None
                 if normalized != original:
                     if not dry_run:
                         setattr(user, field, normalized)
@@ -127,6 +129,8 @@ async def normalize_privmsgs(db: AsyncSession, batch_size: int, dry_run: bool) -
         # Normalize subject
         if msg.subject:
             normalized_subject = normalize_text(msg.subject)
+            # normalize_text only returns None for falsy input, and msg.subject is truthy here
+            assert normalized_subject is not None
             if normalized_subject != msg.subject:
                 if not dry_run:
                     msg.subject = normalized_subject
@@ -139,15 +143,18 @@ async def normalize_privmsgs(db: AsyncSession, batch_size: int, dry_run: bool) -
 
         # Normalize text
         if msg.text:
-            normalized_text = normalize_text(msg.text)
-            if normalized_text != msg.text:
+            original_text = msg.text
+            normalized_text = normalize_text(original_text)
+            # normalize_text only returns None for falsy input, and original_text is truthy here
+            assert normalized_text is not None
+            if normalized_text != original_text:
                 if not dry_run:
                     msg.text = normalized_text
                 counts["text"] += 1
                 needs_update = True
                 if total_updated < 10:  # Only show first 10
                     print(f"  PM {msg.privmsg_id} - text:")
-                    print(f"    Before: {msg.text[:100]}")
+                    print(f"    Before: {original_text[:100]}")
                     print(f"    After:  {normalized_text[:100]}")
 
         if needs_update:
@@ -191,6 +198,8 @@ async def normalize_comments(db: AsyncSession, batch_size: int, dry_run: bool) -
         # Normalize post_text
         if comment.post_text:
             normalized_text = normalize_text(comment.post_text)
+            # normalize_text only returns None for falsy input, and comment.post_text is truthy here
+            assert normalized_text is not None
             if normalized_text != comment.post_text:
                 if not dry_run:
                     comment.post_text = normalized_text
@@ -241,28 +250,34 @@ async def normalize_tags(db: AsyncSession, batch_size: int, dry_run: bool) -> di
 
         # Normalize title
         if tag.title:
-            normalized_title = normalize_text(tag.title)
-            if normalized_title != tag.title:
+            original_title = tag.title
+            normalized_title = normalize_text(original_title)
+            # normalize_text only returns None for falsy input, and original_title is truthy here
+            assert normalized_title is not None
+            if normalized_title != original_title:
                 if not dry_run:
                     tag.title = normalized_title
                 counts["title"] += 1
                 needs_update = True
                 if total_updated < 10:  # Only show first 10
                     print(f"  Tag {tag.tag_id} - title:")
-                    print(f"    Before: {tag.title[:100]}")
+                    print(f"    Before: {original_title[:100]}")
                     print(f"    After:  {normalized_title[:100]}")
 
         # Normalize desc
         if tag.desc:
-            normalized_desc = normalize_text(tag.desc)
-            if normalized_desc != tag.desc:
+            original_desc = tag.desc
+            normalized_desc = normalize_text(original_desc)
+            # normalize_text only returns None for falsy input, and original_desc is truthy here
+            assert normalized_desc is not None
+            if normalized_desc != original_desc:
                 if not dry_run:
                     tag.desc = normalized_desc
                 counts["desc"] += 1
                 needs_update = True
                 if total_updated < 10:  # Only show first 10
                     print(f"  Tag {tag.tag_id} - desc:")
-                    print(f"    Before: {tag.desc[:100]}")
+                    print(f"    Before: {original_desc[:100]}")
                     print(f"    After:  {normalized_desc[:100]}")
 
         if needs_update:
@@ -283,7 +298,7 @@ async def normalize_tags(db: AsyncSession, batch_size: int, dry_run: bool) -> di
     return counts
 
 
-async def main(dry_run: bool = False, batch_size: int = 1000, auto_confirm: bool = False):
+async def main(dry_run: bool = False, batch_size: int = 1000, auto_confirm: bool = False) -> None:
     """Run normalization on all relevant tables."""
     print("=" * 80)
     print("Database Text Normalization Script")

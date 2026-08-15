@@ -24,14 +24,14 @@ import asyncio
 import csv
 import sys
 from pathlib import Path
+from typing import Any
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import TagType, settings
 from app.models.character_source_link import CharacterSourceLinks
@@ -43,19 +43,19 @@ async def analyze_character_sources(
     threshold: float = 0.8,
     min_images: int = 5,
     output_file: str | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """
     Analyze co-occurrence patterns between character and source tags.
     """
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     results = []
 
     async with async_session() as db:
         # Get all character tags with usage >= min_images
         char_result = await db.execute(
-            select(Tags.tag_id, Tags.title)
+            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
             .where(Tags.type == TagType.CHARACTER)
             .where(Tags.usage_count >= min_images)
             .order_by(Tags.title)
@@ -67,7 +67,9 @@ async def analyze_character_sources(
         for char_id, char_title in character_tags:
             # Get count of images with this character
             count_result = await db.execute(
-                select(func.count(TagLinks.image_id)).where(TagLinks.tag_id == char_id)
+                select(func.count(TagLinks.image_id)).where(  # type: ignore[arg-type]
+                    TagLinks.tag_id == char_id
+                )
             )
             total_images = count_result.scalar() or 0
 
@@ -75,16 +77,20 @@ async def analyze_character_sources(
                 continue
 
             # Use subquery for image_ids instead of loading into Python memory
-            image_subquery = select(TagLinks.image_id).where(TagLinks.tag_id == char_id).subquery()
+            image_subquery = (
+                select(TagLinks.image_id)  # type: ignore[call-overload]
+                .where(TagLinks.tag_id == char_id)
+                .subquery()
+            )
 
             # Count source tags that co-occur
             source_counts_result = await db.execute(
-                select(Tags.tag_id, Tags.title, func.count(TagLinks.image_id).label("count"))
+                select(Tags.tag_id, Tags.title, func.count(TagLinks.image_id).label("count"))  # type: ignore[call-overload, arg-type]
                 .join(TagLinks, Tags.tag_id == TagLinks.tag_id)
                 .where(Tags.type == TagType.SOURCE)
-                .where(TagLinks.image_id.in_(select(image_subquery)))
+                .where(TagLinks.image_id.in_(select(image_subquery)))  # type: ignore[attr-defined]
                 .group_by(Tags.tag_id, Tags.title)
-                .order_by(func.count(TagLinks.image_id).desc())
+                .order_by(func.count(TagLinks.image_id).desc())  # type: ignore[arg-type]
             )
 
             for source_id, source_title, count in source_counts_result.all():
@@ -129,7 +135,7 @@ async def analyze_character_sources(
 
 
 async def create_links_from_results(
-    results: list[dict],
+    results: list[dict[str, Any]],
     user_id: int | None = None,
     batch_size: int = 100,
 ) -> tuple[int, int]:
@@ -142,7 +148,7 @@ async def create_links_from_results(
     Returns (created_count, skipped_count).
     """
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     created = 0
     skipped = 0
@@ -202,7 +208,7 @@ async def find_conflated_characters(
     min_usage: int = 20,
     min_images: int = 5,
     min_share: float = 0.05,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """
     Report character tags whose images split across >= 2 dominant sources.
 
@@ -214,7 +220,7 @@ async def find_conflated_characters(
     """
     char_rows = (
         await db.execute(
-            select(Tags.tag_id, Tags.title)
+            select(Tags.tag_id, Tags.title)  # type: ignore[call-overload]
             .where(Tags.type == TagType.CHARACTER)
             .where(Tags.usage_count >= min_usage)
             .order_by(Tags.tag_id)
@@ -223,20 +229,26 @@ async def find_conflated_characters(
 
     link_count_rows = (
         await db.execute(
-            select(CharacterSourceLinks.character_tag_id, func.count()).group_by(
-                CharacterSourceLinks.character_tag_id
-            )
+            select(  # type: ignore[call-overload]
+                CharacterSourceLinks.character_tag_id, func.count()
+            ).group_by(CharacterSourceLinks.character_tag_id)
         )
     ).all()
-    link_counts = dict(link_count_rows)
+    link_counts: dict[int, int] = dict(link_count_rows)  # type: ignore[arg-type]
 
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     for char_id, char_title in char_rows:
-        image_subquery = select(TagLinks.image_id).where(TagLinks.tag_id == char_id).subquery()
+        image_subquery = (
+            select(TagLinks.image_id)  # type: ignore[call-overload]
+            .where(TagLinks.tag_id == char_id)
+            .subquery()
+        )
 
         total_images = (
             await db.execute(
-                select(func.count(TagLinks.image_id)).where(TagLinks.tag_id == char_id)
+                select(func.count(TagLinks.image_id)).where(  # type: ignore[arg-type]
+                    TagLinks.tag_id == char_id
+                )
             )
         ).scalar() or 0
         # usage_count is denormalized and can drift; re-check against live links
@@ -247,9 +259,9 @@ async def find_conflated_characters(
         source_rows = (
             await db.execute(
                 select(canonical_id, func.count(func.distinct(TagLinks.image_id)).label("count"))
-                .join(TagLinks, Tags.tag_id == TagLinks.tag_id)
-                .where(Tags.type == TagType.SOURCE)
-                .where(TagLinks.image_id.in_(select(image_subquery)))
+                .join(TagLinks, Tags.tag_id == TagLinks.tag_id)  # type: ignore[arg-type]
+                .where(Tags.type == TagType.SOURCE)  # type: ignore[arg-type]
+                .where(TagLinks.image_id.in_(select(image_subquery)))  # type: ignore[attr-defined]
                 .group_by(canonical_id)
             )
         ).all()
@@ -257,9 +269,9 @@ async def find_conflated_characters(
         source_tagged = (
             await db.execute(
                 select(func.count(func.distinct(TagLinks.image_id)))
-                .join(Tags, Tags.tag_id == TagLinks.tag_id)
-                .where(Tags.type == TagType.SOURCE)
-                .where(TagLinks.image_id.in_(select(image_subquery)))
+                .join(Tags, Tags.tag_id == TagLinks.tag_id)  # type: ignore[arg-type]
+                .where(Tags.type == TagType.SOURCE)  # type: ignore[arg-type]
+                .where(TagLinks.image_id.in_(select(image_subquery)))  # type: ignore[attr-defined]
             )
         ).scalar() or 0
         if source_tagged == 0:
@@ -295,9 +307,11 @@ async def find_conflated_characters(
     source_ids = {s["source_tag_id"] for r in results for s in r["sources"]}
     if source_ids:
         title_rows = (
-            await db.execute(select(Tags.tag_id, Tags.title).where(Tags.tag_id.in_(source_ids)))
+            await db.execute(
+                select(Tags.tag_id, Tags.title).where(Tags.tag_id.in_(source_ids))  # type: ignore[call-overload, union-attr]
+            )
         ).all()
-        titles = dict(title_rows)
+        titles: dict[int, str | None] = dict(title_rows)  # type: ignore[arg-type]
         for r in results:
             for s in r["sources"]:
                 s["source_title"] = titles.get(s["source_tag_id"])
@@ -308,10 +322,10 @@ async def find_conflated_characters(
 
 async def run_conflated(
     min_usage: int, min_images: int, min_share: float, output_file: str | None
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """CLI wrapper: open a session, run the report, print, optionally CSV."""
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session() as db:
         results = await find_conflated_characters(
             db, min_usage=min_usage, min_images=min_images, min_share=min_share

@@ -49,7 +49,7 @@ async def reindex_tags(batch_size: int = 1000) -> None:
             while True:
                 result = await db.execute(
                     select(Tags)
-                    .where(Tags.tag_id > last_id)  # type: ignore[arg-type]
+                    .where(Tags.tag_id > last_id)  # type: ignore[arg-type,operator]
                     .order_by(Tags.tag_id)  # type: ignore[arg-type]
                     .limit(batch_size)
                 )
@@ -60,7 +60,9 @@ async def reindex_tags(batch_size: int = 1000) -> None:
 
                 await service.index_tags_from_db(db, tags)
                 indexed += len(tags)
-                last_id = tags[-1].tag_id  # type: ignore[assignment]
+                new_last_id = tags[-1].tag_id
+                assert new_last_id is not None, "persisted tags always have a tag_id"
+                last_id = new_last_id
                 print(f"  Indexed {indexed} tags...")
 
             elapsed = time.monotonic() - start

@@ -144,7 +144,7 @@ def get_images_streaming(
                     while True:
                         result = await conn.execute(
                             select(Images.image_id, Images.filename, Images.ext)  # type: ignore[call-overload]
-                            .where(Images.image_id < last_id)  # type: ignore[arg-type,operator]
+                            .where(Images.image_id < last_id)  # type: ignore[operator]
                             .order_by(Images.image_id.desc())  # type: ignore[union-attr]
                             .limit(batch_size)
                         )

@@ -176,7 +176,7 @@ async def find_parent_comment(
     # Find exact text match on this image
     result = await db.execute(
         select(Comments).where(
-            (Comments.image_id == image_id)
+            (Comments.image_id == image_id)  # type: ignore[arg-type]
             & (Comments.post_id != current_comment_id)
             & (Comments.post_text == quoted_text)
         )
@@ -219,9 +219,9 @@ async def migrate_quoted_comments(
         logger.info("migration_step", step="1_load_quoted_comments")
         result = await db.execute(
             select(Comments).where(
-                (Comments.post_text.like("%[quote=%"))
-                | (Comments.post_text.like("%[quote]%"))
-                | (Comments.post_text.like(">%"))
+                (Comments.post_text.like("%[quote=%"))  # type: ignore[attr-defined]
+                | (Comments.post_text.like("%[quote]%"))  # type: ignore[attr-defined]
+                | (Comments.post_text.like(">%"))  # type: ignore[attr-defined]
             )
         )
         quoted_comments = result.scalars().all()
@@ -239,11 +239,13 @@ async def migrate_quoted_comments(
 
         # Fetch only necessary fields for matching (reduces memory)
         result = await db.execute(
-            select(Comments.post_id, Comments.image_id, Comments.post_text).where(
-                Comments.image_id.in_(image_ids)
+            select(  # type: ignore[call-overload]
+                Comments.post_id, Comments.image_id, Comments.post_text
+            ).where(
+                Comments.image_id.in_(image_ids)  # type: ignore[union-attr]
             )
         )
-        comments_by_image: dict[int, list] = {}
+        comments_by_image: dict[int | None, list[tuple[int | None, str]]] = {}
         for row in result.all():
             if row.image_id not in comments_by_image:
                 comments_by_image[row.image_id] = []
