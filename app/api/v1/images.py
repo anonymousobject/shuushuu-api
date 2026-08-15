@@ -134,7 +134,12 @@ from app.services.recommendations import get_recommended_images
 from app.services.search import sync_tag_to_search
 from app.services.tag_context import stamp_context_sources
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
+from app.services.upload import (
+    check_upload_rate_limit,
+    finalize_uploaded_image,
+    link_tags_to_image,
+    stage_uploaded_image,
+)
 from app.tasks.queue import enqueue_job
 from app.utils.comment_search import (
     COMMENT_SEARCH_TIMEOUT_SECONDS,
@@ -2796,6 +2801,22 @@ async def unfavorite_image(
     }
 
 
+async def _discard_unfinished_upload(
+    db: AsyncSession, staged_path: FilePath | None, committed: bool
+) -> None:
+    """Undo an upload that failed before its row was committed.
+
+    Once the row is committed it owns the file, so a later failure (a job
+    enqueue, say) must leave both alone rather than delete a file the row
+    points at.
+    """
+    if committed:
+        return
+    await db.rollback()
+    if staged_path:
+        staged_path.unlink(missing_ok=True)
+
+
 @router.post(
     "/upload",
     response_model=ImageUploadResponse,
@@ -2872,33 +2893,11 @@ async def upload_image(
     # touching an expired attribute on an async session raises.
     uploader_id: int = current_user.id
 
-    # Concurrent uploads write identical placeholder values into the same
-    # index positions, so this INSERT can hit a snapshot conflict (see
-    # app/core/db_retry.py). A rolled-back attempt just burns an auto-inc id.
-    async def _insert_temp_image() -> Images:
-        temp = Images(
-            filename="temp",  # Will be updated after save
-            ext="tmp",
-            original_filename=file.filename or "unknown",
-            md5_hash="",  # Will be calculated during save
-            filesize=0,
-            width=0,
-            height=0,
-            user_id=uploader_id,
-            ip=client_ip,  # Log IP address
-            status=1,
-            locked=0,
-        )
-        db.add(temp)
-        await db.flush()  # Get image_id
-        return temp
-
-    temp_image = await retry_on_snapshot_conflict(db, _insert_temp_image, what="upload_temp_image")
-    image_id: int = temp_image.image_id  # type: ignore[assignment]
-
-    logger.info("image_record_created", image_id=image_id)
-
-    file_path: FilePath | None = None  # Initialize to track if file was saved
+    # The file write and both duplicate checks run BEFORE any database write, so
+    # the transaction that follows never holds a snapshot across the disk write
+    # or the IQDB network call. That is what makes it short enough to retry.
+    staged_path: FilePath | None = None
+    committed = False
     try:
         # Validate source_url before touching storage: only http(s) URLs are
         # accepted (blocks javascript:/data: schemes and similar).
@@ -2910,34 +2909,27 @@ async def upload_image(
                 detail="source_url must start with http:// or https://",
             )
 
-        # Save image to storage (validates and calculates hash)
-        # If validation fails, this will raise HTTPException
-        file_path, ext, md5_hash = await save_uploaded_image(file, settings.STORAGE_PATH, image_id)
-        logger.info("image_saved", image_id=image_id, file_path=str(file_path), md5_hash=md5_hash)
+        # Stage the file (validates and calculates hash) under a temporary name.
+        # If validation fails, this will raise HTTPException.
+        staged_path, ext, md5_hash = await stage_uploaded_image(file, settings.STORAGE_PATH)
+        logger.info("image_staged", file_path=str(staged_path), md5_hash=md5_hash)
 
         # Check for duplicate image (MD5)
         existing_result = await db.execute(
-            select(Images).where(
-                Images.md5_hash == md5_hash,  # type: ignore[arg-type]
-                Images.image_id != image_id,  # type: ignore[arg-type]
-            )
+            select(Images).where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
         )
         existing_image = existing_result.scalar_one_or_none()
 
         if existing_image:
-            # Capture the id before rollback expires the instance.
             existing_image_id: int = existing_image.image_id  # type: ignore[assignment]
             logger.warning(
                 "duplicate_image_detected",
-                image_id=image_id,
                 duplicate_of=existing_image_id,
                 md5_hash=md5_hash,
             )
-            # Clean up the temp record and saved file before returning 409,
-            # mirroring the IQDB near-duplicate path below.
-            await db.rollback()
-            if file_path:
-                file_path.unlink(missing_ok=True)
+            # Nothing was written to the database yet — only the staged file
+            # needs cleaning up, mirroring the IQDB near-duplicate path below.
+            staged_path.unlink(missing_ok=True)
             return JSONResponse(
                 status_code=status.HTTP_409_CONFLICT,
                 content=ImageUploadDuplicateResponse(
@@ -2946,30 +2938,22 @@ async def upload_image(
                 ).model_dump(mode="json"),
             )
 
-        # Get image dimensions and update record
-        width, height = get_image_dimensions(file_path)
-        filesize = file_path.stat().st_size
+        # Get image dimensions
+        width, height = get_image_dimensions(staged_path)
+        filesize = staged_path.stat().st_size
 
         # Calculate total pixels (in megapixels)
         total_pixels = Decimal((width * height) / 1_000_000)
 
-        # Derive from the actually-saved fullsize path so DB.filename matches
-        # the on-disk name even when upload straddles a local-midnight boundary
-        # (datetime.now() recomputed here can land on the next day).
-        filename = file_path.stem  # e.g. "2026-05-18-1116164"
-
         # Check IQDB for near-duplicate images unless user confirmed
         if not confirm_similar:
             iqdb_results = await check_iqdb_similarity(
-                file_path, db, threshold=settings.IQDB_UPLOAD_THRESHOLD
+                staged_path, db, threshold=settings.IQDB_UPLOAD_THRESHOLD
             )
             if iqdb_results:
                 # Hydrate IQDB results with full image data
                 similar = await _hydrate_similar_images(iqdb_results, db)
-                # Clean up temp record and file before returning 409
-                await db.rollback()
-                if file_path and file_path.exists():
-                    file_path.unlink()
+                staged_path.unlink(missing_ok=True)
                 return JSONResponse(
                     status_code=status.HTTP_409_CONFLICT,
                     content=ImageUploadSimilarResponse(
@@ -2990,34 +2974,74 @@ async def upload_image(
             else VariantStatus.NONE
         )
 
-        # Update temporary record with actual data
-        temp_image.filename = filename
-        temp_image.ext = ext
-        temp_image.md5_hash = md5_hash
-        temp_image.filesize = filesize
-        temp_image.width = width
-        temp_image.height = height
-        temp_image.total_pixels = total_pixels
-        temp_image.medium = medium_status
-        temp_image.large = large_status
-        temp_image.caption = caption
-        temp_image.miscmeta = miscmeta
-        temp_image.source_url = source_url
-
-        # Link tags if provided
+        # Parse tag ids before opening the transaction: a malformed list is a
+        # 400, not something to discover mid-write.
+        tag_id_list: list[int] = []
         if tag_ids.strip():
             try:
                 tag_id_list = [int(tid.strip()) for tid in tag_ids.split(",") if tid.strip()]
-                await link_tags_to_image(image_id, tag_id_list, uploader_id, db)
             except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid tag IDs format. Must be comma-separated integers.",
                 ) from e
 
-        # Commit all changes
-        await db.commit()
-        await db.refresh(temp_image)
+        # One date_prefix for both the recorded filename and the on-disk name,
+        # so the two agree even when the upload straddles a local-midnight
+        # boundary (a recomputed datetime.now() can land on the next day).
+        date_prefix = datetime.now().strftime("%Y-%m-%d")
+
+        # Everything above is non-DB work. What remains is a short,
+        # self-contained transaction: INSERT the row, name it from the id it
+        # just minted, link tags, commit. Its tag_links/tag_history INSERTs take
+        # locking reads on FK parents that other taggers keep moving, so under
+        # innodb_snapshot_isolation it can abort with ER_CHECKREAD (1020) —
+        # retry it on a fresh snapshot (see app/core/db_retry.py). A rolled-back
+        # attempt just burns an auto-inc id.
+        async def _insert_image() -> Images:
+            image = Images(
+                filename="",  # set below, from the id this INSERT mints
+                ext=ext,
+                original_filename=file.filename or "unknown",
+                md5_hash=md5_hash,
+                filesize=filesize,
+                width=width,
+                height=height,
+                total_pixels=total_pixels,
+                medium=medium_status,
+                large=large_status,
+                caption=caption,
+                miscmeta=miscmeta,
+                source_url=source_url,
+                user_id=uploader_id,
+                ip=client_ip,  # Log IP address
+                status=1,
+                locked=0,
+            )
+            db.add(image)
+            await db.flush()  # Get image_id
+            image.filename = f"{date_prefix}-{image.image_id}"
+            if tag_id_list:
+                await link_tags_to_image(
+                    image.image_id,  # type: ignore[arg-type]
+                    tag_id_list,
+                    uploader_id,
+                    db,
+                )
+            await db.commit()
+            return image
+
+        new_image = await retry_on_snapshot_conflict(db, _insert_image, what="upload_image")
+        committed = True
+        await db.refresh(new_image)
+        image_id: int = new_image.image_id  # type: ignore[assignment]
+        filename = new_image.filename
+
+        # Give the staged file its permanent name now that the row exists.
+        file_path = finalize_uploaded_image(
+            staged_path, settings.STORAGE_PATH, image_id, ext, date_prefix
+        )
+        logger.info("image_saved", image_id=image_id, file_path=str(file_path))
 
         logger.info(
             "image_upload_completed",
@@ -3102,51 +3126,46 @@ async def upload_image(
 
         # Build response
         image_response = ImageResponse(
-            image_id=temp_image.image_id or 0,  # image_id is guaranteed to exist after flush
-            filename=temp_image.filename,
-            ext=temp_image.ext,
-            original_filename=temp_image.original_filename,
-            md5_hash=temp_image.md5_hash,
-            filesize=temp_image.filesize,
-            width=temp_image.width,
-            height=temp_image.height,
-            caption=temp_image.caption,
-            miscmeta=temp_image.miscmeta,
-            source_url=temp_image.source_url,
-            rating=temp_image.rating,
-            user_id=temp_image.user_id,  # user_id is guaranteed from database
-            date_added=temp_image.date_added,
-            status=temp_image.status,
-            locked=temp_image.locked,
-            posts=temp_image.posts,
-            favorites=temp_image.favorites,
-            bayesian_rating=temp_image.bayesian_rating,
-            num_ratings=temp_image.num_ratings,
-            medium=temp_image.medium,
-            large=temp_image.large,
+            image_id=image_id,
+            filename=new_image.filename,
+            ext=new_image.ext,
+            original_filename=new_image.original_filename,
+            md5_hash=new_image.md5_hash,
+            filesize=new_image.filesize,
+            width=new_image.width,
+            height=new_image.height,
+            caption=new_image.caption,
+            miscmeta=new_image.miscmeta,
+            source_url=new_image.source_url,
+            rating=new_image.rating,
+            user_id=new_image.user_id,  # user_id is guaranteed from database
+            date_added=new_image.date_added,
+            status=new_image.status,
+            locked=new_image.locked,
+            posts=new_image.posts,
+            favorites=new_image.favorites,
+            bayesian_rating=new_image.bayesian_rating,
+            num_ratings=new_image.num_ratings,
+            medium=new_image.medium,
+            large=new_image.large,
         )
 
         return ImageUploadResponse(
             message="Image uploaded successfully",
-            image_id=temp_image.image_id or 0,  # image_id is guaranteed after flush
+            image_id=image_id,
             image=image_response,
         )
 
     except HTTPException as he:
-        # Clean up file and database record on validation error
         logger.warning(
             "image_upload_failed",
             image_id=image_id if "image_id" in locals() else None,
             error=he.detail,
             status_code=he.status_code,
         )
-        # Rollback database first, then delete file
-        await db.rollback()
-        if file_path and file_path.exists():
-            file_path.unlink()
+        await _discard_unfinished_upload(db, staged_path, committed)
         raise
     except Exception as e:
-        # Clean up file and database record on any error
         logger.error(
             "image_upload_error",
             image_id=image_id if "image_id" in locals() else None,
@@ -3154,10 +3173,7 @@ async def upload_image(
             error_type=type(e).__name__,
             exc_info=True,
         )
-        # Rollback database first, then delete file
-        await db.rollback()
-        if file_path and file_path.exists():
-            file_path.unlink()
+        await _discard_unfinished_upload(db, staged_path, committed)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to upload image",

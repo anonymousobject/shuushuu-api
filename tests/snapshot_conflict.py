@@ -49,3 +49,22 @@ def _flaky_flush(fail_times: int, error: OperationalError):
         await real_flush(self, *args, **kwargs)
 
     return patch.object(AsyncSession, "flush", flush), calls
+
+
+def _flaky_flush_nth(n: int, error: OperationalError):
+    """Like `_flaky_flush`, but fails only the `n`th explicit flush (1-indexed).
+
+    Use this to aim the conflict at a specific write within a route that
+    flushes more than once — e.g. the upload's tag-link write rather than the
+    flush that mints its image_id. Returns (patch_ctx, calls).
+    """
+    real_flush = AsyncSession.flush
+    calls: list[int] = []
+
+    async def flush(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == n:
+            raise error
+        await real_flush(self, *args, **kwargs)
+
+    return patch.object(AsyncSession, "flush", flush), calls
