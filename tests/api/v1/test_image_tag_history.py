@@ -150,4 +150,6 @@ class TestTagHistoryOnImageTagging:
         )
         history = result.scalar_one_or_none()
         assert history is not None
-        assert history.user_id == sample_user.user_id, "TagHistory should record the user who added the tag"
+        assert history.user_id == sample_user.user_id, (
+            "TagHistory should record the user who added the tag"
+        )

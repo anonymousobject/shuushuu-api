@@ -32,9 +32,7 @@ class TestIqdbFeed:
         assert root.tag == "images"
         assert len(root) == 0
 
-    async def test_returns_active_images(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_returns_active_images(self, client: AsyncClient, db_session: AsyncSession):
         """Should return active images with correct XML attributes."""
         image = Images(
             filename="2026-01-15-12345",
@@ -68,9 +66,7 @@ class TestIqdbFeed:
         assert elem.get("submitted_on") is not None
         assert "2026-01-15-12345.webp" in elem.get("preview_url")
 
-    async def test_excludes_non_active_images(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_excludes_non_active_images(self, client: AsyncClient, db_session: AsyncSession):
         """Should only return images with status == ACTIVE."""
         # Create one active and one inactive image
         active = Images(
@@ -103,9 +99,7 @@ class TestIqdbFeed:
         assert len(root) == 1
         assert root[0].get("id") == str(active.image_id)
 
-    async def test_limit_parameter(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_limit_parameter(self, client: AsyncClient, db_session: AsyncSession):
         """Should respect the limit parameter."""
         for i in range(5):
             image = Images(
@@ -126,9 +120,7 @@ class TestIqdbFeed:
         root = ET.fromstring(response.text)
         assert len(root) == 3
 
-    async def test_default_limit_is_16(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_default_limit_is_16(self, client: AsyncClient, db_session: AsyncSession):
         """Default limit should be 16."""
         for i in range(20):
             image = Images(
@@ -155,9 +147,7 @@ class TestIqdbFeed:
 
         assert response.status_code == 422
 
-    async def test_after_id_ascending_order(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_after_id_ascending_order(self, client: AsyncClient, db_session: AsyncSession):
         """With after_id, should return images with id > after_id in ASC order."""
         images = []
         for i in range(5):
@@ -212,9 +202,7 @@ class TestIqdbFeed:
         ids = [int(elem.get("id")) for elem in root]
         assert ids == sorted(ids, reverse=True)
 
-    async def test_tags_grouped_by_type(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_tags_grouped_by_type(self, client: AsyncClient, db_session: AsyncSession):
         """Tags should be grouped by type in the XML attributes."""
         image = Images(
             filename="tagged-image",

@@ -231,9 +231,7 @@ class TestRemoveDeactivates:
         await db_session.commit()
         await db_session.refresh(review)
 
-        transition = await _close_review(
-            db_session, review, ReviewOutcome.REMOVE, "quorum_reached"
-        )
+        transition = await _close_review(db_session, review, ReviewOutcome.REMOVE, "quorum_reached")
         await db_session.commit()
 
         await db_session.refresh(image)
@@ -244,12 +242,16 @@ class TestRemoveDeactivates:
 
         # Public status history row carries the category + reason
         hist = (
-            await db_session.execute(
-                select(ImageStatusHistory).where(
-                    ImageStatusHistory.image_id == image.image_id  # type: ignore[arg-type]
+            (
+                await db_session.execute(
+                    select(ImageStatusHistory).where(
+                        ImageStatusHistory.image_id == image.image_id  # type: ignore[arg-type]
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert any(
             h.new_status == ImageStatus.DEACTIVATED
             and h.reason_category == DeactivationReason.LOW_QUALITY
@@ -279,9 +281,7 @@ class TestNoQuorum:
     async def test_no_quorum_extend_first_time(self, db_session: AsyncSession):
         """2 votes total, deadline passed, extension_used=false -> extend deadline."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, extension_used=0
-        )
+        review = await create_test_review(db_session, image.image_id, extension_used=0)
         await add_votes(db_session, review.review_id, keep_count=1, remove_count=1)  # type: ignore[arg-type]
 
         old_deadline = review.deadline
@@ -298,9 +298,7 @@ class TestNoQuorum:
     async def test_no_quorum_default_keep_after_extension(self, db_session: AsyncSession):
         """2 votes total, deadline passed, extension_used=true -> close with outcome=KEEP."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, extension_used=1
-        )
+        review = await create_test_review(db_session, image.image_id, extension_used=1)
         await add_votes(db_session, review.review_id, keep_count=1, remove_count=1)  # type: ignore[arg-type]
 
         result = await check_review_deadlines(db_session)
@@ -321,9 +319,7 @@ class TestTieScenarios:
     async def test_tie_with_quorum_extend_first_time(self, db_session: AsyncSession):
         """2 keep, 2 remove, extension_used=false -> extend deadline."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, extension_used=0
-        )
+        review = await create_test_review(db_session, image.image_id, extension_used=0)
         await add_votes(db_session, review.review_id, keep_count=2, remove_count=2)  # type: ignore[arg-type]
 
         result = await check_review_deadlines(db_session)
@@ -337,9 +333,7 @@ class TestTieScenarios:
     async def test_tie_with_quorum_default_keep_after_extension(self, db_session: AsyncSession):
         """2 keep, 2 remove, extension_used=true -> close with outcome=KEEP."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, extension_used=1
-        )
+        review = await create_test_review(db_session, image.image_id, extension_used=1)
         await add_votes(db_session, review.review_id, keep_count=2, remove_count=2)  # type: ignore[arg-type]
 
         result = await check_review_deadlines(db_session)
@@ -360,9 +354,7 @@ class TestEdgeCases:
         """Review not past deadline -> no action taken."""
         image = await create_test_image(db_session)
         # Deadline in future
-        review = await create_test_review(
-            db_session, image.image_id, deadline_offset_days=7
-        )
+        review = await create_test_review(db_session, image.image_id, deadline_offset_days=7)
         await add_votes(db_session, review.review_id, keep_count=3, remove_count=0)  # type: ignore[arg-type]
 
         result = await check_review_deadlines(db_session)
@@ -387,9 +379,7 @@ class TestEdgeCases:
     async def test_zero_votes_extend_first_time(self, db_session: AsyncSession):
         """0 votes, deadline passed -> extend (first time)."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, extension_used=0
-        )
+        review = await create_test_review(db_session, image.image_id, extension_used=0)
         # No votes added
 
         result = await check_review_deadlines(db_session)
@@ -402,9 +392,7 @@ class TestEdgeCases:
     async def test_zero_votes_default_keep_after_extension(self, db_session: AsyncSession):
         """0 votes, deadline passed, extension used -> default keep."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, extension_used=1
-        )
+        review = await create_test_review(db_session, image.image_id, extension_used=1)
         # No votes added
 
         result = await check_review_deadlines(db_session)
@@ -449,9 +437,7 @@ class TestAuditLogging:
         from sqlalchemy import select
 
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, extension_used=0
-        )
+        review = await create_test_review(db_session, image.image_id, extension_used=0)
         await add_votes(db_session, review.review_id, keep_count=1, remove_count=0)  # type: ignore[arg-type]
 
         await check_review_deadlines(db_session)
@@ -505,7 +491,9 @@ class TestEarlyClose:
         """3 keep, 0 remove (margin=3) -> close with outcome=KEEP."""
         image = await create_test_image(db_session)
         review = await create_test_review(
-            db_session, image.image_id, deadline_offset_days=7  # Not expired
+            db_session,
+            image.image_id,
+            deadline_offset_days=7,  # Not expired
         )
         await add_votes(db_session, review.review_id, keep_count=3, remove_count=0)  # type: ignore[arg-type]
 
@@ -523,9 +511,7 @@ class TestEarlyClose:
     async def test_early_close_remove_margin_met(self, db_session: AsyncSession):
         """0 keep, 3 remove (margin=3) -> close with outcome=REMOVE."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, deadline_offset_days=7
-        )
+        review = await create_test_review(db_session, image.image_id, deadline_offset_days=7)
         await add_votes(db_session, review.review_id, keep_count=0, remove_count=3)  # type: ignore[arg-type]
 
         closed = await check_early_close(db_session, review)
@@ -543,9 +529,7 @@ class TestEarlyClose:
     async def test_early_close_margin_not_met(self, db_session: AsyncSession):
         """2 keep, 1 remove (margin=1, needs 3) -> stays open."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, deadline_offset_days=7
-        )
+        review = await create_test_review(db_session, image.image_id, deadline_offset_days=7)
         await add_votes(db_session, review.review_id, keep_count=2, remove_count=1)  # type: ignore[arg-type]
 
         closed = await check_early_close(db_session, review)
@@ -558,9 +542,7 @@ class TestEarlyClose:
     async def test_early_close_tie(self, db_session: AsyncSession):
         """3 keep, 3 remove (margin=0) -> stays open."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, deadline_offset_days=7
-        )
+        review = await create_test_review(db_session, image.image_id, deadline_offset_days=7)
         await add_votes(db_session, review.review_id, keep_count=3, remove_count=3)  # type: ignore[arg-type]
 
         closed = await check_early_close(db_session, review)
@@ -573,9 +555,7 @@ class TestEarlyClose:
     async def test_early_close_large_margin_keep(self, db_session: AsyncSession):
         """5 keep, 2 remove (margin=3) -> close with KEEP."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, deadline_offset_days=7
-        )
+        review = await create_test_review(db_session, image.image_id, deadline_offset_days=7)
         await add_votes(db_session, review.review_id, keep_count=5, remove_count=2)  # type: ignore[arg-type]
 
         closed = await check_early_close(db_session, review)
@@ -593,9 +573,7 @@ class TestEarlyClose:
         from sqlalchemy import select
 
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, deadline_offset_days=7
-        )
+        review = await create_test_review(db_session, image.image_id, deadline_offset_days=7)
         await add_votes(db_session, review.review_id, keep_count=3, remove_count=0)  # type: ignore[arg-type]
 
         await check_early_close(db_session, review)
@@ -615,9 +593,7 @@ class TestEarlyClose:
     async def test_early_close_no_votes(self, db_session: AsyncSession):
         """0 votes -> stays open."""
         image = await create_test_image(db_session)
-        review = await create_test_review(
-            db_session, image.image_id, deadline_offset_days=7
-        )
+        review = await create_test_review(db_session, image.image_id, deadline_offset_days=7)
 
         closed = await check_early_close(db_session, review)
 

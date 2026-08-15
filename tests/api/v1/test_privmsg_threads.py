@@ -95,15 +95,25 @@ class TestGetThreads:
 
         t1 = str(uuid.uuid4())
         msg1 = Privmsgs(
-            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
-            subject="Read thread", text="Hi", thread_id=t1, date=now, viewed=1,
+            from_user_id=user_b.user_id,
+            to_user_id=user_a.user_id,
+            subject="Read thread",
+            text="Hi",
+            thread_id=t1,
+            date=now,
+            viewed=1,
         )
         db_session.add(msg1)
 
         t2 = str(uuid.uuid4())
         msg2 = Privmsgs(
-            from_user_id=user_c.user_id, to_user_id=user_a.user_id,
-            subject="Unread thread", text="Hey", thread_id=t2, date=now, viewed=0,
+            from_user_id=user_c.user_id,
+            to_user_id=user_a.user_id,
+            subject="Unread thread",
+            text="Hey",
+            thread_id=t2,
+            date=now,
+            viewed=0,
         )
         db_session.add(msg2)
         await db_session.commit()
@@ -119,15 +129,20 @@ class TestGetThreads:
         assert t2 in thread_ids
         assert t1 not in thread_ids
 
-    async def test_threads_exclude_left_conversations(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_threads_exclude_left_conversations(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test that left (soft-deleted) conversations don't appear."""
         user_a = await create_user(db_session, "left_a")
         user_b = await create_user(db_session, "left_b")
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
-            subject="Left thread", text="Bye", thread_id=thread_id,
+            from_user_id=user_b.user_id,
+            to_user_id=user_a.user_id,
+            subject="Left thread",
+            text="Bye",
+            thread_id=thread_id,
             to_del=1,
         )
         db_session.add(msg)
@@ -142,7 +157,9 @@ class TestGetThreads:
         thread_ids = [t["thread_id"] for t in response.json()["threads"]]
         assert thread_id not in thread_ids
 
-    async def test_threads_sorted_by_latest_message(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_threads_sorted_by_latest_message(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test threads are sorted by most recent message date."""
         user_a = await create_user(db_session, "sort_a")
         user_b = await create_user(db_session, "sort_b")
@@ -151,16 +168,28 @@ class TestGetThreads:
         now = datetime.now(UTC)
 
         t1 = str(uuid.uuid4())
-        db_session.add(Privmsgs(
-            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
-            subject="Old", text="Old msg", thread_id=t1, date=now - timedelta(hours=1),
-        ))
+        db_session.add(
+            Privmsgs(
+                from_user_id=user_b.user_id,
+                to_user_id=user_a.user_id,
+                subject="Old",
+                text="Old msg",
+                thread_id=t1,
+                date=now - timedelta(hours=1),
+            )
+        )
 
         t2 = str(uuid.uuid4())
-        db_session.add(Privmsgs(
-            from_user_id=user_c.user_id, to_user_id=user_a.user_id,
-            subject="New", text="New msg", thread_id=t2, date=now,
-        ))
+        db_session.add(
+            Privmsgs(
+                from_user_id=user_c.user_id,
+                to_user_id=user_a.user_id,
+                subject="New",
+                text="New msg",
+                thread_id=t2,
+                date=now,
+            )
+        )
         await db_session.commit()
 
         token = await login(client, "sort_a")
@@ -178,7 +207,9 @@ class TestGetThreads:
 class TestSendThreadedMessage:
     """Tests for POST /api/v1/privmsgs with thread_id."""
 
-    async def test_send_new_message_creates_thread(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_send_new_message_creates_thread(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test sending a new message generates a thread_id."""
         user_a = await create_user(db_session, "send_a", email_verified=True)
         user_b = await create_user(db_session, "send_b", email_verified=True)
@@ -202,8 +233,11 @@ class TestSendThreadedMessage:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Original", text="First msg", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Original",
+            text="First msg",
+            thread_id=thread_id,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -223,15 +257,20 @@ class TestSendThreadedMessage:
         data = response.json()
         assert data["thread_id"] == thread_id
 
-    async def test_reply_resets_recipient_del_flag(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_reply_resets_recipient_del_flag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test that replying to a left thread resets the recipient's del flag."""
         user_a = await create_user(db_session, "reset_a", email_verified=True)
         user_b = await create_user(db_session, "reset_b", email_verified=True)
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Left", text="Old msg", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Left",
+            text="Old msg",
+            thread_id=thread_id,
             to_del=1,  # user_b left the thread
         )
         db_session.add(msg)
@@ -301,8 +340,12 @@ class TestGetThreadMessages:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
-            subject="Unread", text="Please read", thread_id=thread_id, viewed=0,
+            from_user_id=user_b.user_id,
+            to_user_id=user_a.user_id,
+            subject="Unread",
+            text="Please read",
+            thread_id=thread_id,
+            viewed=0,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -327,8 +370,11 @@ class TestGetThreadMessages:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Private", text="Secret", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Private",
+            text="Secret",
+            thread_id=thread_id,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -364,8 +410,11 @@ class TestLeaveThread:
         msgs = []
         for i in range(2):
             msg = Privmsgs(
-                from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-                subject="Leave test", text=f"Msg {i}", thread_id=thread_id,
+                from_user_id=user_a.user_id,
+                to_user_id=user_b.user_id,
+                subject="Leave test",
+                text=f"Msg {i}",
+                thread_id=thread_id,
             )
             db_session.add(msg)
             msgs.append(msg)
@@ -392,8 +441,11 @@ class TestLeaveThread:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Leave send", text="Msg", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Leave send",
+            text="Msg",
+            thread_id=thread_id,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -417,8 +469,11 @@ class TestLeaveThread:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Private", text="Secret", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Private",
+            text="Secret",
+            thread_id=thread_id,
         )
         db_session.add(msg)
         await db_session.commit()

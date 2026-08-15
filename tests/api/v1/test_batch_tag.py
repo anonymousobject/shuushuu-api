@@ -108,9 +108,7 @@ class TestBatchTagValidation:
         )
         assert response.status_code == 401
 
-    async def test_rejects_empty_tag_ids(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_rejects_empty_tag_ids(self, client: AsyncClient, db_session: AsyncSession):
         """tag_ids must have at least 1 item."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -121,9 +119,7 @@ class TestBatchTagValidation:
         )
         assert response.status_code == 422
 
-    async def test_rejects_too_many_tag_ids(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_rejects_too_many_tag_ids(self, client: AsyncClient, db_session: AsyncSession):
         """tag_ids must have at most 5 items."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -134,9 +130,7 @@ class TestBatchTagValidation:
         )
         assert response.status_code == 422
 
-    async def test_rejects_empty_image_ids(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_rejects_empty_image_ids(self, client: AsyncClient, db_session: AsyncSession):
         """image_ids must have at least 1 item."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -147,9 +141,7 @@ class TestBatchTagValidation:
         )
         assert response.status_code == 422
 
-    async def test_rejects_too_many_image_ids(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_rejects_too_many_image_ids(self, client: AsyncClient, db_session: AsyncSession):
         """image_ids must have at most 100 items."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -160,9 +152,7 @@ class TestBatchTagValidation:
         )
         assert response.status_code == 422
 
-    async def test_rejects_invalid_action(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_rejects_invalid_action(self, client: AsyncClient, db_session: AsyncSession):
         """Only 'add' and 'remove' actions are supported."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -178,9 +168,7 @@ class TestBatchTagValidation:
 class TestBatchTagAdd:
     """Tests for the happy path and skip-and-report behavior."""
 
-    async def test_add_tags_to_images(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_add_tags_to_images(self, client: AsyncClient, db_session: AsyncSession):
         """Successfully add multiple tags to multiple images."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -201,9 +189,7 @@ class TestBatchTagAdd:
         assert len(data["added"]) == 6  # 3 images * 2 tags
         assert len(data["skipped"]) == 0
 
-    async def test_skips_nonexistent_images(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_skips_nonexistent_images(self, client: AsyncClient, db_session: AsyncSession):
         """Missing image IDs are reported as skipped."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -227,9 +213,7 @@ class TestBatchTagAdd:
         assert skipped[0]["image_id"] == 999999
         assert skipped[0]["reason"] == "image_not_found"
 
-    async def test_skips_nonexistent_tags(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_skips_nonexistent_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Missing tag IDs are reported as skipped."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -251,9 +235,7 @@ class TestBatchTagAdd:
         assert len(skipped) == 1
         assert skipped[0]["reason"] == "tag_not_found"
 
-    async def test_skips_already_tagged(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_skips_already_tagged(self, client: AsyncClient, db_session: AsyncSession):
         """Already-existing tag links are reported as skipped."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -284,9 +266,7 @@ class TestBatchTagAdd:
         assert len(data["skipped"]) == 1
         assert data["skipped"][0]["reason"] == "already_tagged"
 
-    async def test_resolves_alias_tags(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_resolves_alias_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Alias tags resolve to their canonical tag."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
@@ -318,9 +298,7 @@ class TestBatchTagAdd:
         # The added pair should use the canonical tag_id
         assert data["added"][0]["tag_id"] == canonical.tag_id
 
-    async def test_creates_tag_history(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_creates_tag_history(self, client: AsyncClient, db_session: AsyncSession):
         """Each new tag link creates a tag history entry."""
         from app.models.tag_history import TagHistory
 
@@ -350,9 +328,7 @@ class TestBatchTagAdd:
         count = result.scalar()
         assert count == 2
 
-    async def test_requires_permission(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_requires_permission(self, client: AsyncClient, db_session: AsyncSession):
         """Users without IMAGE_TAG_ADD permission get 403."""
         # Create user WITHOUT the permission
         user = Users(
@@ -380,9 +356,7 @@ class TestBatchTagAdd:
 class TestBatchTagRemove:
     """Tests for batch tag removal."""
 
-    async def test_remove_tags_from_images(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_remove_tags_from_images(self, client: AsyncClient, db_session: AsyncSession):
         """Successfully remove multiple tags from multiple images."""
         user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
         token = create_access_token(user.id)
@@ -411,9 +385,7 @@ class TestBatchTagRemove:
         assert len(data["removed"]) == 4  # 2 images * 2 tags
         assert len(data["skipped"]) == 0
 
-    async def test_skips_not_tagged(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_skips_not_tagged(self, client: AsyncClient, db_session: AsyncSession):
         """Tags not linked to images are reported as skipped."""
         user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
         token = create_access_token(user.id)
@@ -435,9 +407,7 @@ class TestBatchTagRemove:
         assert len(data["skipped"]) == 1
         assert data["skipped"][0]["reason"] == "not_tagged"
 
-    async def test_skips_nonexistent_images(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_skips_nonexistent_images(self, client: AsyncClient, db_session: AsyncSession):
         """Missing image IDs are reported as skipped."""
         user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
         token = create_access_token(user.id)
@@ -458,9 +428,7 @@ class TestBatchTagRemove:
         assert len(data["skipped"]) == 1
         assert data["skipped"][0]["reason"] == "image_not_found"
 
-    async def test_skips_nonexistent_tags(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_skips_nonexistent_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Missing tag IDs are reported as skipped."""
         user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
         token = create_access_token(user.id)
@@ -481,9 +449,7 @@ class TestBatchTagRemove:
         assert len(data["skipped"]) == 1
         assert data["skipped"][0]["reason"] == "tag_not_found"
 
-    async def test_creates_removal_history(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_creates_removal_history(self, client: AsyncClient, db_session: AsyncSession):
         """Each removed tag link creates a tag history entry with action 'r'."""
         from app.models.tag_history import TagHistory
 
@@ -517,9 +483,7 @@ class TestBatchTagRemove:
         )
         assert result.scalar() == 1
 
-    async def test_resolves_alias_tags(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_resolves_alias_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Alias tags resolve to their canonical tag for removal."""
         user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
         token = create_access_token(user.id)
@@ -538,9 +502,7 @@ class TestBatchTagRemove:
 
         # Link canonical tag to image
         db_session.add(
-            TagLinks(
-                image_id=images[0].image_id, tag_id=canonical.tag_id, user_id=user.user_id
-            )
+            TagLinks(image_id=images[0].image_id, tag_id=canonical.tag_id, user_id=user.user_id)
         )
         await db_session.commit()
 
@@ -580,9 +542,7 @@ class TestBatchTagRemove:
         )
         assert history_result.scalar_one_or_none() is not None
 
-    async def test_requires_remove_permission(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_requires_remove_permission(self, client: AsyncClient, db_session: AsyncSession):
         """Users without IMAGE_TAG_REMOVE permission get 403."""
         # User with only ADD permission, not REMOVE
         user = await _create_user_with_tag_permission(db_session, ["image_tag_add"])

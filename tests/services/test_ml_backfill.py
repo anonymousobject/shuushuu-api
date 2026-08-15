@@ -68,7 +68,10 @@ def test_select_shard_validates_arguments():
 def test_jsonl_roundtrip_and_resume_ids(tmp_path):
     out = tmp_path / "results.jsonl"
     rows = [
-        {"image_id": 1, "predictions": [{"external_tag": "a", "confidence": 0.9, "model_version": "v3"}]},
+        {
+            "image_id": 1,
+            "predictions": [{"external_tag": "a", "confidence": 0.9, "model_version": "v3"}],
+        },
         {"image_id": 2, "predictions": []},
     ]
     write_results(out, rows)
@@ -125,7 +128,12 @@ async def _make_user(db_session, suffix: str) -> Users:
 
 
 async def _make_image(
-    db_session, user: Users, suffix: str, *, has_theme: bool = False, status: int = ImageStatus.ACTIVE
+    db_session,
+    user: Users,
+    suffix: str,
+    *,
+    has_theme: bool = False,
+    status: int = ImageStatus.ACTIVE,
 ) -> Images:
     image = Images(
         filename=f"2024-01-01-{suffix}",
@@ -315,8 +323,18 @@ async def test_ingest_results_creates_rows(db_session):
     await db_session.commit()
 
     results = [
-        {"image_id": img1.image_id, "predictions": [{"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}]},
-        {"image_id": img2.image_id, "predictions": [{"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}]},
+        {
+            "image_id": img1.image_id,
+            "predictions": [
+                {"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}
+            ],
+        },
+        {
+            "image_id": img2.image_id,
+            "predictions": [
+                {"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}
+            ],
+        },
     ]
     mapped = [{"tag_id": 46, "confidence": 0.9, "model_version": "v3"}]
 
@@ -344,8 +362,18 @@ async def test_ingest_results_skips_given_ids(db_session):
     await db_session.commit()
 
     results = [
-        {"image_id": img1.image_id, "predictions": [{"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}]},
-        {"image_id": img2.image_id, "predictions": [{"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}]},
+        {
+            "image_id": img1.image_id,
+            "predictions": [
+                {"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}
+            ],
+        },
+        {
+            "image_id": img2.image_id,
+            "predictions": [
+                {"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}
+            ],
+        },
     ]
     mapped = [{"tag_id": 46, "confidence": 0.9, "model_version": "v3"}]
 
@@ -378,8 +406,18 @@ async def test_ingest_results_skips_missing_image_and_continues(db_session):
     good_id = good.image_id  # capture before ingest: the rollback below expires `good`
 
     results = [
-        {"image_id": 99999999, "predictions": [{"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}]},
-        {"image_id": good_id, "predictions": [{"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}]},
+        {
+            "image_id": 99999999,
+            "predictions": [
+                {"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}
+            ],
+        },
+        {
+            "image_id": good_id,
+            "predictions": [
+                {"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}
+            ],
+        },
     ]
     mapped = [{"tag_id": 46, "confidence": 0.9, "model_version": "v3"}]
 
@@ -426,11 +464,15 @@ async def test_ingest_results_records_exception_and_continues(db_session):
     results = [
         {
             "image_id": bad_id,
-            "predictions": [{"external_tag": "ghost_tag", "confidence": 0.9, "model_version": "v3"}],
+            "predictions": [
+                {"external_tag": "ghost_tag", "confidence": 0.9, "model_version": "v3"}
+            ],
         },
         {
             "image_id": good_id,
-            "predictions": [{"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}],
+            "predictions": [
+                {"external_tag": "long_hair", "confidence": 0.9, "model_version": "v3"}
+            ],
         },
     ]
 

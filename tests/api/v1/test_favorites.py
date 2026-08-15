@@ -53,9 +53,7 @@ class TestGetFavoriteImages:
         response = await client.get("/api/v1/favorites/user/999999")
         assert response.status_code == 404
 
-    async def test_get_favorite_images_empty(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_favorite_images_empty(self, client: AsyncClient, db_session: AsyncSession):
         """Test getting favorites when user has no favorites."""
         response = await client.get("/api/v1/favorites/user/1")
         assert response.status_code == 200

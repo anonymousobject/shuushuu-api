@@ -62,7 +62,9 @@ class TestFetchOgPage:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             with pytest.raises(UpstreamError):
                 await fetch_og_page(
-                    client, "https://www.zerochan.net/123", site="zerochan",
+                    client,
+                    "https://www.zerochan.net/123",
+                    site="zerochan",
                     allowed_hosts={"www.zerochan.net", "zerochan.net"},
                 )
 
@@ -77,7 +79,9 @@ class TestFetchOgPage:
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             tags = await fetch_og_page(
-                client, "https://www.zerochan.net/123", site="zerochan",
+                client,
+                "https://www.zerochan.net/123",
+                site="zerochan",
                 allowed_hosts={"www.zerochan.net", "zerochan.net"},
             )
         assert tags["image"].endswith("/full/1.jpg")
@@ -92,7 +96,9 @@ class TestFetchOgPage:
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             await fetch_og_page(
-                client, "https://www.zerochan.net/123", site="zerochan",
+                client,
+                "https://www.zerochan.net/123",
+                site="zerochan",
                 allowed_hosts={"www.zerochan.net", "zerochan.net"},
             )
         assert seen["user_agent"] == BROWSER_USER_AGENT
@@ -106,7 +112,9 @@ class TestFetchOgPage:
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             await fetch_og_page(
-                client, "https://www.zerochan.net/123", site="zerochan",
+                client,
+                "https://www.zerochan.net/123",
+                site="zerochan",
                 allowed_hosts={"www.zerochan.net", "zerochan.net"},
                 user_agent=TOOL_USER_AGENT,
             )
@@ -203,7 +211,9 @@ class TestKofi:
 
     async def test_resolve(self):
         def handler(request):
-            return httpx.Response(200, text=_page("https://storage.ko-fi.com/cdn/useruploads/post/x.png", "Fanart!"))
+            return httpx.Response(
+                200, text=_page("https://storage.ko-fi.com/cdn/useruploads/post/x.png", "Fanart!")
+            )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             post = await KofiResolver().resolve(self.URL, client)
@@ -216,7 +226,9 @@ class TestKofi:
 
         def handler(request):
             fetched_urls.append(str(request.url))
-            return httpx.Response(200, text=_page("https://storage.ko-fi.com/cdn/useruploads/post/x.png"))
+            return httpx.Response(
+                200, text=_page("https://storage.ko-fi.com/cdn/useruploads/post/x.png")
+            )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             bare_post = await KofiResolver().resolve("https://ko-fi.com/i/IX8X0ABC12", client)

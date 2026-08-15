@@ -12,23 +12,21 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.security import get_password_hash
 from app.models.permissions import Groups, Perms, UserGroups, UserPerms
 from app.models.privmsg import Privmsgs
 from app.models.user import Users
-from app.config import settings
 
 
 @pytest.mark.api
 class TestGetReceivedPrivmsgs:
     """Tests for GET /api/v1/privmsgs/received endpoint."""
 
-    async def test_get_own_received_messages(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_own_received_messages(self, client: AsyncClient, db_session: AsyncSession):
         """Test user getting their own received messages."""
         # Create user
         user = Users(
@@ -97,7 +95,9 @@ class TestGetReceivedPrivmsgs:
         for msg in data["messages"]:
             assert msg["to_user_id"] == user.user_id
             # Avatar URL should be present and correctly generated
-            assert msg.get("from_avatar_url") == f"{settings.IMAGE_BASE_URL}/images/avatars/sender.png"
+            assert (
+                msg.get("from_avatar_url") == f"{settings.IMAGE_BASE_URL}/images/avatars/sender.png"
+            )
 
     async def test_get_received_messages_unauthenticated(self, client: AsyncClient):
         """Test getting received messages without authentication."""
@@ -195,7 +195,9 @@ class TestGetReceivedPrivmsgs:
         )
         assert response.status_code == 403
 
-    async def test_delete_privmsg_marks_to_del_for_recipient(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_delete_privmsg_marks_to_del_for_recipient(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test recipient deleting a message marks to_del and preserves row if sender hasn't deleted."""
         # Create recipient
         recipient = Users(
@@ -224,14 +226,19 @@ class TestGetReceivedPrivmsgs:
         access_token = login_response.json()["access_token"]
 
         # Delete message
-        response = await client.delete(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        response = await client.delete(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         assert response.status_code == 204
 
         # Refresh from DB
         await db_session.refresh(msg)
         assert msg.to_del == 1
 
-    async def test_delete_privmsg_deleted_when_both_deleted(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_delete_privmsg_deleted_when_both_deleted(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test that message row is removed when both parties have deleted it."""
         # Create sender and recipient
         sender = Users(
@@ -257,7 +264,9 @@ class TestGetReceivedPrivmsgs:
         await db_session.refresh(recipient)
 
         # Create message
-        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Temp message")
+        msg = Privmsgs(
+            from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Temp message"
+        )
         db_session.add(msg)
         await db_session.commit()
         await db_session.refresh(msg)
@@ -268,7 +277,10 @@ class TestGetReceivedPrivmsgs:
             json={"username": "delsender", "password": "TestPassword123!"},
         )
         access_token_sender = login_response.json()["access_token"]
-        response = await client.delete(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token_sender}"})
+        response = await client.delete(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token_sender}"},
+        )
         assert response.status_code == 204
 
         # Recipient deletes, should remove row
@@ -277,11 +289,16 @@ class TestGetReceivedPrivmsgs:
             json={"username": "delrecipient2", "password": "TestPassword123!"},
         )
         access_token_recipient = login_response.json()["access_token"]
-        response = await client.delete(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token_recipient}"})
+        response = await client.delete(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token_recipient}"},
+        )
         assert response.status_code == 204
 
         # Check that message no longer exists
-        result = await db_session.execute(select(Privmsgs).where(Privmsgs.privmsg_id == msg.privmsg_id))
+        result = await db_session.execute(
+            select(Privmsgs).where(Privmsgs.privmsg_id == msg.privmsg_id)
+        )
         assert result.scalar_one_or_none() is None
 
 
@@ -289,9 +306,7 @@ class TestGetReceivedPrivmsgs:
 class TestGetSentPrivmsgs:
     """Tests for GET /api/v1/privmsgs/sent endpoint."""
 
-    async def test_get_own_sent_messages(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_own_sent_messages(self, client: AsyncClient, db_session: AsyncSession):
         """Test user getting their own sent messages."""
         # Create user
         user = Users(
@@ -459,7 +474,9 @@ class TestGetSentPrivmsgs:
         )
         assert response.status_code == 403
 
-    async def test_get_privmsg_details_and_mark_viewed(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_get_privmsg_details_and_mark_viewed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Recipient should be able to fetch a single privmsg and it should be marked viewed."""
         # Create sender and recipient
         sender = Users(
@@ -485,7 +502,9 @@ class TestGetSentPrivmsgs:
         await db_session.refresh(recipient)
 
         # Create message from sender to recipient (unviewed)
-        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Hello there", viewed=0)
+        msg = Privmsgs(
+            from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Hello there", viewed=0
+        )
         db_session.add(msg)
         await db_session.commit()
         await db_session.refresh(msg)
@@ -498,7 +517,10 @@ class TestGetSentPrivmsgs:
         access_token = login_response.json()["access_token"]
 
         # Fetch single message
-        response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        response = await client.get(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["privmsg_id"] == msg.privmsg_id
@@ -508,7 +530,9 @@ class TestGetSentPrivmsgs:
         await db_session.refresh(msg)
         assert msg.viewed == 1
 
-    async def test_privmsg_handles_html_entities_in_text(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_privmsg_handles_html_entities_in_text(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Ensure messages stored with HTML entities don't double-encode when rendered."""
         sender = Users(
             username="entity_sender",
@@ -533,7 +557,13 @@ class TestGetSentPrivmsgs:
         await db_session.refresh(recipient)
 
         problematic = 'So I want my title to be &quot;Alpha &amp; Omega&quot; or Alpha N&#039; Omega" if the &amp; character is illegal'
-        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, subject='i&#039;m sad', text=problematic, viewed=0)
+        msg = Privmsgs(
+            from_user_id=sender.user_id,
+            to_user_id=recipient.user_id,
+            subject="i&#039;m sad",
+            text=problematic,
+            viewed=0,
+        )
         db_session.add(msg)
         await db_session.commit()
         await db_session.refresh(msg)
@@ -545,20 +575,25 @@ class TestGetSentPrivmsgs:
         )
         access_token = login_response.json()["access_token"]
 
-        response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        response = await client.get(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         assert response.status_code == 200
         data = response.json()
 
         # The rendered HTML should not contain double-encoded &amp;quot; sequences
         assert "&amp;quot;" not in data["text_html"]
         # It should contain a properly encoded quote entity for HTML output
-        assert "&quot;Alpha" in data["text_html"] or 'Alpha' in data["text_html"]
+        assert "&quot;Alpha" in data["text_html"] or "Alpha" in data["text_html"]
 
         # Subject should be normalized and should not contain HTML entity for apostrophe
         assert "&#039;" not in data["subject"]
         assert "'" in data["subject"]
 
-    async def test_get_privmsg_details_sender_can_view_without_marking_viewed(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_get_privmsg_details_sender_can_view_without_marking_viewed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Sender should be able to fetch their sent message and it should not mark viewed."""
         sender = Users(
             username="pm_sender2",
@@ -582,7 +617,9 @@ class TestGetSentPrivmsgs:
         await db_session.refresh(sender)
         await db_session.refresh(recipient)
 
-        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Hi there", viewed=0)
+        msg = Privmsgs(
+            from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Hi there", viewed=0
+        )
         db_session.add(msg)
         await db_session.commit()
         await db_session.refresh(msg)
@@ -594,7 +631,10 @@ class TestGetSentPrivmsgs:
         )
         access_token = login_response.json()["access_token"]
 
-        response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        response = await client.get(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["privmsg_id"] == msg.privmsg_id
@@ -603,7 +643,9 @@ class TestGetSentPrivmsgs:
         await db_session.refresh(msg)
         assert msg.viewed == 0
 
-    async def test_get_privmsg_details_unauthorized(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_get_privmsg_details_unauthorized(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """A random third party should not be able to view someone else's message."""
         sender = Users(
             username="pm_sender3",
@@ -637,7 +679,9 @@ class TestGetSentPrivmsgs:
         await db_session.refresh(recipient)
         await db_session.refresh(outsider)
 
-        msg = Privmsgs(from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Secret", viewed=0)
+        msg = Privmsgs(
+            from_user_id=sender.user_id, to_user_id=recipient.user_id, text="Secret", viewed=0
+        )
         db_session.add(msg)
         await db_session.commit()
         await db_session.refresh(msg)
@@ -648,7 +692,10 @@ class TestGetSentPrivmsgs:
         )
         access_token = login_response.json()["access_token"]
 
-        response = await client.get(f"/api/v1/privmsgs/{msg.privmsg_id}", headers={"Authorization": f"Bearer {access_token}"})
+        response = await client.get(
+            f"/api/v1/privmsgs/{msg.privmsg_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         assert response.status_code == 403
 
 

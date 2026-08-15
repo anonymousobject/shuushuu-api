@@ -77,9 +77,7 @@ async def grant_permission(db_session: AsyncSession, user_id: int, perm_title: s
         await db_session.flush()
 
     # Get or create a test group
-    result = await db_session.execute(
-        select(Groups).where(Groups.title == "suspension_test_admin")
-    )
+    result = await db_session.execute(select(Groups).where(Groups.title == "suspension_test_admin"))
     group = result.scalar_one_or_none()
     if not group:
         group = Groups(title="suspension_test_admin", desc="Suspension test admin group")
@@ -124,9 +122,7 @@ async def login_user(client: AsyncClient, username: str, password: str) -> str:
 class TestSuspendUser:
     """Tests for POST /api/v1/admin/users/{user_id}/suspend endpoint."""
 
-    async def test_suspend_user_temporary(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_suspend_user_temporary(self, client: AsyncClient, db_session: AsyncSession):
         """Test suspending a user with expiration date."""
         # Create admin and regular users
         admin, admin_password = await create_admin_user(db_session)
@@ -171,9 +167,7 @@ class TestSuspendUser:
         )
         assert result.scalar_one_or_none() is None
 
-    async def test_suspend_user_permanent(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_suspend_user_permanent(self, client: AsyncClient, db_session: AsyncSession):
         """Test permanent suspension (no expiration)."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
@@ -239,9 +233,7 @@ class TestSuspendUser:
         assert response.status_code == 400
         assert "already suspended" in response.json()["detail"].lower()
 
-    async def test_suspend_nonexistent_user(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_suspend_nonexistent_user(self, client: AsyncClient, db_session: AsyncSession):
         """Test suspending a user that doesn't exist."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
@@ -259,9 +251,7 @@ class TestSuspendUser:
 
         assert response.status_code == 404
 
-    async def test_suspend_self_prevention(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_suspend_self_prevention(self, client: AsyncClient, db_session: AsyncSession):
         """Test that admins cannot suspend themselves."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
@@ -280,9 +270,7 @@ class TestSuspendUser:
         assert response.status_code == 400
         assert "yourself" in response.json()["detail"].lower()
 
-    async def test_suspend_without_permission(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_suspend_without_permission(self, client: AsyncClient, db_session: AsyncSession):
         """Test suspending without USER_BAN permission."""
         admin, admin_password = await create_admin_user(db_session, username="nopermadmin")
         # Don't grant USER_BAN permission
@@ -301,9 +289,7 @@ class TestSuspendUser:
 
         assert response.status_code == 403
 
-    async def test_suspend_reason_too_short(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_suspend_reason_too_short(self, client: AsyncClient, db_session: AsyncSession):
         """Test that suspension reason must be at least 3 characters."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
@@ -417,15 +403,11 @@ class TestSuspendUser:
 class TestReactivateUser:
     """Tests for POST /api/v1/admin/users/{user_id}/reactivate endpoint."""
 
-    async def test_reactivate_suspended_user(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_reactivate_suspended_user(self, client: AsyncClient, db_session: AsyncSession):
         """Test reactivating a suspended user."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
-        target_user = await create_regular_user(
-            db_session, username="reactivateme", active=0
-        )
+        target_user = await create_regular_user(db_session, username="reactivateme", active=0)
 
         # Create suspension record
         suspend_until = datetime.now(UTC) + timedelta(days=1)
@@ -469,9 +451,7 @@ class TestReactivateUser:
         """Test reactivating a user who is already active without suspension record."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
-        target_user = await create_regular_user(
-            db_session, username="alreadyactive", active=1
-        )
+        target_user = await create_regular_user(db_session, username="alreadyactive", active=1)
         # No suspension record - user was never suspended
 
         token = await login_user(client, admin.username, admin_password)
@@ -491,9 +471,7 @@ class TestReactivateUser:
         """Test reactivating an inactive user with no suspension record."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
-        target_user = await create_regular_user(
-            db_session, username="nosuspension", active=0
-        )
+        target_user = await create_regular_user(db_session, username="nosuspension", active=0)
         # No suspension record created
 
         token = await login_user(client, admin.username, admin_password)
@@ -512,9 +490,7 @@ class TestReactivateUser:
         """Test reactivating a user who was already reactivated."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
-        target_user = await create_regular_user(
-            db_session, username="wasreactivated", active=0
-        )
+        target_user = await create_regular_user(db_session, username="wasreactivated", active=0)
 
         # Create suspension and reactivation records
         now = datetime.now(UTC)
@@ -550,9 +526,7 @@ class TestReactivateUser:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Test reactivating without USER_BAN permission."""
-        admin, admin_password = await create_admin_user(
-            db_session, username="nopermreactivate"
-        )
+        admin, admin_password = await create_admin_user(db_session, username="nopermreactivate")
         target_user = await create_regular_user(db_session, username="target", active=0)
 
         token = await login_user(client, admin.username, admin_password)
@@ -569,9 +543,7 @@ class TestReactivateUser:
 class TestUserSuspensionHistory:
     """Tests for GET /api/v1/admin/users/{user_id}/suspensions endpoint."""
 
-    async def test_get_suspension_history(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_suspension_history(self, client: AsyncClient, db_session: AsyncSession):
         """Test retrieving user suspension history."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
@@ -671,9 +643,7 @@ class TestUserSuspensionHistory:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """Test getting history without USER_BAN permission."""
-        admin, admin_password = await create_admin_user(
-            db_session, username="nopermhistory"
-        )
+        admin, admin_password = await create_admin_user(db_session, username="nopermhistory")
         target_user = await create_regular_user(db_session, username="someuser")
 
         token = await login_user(client, admin.username, admin_password)
@@ -690,9 +660,7 @@ class TestUserSuspensionHistory:
 class TestUserWarningAcknowledgement:
     """Tests for GET/POST /api/v1/users/me/warnings endpoints."""
 
-    async def test_get_unacknowledged_warnings(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_unacknowledged_warnings(self, client: AsyncClient, db_session: AsyncSession):
         """Test getting unacknowledged warnings for current user."""
         user = await create_regular_user(db_session, username="warneduser")
         admin, _ = await create_admin_user(db_session)
@@ -822,9 +790,7 @@ class TestUserWarningAcknowledgement:
         assert data["items"][0]["action"] == "suspended"
         assert data["items"][0]["reason"] == "You have been suspended"
 
-    async def test_acknowledge_warnings(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_acknowledge_warnings(self, client: AsyncClient, db_session: AsyncSession):
         """Test acknowledging all warnings."""
         user = await create_regular_user(db_session, username="ackuser")
         admin, _ = await create_admin_user(db_session)
@@ -871,9 +837,7 @@ class TestUserWarningAcknowledgement:
         )
         assert response.json()["count"] == 0
 
-    async def test_acknowledge_no_warnings(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_acknowledge_no_warnings(self, client: AsyncClient, db_session: AsyncSession):
         """Test acknowledging when there are no warnings."""
         user = await create_regular_user(db_session, username="nowarningsuser")
 
@@ -904,9 +868,7 @@ class TestUserWarningAcknowledgement:
 class TestAdminSuspensionList:
     """Tests for GET /api/v1/admin/suspensions endpoint."""
 
-    async def test_list_all_suspensions(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_list_all_suspensions(self, client: AsyncClient, db_session: AsyncSession):
         """Test listing all suspension records across all users."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
@@ -1062,9 +1024,7 @@ class TestAdminSuspensionList:
         assert data["total"] == 1
         assert data["items"][0]["action"] == "warning"
 
-    async def test_filter_by_days_back(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_filter_by_days_back(self, client: AsyncClient, db_session: AsyncSession):
         """Test filtering by days_back."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
@@ -1155,9 +1115,7 @@ class TestAdminSuspensionList:
         data = response.json()
         assert len(data["items"]) == 2
 
-    async def test_is_active_calculation(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_is_active_calculation(self, client: AsyncClient, db_session: AsyncSession):
         """Test that is_active correctly identifies active suspensions."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")
@@ -1231,13 +1189,9 @@ class TestAdminSuspensionList:
         # active_count should be 1
         assert data["active_count"] == 1
 
-    async def test_without_permission(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_without_permission(self, client: AsyncClient, db_session: AsyncSession):
         """Test listing suspensions without USER_BAN permission."""
-        admin, admin_password = await create_admin_user(
-            db_session, username="nopermsusplist"
-        )
+        admin, admin_password = await create_admin_user(db_session, username="nopermsusplist")
         # Don't grant USER_BAN permission
 
         token = await login_user(client, admin.username, admin_password)
@@ -1249,9 +1203,7 @@ class TestAdminSuspensionList:
 
         assert response.status_code == 403
 
-    async def test_excludes_reactivated_action(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_excludes_reactivated_action(self, client: AsyncClient, db_session: AsyncSession):
         """Test that reactivated action records are excluded from the list."""
         admin, admin_password = await create_admin_user(db_session)
         await grant_permission(db_session, admin.user_id, "user_ban")

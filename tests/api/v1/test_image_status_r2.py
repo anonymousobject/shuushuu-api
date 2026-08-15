@@ -41,9 +41,7 @@ async def _grant_permission(db_session: AsyncSession, user_id: int, perm_title: 
         db_session.add(perm)
         await db_session.flush()
 
-    result = await db_session.execute(
-        select(Groups).where(Groups.title == "r2_status_test_group")
-    )
+    result = await db_session.execute(select(Groups).where(Groups.title == "r2_status_test_group"))
     group = result.scalar_one_or_none()
     if not group:
         group = Groups(title="r2_status_test_group", desc="R2 status test group")
@@ -93,9 +91,7 @@ class TestStatusChangeEnqueuesSync:
         await db_session.commit()
         await db_session.refresh(image)
 
-        with patch(
-            "app.services.image_status.enqueue_job", new_callable=AsyncMock
-        ) as mock_enqueue:
+        with patch("app.services.image_status.enqueue_job", new_callable=AsyncMock) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/admin/images/{image.image_id}",
                 json={
@@ -107,9 +103,7 @@ class TestStatusChangeEnqueuesSync:
             )
         assert response.status_code == 200
         sync_calls = [
-            c
-            for c in mock_enqueue.await_args_list
-            if c.args[0] == "sync_image_status_job"
+            c for c in mock_enqueue.await_args_list if c.args[0] == "sync_image_status_job"
         ]
         assert len(sync_calls) == 1
         assert sync_calls[0].kwargs["image_id"] == image.image_id
@@ -135,9 +129,7 @@ class TestStatusChangeEnqueuesSync:
         await db_session.commit()
         await db_session.refresh(image)
 
-        with patch(
-            "app.services.image_status.enqueue_job", new_callable=AsyncMock
-        ) as mock_enqueue:
+        with patch("app.services.image_status.enqueue_job", new_callable=AsyncMock) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/admin/images/{image.image_id}",
                 json={"locked": True},
@@ -145,9 +137,7 @@ class TestStatusChangeEnqueuesSync:
             )
         assert response.status_code == 200
         sync_calls = [
-            c
-            for c in mock_enqueue.await_args_list
-            if c.args[0] == "sync_image_status_job"
+            c for c in mock_enqueue.await_args_list if c.args[0] == "sync_image_status_job"
         ]
         assert sync_calls == []
 
@@ -170,9 +160,7 @@ class TestStatusChangeEnqueuesSync:
         await db_session.commit()
         await db_session.refresh(image)
 
-        with patch(
-            "app.services.image_status.enqueue_job", new_callable=AsyncMock
-        ) as mock_enqueue:
+        with patch("app.services.image_status.enqueue_job", new_callable=AsyncMock) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/admin/images/{image.image_id}",
                 json={
@@ -184,9 +172,7 @@ class TestStatusChangeEnqueuesSync:
             )
         assert response.status_code == 200
         sync_calls = [
-            c
-            for c in mock_enqueue.await_args_list
-            if c.args[0] == "sync_image_status_job"
+            c for c in mock_enqueue.await_args_list if c.args[0] == "sync_image_status_job"
         ]
         assert sync_calls == []
 
@@ -215,9 +201,7 @@ class TestStatusChangeEnqueuesSync:
         await db_session.commit()
         await db_session.refresh(image)
 
-        with patch(
-            "app.services.image_status.enqueue_job", new_callable=AsyncMock
-        ) as mock_enqueue:
+        with patch("app.services.image_status.enqueue_job", new_callable=AsyncMock) as mock_enqueue:
             response = await client.patch(
                 f"/api/v1/images/{image.image_id}",
                 json={"status": ImageStatus.SPOILER},
@@ -225,8 +209,6 @@ class TestStatusChangeEnqueuesSync:
             )
         assert response.status_code == 200
         sync_calls = [
-            c
-            for c in mock_enqueue.await_args_list
-            if c.args[0] == "sync_image_status_job"
+            c for c in mock_enqueue.await_args_list if c.args[0] == "sync_image_status_job"
         ]
         assert sync_calls == []

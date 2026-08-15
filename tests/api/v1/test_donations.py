@@ -80,9 +80,7 @@ class TestListDonations:
         response = await client.get("/api/v1/donations?limit=0")
         assert response.status_code == 422
 
-    async def test_response_shape(
-        self, client: AsyncClient, sample_donations: list[Donations]
-    ):
+    async def test_response_shape(self, client: AsyncClient, sample_donations: list[Donations]):
         """Each donation has the expected fields."""
         response = await client.get("/api/v1/donations?limit=1")
         data = response.json()
@@ -107,9 +105,7 @@ class TestListDonations:
         data = response.json()
         assert data["donations"][0]["username"] == "testuser"
 
-    async def test_username_null_when_no_user(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_username_null_when_no_user(self, client: AsyncClient, db_session: AsyncSession):
         """Username is null when user_id has no matching user."""
         db_session.add(Donations(amount=10, user_id=0, nick="Anonymous"))
         await db_session.commit()
@@ -167,9 +163,7 @@ class TestMonthlyDonations:
         data = response.json()
         assert data["monthly_totals"] == []
 
-    async def test_monthly_returns_totals(
-        self, client: AsyncClient, monthly_donations: None
-    ):
+    async def test_monthly_returns_totals(self, client: AsyncClient, monthly_donations: None):
         """Returns monthly totals grouped correctly."""
         response = await client.get("/api/v1/donations/monthly?months=12")
         assert response.status_code == 200
@@ -192,9 +186,7 @@ class TestMonthlyDonations:
         # Should only include current month and last month, not 3 months ago
         assert len(totals) == 2
 
-    async def test_monthly_default_6_months(
-        self, client: AsyncClient, monthly_donations: None
-    ):
+    async def test_monthly_default_6_months(self, client: AsyncClient, monthly_donations: None):
         """Default months is 6."""
         response = await client.get("/api/v1/donations/monthly")
         data = response.json()
@@ -211,9 +203,7 @@ class TestMonthlyDonations:
         response = await client.get("/api/v1/donations/monthly?months=0")
         assert response.status_code == 422
 
-    async def test_monthly_response_shape(
-        self, client: AsyncClient, monthly_donations: None
-    ):
+    async def test_monthly_response_shape(self, client: AsyncClient, monthly_donations: None):
         """Each entry has year, month, total fields."""
         response = await client.get("/api/v1/donations/monthly")
         data = response.json()
@@ -259,14 +249,10 @@ class TestCreateDonation:
 
     async def test_create_requires_auth(self, client: AsyncClient):
         """Returns 401 without authentication."""
-        response = await client.post(
-            "/api/v1/donations", json={"amount": 10}
-        )
+        response = await client.post("/api/v1/donations", json={"amount": 10})
         assert response.status_code == 401
 
-    async def test_create_requires_permission(
-        self, client: AsyncClient, unprivileged_token: str
-    ):
+    async def test_create_requires_permission(self, client: AsyncClient, unprivileged_token: str):
         """Returns 403 without DONATIONS_CREATE permission."""
         response = await client.post(
             "/api/v1/donations",

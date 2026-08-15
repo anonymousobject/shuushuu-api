@@ -148,10 +148,12 @@ Use markers to categorize tests:
 ```python
 import pytest
 
+
 @pytest.mark.unit
 def test_something_fast():
     """Unit test - no database or external dependencies."""
     pass
+
 
 @pytest.mark.api
 async def test_api_endpoint(client):
@@ -159,10 +161,12 @@ async def test_api_endpoint(client):
     response = await client.get("/api/v1/images")
     assert response.status_code == 200
 
+
 @pytest.mark.integration
 async def test_database_operation(db_session):
     """Integration test - tests database operations."""
     pass
+
 
 @pytest.mark.slow
 async def test_slow_operation():
@@ -198,10 +202,12 @@ async def test_with_client(client: AsyncClient):
     response = await client.get("/api/v1/images")
     assert response.status_code == 200
 
+
 async def test_with_fixtures(test_user, test_image, db_session):
     """Use data fixtures - they're already created in the DB."""
     # test_user and test_image are already committed
     assert test_image.user_id == test_user.user_id
+
 
 async def test_create_custom_data(test_user, db_session):
     """Create custom test data for this specific test."""

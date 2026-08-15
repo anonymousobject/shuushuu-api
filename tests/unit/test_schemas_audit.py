@@ -1,10 +1,10 @@
 """Tests for audit schemas."""
 
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
 from app.schemas.audit import (
-    TagAuditLogResponse,
     ImageStatusHistoryResponse,
+    TagAuditLogResponse,
     TagHistoryResponse,
 )
 

@@ -30,6 +30,7 @@ def _mr(danbooru: str, iid: int, action: str = "map", match_type: str = "exact")
         action=action,
     )
 
+
 # (tag_id, title)
 INTERNAL = [
     (82250, "Kinomoto Sakura"),
@@ -136,7 +137,9 @@ def test_linked_only_demotes_merge_collisions_even_if_linked():
 
 
 def test_linked_only_leaves_review_and_ignore_untouched():
-    res = [_mr("x", 0, action="review", match_type="fuzzy"),
-           _mr("y", 0, action="ignore", match_type="none")]
+    res = [
+        _mr("x", 0, action="review", match_type="fuzzy"),
+        _mr("y", 0, action="ignore", match_type="none"),
+    ]
     out = apply_linked_only(res, {10})
     assert [r.action for r in out] == ["review", "ignore"]

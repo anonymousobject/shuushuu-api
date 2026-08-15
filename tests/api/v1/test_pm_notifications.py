@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.email import send_pm_notification_email
 from app.models.user import Users
+from app.services.email import send_pm_notification_email
 
 
 @pytest.mark.asyncio

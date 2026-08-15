@@ -1,7 +1,7 @@
 """Tests for ImageDetailedResponse groups support."""
 
-from unittest.mock import MagicMock
 from datetime import datetime
+from unittest.mock import MagicMock
 
 from app.schemas.image import ImageDetailedResponse
 

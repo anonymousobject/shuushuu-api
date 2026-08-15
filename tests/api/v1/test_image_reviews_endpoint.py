@@ -334,9 +334,7 @@ class TestGetImageReviews:
         assert "created_at" in item
         assert "closed_at" in item
 
-    async def test_pagination_works(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_pagination_works(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """Should support pagination."""
         # Create a user
         user = Users(
@@ -379,9 +377,7 @@ class TestGetImageReviews:
         await db_session.commit()
 
         # Get first page with per_page=2
-        response = await client.get(
-            f"/api/v1/images/{image.image_id}/reviews?page=1&per_page=2"
-        )
+        response = await client.get(f"/api/v1/images/{image.image_id}/reviews?page=1&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 1
@@ -390,18 +386,14 @@ class TestGetImageReviews:
         assert data["total"] == 5
 
         # Get second page
-        response = await client.get(
-            f"/api/v1/images/{image.image_id}/reviews?page=2&per_page=2"
-        )
+        response = await client.get(f"/api/v1/images/{image.image_id}/reviews?page=2&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 2
         assert len(data["items"]) == 2
 
         # Get third page
-        response = await client.get(
-            f"/api/v1/images/{image.image_id}/reviews?page=3&per_page=2"
-        )
+        response = await client.get(f"/api/v1/images/{image.image_id}/reviews?page=3&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 3

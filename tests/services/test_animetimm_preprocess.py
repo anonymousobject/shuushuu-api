@@ -62,8 +62,12 @@ def test_respects_pipeline_resolution(tmp_path):
     """A 384-res pipeline (like caformer_b36) yields a 384x384 tensor."""
     img = Image.new("RGB", (640, 480), (10, 20, 30))
     pipeline = [
-        {"type": "pad_to_size", "size": [512, 512], "background_color": "white",
-         "interpolation": "bilinear"},
+        {
+            "type": "pad_to_size",
+            "size": [512, 512],
+            "background_color": "white",
+            "interpolation": "bilinear",
+        },
         {"type": "resize", "size": 384, "interpolation": "bicubic"},
         {"type": "center_crop", "size": [384, 384]},
         {"type": "maybe_to_tensor"},
@@ -81,8 +85,12 @@ def test_pad_to_size_non_square_is_h_w():
     """
     img = Image.new("RGB", (200, 100), (10, 20, 30))  # non-square input
     pipeline = [
-        {"type": "pad_to_size", "size": [384, 512], "background_color": "white",
-         "interpolation": "bilinear"},
+        {
+            "type": "pad_to_size",
+            "size": [384, 512],
+            "background_color": "white",
+            "interpolation": "bilinear",
+        },
         {"type": "maybe_to_tensor"},
     ]
     out = apply_test_pipeline(img, pipeline)

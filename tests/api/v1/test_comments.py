@@ -413,6 +413,7 @@ class TestGetCommentStats:
         assert data["total_comments"] >= 4
         assert data["total_images_with_comments"] >= 2
 
+
 @pytest.mark.api
 class TestCreateComment:
     """Tests for POST /api/v1/comments endpoint."""
@@ -498,9 +499,7 @@ class TestCreateComment:
         )
         assert response.status_code == 401
 
-    async def test_create_comment_image_not_found(
-        self, authenticated_client: AsyncClient
-    ):
+    async def test_create_comment_image_not_found(self, authenticated_client: AsyncClient):
         """Test creating a comment on non-existent image."""
         response = await authenticated_client.post(
             "/api/v1/comments",
@@ -823,17 +822,13 @@ class TestDeleteComment:
         comment_id = comment.post_id
 
         # Delete
-        response = await authenticated_client.delete(
-            f"/api/v1/comments/{comment_id}"
-        )
+        response = await authenticated_client.delete(f"/api/v1/comments/{comment_id}")
         assert response.status_code == 200
         assert response.json()["post_text"] == "[deleted]"
         assert response.json()["deleted"] is True
 
         # Verify soft deleted (text set to "[deleted]", deleted flag set to True)
-        result = await db_session.execute(
-            select(Comments).where(Comments.post_id == comment_id)
-        )
+        result = await db_session.execute(select(Comments).where(Comments.post_id == comment_id))
         deleted_comment = result.scalar_one_or_none()
         assert deleted_comment is not None
         assert deleted_comment.post_text == "[deleted]"
@@ -879,9 +874,7 @@ class TestDeleteComment:
         reply_id = reply.post_id
 
         # Delete parent
-        response = await authenticated_client.delete(
-            f"/api/v1/comments/{parent.post_id}"
-        )
+        response = await authenticated_client.delete(f"/api/v1/comments/{parent.post_id}")
         assert response.status_code == 200
         assert response.json()["post_text"] == "[deleted]"
         assert response.json()["deleted"] is True
@@ -896,9 +889,7 @@ class TestDeleteComment:
         assert deleted_parent.deleted is True
 
         # Verify reply preserved with parent_comment_id set to NULL (SET NULL cascade)
-        result = await db_session.execute(
-            select(Comments).where(Comments.post_id == reply_id)
-        )
+        result = await db_session.execute(select(Comments).where(Comments.post_id == reply_id))
         preserved_reply = result.scalar_one_or_none()
         assert preserved_reply is not None
         assert preserved_reply.post_text == "Reply"  # Original text preserved
@@ -964,9 +955,7 @@ async def grant_mod_permission(db_session: AsyncSession, user_id: int, perm_titl
         db_session.add(perm)
         await db_session.flush()
 
-    result = await db_session.execute(
-        select(Groups).where(Groups.title == "comment_mod_group")
-    )
+    result = await db_session.execute(select(Groups).where(Groups.title == "comment_mod_group"))
     group = result.scalar_one_or_none()
     if not group:
         group = Groups(title="comment_mod_group", desc="Comment mod group")

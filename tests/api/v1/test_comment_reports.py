@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import CommentReportCategory, ImageStatus, ReportCategory, ReportStatus
 from app.core.security import get_password_hash
-from app.models import Comments, CommentReports, ImageReports, Images, Users
+from app.models import CommentReports, Comments, ImageReports, Images, Users
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 
 
@@ -128,9 +128,7 @@ async def grant_permission(db_session: AsyncSession, user_id: int, perm_title: s
 class TestUserCommentReportEndpoint:
     """Tests for POST /api/v1/comments/{comment_id}/report endpoint."""
 
-    async def test_report_comment_success(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_report_comment_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test successfully reporting a comment."""
         user, password = await create_auth_user(db_session)
         image = await create_test_image(db_session, user.user_id)
@@ -167,9 +165,7 @@ class TestUserCommentReportEndpoint:
 
         assert response.status_code == 401
 
-    async def test_report_nonexistent_comment(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_report_nonexistent_comment(self, client: AsyncClient, db_session: AsyncSession):
         """Test reporting a comment that doesn't exist."""
         user, password = await create_auth_user(db_session)
         token = await login_user(client, user.username, password)
@@ -183,9 +179,7 @@ class TestUserCommentReportEndpoint:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
-    async def test_report_deleted_comment(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_report_deleted_comment(self, client: AsyncClient, db_session: AsyncSession):
         """Test that deleted comments cannot be reported."""
         user, password = await create_auth_user(db_session)
         image = await create_test_image(db_session, user.user_id)
@@ -204,9 +198,7 @@ class TestUserCommentReportEndpoint:
         assert response.status_code == 400
         assert "deleted" in response.json()["detail"].lower()
 
-    async def test_duplicate_pending_report(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_duplicate_pending_report(self, client: AsyncClient, db_session: AsyncSession):
         """Test that a user cannot have multiple pending reports on the same comment."""
         user, password = await create_auth_user(db_session)
         image = await create_test_image(db_session, user.user_id)
@@ -230,9 +222,7 @@ class TestUserCommentReportEndpoint:
         assert response.status_code == 409
         assert "pending report" in response.json()["detail"].lower()
 
-    async def test_invalid_category(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_invalid_category(self, client: AsyncClient, db_session: AsyncSession):
         """Test that invalid categories are rejected."""
         user, password = await create_auth_user(db_session)
         image = await create_test_image(db_session, user.user_id)
@@ -252,9 +242,7 @@ class TestUserCommentReportEndpoint:
 class TestAdminCommentReportEndpoints:
     """Tests for admin comment report endpoints."""
 
-    async def test_list_comment_reports(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_list_comment_reports(self, client: AsyncClient, db_session: AsyncSession):
         """Test listing comment reports with report_type=comment filter."""
         user, password = await create_auth_user(db_session, "admin1", "admin1@test.com")
         await grant_permission(db_session, user.user_id, "report_view")
@@ -283,9 +271,7 @@ class TestAdminCommentReportEndpoints:
         assert "comment_reports" in data
         assert len(data["comment_reports"]) == 1
 
-    async def test_list_unified_reports(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_list_unified_reports(self, client: AsyncClient, db_session: AsyncSession):
         """Test listing combined image and comment reports."""
         user, password = await create_auth_user(db_session, "admin_uni", "admin_uni@test.com")
         await grant_permission(db_session, user.user_id, "report_view")
@@ -373,9 +359,7 @@ class TestAdminCommentReportEndpoints:
         assert len(data["comment_reports"]) == 1
         assert data["comment_reports"][0]["category"] == CommentReportCategory.RULE_VIOLATION
 
-    async def test_list_report_deleted_comment(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_list_report_deleted_comment(self, client: AsyncClient, db_session: AsyncSession):
         """Test listing a report for a deleted comment."""
         user, password = await create_auth_user(db_session, "admin_del", "admin_del@test.com")
         await grant_permission(db_session, user.user_id, "report_view")
@@ -417,7 +401,6 @@ class TestAdminCommentReportEndpoints:
         # Usually reports cascade on delete, so if comment is gone, report is gone.
         # But if we rely on OUTER JOIN, we are prepared for it.
         # I'll just skip hard delete test for now to avoid complexity with DB constraints in test.
-
 
     async def test_list_comment_reports_includes_reviewed_by_username(
         self, client: AsyncClient, db_session: AsyncSession
@@ -461,9 +444,7 @@ class TestAdminCommentReportEndpoints:
         assert data["comment_reports"][0]["reviewed_by_user"]["user_id"] == user.user_id
         assert data["comment_reports"][0]["reviewed_by_user"]["username"] == user.username
 
-    async def test_dismiss_comment_report(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_dismiss_comment_report(self, client: AsyncClient, db_session: AsyncSession):
         """Test dismissing a comment report."""
         user, password = await create_auth_user(db_session, "admin2", "admin2@test.com")
         await grant_permission(db_session, user.user_id, "report_manage")
@@ -494,9 +475,7 @@ class TestAdminCommentReportEndpoints:
         await db_session.refresh(report)
         assert report.status == ReportStatus.DISMISSED
 
-    async def test_delete_comment_via_report(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_delete_comment_via_report(self, client: AsyncClient, db_session: AsyncSession):
         """Test deleting a comment via the report action."""
         user, password = await create_auth_user(db_session, "admin3", "admin3@test.com")
         await grant_permission(db_session, user.user_id, "report_manage")
@@ -531,9 +510,7 @@ class TestAdminCommentReportEndpoints:
         await db_session.refresh(report)
         assert report.status == ReportStatus.REVIEWED
 
-    async def test_action_on_processed_report(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_action_on_processed_report(self, client: AsyncClient, db_session: AsyncSession):
         """Test that actions cannot be taken on already processed reports."""
         user, password = await create_auth_user(db_session, "admin4", "admin4@test.com")
         await grant_permission(db_session, user.user_id, "report_manage")
@@ -568,9 +545,7 @@ class TestAdminCommentReportEndpoints:
         assert response.status_code == 400
         assert "already been processed" in response.json()["detail"]
 
-    async def test_dismiss_requires_permission(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_dismiss_requires_permission(self, client: AsyncClient, db_session: AsyncSession):
         """Test that dismiss requires REPORT_MANAGE permission."""
         user, password = await create_auth_user(db_session, "nonadmin", "nonadmin@test.com")
         # No permission granted
@@ -636,17 +611,25 @@ class TestAdminCommentReportEndpoints:
         c1 = await create_test_comment(db_session, user.user_id, image.image_id, "c1")
         c2 = await create_test_comment(db_session, user.user_id, image.image_id, "c2")
 
-        cr1 = CommentReports(comment_id=c1.post_id, user_id=user.user_id, status=ReportStatus.PENDING)
-        cr2 = CommentReports(comment_id=c2.post_id, user_id=user.user_id, status=ReportStatus.PENDING)
+        cr1 = CommentReports(
+            comment_id=c1.post_id, user_id=user.user_id, status=ReportStatus.PENDING
+        )
+        cr2 = CommentReports(
+            comment_id=c2.post_id, user_id=user.user_id, status=ReportStatus.PENDING
+        )
         db_session.add(cr1)
         db_session.add(cr2)
 
         # Create 2 image reports
         user2, _ = await create_auth_user(db_session, "u2", "u2@test.com")
 
-        ir1 = ImageReports(image_id=image.image_id, user_id=user.user_id, status=ReportStatus.PENDING)
+        ir1 = ImageReports(
+            image_id=image.image_id, user_id=user.user_id, status=ReportStatus.PENDING
+        )
         image2 = await create_test_image(db_session, user2.user_id)
-        ir2 = ImageReports(image_id=image2.image_id, user_id=user2.user_id, status=ReportStatus.PENDING)
+        ir2 = ImageReports(
+            image_id=image2.image_id, user_id=user2.user_id, status=ReportStatus.PENDING
+        )
 
         db_session.add(ir1)
         db_session.add(ir2)
@@ -682,9 +665,7 @@ class TestAdminCommentReportEndpoints:
 class TestAdminGetCommentReport:
     """Tests for GET /api/v1/admin/reports/comments/{report_id} endpoint."""
 
-    async def test_get_comment_report_success(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_comment_report_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test fetching a single comment report by ID."""
         user, password = await create_auth_user(db_session, "admin_get", "admin_get@test.com")
         await grant_permission(db_session, user.user_id, "report_view")

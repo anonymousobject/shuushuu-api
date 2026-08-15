@@ -16,9 +16,10 @@ class TestR2DeleteImageJob:
         monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.example.com")
 
         mock_r2 = AsyncMock()
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2), patch(
-            "app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            patch("app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
             await r2_delete_image_job(
                 {},
                 image_id=42,
@@ -36,9 +37,10 @@ class TestR2DeleteImageJob:
     async def test_deletes_from_private_no_purge(self, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         mock_r2 = AsyncMock()
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2), patch(
-            "app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            patch("app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
             await r2_delete_image_job(
                 {},
                 image_id=42,

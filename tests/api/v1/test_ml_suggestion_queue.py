@@ -554,7 +554,7 @@ class TestWorklistPagination:
         await _grant_image_tag_add(db_session, user)
         images = [await _make_image(db_session, user, f"wpag1_{i}") for i in range(8)]
         tags = [await _make_tag(db_session, user, f"wpag1_t{i}") for i in range(8)]
-        for img, tag in zip(images, tags):
+        for img, tag in zip(images, tags, strict=False):
             await _make_suggestion(db_session, img, tag)
         await db_session.commit()
 
@@ -582,7 +582,7 @@ class TestWorklistPagination:
         await _grant_image_tag_add(db_session, user)
         images = [await _make_image(db_session, user, f"wpag2_{i}") for i in range(8)]
         tags = [await _make_tag(db_session, user, f"wpag2_t{i}") for i in range(8)]
-        for img, tag in zip(images, tags):
+        for img, tag in zip(images, tags, strict=False):
             await _make_suggestion(db_session, img, tag)
         await db_session.commit()
 
@@ -630,7 +630,7 @@ class TestWorklistPagination:
         await _grant_image_tag_add(db_session, user)
         images = [await _make_image(db_session, user, f"wpag4_{i}") for i in range(6)]
         tags = [await _make_tag(db_session, user, f"wpag4_t{i}") for i in range(6)]
-        for img, tag in zip(images, tags):
+        for img, tag in zip(images, tags, strict=False):
             await _make_suggestion(db_session, img, tag)
         await db_session.commit()
 

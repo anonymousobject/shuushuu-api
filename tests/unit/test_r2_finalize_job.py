@@ -52,7 +52,9 @@ class TestR2FinalizeUploadJob:
         ):
             yield
 
-    async def test_uploads_two_variants_and_flips_public(self, fresh_image, db_session, monkeypatch, tmp_path):
+    async def test_uploads_two_variants_and_flips_public(
+        self, fresh_image, db_session, monkeypatch, tmp_path
+    ):
         """Image with no medium/large: uploads fullsize+thumbs to public bucket."""
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
@@ -68,10 +70,7 @@ class TestR2FinalizeUploadJob:
             await r2_finalize_upload_job({}, image_id=fresh_image.image_id)
 
         assert mock_r2.upload_file.await_count == 2
-        calls = {
-            (c.kwargs["bucket"], c.kwargs["key"])
-            for c in mock_r2.upload_file.await_args_list
-        }
+        calls = {(c.kwargs["bucket"], c.kwargs["key"]) for c in mock_r2.upload_file.await_args_list}
         assert (settings.R2_PUBLIC_BUCKET, "fullsize/2026-04-17-42.jpg") in calls
         assert (settings.R2_PUBLIC_BUCKET, "thumbs/2026-04-17-42.webp") in calls
 
@@ -145,9 +144,7 @@ class TestR2FinalizeUploadJob:
         mock_r2 = AsyncMock()
         with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
             with pytest.raises(Retry):
-                await r2_finalize_upload_job(
-                    {"job_try": 1}, image_id=fresh_image.image_id
-                )
+                await r2_finalize_upload_job({"job_try": 1}, image_id=fresh_image.image_id)
 
         await db_session.refresh(fresh_image)
         assert fresh_image.r2_location == R2Location.NONE  # no flip on retry

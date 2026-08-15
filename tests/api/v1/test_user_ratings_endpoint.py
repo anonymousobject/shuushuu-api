@@ -31,7 +31,9 @@ async def _make_user(db_session: AsyncSession, username: str) -> Users:
     return user
 
 
-async def _make_image(db_session: AsyncSession, owner: Users, suffix: str, status: int = 1) -> Images:
+async def _make_image(
+    db_session: AsyncSession, owner: Users, suffix: str, status: int = 1
+) -> Images:
     # Field set mirrors the `test_image` fixture in tests/conftest.py — `rating`
     # and `locked` are not nullable and have no server default.
     image = Images(
@@ -74,9 +76,7 @@ class TestUserRatingsHappyPath:
         image = await _make_image(db_session, rater, "aaa")
         await _rate(db_session, rater, image, 7)
 
-        response = await _authenticate(client, rater).get(
-            f"/api/v1/users/{rater.user_id}/ratings"
-        )
+        response = await _authenticate(client, rater).get(f"/api/v1/users/{rater.user_id}/ratings")
 
         assert response.status_code == 200
         body = response.json()
@@ -100,9 +100,7 @@ class TestUserRatingsHappyPath:
         await _rate(db_session, rater, mine, 5)
         await _rate(db_session, stranger, theirs, 9)
 
-        response = await _authenticate(client, rater).get(
-            f"/api/v1/users/{rater.user_id}/ratings"
-        )
+        response = await _authenticate(client, rater).get(f"/api/v1/users/{rater.user_id}/ratings")
 
         assert response.status_code == 200
         body = response.json()
@@ -120,9 +118,7 @@ class TestUserRatingsHappyPath:
         db_session.add(Favorites(user_id=rater.user_id, image_id=loved.image_id))
         await db_session.commit()
 
-        response = await _authenticate(client, rater).get(
-            f"/api/v1/users/{rater.user_id}/ratings"
-        )
+        response = await _authenticate(client, rater).get(f"/api/v1/users/{rater.user_id}/ratings")
 
         assert response.status_code == 200
         by_id = {img["image_id"]: img["is_favorited"] for img in response.json()["images"]}
@@ -149,9 +145,7 @@ class TestUserRatingsAuthorization:
         image = await _make_image(db_session, rater, "eee")
         await _rate(db_session, rater, image, 6)
 
-        response = await _authenticate(client, nosy).get(
-            f"/api/v1/users/{rater.user_id}/ratings"
-        )
+        response = await _authenticate(client, nosy).get(f"/api/v1/users/{rater.user_id}/ratings")
 
         assert response.status_code == 403
 
@@ -164,9 +158,7 @@ class TestUserRatingsAuthorization:
         image = await _make_image(db_session, rater, "fff")
         await _rate(db_session, rater, image, 10)
 
-        response = await _authenticate(client, mod).get(
-            f"/api/v1/users/{rater.user_id}/ratings"
-        )
+        response = await _authenticate(client, mod).get(f"/api/v1/users/{rater.user_id}/ratings")
 
         assert response.status_code == 200
         body = response.json()
@@ -195,9 +187,7 @@ class TestUserRatingsVisibility:
         await _rate(db_session, rater, visible, 3)
         await _rate(db_session, rater, hidden, 8)
 
-        response = await _authenticate(client, rater).get(
-            f"/api/v1/users/{rater.user_id}/ratings"
-        )
+        response = await _authenticate(client, rater).get(f"/api/v1/users/{rater.user_id}/ratings")
 
         assert response.status_code == 200
         body = response.json()
@@ -216,9 +206,7 @@ class TestUserRatingsVisibility:
         await _rate(db_session, rater, visible, 3)
         await _rate(db_session, rater, hidden, 8)
 
-        response = await _authenticate(client, mod).get(
-            f"/api/v1/users/{rater.user_id}/ratings"
-        )
+        response = await _authenticate(client, mod).get(f"/api/v1/users/{rater.user_id}/ratings")
 
         assert response.status_code == 200
         body = response.json()
@@ -301,9 +289,7 @@ class TestUserRatingsFiltersAndSorting:
             await _rate(db_session, rater, image, score)
             images.append(image)
 
-        response = await _authenticate(client, rater).get(
-            f"/api/v1/users/{rater.user_id}/ratings"
-        )
+        response = await _authenticate(client, rater).get(f"/api/v1/users/{rater.user_id}/ratings")
 
         assert response.status_code == 200
         returned = [img["image_id"] for img in response.json()["images"]]

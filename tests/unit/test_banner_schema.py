@@ -234,6 +234,4 @@ def test_banner_response_round_trip_preserves_in_r2() -> None:
 
     round_tripped = BannerResponse.model_validate_json(resp.model_dump_json())
 
-    assert round_tripped.in_r2 is True, (
-        "in_r2 was lost across the cache serialization round trip"
-    )
+    assert round_tripped.in_r2 is True, "in_r2 was lost across the cache serialization round trip"

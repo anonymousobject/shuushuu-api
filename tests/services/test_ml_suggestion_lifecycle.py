@@ -76,11 +76,7 @@ async def _make_suggestion(
 
 async def _suggestion_rows(db: AsyncSession, image_id: int) -> list[MlTagSuggestions]:
     return list(
-        (
-            await db.execute(
-                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)
-            )
-        )
+        (await db.execute(select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)))
         .scalars()
         .all()
     )
@@ -150,9 +146,7 @@ class TestNoOpTransitions:
 
 
 class TestIneligibleToEligible:
-    async def test_reseeds_pending_from_raw_store(
-        self, db_session: AsyncSession, monkeypatch
-    ):
+    async def test_reseeds_pending_from_raw_store(self, db_session: AsyncSession, monkeypatch):
         """DEACTIVATED -> ACTIVE re-seeds pending rows from ml_raw_predictions."""
         monkeypatch.setattr(settings, "ML_MODEL_NAME", MODEL)
         monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.35)
@@ -201,9 +195,7 @@ class TestIneligibleToEligible:
 
 
 class TestMigrateRepostData:
-    async def test_wipes_repost_rows_and_resolves_original(
-        self, db_session: AsyncSession
-    ):
+    async def test_wipes_repost_rows_and_resolves_original(self, db_session: AsyncSession):
         """Repost-marking wipes ALL the repost's suggestion rows and resolves the
         original's matching pending suggestion with a NULL reviewer."""
         from app.models.tag_link import TagLinks

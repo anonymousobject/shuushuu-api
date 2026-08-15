@@ -129,9 +129,7 @@ async def test_suggestion_stats_minimum_threshold(
     assert data["items"] == []
 
 
-async def test_suggestion_stats_at_threshold(
-    client: AsyncClient, db_session: AsyncSession
-) -> None:
+async def test_suggestion_stats_at_threshold(client: AsyncClient, db_session: AsyncSession) -> None:
     """Users at exactly the minimum threshold (5) are included."""
     user = await create_user(db_session, "atthreshold")
     image = await create_image(db_session, user.user_id)

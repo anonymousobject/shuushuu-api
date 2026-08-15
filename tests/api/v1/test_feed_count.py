@@ -57,7 +57,9 @@ async def _img(db, owner, md5, status):
 
 
 async def _login(client, username):
-    r = await client.post("/api/v1/auth/login", json={"username": username, "password": "TestPassword123!"})
+    r = await client.post(
+        "/api/v1/auth/login", json={"username": username, "password": "TestPassword123!"}
+    )
     assert r.status_code == 200
     return r.json()["access_token"]
 
@@ -101,7 +103,9 @@ class TestFastFeedCount:
             db_session, or_(Images.status.in_(VISIBLE), Images.user_id == a.user_id)
         )
         token = await _login(client, a.username)
-        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        r = await client.get(
+            "/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"}
+        )
         assert r.json()["total"] == expected_a
         # sanity: a has hidden images, so this strictly exceeds the anon total
         assert expected_a > expected_anon
@@ -115,7 +119,9 @@ class TestFastFeedCount:
 
         expected_all = await _ground_truth(db_session)
         token = await _login(client, a.username)
-        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        r = await client.get(
+            "/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"}
+        )
         assert r.json()["total"] == expected_all
 
     async def test_explicit_filters_fall_back_to_exact_count(
@@ -140,7 +146,6 @@ class TestFastFeedCount:
         r = await client.get(f"/api/v1/images/?user_id={b.user_id}&per_page=1", headers=h)
         assert r.json()["total"] == expected_b
 
-
     async def test_bare_feed_total_excludes_reposts_for_hide_reposts_viewer(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -157,7 +162,9 @@ class TestFastFeedCount:
             ),
         )
         token = await _login(client, viewer.username)
-        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        r = await client.get(
+            "/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"}
+        )
         assert r.json()["total"] == expected
 
         # Sanity: hiding reposts strictly reduces the total (the seed has a repost).
@@ -170,9 +177,11 @@ class TestFastFeedCount:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         owner = await _user(db_session, "fcOwnRep", show_all=0, hide_reposts=1)
-        await _img(db_session, owner, "or0" + "0" * 29, 1)   # own active (visible)
+        await _img(db_session, owner, "or0" + "0" * 29, 1)  # own active (visible)
         await _img(db_session, owner, "or1" + "1" * 29, -1)  # own repost (public, hidden by pref)
-        await _img(db_session, owner, "or2" + "2" * 29, 0)   # own deactivated (hidden, but own -> visible)
+        await _img(
+            db_session, owner, "or2" + "2" * 29, 0
+        )  # own deactivated (hidden, but own -> visible)
 
         expected = await _ground_truth(
             db_session,
@@ -182,7 +191,9 @@ class TestFastFeedCount:
             ),
         )
         token = await _login(client, owner.username)
-        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        r = await client.get(
+            "/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"}
+        )
         assert r.json()["total"] == expected
 
 
@@ -192,7 +203,12 @@ class TestFeedCountCache:
         """The three global counts are TTL-cached (no per-mutation invalidation): a new
         image isn't reflected until the entry expires or is cleared. Also guards the
         str<->int round-trip through Redis."""
-        from app.services.feed_count_cache import _KEY_HIDDEN, _KEY_REPOST, _KEY_TOTAL, get_feed_counts
+        from app.services.feed_count_cache import (
+            _KEY_HIDDEN,
+            _KEY_REPOST,
+            _KEY_TOTAL,
+            get_feed_counts,
+        )
 
         await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
         try:
@@ -201,7 +217,9 @@ class TestFeedCountCache:
             await _img(db_session, a, "c1" + "0" * 30, 0)
 
             total1, hidden1, repost1 = await get_feed_counts(db_session, redis_client)
-            assert isinstance(total1, int) and isinstance(hidden1, int) and isinstance(repost1, int)  # parsed back from str
+            assert (
+                isinstance(total1, int) and isinstance(hidden1, int) and isinstance(repost1, int)
+            )  # parsed back from str
 
             # New image is NOT reflected while the cache is warm (TTL, no invalidation).
             await _img(db_session, a, "c2" + "0" * 30, 1)
@@ -215,12 +233,17 @@ class TestFeedCountCache:
             await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
 
     async def test_feed_counts_include_repost_count(self, db_session: AsyncSession, redis_client):
-        from app.services.feed_count_cache import _KEY_HIDDEN, _KEY_REPOST, _KEY_TOTAL, get_feed_counts
+        from app.services.feed_count_cache import (
+            _KEY_HIDDEN,
+            _KEY_REPOST,
+            _KEY_TOTAL,
+            get_feed_counts,
+        )
 
         await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
         try:
             u = await _user(db_session, "fcRepost", show_all=0)
-            await _img(db_session, u, "fr0" + "0" * 29, 1)   # active
+            await _img(db_session, u, "fr0" + "0" * 29, 1)  # active
             await _img(db_session, u, "fr1" + "1" * 29, -1)  # repost
             total, hidden, repost = await get_feed_counts(db_session, redis_client)
             assert isinstance(repost, int) and repost >= 1

@@ -404,9 +404,7 @@ class TestGetMlTagSuggestions:
         )
         assert response.status_code == 200
 
-    async def test_admin_can_view_others_image(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_admin_can_view_others_image(self, client: AsyncClient, db_session: AsyncSession):
         """An admin (admin=True, no IMAGE_TAG_ADD perm) can view suggestions on any image."""
         owner = Users(
             username="admin_view_owner",
@@ -1114,9 +1112,7 @@ class TestReviewMlTagSuggestions:
         tag_links = result.scalars().all()
         assert len(tag_links) == 1
 
-    async def test_approve_creates_tag_history(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_approve_creates_tag_history(self, client: AsyncClient, db_session: AsyncSession):
         """Approving a suggestion records a TagHistory add row (action='a')."""
         user = Users(
             username="test_history",
@@ -1207,9 +1203,7 @@ class TestReviewMlTagSuggestions:
         db_session.add(tag)
         await db_session.flush()
 
-        db_session.add(
-            TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=user.user_id)
-        )
+        db_session.add(TagLinks(image_id=image.image_id, tag_id=tag.tag_id, user_id=user.user_id))
         suggestion = MlTagSuggestions(
             image_id=image.image_id,
             tag_id=tag.tag_id,
@@ -1326,9 +1320,7 @@ class TestReviewMlTagSuggestions:
         db_session.add(canonical)
         await db_session.flush()
 
-        alias = Tags(
-            title="alias", type=1, user_id=user.user_id, alias_of=canonical.tag_id
-        )
+        alias = Tags(title="alias", type=1, user_id=user.user_id, alias_of=canonical.tag_id)
         db_session.add(alias)
         await db_session.flush()
 
@@ -1398,9 +1390,7 @@ class TestReviewMlTagSuggestions:
         db_session.add(canonical)
         await db_session.flush()
 
-        alias = Tags(
-            title="alias", type=1, user_id=user.user_id, alias_of=canonical.tag_id
-        )
+        alias = Tags(title="alias", type=1, user_id=user.user_id, alias_of=canonical.tag_id)
         db_session.add(alias)
         await db_session.flush()
 
@@ -1517,9 +1507,7 @@ class TestReviewMlTagSuggestions:
         db_session.add(owner)
         await db_session.flush()
 
-        moderator = await _create_moderator(
-            db_session, "review_mod", "review_mod@example.com"
-        )
+        moderator = await _create_moderator(db_session, "review_mod", "review_mod@example.com")
 
         image = Images(
             filename="test",

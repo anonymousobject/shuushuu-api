@@ -167,7 +167,9 @@ class TestSchemaValidation:
             ReviewCreate()
 
         # Default deadline with required fields
-        review = ReviewCreate(reason_category=DeactivationReason.INAPPROPRIATE, reason="needs review")
+        review = ReviewCreate(
+            reason_category=DeactivationReason.INAPPROPRIATE, reason="needs review"
+        )
         assert review.deadline_days is None
         assert review.reason_category == DeactivationReason.INAPPROPRIATE
         assert review.reason == "needs review"

@@ -87,10 +87,7 @@ exclude = [
     "*.md",
 ]
 extend-exclude = [
-    "tests",
     "docs",
-    "scripts",
-    "test_*.py",
 ]
 
 [tool.ruff.lint]
@@ -112,6 +109,16 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # unused imports
+# Test fixtures are frequently bound to a name only to keep the row alive for
+# the assertions below; the value itself is never read. Deleting the binding
+# would delete the row the test depends on.
+"tests/**" = ["F841"]
+# A couple of test modules import helpers from sibling test modules partway
+# down the file to avoid an import cycle at module load.
+"tests/api/v1/test_user_ratings_endpoint.py" = ["E402"]
+# %-formatting is the subject of these assertions, not an accident: they prove
+# a RedactedStr survives the %r path arq uses when logging job kwargs.
+"tests/unit/test_redacted_str.py" = ["UP031"]
 
 [tool.ruff.lint.pyupgrade]
 # Enforce Python 3.10+ type hints (use | instead of Optional)

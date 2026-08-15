@@ -243,7 +243,12 @@ async def test_analyze_character_child_does_not_supersede_theme_parent_when_flag
     await db_session.refresh(character_child)
 
     raw_preds = [
-        {"external_tag": "vocaloid_outfit", "confidence": 0.7, "category": 0, "model_version": "v1"},
+        {
+            "external_tag": "vocaloid_outfit",
+            "confidence": 0.7,
+            "category": 0,
+            "model_version": "v1",
+        },
         {"external_tag": "hatsune_miku", "confidence": 0.95, "category": 4, "model_version": "v1"},
     ]
     resolved = [
@@ -323,9 +328,14 @@ async def test_analyze_small_image_not_recompressed(
             return []
 
     with (
-        patch("app.api.v1.ml_analyze.get_ml_service", new_callable=AsyncMock,
-              return_value=_CapturingService()),
-        patch("app.api.v1.ml_analyze.resolve_external_tags", new_callable=AsyncMock, return_value=[]),
+        patch(
+            "app.api.v1.ml_analyze.get_ml_service",
+            new_callable=AsyncMock,
+            return_value=_CapturingService(),
+        ),
+        patch(
+            "app.api.v1.ml_analyze.resolve_external_tags", new_callable=AsyncMock, return_value=[]
+        ),
     ):
         response = await analyze_client.post(
             "/api/v1/ml-tag-suggestions/analyze",

@@ -30,7 +30,9 @@ assert _spec is not None and _spec.loader is not None
 ml_gpu_infer = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ml_gpu_infer)
 
-_MODEL_DIR = Path(os.environ.get("ML_MODELS_PATH", "ml_models")) / "swinv2_base_window8_256.dbv4-full"
+_MODEL_DIR = (
+    Path(os.environ.get("ML_MODELS_PATH", "ml_models")) / "swinv2_base_window8_256.dbv4-full"
+)
 
 
 @pytest.mark.unit
@@ -60,8 +62,12 @@ def test_standalone_preprocess_matches_canonical(tmp_path):
     # non-square pipeline through both copies so the twin cannot diverge on the
     # width/height axis silently.
     nonsquare_pipeline = [
-        {"type": "pad_to_size", "size": [400, 512], "background_color": "white",
-         "interpolation": "bilinear"},
+        {
+            "type": "pad_to_size",
+            "size": [400, 512],
+            "background_color": "white",
+            "interpolation": "bilinear",
+        },
         {"type": "resize", "size": [200, 256], "interpolation": "bicubic"},
         {"type": "center_crop", "size": [128, 192]},
         {"type": "maybe_to_tensor"},
@@ -70,9 +76,7 @@ def test_standalone_preprocess_matches_canonical(tmp_path):
     mine_ns = ml_gpu_infer.apply_test_pipeline(
         ml_gpu_infer.load_rgb(str(img_path)), nonsquare_pipeline
     )
-    want_ns = canonical.apply_test_pipeline(
-        canonical.load_rgb(str(img_path)), nonsquare_pipeline
-    )
+    want_ns = canonical.apply_test_pipeline(canonical.load_rgb(str(img_path)), nonsquare_pipeline)
     assert mine_ns.shape == want_ns.shape == (1, 3, 128, 192)  # H=128, W=192
     assert np.allclose(mine_ns, want_ns, atol=1e-7)
 
@@ -98,13 +102,20 @@ async def test_predict_matches_canonical(tmp_path):
 
     subprocess.run(
         [
-            sys.executable, str(_RUNNER),
-            "--manifest", str(manifest),
-            "--out", str(out),
-            "--model-dir", str(_MODEL_DIR),
-            "--storage-path", str(storage),
-            "--variant", "fullsize",
-            "--min-confidence", "0.35",
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            str(manifest),
+            "--out",
+            str(out),
+            "--model-dir",
+            str(_MODEL_DIR),
+            "--storage-path",
+            str(storage),
+            "--variant",
+            "fullsize",
+            "--min-confidence",
+            "0.35",
             "--no-include-character",  # compare general-only against canonical
         ],
         check=True,
@@ -152,17 +163,29 @@ def test_corrupt_image_is_skipped_not_fatal(tmp_path):
 
     manifest = tmp_path / "m.jsonl"
     manifest.write_text(
-        json.dumps({"image_id": 1, "filename": "bad", "ext": "png"}) + "\n"
-        + json.dumps({"image_id": 2, "filename": "good", "ext": "png"}) + "\n"
+        json.dumps({"image_id": 1, "filename": "bad", "ext": "png"})
+        + "\n"
+        + json.dumps({"image_id": 2, "filename": "good", "ext": "png"})
+        + "\n"
     )
     out = tmp_path / "r.jsonl"
 
     proc = subprocess.run(
         [
-            sys.executable, str(_RUNNER),
-            "--manifest", str(manifest), "--out", str(out),
-            "--model-dir", str(_MODEL_DIR), "--storage-path", str(storage),
-            "--variant", "fullsize", "--min-confidence", "0.35",
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            str(manifest),
+            "--out",
+            str(out),
+            "--model-dir",
+            str(_MODEL_DIR),
+            "--storage-path",
+            str(storage),
+            "--variant",
+            "fullsize",
+            "--min-confidence",
+            "0.35",
         ],
         check=True,
         capture_output=True,
@@ -177,6 +200,7 @@ def test_corrupt_image_is_skipped_not_fatal(tmp_path):
 # ---------------------------------------------------------------------------
 # Synthetic predict() tests — no real model or GPU required
 # ---------------------------------------------------------------------------
+
 
 class _FakeSession:
     """Minimal ONNX session stub for predict() unit tests."""
@@ -207,10 +231,10 @@ def _make_fake_pipeline_patches(monkeypatch):
 #   index 2: character tag "reimu",   category=4 (CHARACTER), threshold=0.35, prob=0.7
 #   index 3: general tag "outdoors",  category=0 (GENERAL), threshold=0.35, prob=0.5
 
-_NAMES      = ["sky",  "safe", "reimu",   "outdoors"]
-_CATEGORIES = [0,      9,      4,         0         ]
-_THRESHOLDS = [0.35,   0.35,   0.35,      0.35      ]
-_PROBS      = [0.9,    0.8,    0.7,       0.5       ]
+_NAMES = ["sky", "safe", "reimu", "outdoors"]
+_CATEGORIES = [0, 9, 4, 0]
+_THRESHOLDS = [0.35, 0.35, 0.35, 0.35]
+_PROBS = [0.9, 0.8, 0.7, 0.5]
 
 DUMMY_PIPELINE: list = []
 
@@ -277,8 +301,8 @@ def test_predict_no_include_character_emits_general_only(monkeypatch, tmp_path):
 
     assert "sky" in emitted_tags
     assert "outdoors" in emitted_tags
-    assert "reimu" not in emitted_tags   # character tag suppressed
-    assert "safe" not in emitted_tags    # rating tag suppressed
+    assert "reimu" not in emitted_tags  # character tag suppressed
+    assert "safe" not in emitted_tags  # rating tag suppressed
 
     assert emitted_categories == {ml_gpu_infer.GENERAL_CATEGORY}
 

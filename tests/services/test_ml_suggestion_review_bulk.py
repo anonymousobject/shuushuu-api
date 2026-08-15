@@ -198,13 +198,17 @@ async def _make_chain(db: AsyncSession, user: Users, suffix: str) -> tuple[Tags,
     """grandparent <- parent <- child via inheritedfrom_id."""
     grandparent = await _make_tag(db, user, f"gp_{suffix}")
     parent = Tags(
-        title=f"bulk tag p_{suffix}", type=1, user_id=user.user_id,
+        title=f"bulk tag p_{suffix}",
+        type=1,
+        user_id=user.user_id,
         inheritedfrom_id=grandparent.tag_id,
     )
     db.add(parent)
     await db.flush()
     child = Tags(
-        title=f"bulk tag c_{suffix}", type=1, user_id=user.user_id,
+        title=f"bulk tag c_{suffix}",
+        type=1,
+        user_id=user.user_id,
         inheritedfrom_id=parent.tag_id,
     )
     db.add(child)
@@ -215,9 +219,7 @@ async def _make_chain(db: AsyncSession, user: Users, suffix: str) -> tuple[Tags,
 class TestAncestorCleanupOnApprove:
     """Creating a TagLink deletes now-redundant pending ancestor suggestions."""
 
-    async def test_review_approve_child_deletes_pending_ancestors(
-        self, db_session: AsyncSession
-    ):
+    async def test_review_approve_child_deletes_pending_ancestors(self, db_session: AsyncSession):
         user = await _make_user(db_session, "anc1")
         image = await _make_image(db_session, user, "anc1")
         grandparent, parent, child = await _make_chain(db_session, user, "anc1")
@@ -242,9 +244,7 @@ class TestAncestorCleanupOnApprove:
         rows = (
             (
                 await db_session.execute(
-                    select(MlTagSuggestions).where(
-                        MlTagSuggestions.image_id == image.image_id
-                    )
+                    select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
                 )
             )
             .scalars()
@@ -256,9 +256,7 @@ class TestAncestorCleanupOnApprove:
         assert parent.tag_id not in by_tag
         assert grandparent.tag_id not in by_tag
 
-    async def test_reviewed_ancestor_rows_are_never_touched(
-        self, db_session: AsyncSession
-    ):
+    async def test_reviewed_ancestor_rows_are_never_touched(self, db_session: AsyncSession):
         user = await _make_user(db_session, "anc2")
         image = await _make_image(db_session, user, "anc2")
         grandparent, parent, child = await _make_chain(db_session, user, "anc2")
@@ -276,9 +274,7 @@ class TestAncestorCleanupOnApprove:
         rows = (
             (
                 await db_session.execute(
-                    select(MlTagSuggestions).where(
-                        MlTagSuggestions.image_id == image.image_id
-                    )
+                    select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
                 )
             )
             .scalars()
@@ -328,9 +324,7 @@ class TestAncestorCleanupOnApprove:
         grandparent, _parent, child = await _make_chain(db_session, user, "anc4")
         await _make_suggestion(db_session, image, grandparent)
         await _make_suggestion(db_session, image, child)
-        db_session.add(
-            TagLinks(image_id=image.image_id, tag_id=child.tag_id, user_id=user.user_id)
-        )
+        db_session.add(TagLinks(image_id=image.image_id, tag_id=child.tag_id, user_id=user.user_id))
         await db_session.flush()
 
         await approve_pending_suggestions_for_links(
@@ -341,9 +335,7 @@ class TestAncestorCleanupOnApprove:
         rows = (
             (
                 await db_session.execute(
-                    select(MlTagSuggestions).where(
-                        MlTagSuggestions.image_id == image.image_id
-                    )
+                    select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
                 )
             )
             .scalars()
@@ -353,9 +345,7 @@ class TestAncestorCleanupOnApprove:
         assert by_tag[child.tag_id] == "approved"
         assert grandparent.tag_id not in by_tag
 
-    async def test_pending_descendant_of_applied_tag_survives(
-        self, db_session: AsyncSession
-    ):
+    async def test_pending_descendant_of_applied_tag_survives(self, db_session: AsyncSession):
         """Applying a PARENT tag must not delete the more-specific pending
         child suggestion (cleanup goes up the chain only)."""
         user = await _make_user(db_session, "anc5")
@@ -419,9 +409,7 @@ class TestAncestorCleanupOnApprove:
         rows = (
             (
                 await db_session.execute(
-                    select(MlTagSuggestions).where(
-                        MlTagSuggestions.image_id == image.image_id
-                    )
+                    select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
                 )
             )
             .scalars()

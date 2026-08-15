@@ -86,9 +86,7 @@ def test_user_summary_excludes_avatar_in_r2_from_serialization() -> None:
     summary = UserSummary(user_id=1, username="alice", avatar="abc.png", avatar_in_r2=True)
 
     dumped = summary.model_dump()
-    assert "avatar_in_r2" not in dumped, (
-        f"avatar_in_r2 leaked into model_dump(): {sorted(dumped)}"
-    )
+    assert "avatar_in_r2" not in dumped, f"avatar_in_r2 leaked into model_dump(): {sorted(dumped)}"
 
     dumped_json = json.loads(summary.model_dump_json())
     assert "avatar_in_r2" not in dumped_json, (

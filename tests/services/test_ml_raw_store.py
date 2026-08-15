@@ -7,7 +7,6 @@ Idempotency is verified by running each function twice and asserting the
 second call inserts nothing.
 """
 
-import pytest
 from sqlalchemy import select
 
 from app.models.image import Images
@@ -172,10 +171,14 @@ async def test_ingest_coexists_across_models(db_session, tmp_path):
     assert created2 == 1, "same (image, external_tag) under a different model must be a new row"
 
     raw_rows = (
-        await db_session.execute(
-            select(MlRawPredictions).where(MlRawPredictions.image_id == img.image_id)
+        (
+            await db_session.execute(
+                select(MlRawPredictions).where(MlRawPredictions.image_id == img.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(raw_rows) == 2, "one row per (image, model, external_tag)"
 
     # Same external_tag_id, distinct model_ids

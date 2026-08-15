@@ -68,7 +68,9 @@ async def _passthrough_resolver(db, suggestions):
     return suggestions
 
 
-async def _make_user(db_session: AsyncSession, suffix: str, salt: str = "testsalt12345678") -> Users:
+async def _make_user(
+    db_session: AsyncSession, suffix: str, salt: str = "testsalt12345678"
+) -> Users:
     user = Users(
         username=f"wf_{suffix}",
         email=f"wf_{suffix}@example.com",
@@ -597,9 +599,7 @@ class TestMlTagSuggestionWorkflow:
 
         suggestion = (
             await db_session.execute(
-                select(MlTagSuggestions).where(
-                    MlTagSuggestions.suggestion_id == suggestion_id
-                )
+                select(MlTagSuggestions).where(MlTagSuggestions.suggestion_id == suggestion_id)
             )
         ).scalar_one()
         assert suggestion.status == "approved"

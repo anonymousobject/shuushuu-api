@@ -241,9 +241,7 @@ class TestDailyLimitEnforcement:
             db_session.add(_make_image(user.user_id, f"midnight-{i}"))
         await db_session.commit()
 
-        just_after_midnight = datetime.now(UTC).replace(
-            hour=0, minute=0, second=15, microsecond=0
-        )
+        just_after_midnight = datetime.now(UTC).replace(hour=0, minute=0, second=15, microsecond=0)
 
         class FrozenDatetime(datetime):
             @classmethod

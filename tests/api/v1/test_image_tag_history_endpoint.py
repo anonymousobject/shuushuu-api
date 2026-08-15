@@ -205,9 +205,7 @@ class TestGetImageTagHistory:
         # Added later via add_tag_to_image: both a tag_link AND a tag_history 'a' exist.
         db_session.add(TagLinks(tag_id=tag.tag_id, image_id=image.image_id, user_id=user.user_id))
         db_session.add(
-            TagHistory(
-                image_id=image.image_id, tag_id=tag.tag_id, action="a", user_id=user.user_id
-            )
+            TagHistory(image_id=image.image_id, tag_id=tag.tag_id, action="a", user_id=user.user_id)
         )
         await db_session.commit()
 
@@ -273,9 +271,7 @@ class TestGetImageTagHistory:
         assert data["total"] == 2
         assert sorted(item["action"] for item in data["items"]) == ["added", "removed"]
 
-    async def test_includes_tag_info(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_includes_tag_info(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """History entries should include tag info (LinkedTag)."""
         # Create a user
         user = Users(
@@ -334,9 +330,7 @@ class TestGetImageTagHistory:
         assert item["tag"]["tag_id"] == tag.tag_id
         assert item["tag"]["title"] == "included tag info"
 
-    async def test_includes_user_info(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_includes_user_info(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """History entries should include user info."""
         # Create a user
         user = Users(
@@ -402,9 +396,7 @@ class TestGetImageTagHistory:
         response = await client.get("/api/v1/images/99999999/tag-history")
         assert response.status_code == 404
 
-    async def test_pagination_works(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_pagination_works(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """Should support pagination."""
         # Create a user
         user = Users(
@@ -640,9 +632,7 @@ class TestGetImageTagHistory:
         assert "avatar_in_r2" not in item_user
         assert item_user["avatar_url"] == "https://cdn.test/avatars/abc.png"
 
-    async def test_handles_null_user(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_handles_null_user(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """Should handle history entries with null user_id gracefully."""
         # Create a user for image ownership
         user = Users(

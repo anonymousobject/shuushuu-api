@@ -56,7 +56,9 @@ class TestMatch:
         assert not resolver.match("https://example.com/artworks/1")
 
     def test_registered(self):
-        assert isinstance(get_resolver("https://www.pixiv.net/en/artworks/138823691"), PixivResolver)
+        assert isinstance(
+            get_resolver("https://www.pixiv.net/en/artworks/138823691"), PixivResolver
+        )
 
 
 class TestResolve:
@@ -85,15 +87,18 @@ class TestResolve:
 
     async def test_multi_page_uses_pages_endpoint(self):
         pages = [
-            {"urls": {"original": f"https://i.pximg.net/img-original/img/x/138823691_p{i}.png",
-                      "small": f"https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p{i}_master1200.jpg"},
-             "width": 100, "height": 200}
+            {
+                "urls": {
+                    "original": f"https://i.pximg.net/img-original/img/x/138823691_p{i}.png",
+                    "small": f"https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p{i}_master1200.jpg",
+                },
+                "width": 100,
+                "height": 200,
+            }
             for i in range(3)
         ]
         async with _client(_illust_body(pageCount=3), pages) as client:
-            post = await PixivResolver().resolve(
-                "https://www.pixiv.net/artworks/138823691", client
-            )
+            post = await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
         assert [img.full_url for img in post.images] == [p["urls"]["original"] for p in pages]
         assert post.images[1].width == 100
 
@@ -109,7 +114,14 @@ class TestResolve:
 
     async def test_error_payload_raises_not_found(self):
         def handler(request):
-            return httpx.Response(200, json={"error": True, "message": "該当作品は削除されたか、存在しない作品IDです。", "body": []})
+            return httpx.Response(
+                200,
+                json={
+                    "error": True,
+                    "message": "該当作品は削除されたか、存在しない作品IDです。",
+                    "body": [],
+                },
+            )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             with pytest.raises(PostNotFoundError):
@@ -122,7 +134,12 @@ class TestResolve:
                 return httpx.Response(200, json={"error": False, "body": _illust_body(pageCount=3)})
             if path == "/ajax/illust/138823691/pages":
                 return httpx.Response(
-                    200, json={"error": True, "message": "該当作品は削除されたか、存在しない作品IDです。", "body": []}
+                    200,
+                    json={
+                        "error": True,
+                        "message": "該当作品は削除されたか、存在しない作品IDです。",
+                        "body": [],
+                    },
                 )
             return httpx.Response(404)
 
@@ -186,31 +203,45 @@ class TestResolve:
         assert post.images[0].full_url.endswith("_p0.png")
 
     async def test_off_host_original_url_rejects_whole_post(self):
-        body = _illust_body(urls={
-            "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p0_master1200.jpg",
-            "original": "https://evil.example/a.png",
-        })
+        body = _illust_body(
+            urls={
+                "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p0_master1200.jpg",
+                "original": "https://evil.example/a.png",
+            }
+        )
         async with _client(body) as client:
             with pytest.raises(UpstreamError):
                 await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
 
     async def test_off_host_thumb_url_rejects_whole_post(self):
-        body = _illust_body(urls={
-            "small": "https://evil.example/thumb.jpg",
-            "original": "https://i.pximg.net/img-original/img/x/138823691_p0.png",
-        })
+        body = _illust_body(
+            urls={
+                "small": "https://evil.example/thumb.jpg",
+                "original": "https://i.pximg.net/img-original/img/x/138823691_p0.png",
+            }
+        )
         async with _client(body) as client:
             with pytest.raises(UpstreamError):
                 await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
 
     async def test_off_host_page_url_rejects_whole_post(self):
         pages = [
-            {"urls": {"original": "https://i.pximg.net/img-original/img/x/138823691_p0.png",
-                      "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p0_master1200.jpg"},
-             "width": 100, "height": 200},
-            {"urls": {"original": "https://evil.example/p1.png",
-                      "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p1_master1200.jpg"},
-             "width": 100, "height": 200},
+            {
+                "urls": {
+                    "original": "https://i.pximg.net/img-original/img/x/138823691_p0.png",
+                    "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p0_master1200.jpg",
+                },
+                "width": 100,
+                "height": 200,
+            },
+            {
+                "urls": {
+                    "original": "https://evil.example/p1.png",
+                    "small": "https://i.pximg.net/c/540x540_70/img-master/img/x/138823691_p1_master1200.jpg",
+                },
+                "width": 100,
+                "height": 200,
+            },
         ]
         async with _client(_illust_body(pageCount=2), pages) as client:
             with pytest.raises(UpstreamError):
