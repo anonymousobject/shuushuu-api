@@ -6,7 +6,6 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pymysql
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.exc import OperationalError
@@ -15,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import create_access_token
 from app.models.user import Users
 from app.schemas.image import SimilarImageResult
+from tests.snapshot_conflict import _db_error, _flaky_flush, _snapshot_conflict_error
 
 
 @pytest.fixture
@@ -483,36 +483,6 @@ async def test_images_source_url_roundtrip(db_session: AsyncSession):
     await db_session.commit()
     await db_session.refresh(image)
     assert image.source_url == "https://www.pixiv.net/artworks/138823691"
-
-
-def _db_error(errno: int, message: str) -> OperationalError:
-    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
-    return OperationalError(
-        "INSERT INTO images ...", None, pymysql.err.OperationalError(errno, message)
-    )
-
-
-def _snapshot_conflict_error() -> OperationalError:
-    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD)."""
-    return _db_error(1020, "Record has changed since last read in table 'images'")
-
-
-def _flaky_flush(fail_times: int, error: OperationalError):
-    """Patch AsyncSession.flush to raise `error` for the first `fail_times`
-    calls, then delegate to the real flush. Only the route's explicit
-    `await db.flush()` goes through AsyncSession.flush (autoflush runs inside
-    the sync Session), so the first intercepted call is the temp-row INSERT.
-    Returns (patch_ctx, calls) where calls records each intercepted flush."""
-    real_flush = AsyncSession.flush
-    calls: list[int] = []
-
-    async def flush(self, *args, **kwargs):
-        calls.append(1)
-        if len(calls) <= fail_times:
-            raise error
-        await real_flush(self, *args, **kwargs)
-
-    return patch.object(AsyncSession, "flush", flush), calls
 
 
 class TestUploadSnapshotConflictRetry:

@@ -2395,6 +2395,10 @@ async def add_tag_to_image(
     Returns:
         Success message
     """
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.id
+
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
     image = image_result.scalar_one_or_none()
@@ -2403,58 +2407,70 @@ async def add_tag_to_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check ownership, admin, or permission
-    is_owner = image.user_id == current_user.id
+    is_owner = image.user_id == user_id
     is_admin = current_user.admin
-    has_edit_permission = await has_permission(
-        db, current_user.id, Permission.IMAGE_TAG_ADD, redis_client
-    )
+    has_edit_permission = await has_permission(db, user_id, Permission.IMAGE_TAG_ADD, redis_client)
 
     if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
 
-    # Verify tag exists and resolve aliases
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    tag = tag_result.scalar_one_or_none()
+    # The TagLinks/TagHistory INSERTs take locking reads on their FK parents
+    # (tags, images, users) and the usage_count trigger on tag_links keeps those
+    # parent rows moving, so under innodb_snapshot_isolation a concurrent tag
+    # write aborts this one with ER_CHECKREAD (1020) — reported against the
+    # child table. Retry on a fresh snapshot instead of surfacing a 500 (see
+    # app/core/db_retry.py). The unit re-fetches its rows.
+    async def _apply_tag_add() -> int:
+        # Verify tag exists and resolve aliases
+        tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+        tag = tag_result.scalar_one_or_none()
 
-    if not tag:
-        raise HTTPException(status_code=404, detail="Tag not found")
+        if not tag:
+            raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Resolve alias tags to their actual tag (pass the already-fetched tag to avoid duplicate query)
-    _, resolved_tag_id = await resolve_tag_alias(db, tag_id, tag)
+        # Resolve alias tags to their actual tag (pass the already-fetched tag
+        # to avoid duplicate query)
+        _, resolved = await resolve_tag_alias(db, tag_id, tag)
 
-    # Check if tag link already exists (using resolved tag ID)
-    existing_link = await db.execute(
-        select(TagLinks).where(
-            TagLinks.image_id == image_id,  # type: ignore[arg-type]
-            TagLinks.tag_id == resolved_tag_id,  # type: ignore[arg-type]
+        # Check if tag link already exists (using resolved tag ID)
+        existing_link = await db.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,  # type: ignore[arg-type]
+                TagLinks.tag_id == resolved,  # type: ignore[arg-type]
+            )
         )
-    )
-    if existing_link.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Tag already linked to this image")
+        if existing_link.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Tag already linked to this image")
 
-    # Create tag link (usage_count is maintained by database trigger)
-    tag_link = TagLinks(
-        image_id=image_id,
-        tag_id=resolved_tag_id,
-        user_id=current_user.id,
-    )
-    db.add(tag_link)
+        # Create tag link (usage_count is maintained by database trigger)
+        tag_link = TagLinks(
+            image_id=image_id,
+            tag_id=resolved,
+            user_id=user_id,
+        )
+        db.add(tag_link)
 
-    # Record in tag history
-    history_entry = TagHistory(
-        image_id=image_id,
-        tag_id=resolved_tag_id,
-        action="a",
-        user_id=current_user.id,
-    )
-    db.add(history_entry)
+        # Record in tag history
+        history_entry = TagHistory(
+            image_id=image_id,
+            tag_id=resolved,
+            action="a",
+            user_id=user_id,
+        )
+        db.add(history_entry)
 
-    # Resolve any matching pending ML suggestion (applying the tag out of band
-    # is an implicit approval; keeps the review queue's pending counts honest).
-    await approve_pending_suggestions_for_links(db, [(image_id, resolved_tag_id)], current_user.id)
+        # Resolve any matching pending ML suggestion (applying the tag out of
+        # band is an implicit approval; keeps the review queue's pending counts
+        # honest).
+        await approve_pending_suggestions_for_links(db, [(image_id, resolved)], user_id)
 
-    await refresh_image_tag_type_flags(db, image_id)
-    await db.commit()
+        await refresh_image_tag_type_flags(db, image_id)
+        await db.commit()
+        return resolved
+
+    # Non-DB side effect: the search sync stays outside the retried unit so a
+    # retry never repeats it.
+    resolved_tag_id = await retry_on_snapshot_conflict(db, _apply_tag_add, what="image_tag_add")
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == resolved_tag_id))  # type: ignore[arg-type]
@@ -2481,6 +2497,10 @@ async def remove_tag_from_image(
     - The user has admin privileges
     - The user has the IMAGE_TAG_REMOVE permission
     """
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.id
+
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
     image = image_result.scalar_one_or_none()
@@ -2489,45 +2509,55 @@ async def remove_tag_from_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check ownership, admin, or permission
-    is_owner = image.user_id == current_user.id
+    is_owner = image.user_id == user_id
     is_admin = current_user.admin
     has_edit_permission = await has_permission(
-        db, current_user.id, Permission.IMAGE_TAG_REMOVE, redis_client
+        db, user_id, Permission.IMAGE_TAG_REMOVE, redis_client
     )
 
     if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
 
-    # Check if tag link exists
-    link_result = await db.execute(
-        select(TagLinks).where(
-            TagLinks.image_id == image_id,  # type: ignore[arg-type]
-            TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+    # Same snapshot-conflict exposure as the add path: the TagHistory INSERT
+    # locking-reads its FK parents and the DELETE's usage_count trigger keeps
+    # the parent `tags` row moving, so a concurrent tag write can abort this one
+    # with ER_CHECKREAD (1020). Retry on a fresh snapshot (see
+    # app/core/db_retry.py). The unit re-fetches its rows.
+    async def _apply_tag_remove() -> None:
+        # Check if tag link exists
+        link_result = await db.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,  # type: ignore[arg-type]
+                TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+            )
         )
-    )
-    tag_link = link_result.scalar_one_or_none()
+        tag_link = link_result.scalar_one_or_none()
 
-    if not tag_link:
-        raise HTTPException(status_code=404, detail="Tag not linked to this image")
+        if not tag_link:
+            raise HTTPException(status_code=404, detail="Tag not linked to this image")
 
-    # Record in tag history (before deleting the link)
-    history_entry = TagHistory(
-        image_id=image_id,
-        tag_id=tag_id,
-        action="r",
-        user_id=current_user.id,
-    )
-    db.add(history_entry)
-
-    # Delete tag link (usage_count is maintained by database trigger)
-    await db.execute(
-        delete(TagLinks).where(
-            TagLinks.image_id == image_id,  # type: ignore[arg-type]
-            TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+        # Record in tag history (before deleting the link)
+        history_entry = TagHistory(
+            image_id=image_id,
+            tag_id=tag_id,
+            action="r",
+            user_id=user_id,
         )
-    )
-    await refresh_image_tag_type_flags(db, image_id)
-    await db.commit()
+        db.add(history_entry)
+
+        # Delete tag link (usage_count is maintained by database trigger)
+        await db.execute(
+            delete(TagLinks).where(
+                TagLinks.image_id == image_id,  # type: ignore[arg-type]
+                TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+            )
+        )
+        await refresh_image_tag_type_flags(db, image_id)
+        await db.commit()
+
+    # Non-DB side effect: the search sync stays outside the retried unit so a
+    # retry never repeats it.
+    await retry_on_snapshot_conflict(db, _apply_tag_remove, what="image_tag_remove")
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
