@@ -44,7 +44,9 @@ def main() -> None:
         naive_mine = f"SELECT COUNT(*) FROM images WHERE status IN {VISIBLE} OR user_id = {uid}"
         all_count = "SELECT COUNT(*) FROM images"
         hidden = f"SELECT COUNT(*) FROM images WHERE status NOT IN {VISIBLE}"
-        hidden_mine = f"SELECT COUNT(*) FROM images WHERE status NOT IN {VISIBLE} AND user_id = {uid}"
+        hidden_mine = (
+            f"SELECT COUNT(*) FROM images WHERE status NOT IN {VISIBLE} AND user_id = {uid}"
+        )
 
         print(f"  naive OR plan : {_explain_type(c, naive_mine)}")
         print(f"  hidden  plan  : {_explain_type(c, hidden)}\n")

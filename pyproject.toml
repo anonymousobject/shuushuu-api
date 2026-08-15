@@ -82,6 +82,9 @@ exclude = [
     "__pycache__",
     "alembic/versions",
     "*.egg-info",
+    # Prose. The formatter would otherwise reflow the Python examples in
+    # AGENTS.md, which are wrapped for reading rather than to ruff's rules.
+    "*.md",
 ]
 extend-exclude = [
     "tests",
@@ -170,6 +173,12 @@ markers = [
 # namespace_packages = true
 # Strict mode settings
 strict = true
+# scripts/ has no __init__.py, so `mypy scripts/` would name a file
+# `generate_tag_mappings` while app/ and tests/ import it as
+# `scripts.generate_tag_mappings` — mypy aborts on the clash before checking
+# anything. Resolving module names from the repo root makes both agree.
+mypy_path = "."
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = [

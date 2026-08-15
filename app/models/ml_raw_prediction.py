@@ -51,7 +51,7 @@ class MlRawPredictions(SQLModel, table=True):
 
     # Note: images.image_id is signed in this model's metadata (pre-existing drift
     # from the legacy unsigned schema, tracked in
-    # docs/plans/2026-06-10-schema-sync-signed-unsigned-drift.md), so this FK stays
+    # docs/plans/2026-Q2/2026-06-10-schema-sync-signed-unsigned-drift.md), so this FK stays
     # signed Integer to match it — unsigning it alone would break create_all with
     # the same errno 150 this file otherwise fixes.
     image_id: int = Field(

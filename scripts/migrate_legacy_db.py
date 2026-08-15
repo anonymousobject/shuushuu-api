@@ -55,7 +55,6 @@ from db_utils import (
     stop_docker_services,
 )
 
-
 MIGRATION_STEPS = [
     {
         "number": 1,
@@ -115,7 +114,9 @@ def find_script(script_name: str) -> Path | None:
     return None
 
 
-async def run_step(step: dict, dry_run: bool = False, auto_confirm: bool = False, database_url: str | None = None) -> bool:
+async def run_step(
+    step: dict, dry_run: bool = False, auto_confirm: bool = False, database_url: str | None = None
+) -> bool:
     """
     Run a migration step script.
 
@@ -174,7 +175,7 @@ async def run_step(step: dict, dry_run: bool = False, auto_confirm: bool = False
             print(f"\n❌ Step failed with exit code {result.returncode}")
             return False
 
-        print(f"\n✓ Step completed successfully")
+        print("\n✓ Step completed successfully")
         return True
 
     except Exception as e:
@@ -259,7 +260,9 @@ async def run_migration(
         localhost_db_url = database_url.replace("@mariadb:", "@localhost:")
         print(f"Using DATABASE_URL: {localhost_db_url.replace(db_config['password'], '***')}\n")
 
-        if not await stamp_initial_migration(project_root, localhost_db_url, INITIAL_MIGRATION_REVISION):
+        if not await stamp_initial_migration(
+            project_root, localhost_db_url, INITIAL_MIGRATION_REVISION
+        ):
             print("❌ Failed to stamp initial migration")
             return False
 
@@ -349,10 +352,7 @@ async def run_migration(
         print("-" * 80)
 
         success = await run_step(
-            step,
-            dry_run=dry_run,
-            auto_confirm=auto_confirm,
-            database_url=localhost_db_url
+            step, dry_run=dry_run, auto_confirm=auto_confirm, database_url=localhost_db_url
         )
 
         if not success:

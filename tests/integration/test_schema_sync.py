@@ -235,7 +235,7 @@ class TestSchemaSync:
         flags image_id/user_id/tag_id signedness and TINYINT/MEDIUMTEXT drift,
         but fixing those cascades into the images/users/tags parent PKs — that
         full-schema type audit is tracked separately
-        (docs/plans/2026-06-10-schema-sync-signed-unsigned-drift.md).
+        (docs/plans/2026-Q2/2026-06-10-schema-sync-signed-unsigned-drift.md).
         """
         models_inspector, migrations_inspector = schema_inspectors
 

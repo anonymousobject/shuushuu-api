@@ -303,16 +303,27 @@ def run(args: argparse.Namespace) -> None:
             # not abort a million-image run — log it and move on.
             try:
                 predictions = predict(
-                    session, input_name, names, categories, thresholds, pipeline,
-                    str(path), args.min_confidence, model_version,
+                    session,
+                    input_name,
+                    names,
+                    categories,
+                    thresholds,
+                    pipeline,
+                    str(path),
+                    args.min_confidence,
+                    model_version,
                     allowed_categories=allowed_categories,
                 )
             except Exception as exc:
                 failed += 1
-                print(f"  warning: skipping image {rec['image_id']} ({path}): "
-                      f"{type(exc).__name__}: {exc}")
+                print(
+                    f"  warning: skipping image {rec['image_id']} ({path}): "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 continue
-            out_fh.write(json.dumps({"image_id": rec["image_id"], "predictions": predictions}) + "\n")
+            out_fh.write(
+                json.dumps({"image_id": rec["image_id"], "predictions": predictions}) + "\n"
+            )
             out_fh.flush()
             processed += 1
             if processed % 500 == 0:
@@ -334,12 +345,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Standalone GPU-host ML tag-suggestion inference (animetimm swinv2)."
     )
-    parser.add_argument("--manifest", required=True, help="Manifest JSONL from ml_backfill_manifest.py")
+    parser.add_argument(
+        "--manifest", required=True, help="Manifest JSONL from ml_backfill_manifest.py"
+    )
     parser.add_argument("--out", required=True, help="Output results JSONL (appended; resumable)")
-    parser.add_argument("--model-dir", required=True, help="Dir with model.onnx + selected_tags.csv")
-    parser.add_argument("--storage-path", required=True, help="Image store root (holds thumbs/, fullsize/, ...)")
-    parser.add_argument("--model-name", default=None, help="model_version label (default: model dir name)")
-    parser.add_argument("--variant", default="thumbs", choices=["thumbs", "medium", "large", "fullsize"])
+    parser.add_argument(
+        "--model-dir", required=True, help="Dir with model.onnx + selected_tags.csv"
+    )
+    parser.add_argument(
+        "--storage-path", required=True, help="Image store root (holds thumbs/, fullsize/, ...)"
+    )
+    parser.add_argument(
+        "--model-name", default=None, help="model_version label (default: model dir name)"
+    )
+    parser.add_argument(
+        "--variant", default="thumbs", choices=["thumbs", "medium", "large", "fullsize"]
+    )
     parser.add_argument("--min-confidence", type=float, default=0.35)
     parser.add_argument("--shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)

@@ -79,8 +79,10 @@ async def run(args: argparse.Namespace) -> None:
                 )
             except Exception as exc:
                 failed += 1
-                print(f"  warning: skipping image {rec['image_id']} ({path}): "
-                      f"{type(exc).__name__}: {exc}")
+                print(
+                    f"  warning: skipping image {rec['image_id']} ({path}): "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 continue
             write_results(out, [{"image_id": rec["image_id"], "predictions": predictions}])
             processed += 1
@@ -96,7 +98,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run ML tag-suggestion inference over a manifest (CPU/CUDA/ROCm)."
     )
-    parser.add_argument("--manifest", required=True, help="Manifest JSONL from ml_backfill_manifest.py")
+    parser.add_argument(
+        "--manifest", required=True, help="Manifest JSONL from ml_backfill_manifest.py"
+    )
     parser.add_argument("--out", required=True, help="Output results JSONL (appended; resumable)")
     parser.add_argument(
         "--variant",

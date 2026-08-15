@@ -140,13 +140,15 @@ def find_matches(
         # Try exact match
         if wd_normalized in internal_tags:
             internal = internal_tags[wd_normalized]
-            exact_matches.append({
-                "danbooru_tag": wd_data["original"],
-                "internal_tag_id": internal["tag_id"],
-                "internal_tag_title": internal["title"],
-                "match_type": "exact",
-                "action": "map",
-            })
+            exact_matches.append(
+                {
+                    "danbooru_tag": wd_data["original"],
+                    "internal_tag_id": internal["tag_id"],
+                    "internal_tag_title": internal["title"],
+                    "match_type": "exact",
+                    "action": "map",
+                }
+            )
             matched_internal.add(wd_normalized)
             continue
 
@@ -158,24 +160,28 @@ def find_matches(
 
             # Check if one contains the other
             if wd_normalized in int_normalized or int_normalized in wd_normalized:
-                partial_matches.append({
-                    "danbooru_tag": wd_data["original"],
-                    "internal_tag_id": int_data["tag_id"],
-                    "internal_tag_title": int_data["title"],
-                    "match_type": "partial",
-                    "action": "review",
-                })
+                partial_matches.append(
+                    {
+                        "danbooru_tag": wd_data["original"],
+                        "internal_tag_id": int_data["tag_id"],
+                        "internal_tag_title": int_data["title"],
+                        "match_type": "partial",
+                        "action": "review",
+                    }
+                )
                 found_partial = True
                 break
 
         if not found_partial:
-            unmatched_wd.append({
-                "danbooru_tag": wd_data["original"],
-                "internal_tag_id": "",
-                "internal_tag_title": "",
-                "match_type": "none",
-                "action": "ignore",  # Default to ignore, can be changed
-            })
+            unmatched_wd.append(
+                {
+                    "danbooru_tag": wd_data["original"],
+                    "internal_tag_id": "",
+                    "internal_tag_title": "",
+                    "match_type": "none",
+                    "action": "ignore",  # Default to ignore, can be changed
+                }
+            )
 
     return exact_matches, partial_matches, unmatched_wd
 

@@ -1,6 +1,6 @@
 # R2 Operations Runbook
 
-See `docs/plans/2026-04-16-r2-image-serving-design.md` for the full design.
+See `docs/plans/2026-Q2/2026-04-16-r2-image-serving-design.md` for the full design.
 This file is the short reference for operators.
 
 ## Environment variables

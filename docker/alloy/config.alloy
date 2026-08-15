@@ -1,5 +1,5 @@
 // Grafana Alloy config for shuushuu-api production logging.
-// See docs/plans/2026-04-25-centralized-logging-design.md sections 1 and 2.
+// See docs/plans/2026-Q2/2026-04-25-centralized-logging-design.md sections 1 and 2.
 //
 // Two log sources:
 //   1. Docker containers via socket discovery (this file)

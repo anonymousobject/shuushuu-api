@@ -81,16 +81,14 @@ def process_variant_worker(
             try:
                 icc_profile = img.info.get("icc_profile")
                 if icc_profile:
-                    input_profile = ImageCms.ImageCmsProfile(
-                        ImageCms.getOpenProfile(icc_profile)
-                    )
+                    input_profile = ImageCms.ImageCmsProfile(ImageCms.getOpenProfile(icc_profile))
                     if img.mode == "L":
                         img = ImageCms.profileToProfile(img, input_profile, srgb_profile)
                     else:
                         img = ImageCms.profileToProfile(
                             img, input_profile, srgb_profile, outputMode="RGB"
                         )
-            except (PyCMSError, OSError, TypeError):
+            except PyCMSError, OSError, TypeError:
                 if img.mode not in ("RGB", "L"):
                     img = img.convert("RGB")
 
@@ -178,17 +176,27 @@ def format_time(seconds: float) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate medium/large variants for images"
+    parser = argparse.ArgumentParser(description="Generate medium/large variants for images")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_images",
+        help="Process all images with medium/large flags",
     )
-    parser.add_argument("--all", action="store_true", dest="all_images",
-                        help="Process all images with medium/large flags")
-    parser.add_argument("--missing-only", action="store_true",
-                        help="Only generate variants where file is missing on disk")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would be done without making changes")
-    parser.add_argument("--workers", type=int, default=None,
-                        help=f"Number of parallel workers (default: {os.cpu_count() or 4})")
+    parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="Only generate variants where file is missing on disk",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done without making changes"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=f"Number of parallel workers (default: {os.cpu_count() or 4})",
+    )
 
     args = parser.parse_args()
 
@@ -219,15 +227,33 @@ def main() -> None:
     work_items = []
     for image_id, filename, ext, width, height, has_medium, has_large in images:
         if has_medium:
-            work_items.append((
-                image_id, filename, ext, settings.STORAGE_PATH,
-                width, height, "medium", args.dry_run, args.missing_only,
-            ))
+            work_items.append(
+                (
+                    image_id,
+                    filename,
+                    ext,
+                    settings.STORAGE_PATH,
+                    width,
+                    height,
+                    "medium",
+                    args.dry_run,
+                    args.missing_only,
+                )
+            )
         if has_large:
-            work_items.append((
-                image_id, filename, ext, settings.STORAGE_PATH,
-                width, height, "large", args.dry_run, args.missing_only,
-            ))
+            work_items.append(
+                (
+                    image_id,
+                    filename,
+                    ext,
+                    settings.STORAGE_PATH,
+                    width,
+                    height,
+                    "large",
+                    args.dry_run,
+                    args.missing_only,
+                )
+            )
 
     print(f"Total variant jobs: {len(work_items):,}")
 
@@ -282,7 +308,7 @@ def main() -> None:
     rate = processed / elapsed if elapsed > 0 else 0
 
     print("-" * 80)
-    print(f"\nSUMMARY")
+    print("\nSUMMARY")
     print("=" * 80)
     print(f"Total jobs:    {total:,}")
     print(f"Created:       {created_count:,}")

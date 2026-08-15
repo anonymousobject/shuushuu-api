@@ -37,8 +37,12 @@ def normalize_text(text: str | None) -> str | None:
     normalized = html_unescape(text).strip()
 
     # Warn if still contains HTML entities (potential double-encoding)
-    if "&" in normalized and any(entity in normalized for entity in ["&quot;", "&amp;", "&#", "&lt;", "&gt;"]):
-        print(f"    ⚠️  WARNING: Still contains HTML entities after normalization: {normalized[:100]}")
+    if "&" in normalized and any(
+        entity in normalized for entity in ["&quot;", "&amp;", "&#", "&lt;", "&gt;"]
+    ):
+        print(
+            f"    ⚠️  WARNING: Still contains HTML entities after normalization: {normalized[:100]}"
+        )
 
     return normalized
 
@@ -50,7 +54,7 @@ async def normalize_users(db: AsyncSession, batch_size: int, dry_run: bool) -> d
     Returns dict with counts of normalized fields.
     """
     fields_to_normalize = ["user_title", "location", "website", "interests"]
-    counts = {field: 0 for field in fields_to_normalize}
+    counts = dict.fromkeys(fields_to_normalize, 0)
 
     # Fetch all users
     result = await db.execute(
@@ -340,7 +344,12 @@ async def main(dry_run: bool = False, batch_size: int = 1000, auto_confirm: bool
         for field, count in tag_counts.items():
             print(f"  {field}: {count} records normalized")
 
-        total = sum(user_counts.values()) + sum(privmsg_counts.values()) + sum(comment_counts.values()) + sum(tag_counts.values())
+        total = (
+            sum(user_counts.values())
+            + sum(privmsg_counts.values())
+            + sum(comment_counts.values())
+            + sum(tag_counts.values())
+        )
         print(f"\nTotal fields normalized: {total}")
 
         if dry_run:
@@ -376,4 +385,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    asyncio.run(main(dry_run=args.dry_run, batch_size=args.batch_size, auto_confirm=args.auto_confirm))
+    asyncio.run(
+        main(dry_run=args.dry_run, batch_size=args.batch_size, auto_confirm=args.auto_confirm)
+    )

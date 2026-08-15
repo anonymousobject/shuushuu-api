@@ -48,7 +48,7 @@ async def check_iqdb_available() -> bool:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(iqdb_url)
             return response.status_code in (200, 404)  # 404 is OK, means server is up
-    except (httpx.RequestError, httpx.TimeoutException):
+    except httpx.RequestError, httpx.TimeoutException:
         return False
 
 
@@ -129,9 +129,7 @@ def _get_thumbnail_path(image_id: int, filename: str) -> Path:
     return thumbs_dir / f"{filename}.webp" if filename else thumbs_dir / f"{image_id}.webp"
 
 
-async def iter_image_batches(
-    engine, batch_size: int, start_from: int, *, only_missing_hash: bool
-):
+async def iter_image_batches(engine, batch_size: int, start_from: int, *, only_missing_hash: bool):
     """Yield batches of (image_id, filename, iqdb_hash) using keyset pagination."""
     last_id = start_from
     while True:
@@ -250,9 +248,7 @@ async def populate_iqdb(
 
     # Count images to process
     print("\nCounting images to process...")
-    total_images = await get_image_count(
-        engine, start_from, only_missing_hash=only_missing_hash
-    )
+    total_images = await get_image_count(engine, start_from, only_missing_hash=only_missing_hash)
     print(f"Found {total_images} images to process")
 
     if total_images == 0:
