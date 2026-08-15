@@ -723,3 +723,55 @@ class TestUploadRealStorageRoundTrip:
 
         # Nothing was orphaned under a staging name.
         assert list(fullsize.glob("staged_*")) == []
+
+    @pytest.mark.asyncio
+    async def test_finalize_failure_leaves_no_row_and_no_staged_file(
+        self,
+        upload_client: AsyncClient,
+        verified_user: Users,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """A rename failure undoes the committed row instead of stranding it.
+
+        The row is committed before the staged file is renamed, so a failing
+        rename would otherwise leave a row naming a file that was never created
+        plus a staged file under a uuid name nothing can derive from the row.
+        An upload must still be all-or-nothing.
+        """
+        from sqlalchemy import select
+
+        from app.config import settings
+        from app.models.image import Images
+
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+        with (
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+            patch(
+                "app.api.v1.images.finalize_uploaded_image",
+                side_effect=OSError("no space left on device"),
+            ),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("finalize_fail.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 500
+
+        # The committed row was undone.
+        rows = await db_session.execute(
+            select(Images).where(Images.original_filename == "finalize_fail.jpg")
+        )
+        assert list(rows.scalars().all()) == []
+
+        # And the staged bytes were not left behind under an unfindable name.
+        assert list((tmp_path / "fullsize").glob("staged_*")) == []

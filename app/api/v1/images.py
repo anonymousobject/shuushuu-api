@@ -2817,6 +2817,18 @@ async def _discard_unfinished_upload(
         staged_path.unlink(missing_ok=True)
 
 
+async def _discard_finalized_upload(db: AsyncSession, image_id: int, staged_path: FilePath) -> None:
+    """Undo a committed upload whose file never reached its permanent name.
+
+    Deleting the row cascades its tag_links (fk_tag_links_image_id is ON DELETE
+    CASCADE) and reverses the same usage_count / image_posts triggers the insert
+    fired, so this leaves the counters where they started.
+    """
+    await db.execute(delete(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    await db.commit()
+    staged_path.unlink(missing_ok=True)
+
+
 @router.post(
     "/upload",
     response_model=ImageUploadResponse,
@@ -3038,9 +3050,24 @@ async def upload_image(
         filename = new_image.filename
 
         # Give the staged file its permanent name now that the row exists.
-        file_path = finalize_uploaded_image(
-            staged_path, settings.STORAGE_PATH, image_id, ext, date_prefix
-        )
+        try:
+            file_path = finalize_uploaded_image(
+                staged_path, settings.STORAGE_PATH, image_id, ext, date_prefix
+            )
+        except OSError:
+            # The row is committed, but its bytes never reached the name the row
+            # records — and the staging name is a uuid nothing can derive from
+            # the row, so leaving the pair in place strands both. Undo the row so
+            # the upload is still all-or-nothing, as it was when the rename
+            # happened before the commit.
+            logger.error(
+                "image_finalize_failed",
+                image_id=image_id,
+                staged_path=str(staged_path),
+                exc_info=True,
+            )
+            await _discard_finalized_upload(db, image_id, staged_path)
+            raise
         logger.info("image_saved", image_id=image_id, file_path=str(file_path))
 
         logger.info(
