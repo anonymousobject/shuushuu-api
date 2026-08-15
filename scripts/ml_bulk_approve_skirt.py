@@ -27,7 +27,7 @@ SCOPE_TAG_ID = 16  # school uniform
 async def run(args: argparse.Namespace) -> None:
     async with get_async_session() as db:
         query = (
-            select(MlTagSuggestions.suggestion_id)
+            select(MlTagSuggestions.suggestion_id)  # type: ignore[call-overload]
             .join(TagLinks, TagLinks.image_id == MlTagSuggestions.image_id)
             .where(
                 MlTagSuggestions.tag_id == SKIRT_TAG_ID,

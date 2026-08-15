@@ -40,8 +40,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
-from db_utils import (
+# mypy resolves this file as `scripts.migrate_legacy_db` (mypy_path = "." +
+# explicit_package_bases in pyproject.toml), so it looks for a top-level
+# `db_utils` module and can't find one. At runtime this import works because
+# `python scripts/migrate_legacy_db.py` puts scripts/ (not the repo root) at
+# sys.path[0], making db_utils importable as a top-level module. Not a real
+# bug, just a static/runtime resolution mismatch.
+from db_utils import (  # type: ignore[import-not-found]
     DEV_TEST_DATABASES,
     create_test_user,
     drop_and_create_database,
@@ -55,7 +62,7 @@ from db_utils import (
     stop_docker_services,
 )
 
-MIGRATION_STEPS = [
+MIGRATION_STEPS: list[dict[str, Any]] = [
     {
         "number": 1,
         "name": "convert_bbcode_to_markdown",
@@ -99,7 +106,7 @@ MIGRATION_STEPS = [
 INITIAL_MIGRATION_REVISION = "8d66158eb568"
 
 
-def print_step(step_num: int, step: dict):
+def print_step(step_num: int, step: dict[str, Any]) -> None:
     """Print step information."""
     print(f"Step {step_num}: {step['name']}")
     print(f"  Script: {step['script']}")
@@ -115,7 +122,10 @@ def find_script(script_name: str) -> Path | None:
 
 
 async def run_step(
-    step: dict, dry_run: bool = False, auto_confirm: bool = False, database_url: str | None = None
+    step: dict[str, Any],
+    dry_run: bool = False,
+    auto_confirm: bool = False,
+    database_url: str | None = None,
 ) -> bool:
     """
     Run a migration step script.
@@ -398,7 +408,7 @@ async def run_migration(
     return all_succeeded
 
 
-async def main():
+async def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Orchestrate complete legacy database migration",

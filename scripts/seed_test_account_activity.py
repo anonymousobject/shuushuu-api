@@ -34,8 +34,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 
@@ -97,9 +97,17 @@ async def seed_activity(db: AsyncSession, username: str, tag_title: str, favorit
 
     await db.commit()
 
+    # db.execute() is typed as returning the generic Result[Any], but a raw
+    # INSERT executed via text() always comes back as a CursorResult, which
+    # is what actually carries .rowcount.
+    assert isinstance(fav_result, CursorResult)
     fav_inserted = fav_result.rowcount or 0
     fav_skipped = len(image_ids) - fav_inserted
-    rating_inserted = rating_result.rowcount if rating_result is not None else 0
+    if rating_result is not None:
+        assert isinstance(rating_result, CursorResult)
+        rating_inserted = rating_result.rowcount
+    else:
+        rating_inserted = 0
     rating_skipped = len(rated_ids) - rating_inserted
 
     print(
@@ -119,7 +127,7 @@ async def main() -> None:
     args = parser.parse_args()
 
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as db:
         await seed_activity(db, args.username, args.tag, args.favorites)

@@ -33,8 +33,7 @@ import argparse
 import asyncio
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import TagAuditActionType, settings
 from app.models.tag import Tags
@@ -62,11 +61,13 @@ def resolve_terminal(tag_id: int, alias_map: dict[int, int | None]) -> int | Non
 
 async def repair(*, apply: bool) -> None:
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, future=True)
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     try:
         async with async_session() as db:
-            rows = (await db.execute(select(Tags.tag_id, Tags.title, Tags.alias_of))).all()
+            rows = (
+                await db.execute(select(Tags.tag_id, Tags.title, Tags.alias_of))  # type: ignore[call-overload]
+            ).all()
             alias_map: dict[int, int | None] = {row.tag_id: row.alias_of for row in rows}
             titles: dict[int, str] = {row.tag_id: row.title for row in rows}
 

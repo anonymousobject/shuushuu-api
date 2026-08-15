@@ -10,13 +10,14 @@ Quantifies the list_images count optimization (hidden-complement instead of the
 import time
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Connection
 
 from app.config import settings
 
 VISIBLE = "(-1, 1, 2)"  # PUBLIC_IMAGE_STATUSES: REPOST, ACTIVE, SPOILER
 
 
-def _time_ms(conn, sql: str, runs: int = 3) -> float:
+def _time_ms(conn: Connection, sql: str, runs: int = 3) -> float:
     conn.execute(text(sql)).scalar()  # warm
     best = float("inf")
     for _ in range(runs):
@@ -26,7 +27,7 @@ def _time_ms(conn, sql: str, runs: int = 3) -> float:
     return best
 
 
-def _explain_type(conn, sql: str) -> str:
+def _explain_type(conn: Connection, sql: str) -> str:
     row = conn.execute(text("EXPLAIN " + sql)).mappings().first()
     return f"{row['type']}/{row['key']}/{row['rows']} rows" if row else "?"
 

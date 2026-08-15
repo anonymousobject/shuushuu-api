@@ -83,20 +83,20 @@ def process_variant_worker(
                 if icc_profile:
                     input_profile = ImageCms.ImageCmsProfile(ImageCms.getOpenProfile(icc_profile))
                     if img.mode == "L":
-                        img = ImageCms.profileToProfile(img, input_profile, srgb_profile)
+                        img = ImageCms.profileToProfile(img, input_profile, srgb_profile)  # type: ignore[assignment]
                     else:
-                        img = ImageCms.profileToProfile(
+                        img = ImageCms.profileToProfile(  # type: ignore[assignment]
                             img, input_profile, srgb_profile, outputMode="RGB"
                         )
             except PyCMSError, OSError, TypeError:
                 if img.mode not in ("RGB", "L"):
-                    img = img.convert("RGB")
+                    img = img.convert("RGB")  # type: ignore[assignment]
 
             # Convert RGBA to RGB for JPEG
             if img.mode in ("RGBA", "LA") and ext.lower() in ("jpg", "jpeg"):
                 background = Image.new("RGB", img.size, (255, 255, 255))
                 background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
-                img = background
+                img = background  # type: ignore[assignment]
 
             img.thumbnail((threshold, threshold), Image.Resampling.LANCZOS)
 
@@ -107,7 +107,7 @@ def process_variant_worker(
             elif ext.lower() == "webp":
                 save_kwargs["quality"] = settings.LARGE_QUALITY
 
-            img.save(variant_path, **save_kwargs)
+            img.save(variant_path, **save_kwargs)  # type: ignore[arg-type]
 
             # Delete if variant is larger than original
             original_size = source_path.stat().st_size

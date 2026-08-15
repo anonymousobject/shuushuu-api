@@ -257,7 +257,9 @@ async def load_internal_characters() -> list[tuple[int, str]]:
     async with get_async_session() as db:
         rows = (
             await db.execute(
-                select(Tags.tag_id, Tags.title).where(Tags.type == CHARACTER_TYPE)  # type: ignore[arg-type]
+                select(Tags.tag_id, Tags.title).where(  # type: ignore[call-overload]
+                    Tags.type == CHARACTER_TYPE
+                )
             )
         ).all()
     return [(tag_id, title) for tag_id, title in rows]
@@ -330,11 +332,10 @@ async def main() -> None:
 
     if args.linked_only:
         async with get_async_session() as db:
-            linked_ids = set(
-                (await db.execute(select(CharacterSourceLinks.character_tag_id).distinct()))
-                .scalars()
-                .all()
-            )
+            linked_stmt = select(  # type: ignore[call-overload]
+                CharacterSourceLinks.character_tag_id
+            ).distinct()
+            linked_ids = set((await db.execute(linked_stmt)).scalars().all())
         results = apply_linked_only(results, linked_ids)
         print(
             f"linked-only: restricted auto-map to {len(linked_ids)} source-linked internal characters"

@@ -149,7 +149,10 @@ async def migrate_comments(db: AsyncSession, batch_size: int, dry_run: bool) -> 
 
         # Fetch one batch at a time
         result = await db.execute(
-            select(Comments).order_by(Comments.post_id).limit(batch_size).offset(offset)
+            select(Comments)
+            .order_by(Comments.post_id)  # type: ignore[arg-type]
+            .limit(batch_size)
+            .offset(offset)
         )
         comments = result.scalars().all()
 
@@ -196,7 +199,7 @@ async def migrate_comments(db: AsyncSession, batch_size: int, dry_run: bool) -> 
     return counts
 
 
-async def main(dry_run: bool = False, batch_size: int = 1000, auto_confirm: bool = False):
+async def main(dry_run: bool = False, batch_size: int = 1000, auto_confirm: bool = False) -> None:
     """Run BBCode to Markdown conversion."""
     print("=" * 80)
     print("BBCode to Markdown Conversion Script")
