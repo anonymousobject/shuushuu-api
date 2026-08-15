@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI · SQLAlchemy async · arq · redis.asyncio · onnxruntime · pytest (httpx AsyncClient + ASGITransport).
 
-**Companion spec:** `../../../shuushuu-frontend/docs/plans/2026-06-23-ml-suggestions-on-upload-design.md` (cross-repo design). This plan covers the **API** only; the frontend is a separate plan.
+**Companion spec:** `../../../shuushuu-frontend/docs/plans/2026-Q2/2026-06-23-ml-suggestions-on-upload-design.md` (cross-repo design). This plan covers the **API** only; the frontend is a separate plan.
 
 **Repo hygiene (CRITICAL):** the `shuushuu-api` working tree carries unrelated uncommitted user WIP. NEVER `git add -A`/`.`/`-u` or `git commit -a`. Stage only the exact files named in each task's commit step and verify `git status` first. Commit footer on every commit:
 ```

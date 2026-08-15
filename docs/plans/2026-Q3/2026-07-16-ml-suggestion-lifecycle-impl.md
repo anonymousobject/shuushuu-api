@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Spec of record: `../shuushuu-frontend/docs/plans/2026-07-16-ml-suggestion-lifecycle-and-history-design.md` (Part 1); decisions: `docs/adr/0001-ml-queue-write-time-invalidation.md`, `docs/adr/0002-suggestion-rows-follow-image-status.md`; vocabulary: `CONTEXT.md` (suggestion-eligible, system resolution).
+- Spec of record: `../shuushuu-frontend/docs/plans/2026-Q3/2026-07-16-ml-suggestion-lifecycle-and-history-design.md` (Part 1); decisions: `docs/adr/0001-ml-queue-write-time-invalidation.md`, `docs/adr/0002-suggestion-rows-follow-image-status.md`; vocabulary: `CONTEXT.md` (suggestion-eligible, system resolution).
 - Suggestion-eligible statuses are exactly `{ImageStatus.ACTIVE, ImageStatus.SPOILER}` = `{1, 2}`. Real constants: `REVIEW=-4, LOW_QUALITY=-3, INAPPROPRIATE=-2, REPOST=-1, DEACTIVATED=0, ACTIVE=1, SPOILER=2` (`app/config.py:400-410`). Never invent status values.
 - Feature branch `feat/ml-suggestion-lifecycle` off `main`. This repo has unrelated uncommitted WIP (`scripts/db_utils.py`, `scripts/prune_inactive_users.py`, `scripts/restore_prod_db.py`, old `docs/plans/*.md`) — **never `git add -A`**; stage only the files you touched.
 - Lifecycle hooks are atomic with the status change: no try/except around them; flush-only, caller owns commit.
@@ -1031,5 +1031,5 @@ Expected: `ok`.
 git push origin HEAD
 gh pr create --base main --head feat/ml-suggestion-lifecycle \
   --title "feat(ml): suggestion rows follow the image-status lifecycle" \
-  --body "Closes #274. See docs/adr/0002-suggestion-rows-follow-image-status.md and the design doc in shuushuu-frontend/docs/plans/2026-07-16-ml-suggestion-lifecycle-and-history-design.md."
+  --body "Closes #274. See docs/adr/0002-suggestion-rows-follow-image-status.md and the design doc in shuushuu-frontend/docs/plans/2026-Q3/2026-07-16-ml-suggestion-lifecycle-and-history-design.md."
 ```
