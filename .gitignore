@@ -120,9 +120,9 @@ data/character_mappings_launchable.csv
 shuu-php/
 .worktrees/
 
-# Local project instructions
-AGENTS.md
-CLAUDE.md
+# Agent instructions. AGENTS.md (and the CLAUDE.md that imports it) are tracked
+# — they're the shared contract for any agent working in this repo. Copilot's
+# generated file stays local.
 .github/copilot-instructions.md
 
 # Ansible-rendered prod config (compose_project role on the prod host).
