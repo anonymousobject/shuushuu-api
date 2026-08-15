@@ -137,3 +137,10 @@ CLAUDE.md
 ml_models/**
 !ml_models/**/
 !ml_models/**/README.md
+
+# Claude Code project config is per-machine (settings.local.json holds this
+# clone's permission grants, worktrees/ is scratch). Skills are shared workflow
+# and travel with the repo.
+.claude/**
+!.claude/**/
+!.claude/skills/**
