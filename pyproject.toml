@@ -170,6 +170,12 @@ markers = [
 # namespace_packages = true
 # Strict mode settings
 strict = true
+# scripts/ has no __init__.py, so `mypy scripts/` would name a file
+# `generate_tag_mappings` while app/ and tests/ import it as
+# `scripts.generate_tag_mappings` — mypy aborts on the clash before checking
+# anything. Resolving module names from the repo root makes both agree.
+mypy_path = "."
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = [
