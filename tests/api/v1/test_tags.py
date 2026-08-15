@@ -4272,6 +4272,231 @@ class TestUpdateTag:
         assert tag_p.type == TagType.ARTIST
         assert tag_p.alias_of == tag_b.tag_id
 
+    async def _admin_token(
+        self, client: AsyncClient, db_session: AsyncSession, username: str
+    ) -> str:
+        """Create an admin with TAG_UPDATE and return their access token."""
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        admin = Users(
+            username=username,
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email=f"{username}@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        db_session.add(UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1))
+        await db_session.commit()
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": "AdminPassword123!"},
+        )
+        return str(login_response.json()["access_token"])
+
+    async def test_type_change_blocked_while_linked_as_character(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A character tag that holds character-source links can't be retyped:
+        the link rows would survive as orphans, invisible on the retyped tag's
+        own page but still listed on the source it points at."""
+        access_token = await self._admin_token(client, db_session, "adminretypechar")
+
+        char_tag = Tags(title="Retype Char", desc="", type=TagType.CHARACTER)
+        source_tag = Tags(title="Retype Char Source", desc="", type=TagType.SOURCE)
+        db_session.add_all([char_tag, source_tag])
+        await db_session.commit()
+        await db_session.refresh(char_tag)
+        await db_session.refresh(source_tag)
+
+        db_session.add(
+            CharacterSourceLinks(
+                character_tag_id=char_tag.tag_id, source_tag_id=source_tag.tag_id
+            )
+        )
+        await db_session.commit()
+
+        response = await client.put(
+            f"/api/v1/tags/{char_tag.tag_id}",
+            json={"title": "Retype Char", "type": TagType.SOURCE},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "character-source link" in response.json()["detail"]
+
+        # The tag keeps its type and the link survives untouched
+        await db_session.refresh(char_tag)
+        assert char_tag.type == TagType.CHARACTER
+        links_result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == char_tag.tag_id
+            )
+        )
+        assert len(links_result.scalars().all()) == 1
+
+    async def test_type_change_blocked_while_linked_as_source(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Mirror case: a source tag with characters linked to it can't be
+        retyped out of SOURCE."""
+        access_token = await self._admin_token(client, db_session, "adminretypesource")
+
+        char_tag = Tags(title="Retype Source Char", desc="", type=TagType.CHARACTER)
+        source_tag = Tags(title="Retype Source", desc="", type=TagType.SOURCE)
+        db_session.add_all([char_tag, source_tag])
+        await db_session.commit()
+        await db_session.refresh(char_tag)
+        await db_session.refresh(source_tag)
+
+        db_session.add(
+            CharacterSourceLinks(
+                character_tag_id=char_tag.tag_id, source_tag_id=source_tag.tag_id
+            )
+        )
+        await db_session.commit()
+
+        response = await client.put(
+            f"/api/v1/tags/{source_tag.tag_id}",
+            json={"title": "Retype Source", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        assert "character-source link" in response.json()["detail"]
+
+        await db_session.refresh(source_tag)
+        assert source_tag.type == TagType.SOURCE
+
+    async def test_unrelated_edit_allowed_while_linked_as_character(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The link guard is scoped to type changes: a description edit on a
+        linked character tag must still go through."""
+        access_token = await self._admin_token(client, db_session, "admindesclinked")
+
+        char_tag = Tags(title="Linked Char Desc", desc="old", type=TagType.CHARACTER)
+        source_tag = Tags(title="Linked Char Desc Source", desc="", type=TagType.SOURCE)
+        db_session.add_all([char_tag, source_tag])
+        await db_session.commit()
+        await db_session.refresh(char_tag)
+        await db_session.refresh(source_tag)
+
+        db_session.add(
+            CharacterSourceLinks(
+                character_tag_id=char_tag.tag_id, source_tag_id=source_tag.tag_id
+            )
+        )
+        await db_session.commit()
+
+        response = await client.put(
+            f"/api/v1/tags/{char_tag.tag_id}",
+            json={"title": "Linked Char Desc", "desc": "new"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(char_tag)
+        assert char_tag.desc == "new"
+
+    async def test_retyping_alias_rejects_mismatch_with_canonical(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Issue #307: editing an alias's own type -- without touching
+        alias_of -- must still be validated against its existing canonical."""
+        access_token = await self._admin_token(client, db_session, "adminaliasretype")
+
+        canonical = Tags(title="Alias Retype Canonical", desc="", type=TagType.THEME)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(
+            title="Alias Retype Alias", desc="", type=TagType.THEME, alias_of=canonical.tag_id
+        )
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        response = await client.put(
+            f"/api/v1/tags/{alias.tag_id}",
+            json={"title": "Alias Retype Alias", "type": TagType.ARTIST},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "different type than its canonical" in detail
+        assert "Alias Retype Canonical" in detail
+
+        await db_session.refresh(alias)
+        assert alias.type == TagType.THEME
+
+    async def test_retyping_alias_to_match_canonical_repairs_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The type-match check still allows repairing an already-mismatched
+        alias by setting it to its canonical's type."""
+        access_token = await self._admin_token(client, db_session, "adminaliasrepair")
+
+        canonical = Tags(title="Alias Repair Canonical", desc="", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        # Legacy mismatched row, written directly to bypass API validation
+        alias = Tags(
+            title="Alias Repair Alias", desc="", type=TagType.THEME, alias_of=canonical.tag_id
+        )
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        response = await client.put(
+            f"/api/v1/tags/{alias.tag_id}",
+            json={"title": "Alias Repair Alias", "type": TagType.ARTIST},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(alias)
+        assert alias.type == TagType.ARTIST
+
+    async def test_editing_mismatched_alias_description_still_allowed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The #307 check is scoped to type edits: an unrelated description
+        edit on an already-mismatched alias must not 400."""
+        access_token = await self._admin_token(client, db_session, "adminaliasdesc")
+
+        canonical = Tags(title="Alias Desc Canonical", desc="", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(
+            title="Alias Desc Alias", desc="old", type=TagType.THEME, alias_of=canonical.tag_id
+        )
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        response = await client.put(
+            f"/api/v1/tags/{alias.tag_id}",
+            json={"title": "Alias Desc Alias", "desc": "new"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(alias)
+        assert alias.desc == "new"
+
 
 @pytest.mark.api
 class TestDeleteTag:

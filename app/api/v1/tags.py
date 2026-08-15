@@ -420,6 +420,70 @@ async def validate_tag_relationships(
             )
 
 
+# A source can carry hundreds of characters, so the error names a sample
+# rather than every counterpart.
+_LINKED_TAG_SAMPLE_SIZE = 5
+
+
+def _linked_tag_sample(titles: list[str]) -> str:
+    """Render counterpart titles for an error message, capped in length."""
+    sample = ", ".join(f"'{title}'" for title in titles[:_LINKED_TAG_SAMPLE_SIZE])
+    remaining = len(titles) - _LINKED_TAG_SAMPLE_SIZE
+    return f"{sample} and {remaining} more" if remaining > 0 else sample
+
+
+async def validate_character_source_links_for_type(
+    db: AsyncSession, *, tag_id: int, new_type: int
+) -> None:
+    """Reject a type change that would orphan the tag's character-source links.
+
+    Links are only reachable from a CHARACTER tag's page (its sources) and a
+    SOURCE tag's page (its characters), and both sides are type-checked when a
+    link is created. A tag retyped out of either role therefore leaves its rows
+    behind as orphans: invisible on its own page, still listed on the
+    counterpart's. Blocking keeps the link (and its picture crop) intact and
+    puts the delete in the moderator's hands.
+
+    Raises HTTPException(400) on validation failure.
+    """
+    if new_type != TagType.CHARACTER:
+        linked_sources = await db.execute(
+            select(Tags.title)  # type: ignore[call-overload]
+            .join(CharacterSourceLinks, Tags.tag_id == CharacterSourceLinks.source_tag_id)
+            .where(CharacterSourceLinks.character_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        source_titles = [row[0] for row in linked_sources]
+        if source_titles:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot change tag type: this tag is linked as a character to "
+                    f"{len(source_titles)} source tag(s): {_linked_tag_sample(source_titles)}. "
+                    f"Remove the character-source link(s) first."
+                ),
+            )
+
+    if new_type != TagType.SOURCE:
+        linked_characters = await db.execute(
+            select(Tags.title)  # type: ignore[call-overload]
+            .join(CharacterSourceLinks, Tags.tag_id == CharacterSourceLinks.character_tag_id)
+            .where(CharacterSourceLinks.source_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        character_titles = [row[0] for row in linked_characters]
+        if character_titles:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot change tag type: this tag is linked as a source to "
+                    f"{len(character_titles)} character tag(s): "
+                    f"{_linked_tag_sample(character_titles)}. "
+                    f"Remove the character-source link(s) first."
+                ),
+            )
+
+
 @router.get("/suggestion-stats", response_model=TagSuggestionStatsResponse)
 async def get_tag_suggestion_stats(
     pagination: Annotated[PaginationParams, Depends()],
@@ -1713,6 +1777,32 @@ async def update_tag(
         inheritedfrom_id=inheritedfrom_id,
         alias_of=alias_id,
     )
+
+    if new_type != tag.type:
+        # An alias is a synonym of its canonical -- same concept, same type. A
+        # request that edits the type without touching alias_of never reaches
+        # the check above, so re-validate against the existing canonical here.
+        # Only the type match is re-run: feeding the existing target through
+        # validate_tag_relationships would also re-run the chain and children
+        # checks and 400 unrelated edits on legacy rows.
+        if "alias_of" not in update_data and tag.alias_of is not None:
+            canonical_result = await db.execute(
+                select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
+            )
+            canonical_tag = canonical_result.scalar_one_or_none()
+            if canonical_tag is not None and canonical_tag.type != new_type:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot give an alias a different type than its canonical. "
+                        f"This tag is an alias of '{canonical_tag.title}' "
+                        f"(id: {tag.alias_of}), which has type {canonical_tag.type}, "
+                        f"not {new_type}. Retype the canonical instead: the change "
+                        f"cascades to its aliases."
+                    ),
+                )
+
+        await validate_character_source_links_for_type(db, tag_id=tag_id, new_type=new_type)
 
     # Update fields
     for key, value in update_data.items():
