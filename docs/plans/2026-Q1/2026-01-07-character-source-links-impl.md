@@ -1658,7 +1658,7 @@ git commit -m "chore: final cleanup for character-source links feature"
 
 ---
 
-Plan complete and saved to `docs/plans/2026-01-07-character-source-links-impl.md`.
+Plan complete and saved to `docs/plans/2026-Q1/2026-01-07-character-source-links-impl.md`.
 
 **Two execution options:**
 

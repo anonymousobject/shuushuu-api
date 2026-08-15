@@ -1,7 +1,8 @@
 """Unit tests for the comment-search query parser.
 
 Every case here maps to a behaviour measured against the live corpus and
-recorded in docs/plans/2026-08-10-comment-search-and-semantics-impl.md.
+recorded in docs/plans/2026-08-10-comment-search-and-semantics-impl.md in the
+frontend repo.
 """
 
 from app.utils.comment_search import (

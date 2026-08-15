@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLAlchemy async, existing `resolve_tag_alias()` function, pytest.
 
-**Design doc:** `docs/plans/2026-02-19-exclude-tags-design.md`
+**Design doc:** `docs/plans/2026-Q1/2026-02-19-exclude-tags-design.md`
 
 ---
 

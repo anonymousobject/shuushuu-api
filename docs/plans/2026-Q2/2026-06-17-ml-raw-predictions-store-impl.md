@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLModel/SQLAlchemy (async), Alembic, MariaDB, pytest (real test DB, no mocks), onnxruntime.
 
-**Spec:** `docs/plans/2026-06-17-ml-raw-predictions-store-design.md`
+**Spec:** `docs/plans/2026-Q2/2026-06-17-ml-raw-predictions-store-design.md`
 
 ---
 

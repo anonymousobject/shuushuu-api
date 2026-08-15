@@ -6,7 +6,7 @@
 
 **Architecture:** New nullable `iqdb_hash` column on `images`, captured by `add_to_iqdb_job` from iqdb-rs's `POST /images/{id}` response, queried via iqdb-rs's hash-only `GET /query?h=<hash>` endpoint. Existing file-based path stays as a transitional fallback for rows with `iqdb_hash IS NULL`. Backfill folds into `scripts/populate_iqdb.py`.
 
-**Tech Stack:** Python 3.14, FastAPI, SQLModel, Alembic, MariaDB, ARQ, httpx, pytest. Spec: `docs/plans/2026-05-07-iqdb-hash-storage-design.md`.
+**Tech Stack:** Python 3.14, FastAPI, SQLModel, Alembic, MariaDB, ARQ, httpx, pytest. Spec: `docs/plans/2026-Q2/2026-05-07-iqdb-hash-storage-design.md`.
 
 ---
 
@@ -1000,7 +1000,7 @@ gh pr create --title "feat(images): store iqdb hash, query similar by hash" --bo
 ## Summary
 Stores iqdb-rs's signature hash on every \`Images\` row at index time so the existing-image similarity-search query path can call \`GET /query?h=<hash>\` instead of streaming the thumbnail. Removes the runtime dependency on local thumbnail files for \`GET /api/v1/images/{id}/similar\` — necessary before the cutover to a server where historical images live only in R2.
 
-Spec: \`docs/plans/2026-05-07-iqdb-hash-storage-design.md\`.
+Spec: \`docs/plans/2026-Q2/2026-05-07-iqdb-hash-storage-design.md\`.
 
 ## Changes
 - New nullable \`iqdb_hash VARCHAR(533)\` column on \`images\`.

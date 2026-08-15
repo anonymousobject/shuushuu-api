@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLModel, Alembic, ARQ (async Redis queue), aiosmtplib
 
-**Design doc:** `docs/plans/2026-02-20-password-reset-design.md`
+**Design doc:** `docs/plans/2026-Q1/2026-02-20-password-reset-design.md`
 
 ---
 

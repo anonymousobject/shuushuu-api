@@ -6,7 +6,7 @@
 
 **Architecture:** Two new boolean columns (`users.avatar_in_r2`, `banners.in_r2`) gate URL generation and orphan-cleanup. Avatar uploads dual-write inline (best-effort R2, falls back to local-only on failure). One-shot `r2_sync.py` subcommands (`avatars-backfill`, `banners-backfill`) cover existing files. No async retry queue, no admin upload endpoint, no private-bucket support.
 
-**Tech Stack:** Python 3.14, FastAPI, SQLModel, Alembic, MariaDB 12, aioboto3, moto (test), pytest. Spec: `docs/plans/2026-05-08-r2-avatars-banners-design.md`.
+**Tech Stack:** Python 3.14, FastAPI, SQLModel, Alembic, MariaDB 12, aioboto3, moto (test), pytest. Spec: `docs/plans/2026-Q2/2026-05-08-r2-avatars-banners-design.md`.
 
 ---
 

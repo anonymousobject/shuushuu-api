@@ -9,7 +9,7 @@
 **Tech Stack:** FastAPI, SQLModel/SQLAlchemy async, MariaDB, Redis (existing caching unchanged), pytest
 
 **Reference files:**
-- Design: `docs/plans/2026-02-05-user-banner-preferences-design.md`
+- Design: `docs/plans/2026-Q1/2026-02-05-user-banner-preferences-design.md`
 - Existing models: `app/models/misc.py` (BannerSize, BannerBase, Banners)
 - Existing schemas: `app/schemas/banner.py` (BannerResponse, BannerListResponse)
 - Existing service: `app/services/banner.py` (get_current_banner, list_banners)
@@ -180,7 +180,7 @@ Run: `uv run alembic revision -m "add user banner preferences"`
 
 **Step 2: Edit the migration file**
 
-Write the upgrade/downgrade functions. Reference the SQL from the design doc (`docs/plans/2026-02-05-user-banner-preferences-design.md`, lines 42-61):
+Write the upgrade/downgrade functions. Reference the SQL from the design doc (`docs/plans/2026-Q1/2026-02-05-user-banner-preferences-design.md`, lines 42-61):
 
 ```python
 """add user banner preferences

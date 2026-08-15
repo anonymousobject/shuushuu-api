@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLModel/SQLAlchemy async, MariaDB, pytest (async), `uv` for all Python execution.
 
-**Spec:** `docs/plans/2026-05-29-missing-tag-type-filter-design.md`
+**Spec:** `docs/plans/2026-Q2/2026-05-29-missing-tag-type-filter-design.md`
 
 ---
 

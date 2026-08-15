@@ -191,7 +191,7 @@ Approve pending `skirt` suggestions with confidence ≥ 0.9 on images already ta
 """Bulk-approve pending skirt (159) ML suggestions on school-uniform (16) images.
 
 One-off for the 2026-07 seifuku→school-uniform reparent backfill
-(docs/plans/2026-07-26-school-uniform-flip-impl.md). Selection here, all
+(docs/plans/2026-Q3/2026-07-26-school-uniform-flip-impl.md). Selection here, all
 review side effects in the tested bulk_review_suggestions service.
 
 Usage:

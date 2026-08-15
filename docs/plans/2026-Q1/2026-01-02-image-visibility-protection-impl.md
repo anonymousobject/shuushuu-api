@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLAlchemy async, existing permission system (`has_any_permission`)
 
-**Design Doc:** `docs/plans/2026-01-02-image-visibility-protection-design.md`
+**Design Doc:** `docs/plans/2026-Q1/2026-01-02-image-visibility-protection-design.md`
 
 ---
 
@@ -871,7 +871,7 @@ git commit -m "chore: format code with ruff"
 ## Task 6: Document nginx Configuration
 
 **Files:**
-- Modify: `docs/plans/2026-01-02-image-visibility-protection-design.md` (already has nginx config)
+- Modify: `docs/plans/2026-Q1/2026-01-02-image-visibility-protection-design.md` (already has nginx config)
 
 **Step 1: Verify design doc has nginx config**
 

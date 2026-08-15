@@ -1205,7 +1205,7 @@ gh pr create --title "feat: add rotating banner system" --body "$(cat <<'EOF'
 - [x] Manual integration testing
 - [ ] Frontend integration (separate PR)
 
-Implements design from docs/plans/2026-02-01-rotating-banners-design.md
+Implements design from docs/plans/2026-Q1/2026-02-01-rotating-banners-design.md
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF

@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLModel/SQLAlchemy async, Pydantic v2, pytest + httpx
 
-**Design doc:** `docs/plans/2026-02-20-news-items-design.md`
+**Design doc:** `docs/plans/2026-Q1/2026-02-20-news-items-design.md`
 
 ---
 

@@ -4,7 +4,7 @@
 
 **Goal:** Precompute a per-user tag-affinity profile from favorites/ratings/uploads and expose it via `GET /users/me/taste-profile` (private analytics) and `GET /images/recommended` (live-scored personalized feed).
 
-**Architecture:** A nightly-refreshed `user_tag_affinity` analytics table (built with the same materialized-helper-tables + advisory-lock + staging-swap machinery as `tag_cooccurrence`, but batched by user ranges), read by two thin endpoints. Recommendation scoring happens live at request time from the profile. Spec: `docs/plans/2026-07-09-user-taste-profile-design.md` (approved).
+**Architecture:** A nightly-refreshed `user_tag_affinity` analytics table (built with the same materialized-helper-tables + advisory-lock + staging-swap machinery as `tag_cooccurrence`, but batched by user ranges), read by two thin endpoints. Recommendation scoring happens live at request time from the profile. Spec: `docs/plans/2026-Q3/2026-07-09-user-taste-profile-design.md` (approved).
 
 **Tech Stack:** FastAPI + SQLModel + MariaDB (raw SQL via `text()` for the batch job), arq cron, alembic, pytest (real MariaDB test DB).
 
@@ -1612,7 +1612,7 @@ Expected: no NEW errors vs `main` baseline (run `git stash && uv run mypy app | 
 ```bash
 git push -u origin feat/user-taste-profile
 gh pr create --title "feat: per-user taste profiles + recommended feed (API)" --body "$(cat <<'EOF'
-Implements the approved design in docs/plans/2026-07-09-user-taste-profile-design.md.
+Implements the approved design in docs/plans/2026-Q3/2026-07-09-user-taste-profile-design.md.
 
 - `user_tag_affinity` analytics table (nightly rebuild: advisory lock, user-batched aggregation, atomic staging swap)
 - `GET /users/me/taste-profile` — private per-user tag analytics (lift + centered rating deltas)

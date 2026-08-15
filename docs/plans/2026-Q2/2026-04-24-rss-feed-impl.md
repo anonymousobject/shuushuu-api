@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLModel/SQLAlchemy async, MariaDB, `feedgenerator` (PyPI, Django-extracted). Python 3.14+.
 
-**Reference:** full design at `docs/plans/2026-04-24-rss-feed-design.md`. Read it before starting — this plan assumes the reader has seen the spec's feed-structure tables, ETag rationale, and edge-case list.
+**Reference:** full design at `docs/plans/2026-Q2/2026-04-24-rss-feed-design.md`. Read it before starting — this plan assumes the reader has seen the spec's feed-structure tables, ETag rationale, and edge-case list.
 
 ---
 
@@ -1706,7 +1706,7 @@ Expected: no errors. If feedgenerator lacks type stubs, the `# type: ignore[impo
 
 ```bash
 git push -u origin HEAD
-gh pr create --title "feat: Atom feeds for images and tags" --body-file docs/plans/2026-04-24-rss-feed-design.md
+gh pr create --title "feat: Atom feeds for images and tags" --body-file docs/plans/2026-Q2/2026-04-24-rss-feed-design.md
 ```
 
 ---

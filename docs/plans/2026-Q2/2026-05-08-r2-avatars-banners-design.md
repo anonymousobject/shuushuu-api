@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-08
 **Status:** design
-**Related:** `docs/plans/2026-04-16-r2-image-serving-design.md`
+**Related:** `docs/plans/2026-Q2/2026-04-16-r2-image-serving-design.md`
 
 ## Problem
 

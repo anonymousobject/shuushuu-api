@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLModel, Alembic, aioboto3, ARQ, moto (S3 mocking), httpx (Cloudflare API), pytest
 
-**Design doc:** `docs/plans/2026-04-16-r2-image-serving-design.md`
+**Design doc:** `docs/plans/2026-Q2/2026-04-16-r2-image-serving-design.md`
 
 ---
 
@@ -3798,7 +3798,7 @@ Create `docs/r2-operations.md`:
 ```markdown
 # R2 Operations Runbook
 
-See `docs/plans/2026-04-16-r2-image-serving-design.md` for the full design.
+See `docs/plans/2026-Q2/2026-04-16-r2-image-serving-design.md` for the full design.
 This file is the short reference for operators.
 
 ## Environment variables

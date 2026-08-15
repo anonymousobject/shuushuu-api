@@ -60,4 +60,4 @@ whole-schema diff) as the audit proceeds.
 
 ## Related
 
-- Postgres feasibility analysis (`docs/plans/2026-06-10-postgres-migration-feasibility.md`) notes Postgres has no unsigned ints; this family is among the columns that would need a signed-range check before any such migration.
+- Postgres feasibility analysis (`docs/plans/2026-Q2/2026-06-10-postgres-migration-feasibility.md`) notes Postgres has no unsigned ints; this family is among the columns that would need a signed-range check before any such migration.

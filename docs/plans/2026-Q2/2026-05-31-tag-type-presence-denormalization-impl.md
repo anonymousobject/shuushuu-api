@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLModel/SQLAlchemy async, MariaDB 12, Alembic, pytest (async), `uv`.
 
-**Spec:** `docs/plans/2026-05-31-tag-type-presence-denormalization-design.md`
+**Spec:** `docs/plans/2026-Q2/2026-05-31-tag-type-presence-denormalization-design.md`
 
 ## Key facts (verified against the codebase)
 
