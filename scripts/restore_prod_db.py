@@ -6,6 +6,12 @@ Unlike migrate_legacy_db.py, this script does NOT run legacy data migrations
 (BBCode conversion, comment quote migration, text normalization, etc.) because
 the prod database has already been migrated to the new schema.
 
+The mariadb client steps (drop/create, import, test users) run inside the
+running 'mariadb' Docker Compose service via `docker compose exec`, so a host
+mariadb binary is not required. The mariadb container must be up; only the api
+and arq-worker services are stopped during the restore. The alembic step still
+runs on the host and connects to the published port on localhost.
+
 Workflow:
 1. Stop Docker API/worker services
 2. Drop and recreate database
@@ -25,7 +31,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from db_utils import (
+from db_utils import (  # type: ignore[import-not-found]
     create_test_user,
     drop_and_create_database,
     get_database_url,
@@ -105,7 +111,7 @@ async def restore_prod_db(
     print("\n" + "=" * 80)
     print(f"[2/{total_steps}] Dropping and recreating database")
     print("=" * 80)
-    if not await drop_and_create_database(db_config):
+    if not await drop_and_create_database(db_config, use_docker=True):
         print("❌ Failed to drop/create database")
         print("\n⚠️  Attempting to restart Docker services...")
         await start_docker_services(project_root)
@@ -115,7 +121,7 @@ async def restore_prod_db(
     print("\n" + "=" * 80)
     print(f"[3/{total_steps}] Importing SQL dump")
     print("=" * 80)
-    if not await import_sql_dump(sql_file, db_config):
+    if not await import_sql_dump(sql_file, db_config, use_docker=True):
         print("❌ Failed to import SQL dump")
         print("\n⚠️  Attempting to restart Docker services...")
         await start_docker_services(project_root)
@@ -136,7 +142,7 @@ async def restore_prod_db(
     print("\n" + "=" * 80)
     print(f"[5/{total_steps}] Creating test users (if dev/test database)")
     print("=" * 80)
-    if not await create_test_user(db_config):
+    if not await create_test_user(db_config, use_docker=True):
         print("⚠️  Warning: Failed to create test users (continuing anyway)")
 
     # Restart Docker services
