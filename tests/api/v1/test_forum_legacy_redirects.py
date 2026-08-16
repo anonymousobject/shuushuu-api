@@ -39,9 +39,7 @@ class TestViewforumRedirect:
     ):
         staff_category.legacy_forum_id = 3
         await db_session.commit()
-        r = await client.get(
-            "/api/v1/forum/legacy/viewforum?f=3", headers=_auth(staff_token)
-        )
+        r = await client.get("/api/v1/forum/legacy/viewforum?f=3", headers=_auth(staff_token))
         assert r.status_code == 301
         assert r.headers["location"] == f"/forum/{staff_category.category_id}"
 

@@ -17,9 +17,7 @@ async def _opening_post(db_session: AsyncSession, thread: ForumThreads) -> Forum
     return result.scalars().first()
 
 
-async def _add_reply(
-    db_session: AsyncSession, thread: ForumThreads, text: str
-) -> ForumPosts:
+async def _add_reply(db_session: AsyncSession, thread: ForumThreads, text: str) -> ForumPosts:
     post = ForumPosts(thread_id=thread.thread_id, user_id=1, post_text=text)
     db_session.add(post)
     await db_session.flush()
