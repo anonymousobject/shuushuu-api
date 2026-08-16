@@ -1242,7 +1242,7 @@ class TestUserHistoryLinkedTags:
 
     Field naming mirrors TagAuditLogResponse 1:1 so the frontend can reuse
     its existing getLinkedTag() helper. See
-    https://github.com/anonymousobject/shuushuu-frontend/blob/main/docs/plans/2026-05-23-history-linked-tags-api-requirements.md
+    https://github.com/anonymousobject/shuushuu-frontend/blob/main/docs/plans/2026-Q2/2026-05-23-history-linked-tags-api-requirements.md
     """
 
     async def _make_user(self, db_session: AsyncSession, username: str) -> Users:
