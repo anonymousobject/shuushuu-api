@@ -177,7 +177,7 @@ async def restore_prod_db(
         print("You may need to manually restart: docker compose start api arq-worker")
         success = False
 
-    # Step 6: Rebuild the search index. Runs after the restart because it
+    # Step 7: Rebuild the search index. Runs after the restart because it
     # executes inside the api container. Never fatal: the database is already
     # restored by this point, and a stale index is a warning, not a rollback.
     search_reindexed = False
