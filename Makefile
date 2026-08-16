@@ -29,7 +29,8 @@ help:
 	@echo "  test-build-frontend     Rebuild frontend image"
 	@echo ""
 	@echo "Python test suite (isolated DB on :3316):"
-	@echo "  pytest       Run the pytest suite (-n auto) against an isolated MariaDB"
+	@echo "  pytest       Run the pytest suite against an isolated MariaDB"
+	@echo "               (workers: PYTEST_WORKERS in .env, default auto)"
 	@echo "  pytest-db-up   Start the isolated pytest MariaDB"
 	@echo "  pytest-db-down Stop the isolated pytest MariaDB"
 	@echo ""
@@ -131,7 +132,7 @@ test-build-frontend: check-env-test
 # pytest targets — run the Python unit/integration suite against an isolated,
 # right-sized MariaDB (docker-compose.pytest.yml) instead of the shared,
 # memory-saturated dev container. See that file's header for the OOM root cause
-# this avoids. This is the supported way to run `pytest -n auto` locally.
+# this avoids. This is the supported way to run the suite locally.
 # Host port for the isolated DB. Defaults to 3316; a host where that is taken
 # (a second instance alongside another stack) sets PYTEST_DB_PORT in .env.
 # Compose reads .env by itself, make does not, so pull the same value through
@@ -142,6 +143,15 @@ ifeq ($(strip $(PYTEST_DB_PORT)),)
 PYTEST_DB_PORT := 3316
 endif
 COMPOSE_PYTEST = PYTEST_DB_PORT=$(PYTEST_DB_PORT) docker compose -f docker-compose.pytest.yml
+# xdist worker count, same .env-or-default mechanism. 'auto' takes every core,
+# which is right on a machine doing nothing else; a host also running a dev
+# stack (or two) wants a cap, since each worker carries its own DB connections
+# and temp tables on top of whatever the stack already holds. Overshooting here
+# is what invites the OOM killer, not a slow suite.
+PYTEST_WORKERS ?= $(shell sed -n 's/^PYTEST_WORKERS=[[:space:]]*//p' .env 2>/dev/null | tail -1)
+ifeq ($(strip $(PYTEST_WORKERS)),)
+PYTEST_WORKERS := auto
+endif
 # Pin the suite at the isolated DB regardless of what else .env holds.
 # DATABASE_URL is what the app engine builds from at import; the TEST_DB_*
 # components are what conftest builds the test engine AND the root admin engine
@@ -164,7 +174,7 @@ pytest-db-down:
 	$(COMPOSE_PYTEST) down
 
 pytest: pytest-db-up
-	$(PYTEST_DB_ENV) uv run pytest -n auto --dist loadgroup $(ARGS)
+	$(PYTEST_DB_ENV) uv run pytest -n $(PYTEST_WORKERS) --dist loadgroup $(ARGS)
 
 # Production targets
 prod: check-env-prod
