@@ -45,12 +45,16 @@ class TestRecomputeThreadStats:
         thread = await _make_thread_with_posts(db_session)
         # Soft-delete the newest post (user 3's)
         newest = (
-            await db_session.execute(
-                select(ForumPosts)
-                .where(ForumPosts.thread_id == thread.thread_id)
-                .order_by(ForumPosts.post_id.desc())
+            (
+                await db_session.execute(
+                    select(ForumPosts)
+                    .where(ForumPosts.thread_id == thread.thread_id)
+                    .order_by(ForumPosts.post_id.desc())
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         newest.deleted = True
         await db_session.flush()
 

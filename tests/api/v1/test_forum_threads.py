@@ -75,7 +75,12 @@ class TestListThreads:
         assert response.json()["total"] == 0
 
     async def test_unread_lifecycle(
-        self, client: AsyncClient, db_session: AsyncSession, public_category, public_thread, user_token
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_category,
+        public_thread,
+        user_token,
     ):
         url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
         # Anonymous: never unread
@@ -120,9 +125,7 @@ class TestCreateThread:
         assert data["unread"] is False  # own post never unread for the author
 
         # The opening post exists and renders markdown
-        detail = (
-            await client.get(f"/api/v1/forum/threads/{data['thread_id']}")
-        ).json()
+        detail = (await client.get(f"/api/v1/forum/threads/{data['thread_id']}")).json()
         assert detail["total"] == 1
         assert "<strong>post</strong>" in detail["posts"][0]["post_text_html"]
 
@@ -134,9 +137,7 @@ class TestCreateThread:
         )
         assert response.status_code == 403
 
-    async def test_view_gated_404_not_403(
-        self, client: AsyncClient, staff_category, user_token
-    ):
+    async def test_view_gated_404_not_403(self, client: AsyncClient, staff_category, user_token):
         response = await client.post(
             f"/api/v1/forum/categories/{staff_category.category_id}/threads",
             json={"title": "T", "post_text": "body"},
@@ -352,9 +353,7 @@ class TestDeleteThread:
         )
         assert response.status_code == 204
 
-    async def test_non_author_cannot_delete(
-        self, client: AsyncClient, public_thread, user_token
-    ):
+    async def test_non_author_cannot_delete(self, client: AsyncClient, public_thread, user_token):
         response = await client.delete(
             f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(user_token)
         )

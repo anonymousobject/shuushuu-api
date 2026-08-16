@@ -71,15 +71,15 @@ class TestListCategories:
         assert anon["can_create_thread"] is False
         assert anon["can_reply"] is False
         # Plain user on Announcements: reply yes, create no
-        plain = (
-            await client.get("/api/v1/forum/categories", headers=_auth(user_token))
-        ).json()["categories"][0]
+        plain = (await client.get("/api/v1/forum/categories", headers=_auth(user_token))).json()[
+            "categories"
+        ][0]
         assert plain["can_create_thread"] is False
         assert plain["can_reply"] is True
         # Staff: both
-        staff = (
-            await client.get("/api/v1/forum/categories", headers=_auth(staff_token))
-        ).json()["categories"][0]
+        staff = (await client.get("/api/v1/forum/categories", headers=_auth(staff_token))).json()[
+            "categories"
+        ][0]
         assert staff["can_create_thread"] is True
         assert staff["can_reply"] is True
 

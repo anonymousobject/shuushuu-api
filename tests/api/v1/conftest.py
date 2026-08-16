@@ -18,9 +18,7 @@ from app.models.permissions import Perms, UserPerms
 from app.models.user import Users
 
 
-async def grant_permission(
-    db_session: AsyncSession, user_id: int, permission: Permission
-) -> str:
+async def grant_permission(db_session: AsyncSession, user_id: int, permission: Permission) -> str:
     """Grant a permission to a user via user_perms and return a bearer token.
 
     Looks up the Perms row by title first — sync_permissions() has already

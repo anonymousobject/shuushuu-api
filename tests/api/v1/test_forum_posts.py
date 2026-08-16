@@ -127,9 +127,7 @@ class TestCreatePost:
         )
         assert response.status_code == 404
 
-    async def test_reply_gated_403(
-        self, client: AsyncClient, db_session: AsyncSession, user_token
-    ):
+    async def test_reply_gated_403(self, client: AsyncClient, db_session: AsyncSession, user_token):
         # Public view, staff-only replies (a read-only announcements pattern)
         cat = ForumCategories(
             title="Read Only",
@@ -158,9 +156,7 @@ class TestUpdatePost:
         assert response.status_code == 201
         return response.json()
 
-    async def test_owner_edits_with_tracking(
-        self, client: AsyncClient, public_thread, user_token
-    ):
+    async def test_owner_edits_with_tracking(self, client: AsyncClient, public_thread, user_token):
         post = await self._create_reply(client, public_thread.thread_id, user_token)
         response = await client.patch(
             f"/api/v1/forum/posts/{post['post_id']}",
@@ -201,9 +197,7 @@ class TestUpdatePost:
         self, client: AsyncClient, public_thread, user_token, staff_token
     ):
         post = await self._create_reply(client, public_thread.thread_id, user_token)
-        await client.delete(
-            f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(user_token)
-        )
+        await client.delete(f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(user_token))
         response = await client.patch(
             f"/api/v1/forum/posts/{post['post_id']}",
             json={"post_text": "necro-edit"},
@@ -226,9 +220,7 @@ class TestUpdatePost:
         self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token, staff_token
     ):
         post = await self._create_reply(client, public_thread.thread_id, user_token)
-        await client.delete(
-            f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(staff_token)
-        )
+        await client.delete(f"/api/v1/forum/posts/{post['post_id']}", headers=_auth(staff_token))
         thread = await _get_thread(db_session, public_thread.thread_id)
         assert thread.post_count == 1
 
@@ -268,18 +260,14 @@ class TestDeletePost:
         assert thread.last_post_user_id == 1  # back to the opening post's author
 
         # Tombstone visible in the thread, text blanked
-        detail = (
-            await client.get(f"/api/v1/forum/threads/{public_thread.thread_id}")
-        ).json()
+        detail = (await client.get(f"/api/v1/forum/threads/{public_thread.thread_id}")).json()
         assert detail["posts"][1]["deleted"] is True
         assert detail["posts"][1]["post_text"] == ""
 
     async def test_opening_post_cannot_be_deleted(
         self, client: AsyncClient, public_thread, author_token
     ):
-        detail = (
-            await client.get(f"/api/v1/forum/threads/{public_thread.thread_id}")
-        ).json()
+        detail = (await client.get(f"/api/v1/forum/threads/{public_thread.thread_id}")).json()
         opening_id = detail["posts"][0]["post_id"]
         response = await client.delete(
             f"/api/v1/forum/posts/{opening_id}", headers=_auth(author_token)
