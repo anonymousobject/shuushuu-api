@@ -18,12 +18,25 @@ Workflow:
 3. Import SQL dump (prod already has alembic_version stamped)
 4. alembic upgrade head (apply any migrations not yet on prod)
 5. Create test users (dev/test databases only)
-6. Start Docker services
+6. Restart Docker services
+7. Reindex Meilisearch from the restored database (--skip-reindex to opt out)
+
+A dump restores the database and nothing else, so the derived indexes are left
+describing the data that was there before. Step 7 rebuilds the Meilisearch tags
+index for that reason; it runs inside the api container and never fails the
+restore, since the database is already in place by then.
+
+IQDB is NOT rebuilt here — it is a long job over every image, so it stays an
+explicit choice. The summary says so, because an empty index is invisible in
+normal use: search and duplicate detection simply return nothing.
+
+    docker compose exec api uv run --no-project python scripts/populate_iqdb.py
 
 Usage:
     uv run python scripts/restore_prod_db.py /path/to/prod.sql
     uv run python scripts/restore_prod_db.py /path/to/prod.sql --dry-run
     uv run python scripts/restore_prod_db.py /path/to/prod.sql --auto-confirm
+    uv run python scripts/restore_prod_db.py /path/to/prod.sql --skip-reindex
 """
 
 import argparse
@@ -38,6 +51,7 @@ from db_utils import (  # type: ignore[import-not-found]
     import_sql_dump,
     parse_database_url,
     print_header,
+    reindex_search,
     run_alembic_upgrade,
     start_docker_services,
     stop_docker_services,
@@ -48,6 +62,7 @@ async def restore_prod_db(
     sql_file: Path,
     dry_run: bool = False,
     auto_confirm: bool = False,
+    skip_reindex: bool = False,
 ) -> bool:
     """
     Restore a production database dump.
@@ -56,6 +71,7 @@ async def restore_prod_db(
         sql_file: Path to the prod SQL dump file
         dry_run: If True, only show what would be done
         auto_confirm: If True, skip confirmation prompts
+        skip_reindex: If True, leave the Meilisearch index untouched
 
     Returns:
         True if successful, False otherwise
@@ -86,7 +102,11 @@ async def restore_prod_db(
         print(f"  3. Import SQL dump: {sql_file}")
         print("  4. Run alembic upgrade head")
         print("  5. Create test users (if dev/test database)")
-        print("  6. Start Docker services")
+        print("  6. Restart Docker services")
+        if skip_reindex:
+            print("  7. Reindex Meilisearch (SKIPPED via --skip-reindex)")
+        else:
+            print("  7. Reindex Meilisearch from the restored database")
         return True
 
     if not auto_confirm:
@@ -97,7 +117,7 @@ async def restore_prod_db(
             print("Restore cancelled.")
             return False
 
-    total_steps = 5
+    total_steps = 7
     success = True
 
     # Step 1: Stop Docker services
@@ -145,16 +165,39 @@ async def restore_prod_db(
     if not await create_test_user(db_config, use_docker=True):
         print("⚠️  Warning: Failed to create test users (continuing anyway)")
 
-    # Restart Docker services
+    # Step 6: Restart Docker services
     print("\n" + "=" * 80)
-    print("Restarting Docker services")
+    print(f"[6/{total_steps}] Restarting Docker services")
     print("=" * 80)
-    if await start_docker_services(project_root):
+    services_up = await start_docker_services(project_root)
+    if services_up:
         print("✅ Docker services restarted successfully")
     else:
         print("⚠️  Warning: Failed to restart Docker services")
         print("You may need to manually restart: docker compose start api arq-worker")
         success = False
+
+    # Step 6: Rebuild the search index. Runs after the restart because it
+    # executes inside the api container. Never fatal: the database is already
+    # restored by this point, and a stale index is a warning, not a rollback.
+    search_reindexed = False
+    if skip_reindex:
+        print("\n" + "=" * 80)
+        print(f"[{total_steps}/{total_steps}] Reindexing search (skipped)")
+        print("=" * 80)
+        print("Skipped via --skip-reindex.")
+    elif not services_up:
+        print("\n" + "=" * 80)
+        print(f"[{total_steps}/{total_steps}] Reindexing search (skipped)")
+        print("=" * 80)
+        print("⚠️  Skipped: the api container is not running.")
+    else:
+        print("\n" + "=" * 80)
+        print(f"[{total_steps}/{total_steps}] Reindexing search")
+        print("=" * 80)
+        search_reindexed = await reindex_search(project_root)
+        if not search_reindexed:
+            print("⚠️  Warning: search reindex failed (continuing anyway)")
 
     # Summary
     print_header("Restore Summary", width=80)
@@ -163,6 +206,21 @@ async def restore_prod_db(
         print(f"\nDatabase '{db_config['database']}' is ready for use.")
     else:
         print("⚠️  Restore completed with warnings (see above)")
+
+    # Derived indexes do not come back with the dump. Say so plainly either
+    # way: an empty index is invisible in normal use — search and duplicate
+    # detection just quietly return nothing.
+    print("\nDerived indexes:")
+    if search_reindexed:
+        print("  ✓ Meilisearch reindexed from the restored database")
+    else:
+        print("  ⚠️  Meilisearch NOT reindexed — search will return stale or no results.")
+        print("     Rebuild: docker compose exec api uv run --no-project \\")
+        print("              python scripts/reindex_search.py")
+    print("  ⚠️  IQDB is not rebuilt by this script — duplicate detection will")
+    print("     find nothing until it is populated. This is a long job over every")
+    print("     image, so run it deliberately:")
+    print("     docker compose exec api uv run --no-project python scripts/populate_iqdb.py")
 
     return success
 
@@ -182,6 +240,9 @@ Examples:
 
   # Preview what would happen
   uv run python scripts/restore_prod_db.py /path/to/prod.sql --dry-run
+
+  # Restore without rebuilding the search index
+  uv run python scripts/restore_prod_db.py /path/to/prod.sql --skip-reindex
         """,
     )
 
@@ -203,6 +264,12 @@ Examples:
         help="Skip confirmation prompts",
     )
 
+    parser.add_argument(
+        "--skip-reindex",
+        action="store_true",
+        help="Leave the Meilisearch index untouched (it will be stale)",
+    )
+
     args = parser.parse_args()
 
     sql_file = Path(args.sql_file)
@@ -214,6 +281,7 @@ Examples:
         sql_file=sql_file,
         dry_run=args.dry_run,
         auto_confirm=args.auto_confirm,
+        skip_reindex=args.skip_reindex,
     )
 
     sys.exit(0 if success else 1)
