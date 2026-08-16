@@ -69,7 +69,9 @@ async def _build_resolution(
             forum_id_map = {
                 int(r[0]): int(r[1])
                 for r in await lc.execute(
-                    text("SELECT forum_id, user_id FROM users WHERE forum_id IS NOT NULL AND forum_id>0")
+                    text(
+                        "SELECT forum_id, user_id FROM users WHERE forum_id IS NOT NULL AND forum_id>0"
+                    )
                 )
             }
     finally:
@@ -103,7 +105,7 @@ async def _post_attachment_links(
         src = backup_dir / physical
         if src.exists():
             await rehost_attachment(physical, real, src, mime or "application/octet-stream")
-            lines.append(f"\U0001F4CE [{real}]({forum_attachment_url(physical, real)})")
+            lines.append(f"\U0001f4ce [{real}]({forum_attachment_url(physical, real)})")
             stats.attachments += 1
         else:
             stats.notes.append(f"missing attachment file {physical} (post {post_id})")
@@ -192,8 +194,16 @@ async def run_import(
                 )
                 for tid, title, ttime in topics:
                     await _import_topic(
-                        target, pc, cat, tid, title, ttime, author_of,
-                        backup_files_dir, stats, dry_run,
+                        target,
+                        pc,
+                        cat,
+                        tid,
+                        title,
+                        ttime,
+                        author_of,
+                        backup_files_dir,
+                        stats,
+                        dry_run,
                     )
     finally:
         await phpbb.dispose()
@@ -336,8 +346,12 @@ async def main() -> None:
 
     async with AsyncSessionLocal() as session:
         stats = await run_import(
-            session, phpbb_url, legacy_url, BACKUP_FILES_DIR,
-            dry_run=args.dry_run, remap_only=args.remap,
+            session,
+            phpbb_url,
+            legacy_url,
+            BACKUP_FILES_DIR,
+            dry_run=args.dry_run,
+            remap_only=args.remap,
         )
     print(stats)
 

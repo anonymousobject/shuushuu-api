@@ -24,8 +24,7 @@ def test_url_no_extension_leaves_key_bare(monkeypatch):
     monkeypatch.setattr(settings, "R2_ENABLED", False)
     monkeypatch.setattr(settings, "IMAGE_BASE_URL", "http://dev.local")
     assert (
-        forum_attachment_url("abc123", "README")
-        == "http://dev.local/images/forum-archive/abc123"
+        forum_attachment_url("abc123", "README") == "http://dev.local/images/forum-archive/abc123"
     )
 
 
@@ -45,9 +44,7 @@ async def test_rehost_r2_sets_extension_key_and_disposition(monkeypatch, tmp_pat
     captured: dict = {}
 
     class FakeStorage:
-        async def upload_bytes(
-            self, *, bucket, key, body, content_type, content_disposition=None
-        ):
+        async def upload_bytes(self, *, bucket, key, body, content_type, content_disposition=None):
             captured.update(
                 bucket=bucket,
                 key=key,

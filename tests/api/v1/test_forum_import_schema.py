@@ -15,8 +15,12 @@ async def test_legacy_columns_round_trip(db_session: AsyncSession):
     db_session.add(thread)
     await db_session.flush()
     post = ForumPosts(
-        thread_id=thread.thread_id, user_id=1, post_text="hi",
-        legacy_post_id=99, legacy_poster_id=1234, legacy_username="OldName",
+        thread_id=thread.thread_id,
+        user_id=1,
+        post_text="hi",
+        legacy_post_id=99,
+        legacy_poster_id=1234,
+        legacy_username="OldName",
     )
     db_session.add(post)
     await db_session.commit()

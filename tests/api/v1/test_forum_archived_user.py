@@ -14,14 +14,25 @@ async def test_archived_post_shows_legacy_username(client: AsyncClient, db_sessi
     cat = ForumCategories(title="Imported")
     db_session.add(cat)
     await db_session.flush()
-    thread = ForumThreads(category_id=cat.category_id, title="Old thread", user_id=archived_id,
-                          locked=True, legacy_topic_id=1)
+    thread = ForumThreads(
+        category_id=cat.category_id,
+        title="Old thread",
+        user_id=archived_id,
+        locked=True,
+        legacy_topic_id=1,
+    )
     db_session.add(thread)
     await db_session.flush()
-    db_session.add(ForumPosts(
-        thread_id=thread.thread_id, user_id=archived_id, post_text="old body",
-        legacy_post_id=1, legacy_poster_id=555, legacy_username="RetroPoster",
-    ))
+    db_session.add(
+        ForumPosts(
+            thread_id=thread.thread_id,
+            user_id=archived_id,
+            post_text="old body",
+            legacy_post_id=1,
+            legacy_poster_id=555,
+            legacy_username="RetroPoster",
+        )
+    )
     await db_session.commit()
 
     resp = await client.get(f"/api/v1/forum/threads/{thread.thread_id}")
@@ -43,18 +54,35 @@ async def test_archived_thread_multiple_posts_keep_distinct_legacy_usernames(
     cat = ForumCategories(title="Imported")
     db_session.add(cat)
     await db_session.flush()
-    thread = ForumThreads(category_id=cat.category_id, title="Old multi-poster thread",
-                          user_id=archived_id, locked=True, legacy_topic_id=2)
+    thread = ForumThreads(
+        category_id=cat.category_id,
+        title="Old multi-poster thread",
+        user_id=archived_id,
+        locked=True,
+        legacy_topic_id=2,
+    )
     db_session.add(thread)
     await db_session.flush()
-    db_session.add(ForumPosts(
-        thread_id=thread.thread_id, user_id=archived_id, post_text="first body",
-        legacy_post_id=2, legacy_poster_id=556, legacy_username="RetroA",
-    ))
-    db_session.add(ForumPosts(
-        thread_id=thread.thread_id, user_id=archived_id, post_text="second body",
-        legacy_post_id=3, legacy_poster_id=557, legacy_username="RetroB",
-    ))
+    db_session.add(
+        ForumPosts(
+            thread_id=thread.thread_id,
+            user_id=archived_id,
+            post_text="first body",
+            legacy_post_id=2,
+            legacy_poster_id=556,
+            legacy_username="RetroA",
+        )
+    )
+    db_session.add(
+        ForumPosts(
+            thread_id=thread.thread_id,
+            user_id=archived_id,
+            post_text="second body",
+            legacy_post_id=3,
+            legacy_poster_id=557,
+            legacy_username="RetroB",
+        )
+    )
     await db_session.commit()
 
     resp = await client.get(f"/api/v1/forum/threads/{thread.thread_id}")

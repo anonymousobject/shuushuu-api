@@ -22,7 +22,9 @@ def test_italic():
 
 def test_url_link():
     xml = '<r><URL url="http://www.zerochan.net/937289">http://www.zerochan.net/937289</URL></r>'
-    assert s9e_to_markdown(xml) == "[http://www.zerochan.net/937289](http://www.zerochan.net/937289)"
+    assert (
+        s9e_to_markdown(xml) == "[http://www.zerochan.net/937289](http://www.zerochan.net/937289)"
+    )
 
 
 def test_img_becomes_link_to_src():

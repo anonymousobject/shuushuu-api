@@ -26,6 +26,7 @@ def _sources_available() -> bool:
 @pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
 async def test_import_one_forum(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
+
     monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))  # attachments → tmp
     monkeypatch.setattr(settings, "R2_ENABLED", False)
     from scripts.import_forum_archive import run_import
@@ -44,14 +45,18 @@ async def test_import_one_forum(db_session: AsyncSession, monkeypatch, tmp_path)
     ).scalar_one()
     assert cat.title == "Gaming"
     assert cat.view_perm is None  # public forum
-    assert cat.description == "Console, PC, MMO games"   # forum_desc converted, no <t> wrapper
+    assert cat.description == "Console, PC, MMO games"  # forum_desc converted, no <t> wrapper
     assert "<t>" not in (cat.description or "")
 
     threads = (
-        await db_session.execute(
-            select(ForumThreads).where(ForumThreads.category_id == cat.category_id)
+        (
+            await db_session.execute(
+                select(ForumThreads).where(ForumThreads.category_id == cat.category_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(threads) == 3
     assert all("<t>" not in t.title and "<r>" not in t.title for t in threads)
     assert all(t.locked for t in threads)
@@ -76,6 +81,7 @@ async def test_import_one_forum(db_session: AsyncSession, monkeypatch, tmp_path)
 @pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
 async def test_import_is_idempotent(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
+
     monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
     monkeypatch.setattr(settings, "R2_ENABLED", False)
     from scripts.import_forum_archive import run_import
@@ -90,13 +96,18 @@ async def test_import_is_idempotent(db_session: AsyncSession, monkeypatch, tmp_p
 @pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
 async def test_dry_run_writes_nothing(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
+
     monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
     monkeypatch.setattr(settings, "R2_ENABLED", False)
     from scripts.import_forum_archive import run_import
 
     await run_import(
-        db_session, PHPBB_URL, LEGACY_URL, BACKUP,
-        only_forum_ids={GAMING_FORUM_ID}, dry_run=True,
+        db_session,
+        PHPBB_URL,
+        LEGACY_URL,
+        BACKUP,
+        only_forum_ids={GAMING_FORUM_ID},
+        dry_run=True,
     )
 
     # Nothing persisted: the Archived User row may exist (needed so dry-run
@@ -107,9 +118,7 @@ async def test_dry_run_writes_nothing(db_session: AsyncSession, monkeypatch, tmp
     thread_count = (
         await db_session.execute(select(func.count()).select_from(ForumThreads))
     ).scalar()
-    post_count = (
-        await db_session.execute(select(func.count()).select_from(ForumPosts))
-    ).scalar()
+    post_count = (await db_session.execute(select(func.count()).select_from(ForumPosts))).scalar()
     assert cat_count == 0
     assert thread_count == 0
     assert post_count == 0
@@ -118,6 +127,7 @@ async def test_dry_run_writes_nothing(db_session: AsyncSession, monkeypatch, tmp
 @pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
 async def test_remap_recovers_thread_author(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
+
     monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
     monkeypatch.setattr(settings, "R2_ENABLED", False)
     from scripts.import_forum_archive import run_import
@@ -125,17 +135,23 @@ async def test_remap_recovers_thread_author(db_session: AsyncSession, monkeypatc
     await run_import(db_session, PHPBB_URL, LEGACY_URL, BACKUP, only_forum_ids={GAMING_FORUM_ID})
 
     thread = (
-        await db_session.execute(select(ForumThreads).order_by(ForumThreads.thread_id).limit(1))
-    ).scalars().first()
+        (await db_session.execute(select(ForumThreads).order_by(ForumThreads.thread_id).limit(1)))
+        .scalars()
+        .first()
+    )
     assert thread is not None
     opening_post = (
-        await db_session.execute(
-            select(ForumPosts)
-            .where(ForumPosts.thread_id == thread.thread_id)
-            .order_by(ForumPosts.post_id)
-            .limit(1)
+        (
+            await db_session.execute(
+                select(ForumPosts)
+                .where(ForumPosts.thread_id == thread.thread_id)
+                .order_by(ForumPosts.post_id)
+                .limit(1)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert opening_post is not None
 
     # Corrupt the opening post's + thread's authorship to a different existing
@@ -151,8 +167,12 @@ async def test_remap_recovers_thread_author(db_session: AsyncSession, monkeypatc
     await db_session.commit()
 
     await run_import(
-        db_session, PHPBB_URL, LEGACY_URL, BACKUP,
-        only_forum_ids={GAMING_FORUM_ID}, remap_only=True,
+        db_session,
+        PHPBB_URL,
+        LEGACY_URL,
+        BACKUP,
+        only_forum_ids={GAMING_FORUM_ID},
+        remap_only=True,
     )
 
     # Test-DB users don't match the real phpBB forum_id map, so the resolved
@@ -168,6 +188,7 @@ async def test_remap_recovers_thread_author(db_session: AsyncSession, monkeypatc
 @pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
 async def test_empty_forum_keeps_category(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
+
     monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
     monkeypatch.setattr(settings, "R2_ENABLED", False)
     from scripts.import_forum_archive import run_import
@@ -196,6 +217,7 @@ async def test_remap_dry_run_does_not_persist(db_session: AsyncSession, monkeypa
     # commits with nested SAVEPOINTs, which can't distinguish a real in-run
     # rollback (--dry-run) from that emulation.
     from app.config import settings
+
     monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
     monkeypatch.setattr(settings, "R2_ENABLED", False)
     from scripts.import_forum_archive import run_import
@@ -211,8 +233,13 @@ async def test_remap_dry_run_does_not_persist(db_session: AsyncSession, monkeypa
     await db_session.commit()
 
     await run_import(
-        db_session, PHPBB_URL, LEGACY_URL, BACKUP,
-        only_forum_ids={GAMING_FORUM_ID}, remap_only=True, dry_run=True,
+        db_session,
+        PHPBB_URL,
+        LEGACY_URL,
+        BACKUP,
+        only_forum_ids={GAMING_FORUM_ID},
+        remap_only=True,
+        dry_run=True,
     )
 
     db_session.expire_all()
