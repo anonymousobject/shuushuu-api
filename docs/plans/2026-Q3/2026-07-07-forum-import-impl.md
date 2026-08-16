@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, SQLModel/SQLAlchemy (async, MariaDB), Alembic, `xml.etree.ElementTree` (stdlib), the app's R2 storage adapter, pytest.
 
-**Spec:** `docs/plans/2026-07-07-forum-import-design.md`
+**Spec:** `docs/plans/2026-Q3/2026-07-07-forum-import-design.md`
 
 ## Global Constraints
 
