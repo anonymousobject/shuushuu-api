@@ -13,6 +13,7 @@ from app.api.dependencies import PaginationParams
 from app.core.archived_user import get_archived_user_id
 from app.core.auth import CurrentUser, OptionalCurrentUser
 from app.core.database import get_db
+from app.core.db_retry import retry_on_snapshot_conflict
 from app.core.permission_cache import get_cached_user_permissions
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
@@ -36,6 +37,7 @@ from app.schemas.forum import (
     ForumThreadUpdate,
 )
 from app.services.forum import can_access, recompute_thread_stats, upsert_thread_read
+from app.services.rate_limit import check_forum_create_rate_limit
 
 router = APIRouter(prefix="/forum", tags=["forum"])
 
@@ -63,12 +65,23 @@ async def _effective_perms(
     return await get_cached_user_permissions(db, redis_client, user.user_id)
 
 
-async def _visible_category(db: AsyncSession, category_id: int, perms: set[str]) -> ForumCategories:
+async def _visible_category(
+    db: AsyncSession,
+    category_id: int,
+    perms: set[str],
+    *,
+    not_found_detail: str = "Not found",
+) -> ForumCategories:
     """Load a category the caller may view; 404 (not 403) otherwise so gated
-    categories don't leak existence."""
+    categories don't leak existence.
+
+    Callers that reach this after resolving a thread/post pass their own
+    missing-object detail as ``not_found_detail`` so a gated-but-existing
+    object and a missing one return a byte-identical 404 — otherwise the
+    differing detail string is itself an existence oracle for gated ids."""
     category = await db.get(ForumCategories, category_id)
     if category is None or not can_access(perms, category.view_perm):
-        raise HTTPException(status_code=404, detail="Category not found")
+        raise HTTPException(status_code=404, detail=not_found_detail)
     return category
 
 
@@ -401,9 +414,12 @@ async def create_thread(
     """Create a thread with its opening post in one transaction."""
     assert current_user.user_id is not None
     perms = await _effective_perms(db, redis_client, current_user)
+    is_moderator = Permission.FORUM_MODERATE.value in perms
     category = await _visible_category(db, category_id, perms)
     if not can_access(perms, category.thread_create_perm):
         raise HTTPException(status_code=403, detail="You cannot create threads in this category")
+    if not is_moderator:
+        await check_forum_create_rate_limit(current_user.user_id, redis_client)
 
     thread = ForumThreads(
         category_id=category.category_id, title=body.title, user_id=current_user.user_id
@@ -447,7 +463,9 @@ async def get_thread(
     thread = await db.get(ForumThreads, thread_id)
     if thread is None or (thread.deleted and not is_moderator):
         raise HTTPException(status_code=404, detail="Thread not found")
-    category = await _visible_category(db, thread.category_id, perms)
+    category = await _visible_category(
+        db, thread.category_id, perms, not_found_detail="Thread not found"
+    )
 
     total = (
         await db.execute(
@@ -522,7 +540,7 @@ async def update_thread(
     thread = await db.get(ForumThreads, thread_id)
     if thread is None or (thread.deleted and not is_moderator):
         raise HTTPException(status_code=404, detail="Thread not found")
-    await _visible_category(db, thread.category_id, perms)
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Thread not found")
 
     updates = body.model_dump(exclude_unset=True)
     mod_fields = {"pinned", "locked", "category_id", "deleted"} & updates.keys()
@@ -533,6 +551,10 @@ async def update_thread(
             status_code=403,
             detail="Only the thread author or a moderator can edit the title",
         )
+    if "title" in updates and thread.locked and not is_moderator:
+        # A locked thread blocks the author's rename too (moderators unlock
+        # first); mod-only fields above are already gated by FORUM_MODERATE.
+        raise HTTPException(status_code=403, detail="Thread is locked")
     if "category_id" in updates:
         target = await db.get(ForumCategories, updates["category_id"])
         if target is None:
@@ -566,7 +588,7 @@ async def delete_thread(
     thread = await db.get(ForumThreads, thread_id)
     if thread is None or (thread.deleted and not is_moderator):
         raise HTTPException(status_code=404, detail="Thread not found")
-    await _visible_category(db, thread.category_id, perms)
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Thread not found")
 
     if not is_moderator:
         if thread.user_id != current_user.user_id:
@@ -602,44 +624,61 @@ async def create_post(
     assert current_user.user_id is not None
     perms = await _effective_perms(db, redis_client, current_user)
     is_moderator = Permission.FORUM_MODERATE.value in perms
+    # Capture as primitives: a snapshot-conflict retry rolls back the
+    # transaction, expiring ORM instances (including current_user).
+    user_id = current_user.user_id
+    client_ip = request.client.host if request.client else ""
 
-    # Lock the thread row: the denormalized stats recompute below must not
-    # race a concurrent reply/delete.
-    result = await db.execute(
-        select(ForumThreads)
-        .where(ForumThreads.thread_id == thread_id)  # type: ignore[arg-type]
-        .with_for_update()
-    )
-    thread = result.scalar_one_or_none()
-    if thread is None or (thread.deleted and not is_moderator):
-        # Non-moderators can't distinguish a deleted thread from a missing one,
-        # matching get_thread/update_thread/delete_thread — no existence leak.
-        raise HTTPException(status_code=404, detail="Thread not found")
-    category = await _visible_category(db, thread.category_id, perms)
-    if thread.deleted:
-        # Moderator path: the thread exists but must be restored before posting.
-        raise HTTPException(status_code=403, detail="Thread is deleted")
-    if thread.locked:
-        raise HTTPException(status_code=403, detail="Thread is locked")
-    if not can_access(perms, category.reply_perm):
-        raise HTTPException(status_code=403, detail="You cannot reply in this category")
+    # Anti-spam rate limit (moderators exempt). Kept outside the retried unit
+    # below so a snapshot-conflict retry does not double-count the attempt.
+    if not is_moderator:
+        await check_forum_create_rate_limit(user_id, redis_client)
 
-    post = ForumPosts(
-        thread_id=thread_id,
-        user_id=current_user.user_id,
-        post_text=body.post_text,
-        ip=request.client.host if request.client else "",
-    )
-    db.add(post)
-    await db.flush()
-    await db.refresh(post)
-    await recompute_thread_stats(db, thread)
-    # The author has read their own reply
-    await upsert_thread_read(db, current_user.user_id, thread_id, post.date)
-    await db.commit()
+    # Lock the thread row and recompute its stats as one retryable unit: under
+    # innodb_snapshot_isolation the locking read can abort with ER_CHECKREAD
+    # (1020) when a concurrent request commits to the same thread/post rows, so
+    # re-fetch on a fresh snapshot instead of 500ing (see app/core/db_retry.py).
+    async def _apply() -> ForumPosts:
+        result = await db.execute(
+            select(ForumThreads)
+            .where(ForumThreads.thread_id == thread_id)  # type: ignore[arg-type]
+            .with_for_update()
+        )
+        thread = result.scalar_one_or_none()
+        if thread is None or (thread.deleted and not is_moderator):
+            # Non-moderators can't distinguish a deleted thread from a missing
+            # one, matching get_thread/update_thread/delete_thread — no leak.
+            raise HTTPException(status_code=404, detail="Thread not found")
+        category = await _visible_category(
+            db, thread.category_id, perms, not_found_detail="Thread not found"
+        )
+        if thread.deleted:
+            # Moderator path: the thread exists but must be restored first.
+            raise HTTPException(status_code=403, detail="Thread is deleted")
+        if thread.locked:
+            raise HTTPException(status_code=403, detail="Thread is locked")
+        if not can_access(perms, category.reply_perm):
+            raise HTTPException(status_code=403, detail="You cannot reply in this category")
 
-    summaries = await build_user_summaries(db, {current_user.user_id})
-    return _post_response(post, summaries[current_user.user_id], is_moderator)
+        post = ForumPosts(
+            thread_id=thread_id,
+            user_id=user_id,
+            post_text=body.post_text,
+            ip=client_ip,
+        )
+        db.add(post)
+        await db.flush()
+        await db.refresh(post)
+        await recompute_thread_stats(db, thread)
+        # The author has read their own reply
+        await upsert_thread_read(db, user_id, thread_id, post.date)
+        await db.commit()
+        return post
+
+    post = await retry_on_snapshot_conflict(db, _apply, what="forum_create_post")
+
+    summaries = await build_user_summaries(db, {user_id})
+    return _post_response(post, summaries[user_id], is_moderator)
 
 
 @router.patch("/posts/{post_id}", response_model=ForumPostResponse)
@@ -655,44 +694,58 @@ async def update_post(
     assert current_user.user_id is not None
     perms = await _effective_perms(db, redis_client, current_user)
     is_moderator = Permission.FORUM_MODERATE.value in perms
-
-    post = await db.get(ForumPosts, post_id)
-    if post is None:
-        raise HTTPException(status_code=404, detail="Post not found")
-    result = await db.execute(
-        select(ForumThreads)
-        .where(ForumThreads.thread_id == post.thread_id)  # type: ignore[arg-type]
-        .with_for_update()
-    )
-    thread = result.scalar_one()
-    if thread.deleted and not is_moderator:
-        raise HTTPException(status_code=404, detail="Thread not found")
-    await _visible_category(db, thread.category_id, perms)
-
+    user_id = current_user.user_id
     updates = body.model_dump(exclude_unset=True)
-    if "deleted" in updates and not is_moderator:
-        raise HTTPException(status_code=403, detail="FORUM_MODERATE permission required")
-    if "post_text" in updates:
-        if not (is_moderator or post.user_id == current_user.user_id):
-            raise HTTPException(
-                status_code=403, detail="Only the author or a moderator can edit this post"
-            )
-        will_be_deleted = updates.get("deleted", post.deleted)
-        if will_be_deleted:
-            raise HTTPException(status_code=400, detail="Restore the post before editing it")
-        post.post_text = updates["post_text"]
-        post.update_count += 1
-        post.last_updated = datetime.now(UTC)
-        post.last_updated_user_id = current_user.user_id
-    if "deleted" in updates:
-        if updates["deleted"] and post.post_id == await _first_post_id(db, thread.thread_id or 0):
-            raise HTTPException(
-                status_code=400,
-                detail="The opening post cannot be deleted; delete the thread instead",
-            )
-        post.deleted = updates["deleted"]
-        await recompute_thread_stats(db, thread)
-    await db.commit()
+
+    # Lock the thread row and recompute its stats as one retryable unit; the
+    # locking read can abort with a snapshot conflict (1020) under concurrency,
+    # so re-fetch post + thread on a fresh snapshot (see app/core/db_retry.py).
+    async def _apply() -> ForumPosts:
+        post = await db.get(ForumPosts, post_id)
+        if post is None:
+            raise HTTPException(status_code=404, detail="Post not found")
+        result = await db.execute(
+            select(ForumThreads)
+            .where(ForumThreads.thread_id == post.thread_id)  # type: ignore[arg-type]
+            .with_for_update()
+        )
+        thread = result.scalar_one()
+        if thread.deleted and not is_moderator:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
+        if thread.locked and not is_moderator:
+            # A locked thread blocks the owner's own edit/soft-delete too,
+            # matching create_post; moderators may still act (they unlock first).
+            raise HTTPException(status_code=403, detail="Thread is locked")
+
+        if "deleted" in updates and not is_moderator:
+            raise HTTPException(status_code=403, detail="FORUM_MODERATE permission required")
+        if "post_text" in updates:
+            if not (is_moderator or post.user_id == user_id):
+                raise HTTPException(
+                    status_code=403, detail="Only the author or a moderator can edit this post"
+                )
+            will_be_deleted = updates.get("deleted", post.deleted)
+            if will_be_deleted:
+                raise HTTPException(status_code=400, detail="Restore the post before editing it")
+            post.post_text = updates["post_text"]
+            post.update_count += 1
+            post.last_updated = datetime.now(UTC)
+            post.last_updated_user_id = user_id
+        if "deleted" in updates:
+            if updates["deleted"] and post.post_id == await _first_post_id(
+                db, thread.thread_id or 0
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="The opening post cannot be deleted; delete the thread instead",
+                )
+            post.deleted = updates["deleted"]
+            await recompute_thread_stats(db, thread)
+        await db.commit()
+        return post
+
+    post = await retry_on_snapshot_conflict(db, _apply, what="forum_update_post")
 
     summaries = await build_user_summaries(db, {post.user_id})
     return _post_response(post, summaries[post.user_id], is_moderator)
@@ -710,32 +763,43 @@ async def delete_post(
     assert current_user.user_id is not None
     perms = await _effective_perms(db, redis_client, current_user)
     is_moderator = Permission.FORUM_MODERATE.value in perms
+    user_id = current_user.user_id
 
-    post = await db.get(ForumPosts, post_id)
-    if post is None or (post.deleted and not is_moderator):
-        raise HTTPException(status_code=404, detail="Post not found")
-    result = await db.execute(
-        select(ForumThreads)
-        .where(ForumThreads.thread_id == post.thread_id)  # type: ignore[arg-type]
-        .with_for_update()
-    )
-    thread = result.scalar_one()
-    if thread.deleted and not is_moderator:
-        raise HTTPException(status_code=404, detail="Thread not found")
-    await _visible_category(db, thread.category_id, perms)
+    # Lock the thread row and recompute its stats as one retryable unit; the
+    # locking read can abort with a snapshot conflict (1020) under concurrency,
+    # so re-fetch post + thread on a fresh snapshot (see app/core/db_retry.py).
+    async def _apply() -> None:
+        post = await db.get(ForumPosts, post_id)
+        if post is None or (post.deleted and not is_moderator):
+            raise HTTPException(status_code=404, detail="Post not found")
+        result = await db.execute(
+            select(ForumThreads)
+            .where(ForumThreads.thread_id == post.thread_id)  # type: ignore[arg-type]
+            .with_for_update()
+        )
+        thread = result.scalar_one()
+        if thread.deleted and not is_moderator:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
+        if thread.locked and not is_moderator:
+            # A locked thread blocks the owner's own soft-delete too, matching
+            # create_post; moderators may still act (they unlock first).
+            raise HTTPException(status_code=403, detail="Thread is locked")
 
-    if not (is_moderator or post.user_id == current_user.user_id):
-        raise HTTPException(
-            status_code=403, detail="Only the author or a moderator can delete this post"
-        )
-    if post.post_id == await _first_post_id(db, thread.thread_id or 0):
-        raise HTTPException(
-            status_code=400,
-            detail="The opening post cannot be deleted; delete the thread instead",
-        )
-    post.deleted = True
-    await recompute_thread_stats(db, thread)
-    await db.commit()
+        if not (is_moderator or post.user_id == user_id):
+            raise HTTPException(
+                status_code=403, detail="Only the author or a moderator can delete this post"
+            )
+        if post.post_id == await _first_post_id(db, thread.thread_id or 0):
+            raise HTTPException(
+                status_code=400,
+                detail="The opening post cannot be deleted; delete the thread instead",
+            )
+        post.deleted = True
+        await recompute_thread_stats(db, thread)
+        await db.commit()
+
+    await retry_on_snapshot_conflict(db, _apply, what="forum_delete_post")
 
 
 # ===== Legacy phpBB URL redirects & post permalinks =====
@@ -783,8 +847,10 @@ async def legacy_viewtopic(
     thread = result.scalars().first()
     if thread is None:
         raise HTTPException(status_code=404, detail="Topic not found")
-    # 404 if the destination category is gated and not visible to the caller.
-    await _visible_category(db, thread.category_id, perms)
+    # 404 (identical to the missing-topic 404 above) if the destination category
+    # is gated and not visible to the caller, so gated topic ids can't be
+    # enumerated by the differing detail string.
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Topic not found")
     return RedirectResponse(
         url=f"/forum/threads/{thread.thread_id}",
         status_code=status.HTTP_301_MOVED_PERMANENTLY,
@@ -809,8 +875,10 @@ async def post_permalink(
     thread = await db.get(ForumThreads, post.thread_id)
     if thread is None:  # FK guarantees a parent thread; guard defensively anyway.
         raise HTTPException(status_code=404, detail="Post not found")
-    # 404 if the destination category is gated and not visible to the caller.
-    await _visible_category(db, thread.category_id, perms)
+    # 404 (identical to the missing-post 404 above) if the destination category
+    # is gated and not visible to the caller, so gated post ids can't be
+    # enumerated by the differing detail string.
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
     rank = (
         await db.execute(
             select(func.count())
