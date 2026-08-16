@@ -132,17 +132,26 @@ test-build-frontend: check-env-test
 # right-sized MariaDB (docker-compose.pytest.yml) instead of the shared,
 # memory-saturated dev container. See that file's header for the OOM root cause
 # this avoids. This is the supported way to run `pytest -n auto` locally.
-COMPOSE_PYTEST = docker compose -f docker-compose.pytest.yml
-# Pin the suite at the isolated DB (port 3316) regardless of what .env holds.
+# Host port for the isolated DB. Defaults to 3316; a host where that is taken
+# (a second instance alongside another stack) sets PYTEST_DB_PORT in .env.
+# Compose reads .env by itself, make does not, so pull the same value through
+# here — and hand it back to compose explicitly so a value coming from the
+# environment or the command line reaches both halves.
+PYTEST_DB_PORT ?= $(shell sed -n 's/^PYTEST_DB_PORT=[[:space:]]*//p' .env 2>/dev/null | tail -1)
+ifeq ($(strip $(PYTEST_DB_PORT)),)
+PYTEST_DB_PORT := 3316
+endif
+COMPOSE_PYTEST = PYTEST_DB_PORT=$(PYTEST_DB_PORT) docker compose -f docker-compose.pytest.yml
+# Pin the suite at the isolated DB regardless of what else .env holds.
 # DATABASE_URL is what the app engine builds from at import; the TEST_DB_*
 # components are what conftest builds the test engine AND the root admin engine
 # (which creates the per-worker databases) from -- the root path reads
 # TEST_DB_HOST/TEST_DB_PORT, not TEST_DATABASE_URL, so set the components.
 PYTEST_DB_ENV = \
-	DATABASE_URL="mysql+aiomysql://shuushuu:shuushuu_password@127.0.0.1:3316/shuushuu_pytest?charset=utf8mb4" \
-	DATABASE_URL_SYNC="mysql+pymysql://shuushuu:shuushuu_password@127.0.0.1:3316/shuushuu_pytest?charset=utf8mb4" \
+	DATABASE_URL="mysql+aiomysql://shuushuu:shuushuu_password@127.0.0.1:$(PYTEST_DB_PORT)/shuushuu_pytest?charset=utf8mb4" \
+	DATABASE_URL_SYNC="mysql+pymysql://shuushuu:shuushuu_password@127.0.0.1:$(PYTEST_DB_PORT)/shuushuu_pytest?charset=utf8mb4" \
 	TEST_DB_HOST=127.0.0.1 \
-	TEST_DB_PORT=3316 \
+	TEST_DB_PORT=$(PYTEST_DB_PORT) \
 	TEST_DB_USER=shuushuu \
 	TEST_DB_PASSWORD=shuushuu_password \
 	TEST_DB_NAME=shuushuu_pytest \
