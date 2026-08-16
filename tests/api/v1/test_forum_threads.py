@@ -207,9 +207,7 @@ class TestGetThread:
         gated = await make_thread(db_session, staff_category, title="Secret")
         for method, kwargs in (("patch", {"json": {"title": "x"}}), ("delete", {})):
             req = getattr(client, method)
-            missing = await req(
-                "/api/v1/forum/threads/999999", headers=_auth(user_token), **kwargs
-            )
+            missing = await req("/api/v1/forum/threads/999999", headers=_auth(user_token), **kwargs)
             gated_resp = await req(
                 f"/api/v1/forum/threads/{gated.thread_id}", headers=_auth(user_token), **kwargs
             )
@@ -306,7 +304,12 @@ class TestUpdateThread:
         assert data["locked"] is True
 
     async def test_locked_thread_blocks_author_title_edit_but_not_moderator(
-        self, client: AsyncClient, db_session: AsyncSession, public_thread, author_token, staff_token
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_thread,
+        author_token,
+        staff_token,
     ):
         # A lock must block the author's title rename too — otherwise the thread
         # author could still mutate a locked thread. Moderators may still rename.

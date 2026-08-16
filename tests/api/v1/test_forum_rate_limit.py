@@ -48,7 +48,12 @@ class TestForumCreateRateLimit:
         assert third.status_code == 429
 
     async def test_thread_and_post_share_one_budget(
-        self, client_real_redis: AsyncClient, public_thread, public_category, user_token, monkeypatch
+        self,
+        client_real_redis: AsyncClient,
+        public_thread,
+        public_category,
+        user_token,
+        monkeypatch,
     ):
         # A spammer must not bypass the cap by alternating thread and post
         # creation: both draw from the same per-user budget.
