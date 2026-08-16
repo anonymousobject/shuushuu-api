@@ -17,6 +17,10 @@ services:
     environment:
       - NGINX_HOST=localhost
       - NGINX_PORT=80
+      # Host port of the Vite dev server nginx proxies '/' to. Override in .env
+      # on a host where 5173 is taken (e.g. a second instance alongside another
+      # stack); the frontend's DEV_PORT must match.
+      - FRONTEND_DEV_PORT=${FRONTEND_DEV_PORT:-5173}
     restart: unless-stopped
     depends_on:
       - api

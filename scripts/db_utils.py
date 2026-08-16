@@ -141,6 +141,29 @@ async def run_command(
 # Compose service name of the MariaDB container (see docker-compose.yml)
 MARIADB_SERVICE = "mariadb"
 
+# Port MariaDB listens on inside the container. The published port can differ
+# (a host running a second dev instance remaps it, e.g. 13306), so anything
+# executing inside the container must dial this one, not the published one.
+MARIADB_INTERNAL_PORT = "3306"
+
+
+def _resolve_connection(db_config: dict[str, str], use_docker: bool) -> tuple[str, str]:
+    """
+    Resolve the (host, port) the mariadb client should dial.
+
+    Inside the compose service the server is reached on its internal port; the
+    published port from DATABASE_URL is meaningless there. From the host the
+    Docker hostname 'mariadb' does not resolve, so dial localhost on the
+    published port instead.
+    """
+    if use_docker:
+        return "127.0.0.1", MARIADB_INTERNAL_PORT
+
+    host = db_config["host"]
+    if host == MARIADB_SERVICE:
+        host = "localhost"
+    return host, db_config["port"]
+
 
 def _maybe_docker_exec(cmd: list[str], use_docker: bool) -> list[str]:
     """
@@ -161,14 +184,12 @@ def _maybe_docker_exec(cmd: list[str], use_docker: bool) -> list[str]:
 
 def _build_mysql_cmd(db_config: dict[str, str], use_docker: bool = False) -> list[str]:
     """Build base mariadb CLI command from db config."""
-    host = db_config["host"]
-    if host == "mariadb":
-        host = "localhost"
+    host, port = _resolve_connection(db_config, use_docker)
 
     cmd = [
         "mariadb",
         f"--host={host}",
-        f"--port={db_config['port']}",
+        f"--port={port}",
         f"--user={db_config['user']}",
     ]
 
@@ -200,10 +221,8 @@ async def drop_and_create_database(db_config: dict[str, str], use_docker: bool =
 
     print(f"⚠️  Dropping database '{database_name}' if it exists...")
 
-    # Replace Docker hostname 'mariadb' with 'localhost' when running from host
-    host = db_config["host"]
-    if host == "mariadb":
-        host = "localhost"
+    host, port = _resolve_connection(db_config, use_docker)
+    if not use_docker and db_config["host"] == MARIADB_SERVICE:
         print("Note: Replacing Docker hostname 'mariadb' with 'localhost' for host execution")
 
     # Build mysql command for drop/create (no database name appended: the
@@ -211,7 +230,7 @@ async def drop_and_create_database(db_config: dict[str, str], use_docker: bool =
     mysql_cmd = [
         "mariadb",
         f"--host={host}",
-        f"--port={db_config['port']}",
+        f"--port={port}",
         f"--user={db_config['user']}",
     ]
 
@@ -254,10 +273,7 @@ async def import_sql_dump(
     print(f"Importing SQL dump from: {sql_file}")
     print(f"Into database: {db_config['database']}")
 
-    # Replace Docker hostname 'mariadb' with 'localhost' when running from host
-    host = db_config["host"]
-    if host == "mariadb":
-        host = "localhost"
+    host, port = _resolve_connection(db_config, use_docker)
 
     # Build mysql import command with optimizations for large imports
     # Use 1GB for max-allowed-packet (in bytes)
@@ -266,7 +282,7 @@ async def import_sql_dump(
     mysql_cmd = [
         "mariadb",
         f"--host={host}",
-        f"--port={db_config['port']}",
+        f"--port={port}",
         f"--user={db_config['user']}",
     ]
 

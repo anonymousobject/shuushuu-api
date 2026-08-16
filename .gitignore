@@ -45,6 +45,9 @@ env/
 *.crt
 .htpasswd
 
+# Host-local compose override (e.g. a second dev instance with remapped ports)
+docker-compose.local.yml
+
 # Database
 *.db
 *.sqlite
