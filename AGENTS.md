@@ -153,6 +153,17 @@ await upload.check_upload_rate_limit(user_id, db)
 await iqdb.add_to_iqdb(image_id, file_path)
 ```
 
+## Working across repos
+
+The SvelteKit frontend lives at `../shuushuu-frontend` and has its own
+`AGENTS.md`. If a task takes you into that repo, read its instructions before
+editing there: its conventions, tooling, and test commands are not these. The
+same holds in reverse for an agent based in that repo reaching into this one.
+
+Its API types are generated from this repo's OpenAPI schema, so a change to a
+response model there is a frontend change too — regenerate and commit the types
+with the frontend code that needs them.
+
 ## Legacy Migration Notes
 - PHP codebase in `shuu-php/` is read-only reference for business logic understanding
 - Database schema originated from PHP; migrations track changes going forward
