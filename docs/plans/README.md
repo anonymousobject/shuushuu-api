@@ -34,6 +34,7 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2026-07-23 | ML Ancestor-Suggestion Fixes Implementation Plan | [impl](2026-Q3/2026-07-23-ml-ancestor-suggestions-impl.md) |
 | 2026-07-16 | ML Suggestion Lifecycle Implementation Plan | [impl](2026-Q3/2026-07-16-ml-suggestion-lifecycle-impl.md) |
 | 2026-07-09 | User Taste Profile & Recommendations — Design | [design](2026-Q3/2026-07-09-user-taste-profile-design.md) · [impl](2026-Q3/2026-07-09-user-taste-profile-impl.md) |
+| 2026-07-07 | Forum URLs (API + nginx) — Redirect Resolvers Implementation Plan | [notes](2026-Q3/2026-07-07-forum-urls-api.md) |
 | 2026-07-07 | phpBB3 Forum Import — Design | [design](2026-Q3/2026-07-07-forum-import-design.md) · [impl](2026-Q3/2026-07-07-forum-import-impl.md) |
 | 2026-07-06 | Forum System (API) Implementation Plan | [impl](2026-Q3/2026-07-06-forum-api-impl.md) |
 
@@ -105,4 +106,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-61 efforts, 90 documents.
+62 efforts, 91 documents.

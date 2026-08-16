@@ -192,6 +192,49 @@ server {
         return 301 /images/$1;
     }
 
+    # image.php?mode=view&image_id=N → /images/N
+    # (the /image/N/ path form is handled by the rule above)
+    location = /image.php {
+        if ($arg_image_id) { return 301 /images/$arg_image_id; }
+        return 404;
+    }
+
+    # Old profile links → /users/N (legacy profile ids == current user ids)
+    location ~ "^/profile/([0-9]+)/?$" { return 301 /users/$1; }
+    location = /profile.php {
+        # Imported links use ?mode=view_profile&user_id=N (verified against dev data).
+        if ($arg_user_id) { return 301 /users/$arg_user_id; }
+        return 404;
+    }
+
+    # Legacy phpBB forum URLs → new forum, resolved by the API via legacy_* columns.
+    location = /forums/viewforum.php {
+        set $api_upstream api:8000;
+        rewrite ^ /api/v1/forum/legacy/viewforum break;
+        proxy_pass http://$api_upstream;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /forums/viewtopic.php {
+        set $api_upstream api:8000;
+        rewrite ^ /api/v1/forum/legacy/viewtopic break;
+        proxy_pass http://$api_upstream;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Forum post permalink: /forum/posts/{id} → thread + page + anchor.
+    location ~ "^/forum/posts/[0-9]+/?$" {
+        set $api_upstream api:8000;
+        rewrite "^/forum/posts/([0-9]+)/?$" /api/v1/forum/posts/$1/redirect break;
+        proxy_pass http://$api_upstream;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # Frontend - proxy to SvelteKit SSR server (production build in Docker)
     location / {
         set $frontend_upstream frontend:3000;
