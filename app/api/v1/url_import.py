@@ -1,6 +1,6 @@
 """URL-import endpoints: resolve external post URLs and proxy vetted image fetches.
 
-Design: docs/plans/2026-07-06-url-import-design.md (frontend repo).
+Design: <shuushuu-frontend-repo>/docs/plans/2026-Q3/2026-07-06-url-import-design.md
 """
 
 import io

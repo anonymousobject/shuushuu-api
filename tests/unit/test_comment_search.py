@@ -1,8 +1,8 @@
 """Unit tests for the comment-search query parser.
 
 Every case here maps to a behaviour measured against the live corpus and
-recorded in docs/plans/2026-08-10-comment-search-and-semantics-impl.md in the
-frontend repo.
+recorded in
+<shuushuu-frontend-repo>/docs/plans/2026-Q3/2026-08-10-comment-search-and-semantics-impl.md.
 """
 
 from app.utils.comment_search import (
