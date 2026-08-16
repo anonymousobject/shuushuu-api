@@ -426,6 +426,44 @@ async def start_docker_services(project_root: Path) -> bool:
     return success
 
 
+async def reindex_search(project_root: Path) -> bool:
+    """
+    Rebuild the Meilisearch tags index from the database.
+
+    A restore repopulates MySQL and leaves Meilisearch untouched, so search
+    silently returns stale or empty results until the index is rebuilt — the
+    failure is invisible from the API, which answers normally with nothing in
+    it.
+
+    Runs inside the api container: reindex_search.py reads
+    settings.DATABASE_URL / settings.MEILISEARCH_URL directly, with no host
+    rewriting, and those compose hostnames only resolve on the network.
+
+    Returns:
+        True if successful, False otherwise. Callers treat failure as a
+        warning: a stale index is worth flagging loudly but is not a reason to
+        fail an otherwise complete restore.
+    """
+    cmd = [
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "api",
+        "uv",
+        "run",
+        "--no-project",
+        "python",
+        "scripts/reindex_search.py",
+    ]
+
+    return await run_command(
+        cmd,
+        "Reindex Meilisearch from the restored database",
+        cwd=project_root,
+    )
+
+
 async def create_test_user(
     db_config: dict[str, str], dry_run: bool = False, use_docker: bool = False
 ) -> bool:
