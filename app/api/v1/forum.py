@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import PaginationParams
+from app.core.archived_user import get_archived_user_id
 from app.core.auth import CurrentUser, OptionalCurrentUser
 from app.core.database import get_db
 from app.core.permission_cache import get_cached_user_permissions
@@ -96,9 +97,14 @@ def _thread_summary(
     )
 
 
-def _post_response(post: ForumPosts, user: UserSummary, is_moderator: bool) -> ForumPostResponse:
+def _post_response(
+    post: ForumPosts, user: UserSummary, is_moderator: bool, archived_user_id: int | None = None
+) -> ForumPostResponse:
     """Build a post response; tombstoned posts have their text blanked for
-    callers without FORUM_MODERATE."""
+    callers without FORUM_MODERATE. Imported posts attributed to the Archived
+    User display their original (legacy) poster name."""
+    if archived_user_id is not None and post.user_id == archived_user_id and post.legacy_username:
+        user = user.model_copy(update={"username": post.legacy_username})
     return ForumPostResponse(
         post_id=post.post_id or 0,  # guaranteed to exist after flush/refresh
         thread_id=post.thread_id,
@@ -464,14 +470,31 @@ async def get_thread(
         await upsert_thread_read(db, current_user.user_id, thread_id, datetime.now(UTC))
         await db.commit()
 
+    archived_user_id = await get_archived_user_id(db)
+    thread_summary = _thread_summary(thread, summaries, unread=False)
+    if archived_user_id is not None and thread.user_id == archived_user_id:
+        opening_legacy = (
+            await db.execute(
+                select(ForumPosts.legacy_username)  # type: ignore[call-overload]
+                .where(ForumPosts.thread_id == thread.thread_id)
+                .order_by(ForumPosts.post_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if opening_legacy:
+            thread_summary.user = thread_summary.user.model_copy(
+                update={"username": opening_legacy}
+            )
     return ForumThreadDetailResponse(
-        thread=_thread_summary(thread, summaries, unread=False),
+        thread=thread_summary,
         can_reply=current_user is not None and can_access(perms, category.reply_perm),
         can_moderate=is_moderator,
         total=total,
         page=pagination.page,
         per_page=pagination.per_page,
-        posts=[_post_response(p, summaries[p.user_id], is_moderator) for p in posts],
+        posts=[
+            _post_response(p, summaries[p.user_id], is_moderator, archived_user_id) for p in posts
+        ],
     )
 
 
