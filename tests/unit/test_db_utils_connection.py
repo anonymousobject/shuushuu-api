@@ -18,7 +18,7 @@ from scripts.db_utils import (
 )
 
 # Published port deliberately differs from the container's internal 3306, the
-# way a second dev instance remaps it (see docker-compose.skinny.yml).
+# way a second dev instance remaps it (see docker-compose.local.yml).
 REMAPPED_CONFIG = {
     "host": "mariadb",
     "port": "13306",
