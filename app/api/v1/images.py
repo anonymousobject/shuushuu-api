@@ -117,7 +117,7 @@ from app.schemas.user import (
     UserResponse,
     UserWithRatingResponse,
 )
-from app.services.feed_count_cache import get_feed_counts
+from app.services.feed_count_cache import get_feed_counts, get_filtered_count
 from app.services.image_processing import (
     create_thumbnail,
     get_image_dimensions,
@@ -892,7 +892,7 @@ async def list_images(
         else:
             count_query = select(func.count()).select_from(query.subquery())
         async with statement_timeout(db, search_timeout):
-            total = (await db.execute(count_query)).scalar() or 0
+            total = await get_filtered_count(db, count_query, redis_client)
 
     # Performance optimization: Two-stage query for fast filtering and sorting
     #
