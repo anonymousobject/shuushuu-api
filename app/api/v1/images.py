@@ -598,7 +598,13 @@ async def list_images(
                 )
             )
         )
-    # Status filtering: explicit param overrides, otherwise use user's show_all_images setting
+    # Status filtering: explicit param overrides, otherwise use user's show_all_images
+    # setting. Visibility clauses are COLLECTED here, not applied: the count path below
+    # decomposes the default logged-in feed into a shared public term plus a per-viewer
+    # own-hidden term, which needs the content filters without the visibility WHERE.
+    # They are applied to `query` right after the last content filter.
+    visibility_clauses = []
+    decompose_count = False
     if image_status is not None:
         # Explicit status filter - always honor it (supports single or multiple values)
         query = query.where(Images.status.in_(image_status))  # type: ignore[attr-defined]
@@ -607,7 +613,7 @@ async def list_images(
             # explicitly — otherwise ?status=0/-2/-4 enumerates deactivated /
             # inappropriate / review-queue image metadata. Authenticated users retain
             # full explicit-status access (policy decision 2026-07-12).
-            query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
+            visibility_clauses.append(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
     else:
         # No explicit filter - apply default based on user's show_all_images setting
         # Anonymous users or users with show_all_images=0 see only public statuses
@@ -615,22 +621,23 @@ async def list_images(
         if not show_all:
             if current_user is not None:
                 # Logged in: show public statuses OR user's own images (any status)
-                query = query.where(
+                visibility_clauses.append(
                     or_(
                         Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
                         Images.user_id == current_user.user_id,  # type: ignore[arg-type]
                     )
                 )
+                decompose_count = current_user.user_id is not None
             else:
                 # Anonymous: only public statuses
-                query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
+                visibility_clauses.append(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
         # hide_reposts preference — applied in the no-explicit-status branch, outside the
         # show_all sub-block so it covers both show_all=0 and show_all=1. This is a global
         # exclusion (not ownership-aware), so the viewer's own reposts are dropped too.
         # An explicit ?status= takes the other branch and overrides this.
         if current_user is not None and current_user.hide_reposts == 1:
-            query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
+            visibility_clauses.append(Images.status != ImageStatus.REPOST)
 
     # Tag filtering
     tag_ids: list[int] = []
@@ -846,6 +853,13 @@ async def list_images(
             )
         )
 
+    # Content filters end here. `content_query` (no visibility WHERE) feeds the
+    # decomposed count's shared public term; `query` gains the visibility clauses and
+    # serves the page fetch and every other count path.
+    content_query = query
+    for clause in visibility_clauses:
+        query = query.where(clause)
+
     # Count total results. For the *bare* default feed (no content filter — only the
     # implicit visibility filter), count(visible OR mine) is a full-table scan; use the
     # fast hidden-complement count instead. ANY explicit filter falls back to the exact
@@ -889,10 +903,39 @@ async def list_images(
                 Images.image_id.label("image_id")  # type: ignore[union-attr]
             ).distinct()
             count_query = select(func.count()).select_from(distinct_ids.subquery())
+            async with statement_timeout(db, search_timeout):
+                total = await get_filtered_count(db, count_query, redis_client)
+        elif decompose_count and current_user is not None:
+            # Default logged-in (show_all=0) feed. The visibility OR bakes the viewer's
+            # user_id into the count, which would give every user a private cache entry.
+            # Decompose instead (disjoint union):
+            #   count(F AND (public OR mine)) = count(F AND public) + count(F AND mine AND hidden)
+            # The public term is viewer-independent — one shared cache entry per filter
+            # combo (identical to the anonymous entry when hide_reposts is off). The
+            # own-hidden term is the viewer's own non-public uploads matching F: tiny,
+            # user_id-indexed, computed live. hide_reposts folds into the public term
+            # only — reposts are public, so the own-hidden term can never contain one.
+            public_query = content_query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
+            if current_user.hide_reposts == 1:
+                public_query = public_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
+            own_hidden_query = content_query.where(
+                Images.status.notin_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+            )
+            async with statement_timeout(db, search_timeout):
+                public_count = await get_filtered_count(
+                    db,
+                    select(func.count()).select_from(public_query.subquery()),
+                    redis_client,
+                )
+                own_hidden_count = (
+                    await db.execute(select(func.count()).select_from(own_hidden_query.subquery()))
+                ).scalar() or 0
+            total = public_count + own_hidden_count
         else:
             count_query = select(func.count()).select_from(query.subquery())
-        async with statement_timeout(db, search_timeout):
-            total = await get_filtered_count(db, count_query, redis_client)
+            async with statement_timeout(db, search_timeout):
+                total = await get_filtered_count(db, count_query, redis_client)
 
     # Performance optimization: Two-stage query for fast filtering and sorting
     #

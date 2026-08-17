@@ -366,6 +366,95 @@ class TestFilteredCountCache:
         finally:
             await _clear_filtered_keys(redis_client)
 
+    async def test_show_all_zero_viewers_share_the_public_count_entry(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        """The default logged-in count decomposes into a shared public term (cached once
+        per filter combo) plus a live per-viewer own-hidden term — two show_all=0
+        viewers must not each warm a private entry for the same tag filter."""
+        await _clear_filtered_keys(redis_client)
+        try:
+            viewer_a = await _user(db_session, "fltShareA")
+            viewer_b = await _user(db_session, "fltShareB")
+            tag = await _tag(db_session, "flt-share-tag")
+            public_img = await _img(db_session, viewer_b, "fs" + "0" * 30, 1)
+            hidden_of_a = await _img(db_session, viewer_a, "fs" + "1" * 30, 0)
+            await _link(db_session, tag, public_img)
+            await _link(db_session, tag, hidden_of_a)
+
+            token_a = await _login(client_real_redis, viewer_a.username)
+            r_a = await client_real_redis.get(
+                f"/api/v1/images/?tags={tag.tag_id}&per_page=1",
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+            assert r_a.json()["total"] == 2  # public + own hidden
+
+            token_b = await _login(client_real_redis, viewer_b.username)
+            r_b = await client_real_redis.get(
+                f"/api/v1/images/?tags={tag.tag_id}&per_page=1",
+                headers={"Authorization": f"Bearer {token_b}"},
+            )
+            assert r_b.json()["total"] == 1  # public only; b owns no hidden match
+
+            # One shared entry for the public term — NOT one per viewer.
+            assert len(await redis_client.keys("feed:count:filtered:*")) == 1
+        finally:
+            await _clear_filtered_keys(redis_client)
+
+    async def test_own_hidden_term_is_live_while_public_term_is_cached(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        """A show_all=0 viewer's own newly hidden upload shows up immediately (live
+        term); a new public upload lags until the cached public term expires."""
+        await _clear_filtered_keys(redis_client)
+        try:
+            viewer = await _user(db_session, "fltLive")
+            tag = await _tag(db_session, "flt-live-tag")
+            public_img = await _img(db_session, viewer, "fl" + "0" * 30, 1)
+            await _link(db_session, tag, public_img)
+            token = await _login(client_real_redis, viewer.username)
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"/api/v1/images/?tags={tag.tag_id}&per_page=1"
+
+            assert (await client_real_redis.get(url, headers=headers)).json()["total"] == 1
+
+            # Own hidden upload: reflected immediately despite the warm cache.
+            own_hidden = await _img(db_session, viewer, "fl" + "1" * 30, 0)
+            await _link(db_session, tag, own_hidden)
+            assert (await client_real_redis.get(url, headers=headers)).json()["total"] == 2
+
+            # New public image: NOT reflected while the public term is cached.
+            public_2 = await _img(db_session, viewer, "fl" + "2" * 30, 1)
+            await _link(db_session, tag, public_2)
+            assert (await client_real_redis.get(url, headers=headers)).json()["total"] == 2
+        finally:
+            await _clear_filtered_keys(redis_client)
+
+    async def test_decomposed_total_respects_hide_reposts(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        """hide_reposts folds into the shared public term: a public repost is excluded,
+        and the viewer's own hidden images still count exactly once."""
+        await _clear_filtered_keys(redis_client)
+        try:
+            viewer = await _user(db_session, "fltHR", hide_reposts=1)
+            tag = await _tag(db_session, "flt-hr-tag")
+            active = await _img(db_session, viewer, "fh" + "0" * 30, 1)
+            repost = await _img(db_session, viewer, "fh" + "1" * 30, -1)
+            own_hidden = await _img(db_session, viewer, "fh" + "2" * 30, 0)
+            for img in (active, repost, own_hidden):
+                await _link(db_session, tag, img)
+
+            token = await _login(client_real_redis, viewer.username)
+            r = await client_real_redis.get(
+                f"/api/v1/images/?tags={tag.tag_id}&per_page=1",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            # active (public) + own hidden; the repost is public but hidden by pref.
+            assert r.json()["total"] == 2
+        finally:
+            await _clear_filtered_keys(redis_client)
+
 
 @pytest.mark.unit
 class TestFilteredCountKey:
