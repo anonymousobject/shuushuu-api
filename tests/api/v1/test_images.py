@@ -21,7 +21,7 @@ from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import Groups, UserGroups
 from app.models.tag_history import TagHistory
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from tests.snapshot_conflict import _db_error, _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _db_error, _flaky_flush, _snapshot_conflict_error
 
 
 @pytest.mark.api
@@ -4644,7 +4644,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
         with flush_patch, pytest.raises(OperationalError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
@@ -4828,7 +4828,7 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
         with flush_patch, pytest.raises(OperationalError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 

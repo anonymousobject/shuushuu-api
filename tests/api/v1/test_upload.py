@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import create_access_token
 from app.models.user import Users
 from app.schemas.image import SimilarImageResult
-from tests.snapshot_conflict import (
+from tests.transient_conflict import (
     _db_error,
     _flaky_flush,
     _flaky_flush_nth,
@@ -578,8 +578,8 @@ class TestUploadSnapshotConflictRetry:
     async def test_upload_does_not_retry_other_db_errors(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """Non-1020 database errors fail immediately with no retry."""
-        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        """Database errors outside the transient set fail immediately with no retry."""
+        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
         with (
             _mock_upload_storage("snapshotretry3"),
             patch(

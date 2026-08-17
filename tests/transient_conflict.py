@@ -1,13 +1,19 @@
-"""Helpers for testing the MariaDB snapshot-conflict retry (app/core/db_retry.py).
+"""Helpers for testing the MariaDB transient-conflict retry (app/core/db_retry.py).
 
-Under ``innodb_snapshot_isolation=ON`` a locking statement that meets a row
-version committed after this transaction's snapshot aborts with ER_CHECKREAD
-(errno 1020) rather than reading the stale version. Write paths wrap their
-transactional unit in ``retry_on_snapshot_conflict`` so the conflict is retried
-on a fresh snapshot instead of surfacing a 500.
+Two errors get the same rollback-and-replay treatment:
 
-These helpers inject that error into a route's explicit flush, which is what
-lets a test exercise the real helper without racing two live requests.
+- ER_CHECKREAD (1020), raised under ``innodb_snapshot_isolation=ON`` when a
+  locking statement meets a row version committed after this transaction's
+  snapshot rather than reading the stale version.
+- ER_LOCK_DEADLOCK (1213), raised when InnoDB breaks a lock cycle by rolling
+  one of the transactions back.
+
+Write paths wrap their transactional unit in ``retry_on_transient_conflict`` so
+either one is retried on a fresh transaction instead of surfacing a 500.
+
+These helpers inject the error into a route's explicit flush or its commit,
+which is what lets a test exercise the real helper without racing two live
+requests.
 """
 
 from unittest.mock import patch
@@ -31,6 +37,34 @@ def _snapshot_conflict_error(table: str = "images") -> OperationalError:
     handler, not the parent row that actually moved.
     """
     return _db_error(1020, f"Record has changed since last read in table '{table}'")
+
+
+def _deadlock_error() -> OperationalError:
+    """The error MariaDB raises when it picks this transaction as the deadlock
+    victim (ER_LOCK_DEADLOCK). Carries no table name — InnoDB reports the cycle,
+    not a single row."""
+    return _db_error(1213, "Deadlock found when trying to get lock; try restarting transaction")
+
+
+def _flaky_commit(fail_times: int, error: OperationalError):
+    """Patch AsyncSession.commit to raise `error` for the first `fail_times`
+    calls, then delegate to the real commit.
+
+    The flush-based helpers below can't reach a route whose transactional unit
+    has no explicit ``db.flush()`` of its own — the repost migration is all
+    Core-level execute() calls ending at the route's commit. Failing the commit
+    aborts the attempt with nothing persisted, which is exactly what a real
+    deadlock does. Returns (patch_ctx, calls)."""
+    real_commit = AsyncSession.commit
+    calls: list[int] = []
+
+    async def commit(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) <= fail_times:
+            raise error
+        await real_commit(self, *args, **kwargs)
+
+    return patch.object(AsyncSession, "commit", commit), calls
 
 
 def _flaky_flush(fail_times: int, error: OperationalError):

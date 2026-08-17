@@ -4,7 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.models.image import Images
 from app.models.tag import Tags
@@ -164,7 +164,7 @@ async def batch_add_tags(
 
         return added, skipped
 
-    added, skipped = await retry_on_snapshot_conflict(db, _apply, what="batch_tag_add")
+    added, skipped = await retry_on_transient_conflict(db, _apply, what="batch_tag_add")
 
     # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
     # Non-DB side effect: stays outside the retried unit so it never repeats.
@@ -321,7 +321,7 @@ async def batch_remove_tags(
 
         return removed, skipped
 
-    removed, skipped = await retry_on_snapshot_conflict(db, _apply, what="batch_tag_remove")
+    removed, skipped = await retry_on_transient_conflict(db, _apply, what="batch_tag_remove")
 
     # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
     # Non-DB side effect: stays outside the retried unit so it never repeats.
