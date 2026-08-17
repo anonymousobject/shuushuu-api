@@ -164,6 +164,16 @@ Its API types are generated from this repo's OpenAPI schema, so a change to a
 response model there is a frontend change too — regenerate and commit the types
 with the frontend code that needs them.
 
+When prose in this repo cites a file in that one, write it as
+`<shuushuu-frontend-repo>/docs/plans/...` — a placeholder, not a path. Paths in
+comments and docs here are repo-root-relative (`app/services/...`), so a
+`../shuushuu-frontend/...` prefix reads as relative to the citing file and
+resolves to nothing from anywhere except the root. The placeholder can't be
+mistaken for something an editor should resolve, and stays greppable when
+either repo moves files. Tooling that genuinely runs from the repo root —
+`docker-compose*.yml`, shell scripts — keeps the real `../shuushuu-frontend`
+path.
+
 ## Legacy Migration Notes
 - PHP codebase in `shuu-php/` is read-only reference for business logic understanding
 - Database schema originated from PHP; migrations track changes going forward
