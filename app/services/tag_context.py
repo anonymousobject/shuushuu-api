@@ -26,11 +26,16 @@ async def stamp_context_sources(
 ) -> None:
     """Mutate responses in place per the exactly-one rule."""
     page_tag_ids: set[int] = set()
+    has_character = False
     for r in responses:
         for t in r.tags or []:
             if t.type_id in (TagType.CHARACTER, TagType.SOURCE):
                 page_tag_ids.add(t.tag_id)
-    if not page_tag_ids:
+                has_character = has_character or t.type_id == TagType.CHARACTER
+    # Sources alone can never be stamped, so a character-less page needs no
+    # query at all — not even the alias map, which exists to canonicalize the
+    # character ids this rule keys on.
+    if not has_character:
         return
 
     # Canonicalize alias tags among them (usually zero rows).
@@ -44,14 +49,15 @@ async def stamp_context_sources(
     ).all()
     canon: dict[int, int] = dict(alias_rows)  # type: ignore[arg-type]
 
+    # Non-empty by construction: has_character above was set by a tag this
+    # same comprehension collects. (It used to be the guard that caught
+    # source-only pages, one query too late.)
     char_ids = {
         canon.get(t.tag_id, t.tag_id)
         for r in responses
         for t in r.tags or []
         if t.type_id == TagType.CHARACTER
     }
-    if not char_ids:
-        return
 
     link_rows = (
         await db.execute(
