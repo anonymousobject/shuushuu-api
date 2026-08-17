@@ -49,14 +49,15 @@ async def stamp_context_sources(
     ).all()
     canon: dict[int, int] = dict(alias_rows)  # type: ignore[arg-type]
 
+    # Non-empty by construction: has_character above was set by a tag this
+    # same comprehension collects. (It used to be the guard that caught
+    # source-only pages, one query too late.)
     char_ids = {
         canon.get(t.tag_id, t.tag_id)
         for r in responses
         for t in r.tags or []
         if t.type_id == TagType.CHARACTER
     }
-    if not char_ids:
-        return
 
     link_rows = (
         await db.execute(
