@@ -114,7 +114,7 @@ def golden_diff(expected: object, actual: object, path: str = "") -> str | None:
     if isinstance(expected, list) and isinstance(actual, list):
         if len(expected) != len(actual):
             return f"{path or '$'}: length {len(expected)} != {len(actual)}"
-        for index, (exp_item, act_item) in enumerate(zip(expected, actual)):
+        for index, (exp_item, act_item) in enumerate(zip(expected, actual, strict=True)):
             diff = golden_diff(exp_item, act_item, f"{path}[{index}]")
             if diff:
                 return diff
@@ -211,7 +211,9 @@ def _run_golden(scenarios: list[Scenario], token: str | None, mode: str) -> None
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=15, help="timed requests per scenario")
-    parser.add_argument("--warmup", type=int, default=3, help="untimed warmup requests per scenario")
+    parser.add_argument(
+        "--warmup", type=int, default=3, help="untimed warmup requests per scenario"
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--golden", choices=["save", "check"], help="correctness gate mode")
     args = parser.parse_args()
@@ -223,8 +225,10 @@ def main() -> None:
         if authed:
             token = _login(client)
         else:
-            print("note: BENCH_USERNAME/BENCH_PASSWORD not set — skipping authed scenarios",
-                  file=sys.stderr)
+            print(
+                "note: BENCH_USERNAME/BENCH_PASSWORD not set — skipping authed scenarios",
+                file=sys.stderr,
+            )
 
     if args.golden:
         _run_golden(scenarios, token, args.golden)

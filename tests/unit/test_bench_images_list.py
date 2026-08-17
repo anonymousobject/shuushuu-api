@@ -9,7 +9,6 @@ depends on.
 from pytest import approx
 
 from scripts.bench_images_list import (
-    Stats,
     build_scenarios,
     golden_diff,
     percentile,
