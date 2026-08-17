@@ -15,7 +15,7 @@ from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from tests.snapshot_conflict import _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _flaky_flush, _snapshot_conflict_error
 
 
 async def _create_user_with_tag_permission(

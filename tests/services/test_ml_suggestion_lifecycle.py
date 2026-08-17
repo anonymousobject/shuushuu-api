@@ -227,3 +227,72 @@ class TestMigrateRepostData:
         assert original_pending.status == "approved"
         assert original_pending.reviewed_by_user_id is None
         assert original_pending.reviewed_at is not None
+
+    async def test_resolves_only_the_tags_the_migration_moved(self, db_session: AsyncSession):
+        """The approve pass is scoped to the tags this migration actually added.
+
+        A pending suggestion for a tag the original ALREADY carried is not this
+        operation's business — resolving it would widen the UPDATE's lock set to
+        the original's whole tag set, which is what deadlocked against the ML
+        pipeline (#335). Every other caller of
+        approve_pending_suggestions_for_links passes only its own new links.
+        """
+        from app.models.tag_link import TagLinks
+        from app.services.repost import migrate_repost_data
+
+        user = await _make_user(db_session, "repost_scope")
+        repost = await _make_image(db_session, user, "scope_r", ImageStatus.ACTIVE)
+        original = await _make_image(db_session, user, "scope_o", ImageStatus.ACTIVE)
+        moved_tag = await _make_tag(db_session, user, "scope_moved")
+        preexisting_tag = await _make_tag(db_session, user, "scope_preexisting")
+
+        # moved_tag arrives with the repost; preexisting_tag is already on the
+        # original. Both have a pending suggestion on the original.
+        db_session.add(
+            TagLinks(image_id=repost.image_id, tag_id=moved_tag.tag_id, user_id=user.user_id)
+        )
+        db_session.add(
+            TagLinks(
+                image_id=original.image_id, tag_id=preexisting_tag.tag_id, user_id=user.user_id
+            )
+        )
+        moved_pending = await _make_suggestion(db_session, original, moved_tag, status="pending")
+        untouched_pending = await _make_suggestion(
+            db_session, original, preexisting_tag, status="pending"
+        )
+        await db_session.commit()
+
+        result = await migrate_repost_data(repost.image_id, original.image_id, db_session)
+        await db_session.commit()
+
+        assert result["tags_moved"] == 1
+
+        await db_session.refresh(moved_pending)
+        assert moved_pending.status == "approved"
+
+        await db_session.refresh(untouched_pending)
+        assert untouched_pending.status == "pending"
+        assert untouched_pending.reviewed_at is None
+
+    async def test_tags_already_on_the_original_are_not_counted_as_moved(
+        self, db_session: AsyncSession
+    ):
+        """A tag on both images is deduped by INSERT IGNORE, so it moved nothing."""
+        from app.models.tag_link import TagLinks
+        from app.services.repost import migrate_repost_data
+
+        user = await _make_user(db_session, "repost_dupe")
+        repost = await _make_image(db_session, user, "dupe_r", ImageStatus.ACTIVE)
+        original = await _make_image(db_session, user, "dupe_o", ImageStatus.ACTIVE)
+        shared_tag = await _make_tag(db_session, user, "dupe_shared")
+
+        for image in (repost, original):
+            db_session.add(
+                TagLinks(image_id=image.image_id, tag_id=shared_tag.tag_id, user_id=user.user_id)
+            )
+        await db_session.commit()
+
+        result = await migrate_repost_data(repost.image_id, original.image_id, db_session)
+        await db_session.commit()
+
+        assert result["tags_moved"] == 0

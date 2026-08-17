@@ -31,7 +31,7 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
-from tests.snapshot_conflict import _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _flaky_flush, _snapshot_conflict_error
 
 
 async def create_auth_user(

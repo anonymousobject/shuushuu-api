@@ -17,6 +17,14 @@ from app.services.ml_suggestion_review import approve_pending_suggestions_for_li
 from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 
+async def _tag_ids_for(db: AsyncSession, image_id: int) -> set[int]:
+    """The tag ids currently linked to `image_id`."""
+    result = await db.execute(
+        select(TagLinks.tag_id).where(TagLinks.image_id == image_id)  # type: ignore[call-overload]
+    )
+    return set(result.scalars().all())
+
+
 async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession) -> dict[str, int]:
     """
     Migrate favorites, ratings, and tags from a repost to the original image.
@@ -120,14 +128,16 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
     )
 
     # --- Tags ---
-    before_tag = await db.execute(
-        select(func.count())
-        .select_from(TagLinks)
-        .where(
-            TagLinks.image_id == original_id  # type: ignore[arg-type]
-        )
-    )
-    tag_count_before = before_tag.scalar() or 0
+    # Read both sides' tag ids up front and diff them. tag_links is keyed on
+    # (tag_id, image_id), so the INSERT IGNORE below adds exactly the repost's
+    # tags that the original lacks — the difference IS the moved count, and it
+    # is also the precise scope of the suggestion resolution further down.
+    # (Replaces a COUNT-before/COUNT-after pair plus a third SELECT of the
+    # original's tag ids.)
+    original_tag_ids_before = await _tag_ids_for(db, original_id)
+    repost_tag_ids = await _tag_ids_for(db, repost_id)
+    moved_tag_ids = repost_tag_ids - original_tag_ids_before
+    tags_moved = len(moved_tag_ids)
 
     await db.execute(
         text(
@@ -137,16 +147,6 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
         ),
         {"original_id": original_id, "repost_id": repost_id},
     )
-
-    after_tag = await db.execute(
-        select(func.count())
-        .select_from(TagLinks)
-        .where(
-            TagLinks.image_id == original_id  # type: ignore[arg-type]
-        )
-    )
-    tag_count_after = after_tag.scalar() or 0
-    tags_moved = tag_count_after - tag_count_before
 
     await db.execute(
         delete(TagLinks).where(
@@ -158,19 +158,17 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
     # The migrated tags are now applied to the original: resolve its matching
     # pending suggestions. Reviewer stays NULL — this is data movement, not a
     # human review (system resolution; see CONTEXT.md and ADR-0001).
-    original_tag_ids = (
-        (
-            await db.execute(
-                select(TagLinks.tag_id).where(  # type: ignore[call-overload]
-                    TagLinks.image_id == original_id
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    #
+    # Scoped to the tags this migration actually added, matching every other
+    # caller of approve_pending_suggestions_for_links (single tag add, batch
+    # tagging, report resolution), which each pass only their own new links.
+    # Passing the original's WHOLE tag set instead made the UPDATE's lock set
+    # grow with the original's tag count and cover index gaps for tags with no
+    # suggestion row — the gaps the ML pipeline inserts into, and the deadlock
+    # in #335. A tag the original already carried is not this operation's to
+    # resolve: whatever applied it owned that.
     await approve_pending_suggestions_for_links(
-        db, [(original_id, tag_id) for tag_id in original_tag_ids], None
+        db, [(original_id, tag_id) for tag_id in sorted(moved_tag_ids)], None
     )
 
     # A repost is permanently out of review scope: wipe ALL its suggestion rows,

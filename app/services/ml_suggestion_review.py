@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.db_retry import retry_on_transient_conflict
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.tag_history import TagHistory
@@ -302,7 +302,7 @@ async def review_ml_tag_suggestions(
         errors,
         created,
         removed_suggestion_ids,
-    ) = await retry_on_snapshot_conflict(db, _apply, what="ml_review_apply")
+    ) = await retry_on_transient_conflict(db, _apply, what="ml_review_apply")
 
     # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
     # Non-DB side effect: stays outside the retried unit so it never repeats.
@@ -404,7 +404,7 @@ async def bulk_review_suggestions(
         errors,
         all_created_tag_ids,
         all_removed_suggestion_ids,
-    ) = await retry_on_snapshot_conflict(db, _apply, what="ml_review_bulk_apply")
+    ) = await retry_on_transient_conflict(db, _apply, what="ml_review_bulk_apply")
 
     # Single batched search-sync over the union of created tag_ids.
     # Non-DB side effect: stays outside the retried unit so it never repeats.

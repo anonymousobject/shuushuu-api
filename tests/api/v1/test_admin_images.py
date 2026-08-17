@@ -21,6 +21,7 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
+from tests.transient_conflict import _deadlock_error, _flaky_commit
 
 
 async def create_admin_user(
@@ -333,6 +334,88 @@ class TestImageStatusChange:
         data = response.json()
         assert data["status"] == ImageStatus.ACTIVE
         assert data["replacement_id"] is None
+
+    @pytest.mark.needs_commit
+    async def test_repost_retries_deadlock_and_migrates_exactly_once(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A deadlock (#335) is retried, not surfaced as a 500.
+
+        The repost migration and the ML pipeline lock ml_tag_suggestions rows
+        and index gaps in opposite orders, so InnoDB rolls one of them back.
+        The retry replays the whole unit on a fresh transaction; because the
+        first attempt persisted nothing, the migration must land exactly once —
+        no double-counted tags, no duplicated audit row.
+        """
+        admin, admin_password = await create_admin_user(db_session)
+        await grant_permission(db_session, admin.user_id, "image_edit")
+
+        original = await create_test_image(db_session, admin.user_id)
+        repost = Images(
+            user_id=admin.user_id,
+            filename="deadlock_repost",
+            ext="jpg",
+            md5_hash="dead1ockdead1ockdead1ockdead1ock",
+            status=ImageStatus.ACTIVE,
+        )
+        db_session.add(repost)
+        tag = Tags(title="deadlock repost tag", type=TagType.THEME, user_id=admin.user_id)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(repost)
+        await db_session.refresh(tag)
+
+        db_session.add(TagLinks(image_id=repost.image_id, tag_id=tag.tag_id, user_id=admin.user_id))
+        db_session.add(Favorites(image_id=repost.image_id, user_id=admin.user_id))
+        await db_session.commit()
+
+        # The route shares this session, so its retry rollback expires every
+        # instance above. Hold the ids as plain ints for the assertions.
+        repost_id, original_id, tag_id = repost.image_id, original.image_id, tag.tag_id
+        token = await login_user(client, admin.username, admin_password)
+
+        commit_patch, calls = _flaky_commit(1, _deadlock_error())
+        with commit_patch:
+            response = await client.patch(
+                f"/api/v1/admin/images/{repost_id}",
+                json={
+                    "status": ImageStatus.REPOST,
+                    "replacement_id": original_id,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert response.status_code == 200, response.text
+        assert len(calls) >= 2  # failed attempt + successful retry
+        assert response.json()["status"] == ImageStatus.REPOST
+
+        # The migration landed once: the tag and favourite moved to the original
+        # and the repost keeps neither.
+        moved_tags = await db_session.execute(
+            select(func.count())
+            .select_from(TagLinks)
+            .where(TagLinks.image_id == original_id, TagLinks.tag_id == tag_id)
+        )
+        assert moved_tags.scalar_one() == 1
+        leftover_tags = await db_session.execute(
+            select(func.count()).select_from(TagLinks).where(TagLinks.image_id == repost_id)
+        )
+        assert leftover_tags.scalar_one() == 0
+        moved_favs = await db_session.execute(
+            select(func.count()).select_from(Favorites).where(Favorites.image_id == original_id)
+        )
+        assert moved_favs.scalar_one() == 1
+
+        # ...and audited once, not once per attempt.
+        audit_rows = await db_session.execute(
+            select(func.count())
+            .select_from(AdminActions)
+            .where(
+                AdminActions.image_id == repost_id,
+                AdminActions.action_type == AdminActionType.IMAGE_STATUS_CHANGE,
+            )
+        )
+        assert audit_rows.scalar_one() == 1
 
     async def test_requires_image_edit_permission(
         self, client: AsyncClient, db_session: AsyncSession

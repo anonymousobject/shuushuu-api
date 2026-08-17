@@ -49,7 +49,7 @@ from app.config import (
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
 from app.core.database import get_db, statement_timeout
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission, has_any_permission, has_permission
@@ -2518,7 +2518,7 @@ async def add_tag_to_image(
 
     # Non-DB side effect: the search sync stays outside the retried unit so a
     # retry never repeats it.
-    resolved_tag_id = await retry_on_snapshot_conflict(db, _apply_tag_add, what="image_tag_add")
+    resolved_tag_id = await retry_on_transient_conflict(db, _apply_tag_add, what="image_tag_add")
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == resolved_tag_id))  # type: ignore[arg-type]
@@ -2605,7 +2605,7 @@ async def remove_tag_from_image(
 
     # Non-DB side effect: the search sync stays outside the retried unit so a
     # retry never repeats it.
-    await retry_on_snapshot_conflict(db, _apply_tag_remove, what="image_tag_remove")
+    await retry_on_transient_conflict(db, _apply_tag_remove, what="image_tag_remove")
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -2680,7 +2680,7 @@ async def rate_image(
         await db.commit()
         return message, stats
 
-    message, stats = await retry_on_snapshot_conflict(db, _apply_rating, what="rate_image")
+    message, stats = await retry_on_transient_conflict(db, _apply_rating, what="rate_image")
 
     return {
         "message": message,
@@ -2748,7 +2748,7 @@ async def favorite_image(
         await db.commit()
         return False, favorites_count
 
-    already_favorited, favorites_count = await retry_on_snapshot_conflict(
+    already_favorited, favorites_count = await retry_on_transient_conflict(
         db, _apply_favorite, what="favorite_image"
     )
 
@@ -2833,7 +2833,7 @@ async def unfavorite_image(
         await db.commit()
         return favorites_count
 
-    favorites_count = await retry_on_snapshot_conflict(
+    favorites_count = await retry_on_transient_conflict(
         db, _apply_unfavorite, what="unfavorite_image"
     )
 
@@ -3086,7 +3086,7 @@ async def upload_image(
             await db.commit()
             return image
 
-        new_image = await retry_on_snapshot_conflict(db, _insert_image, what="upload_image")
+        new_image = await retry_on_transient_conflict(db, _insert_image, what="upload_image")
         committed = True
         await db.refresh(new_image)
         image_id: int = new_image.image_id  # type: ignore[assignment]

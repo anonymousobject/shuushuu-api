@@ -40,7 +40,7 @@ from app.core.auth import (
     get_optional_current_user,
 )
 from app.core.database import get_db
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
 from app.core.r2_client import get_r2_storage
@@ -763,7 +763,7 @@ async def _update_user_profile(
         # public or private response schemas depending on the endpoint.
         return user
 
-    return await retry_on_snapshot_conflict(db, _apply, what="user_profile_update")
+    return await retry_on_transient_conflict(db, _apply, what="user_profile_update")
 
 
 @router.get("/{user_id}/images", response_model=ImageDetailedListResponse)

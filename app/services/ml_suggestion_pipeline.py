@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus, TagType, settings
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
@@ -346,9 +347,22 @@ async def persist_predictions(
 
     ingest_raw_predictions and store_predictions run in the SAME session;
     store_predictions issues the commit (do not add a second commit here).
-    Returns the number of suggestions created."""
-    await ingest_raw_predictions(db, [{"image_id": image_id, "predictions": raw_predictions}])
-    return await store_predictions(db, image_id, raw_predictions)
+    Returns the number of suggestions created.
+
+    Retried as one unit: this writes ml_raw_predictions and ml_tag_suggestions
+    for whatever image the worker is on while the request path writes the same
+    tables (a moderator flagging a repost, a tagger approving suggestions), so
+    either side can lose a snapshot conflict or a deadlock (#335). Replay is
+    safe because both halves are idempotent — INSERT IGNORE for the raw rows,
+    keep-existing for the suggestions — and both re-read everything they need
+    from the session rather than closing over rows the rollback expired.
+    ``raw_predictions`` is plain dicts, so it survives the rollback untouched."""
+
+    async def _persist() -> int:
+        await ingest_raw_predictions(db, [{"image_id": image_id, "predictions": raw_predictions}])
+        return await store_predictions(db, image_id, raw_predictions)
+
+    return await retry_on_transient_conflict(db, _persist, what="ml_persist_predictions")
 
 
 async def compute_implied_suggestions(

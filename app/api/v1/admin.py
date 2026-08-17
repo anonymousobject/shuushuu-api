@@ -34,7 +34,7 @@ from app.config import (
 )
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.permission_cache import invalidate_group_permissions, invalidate_user_permissions
 from app.core.permission_deps import require_all_permissions, require_permission
 from app.core.permissions import Permission
@@ -731,33 +731,46 @@ async def change_image_status(
 
     Requires IMAGE_EDIT permission.
     """
-    # Get the image
-    result = await db.execute(
-        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+    actor_id = current_user.user_id
+
+    # Marking a repost migrates favourites, ratings, tags and ML suggestions in
+    # one transaction, which can deadlock against the ML pipeline writing the
+    # same suggestion rows (#335). Retry the whole unit; every non-DB side
+    # effect stays below the commit, so a replay repeats nothing external.
+    async def _apply() -> tuple[Images, int]:
+        # Re-fetched inside the unit: a retry rolls back, expiring every ORM
+        # instance the previous attempt loaded (see app/core/db_retry.py).
+        result = await db.execute(
+            select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+        )
+        image = result.scalar_one_or_none()
+
+        if not image:
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        previous_status = image.status
+
+        # All mutation + audit logging goes through the unified service so this
+        # endpoint and the report-triage path stay consistent. (Imported under an
+        # alias because this route handler shares the service's name.)
+        await apply_image_status_change(
+            db,
+            image,
+            await db.get(Users, actor_id),
+            new_status=status_data.status,
+            reason_category=status_data.reason_category,
+            reason=status_data.reason,
+            replacement_id=status_data.replacement_id,
+            locked=status_data.locked,
+        )
+
+        await db.commit()
+        await db.refresh(image)
+        return image, previous_status
+
+    image, previous_status = await retry_on_transient_conflict(
+        db, _apply, what="image_status_change"
     )
-    image = result.scalar_one_or_none()
-
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
-
-    previous_status = image.status
-
-    # All mutation + audit logging goes through the unified service so this
-    # endpoint and the report-triage path stay consistent. (Imported under an
-    # alias because this route handler shares the service's name.)
-    await apply_image_status_change(
-        db,
-        image,
-        current_user,
-        new_status=status_data.status,
-        reason_category=status_data.reason_category,
-        reason=status_data.reason,
-        replacement_id=status_data.replacement_id,
-        locked=status_data.locked,
-    )
-
-    await db.commit()
-    await db.refresh(image)
 
     if status_data.status is not None:
         await enqueue_r2_sync_on_status_change(
@@ -1660,7 +1673,7 @@ async def apply_tag_suggestions(
         removed_tags,
         already_present,
         already_absent,
-    ) = await retry_on_snapshot_conflict(db, _apply, what="apply_tag_suggestions")
+    ) = await retry_on_transient_conflict(db, _apply, what="apply_tag_suggestions")
 
     return ApplyTagSuggestionsResponse(
         message=f"Applied {len(applied_tags)} tags, removed {len(removed_tags)} tags",
@@ -1686,52 +1699,65 @@ async def action_report(
 
     Requires REPORT_MANAGE permission.
     """
-    result = await db.execute(
-        select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
+    actor_id = current_user.user_id
+
+    # Resolving a report as a repost runs the same multi-table migration as the
+    # direct PATCH, so it can lose the same deadlock (#335). Retried as one
+    # unit; the enqueues below stay outside it.
+    async def _apply() -> tuple[int, int]:
+        # Re-fetched inside the unit: a retry rolls back, expiring every ORM
+        # instance the previous attempt loaded (see app/core/db_retry.py).
+        result = await db.execute(
+            select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]
+        )
+        report = result.scalar_one_or_none()
+
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+
+        if report.status != ReportStatus.PENDING:
+            raise HTTPException(status_code=400, detail="Report has already been processed")
+
+        # Get the image
+        image_result = await db.execute(
+            select(Images).where(Images.image_id == report.image_id)  # type: ignore[arg-type]
+        )
+        image = image_result.scalar_one_or_none()
+
+        if not image:
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        previous_status = image.status
+
+        # All mutation + audit logging goes through the unified service: writes the
+        # public history row, enforces replacement_id for repost, stamps report_id on
+        # the REPORT_ACTION audit row (the report's resolution is derived from it).
+        await apply_image_status_change(
+            db,
+            image,
+            await db.get(Users, actor_id),
+            new_status=action_data.new_status,
+            reason_category=action_data.reason_category,
+            reason=action_data.reason,
+            replacement_id=action_data.replacement_id,
+            action_type=AdminActionType.REPORT_ACTION,
+            report_id=report_id,
+        )
+
+        # Update report
+        report.status = ReportStatus.REVIEWED
+        report.reviewed_by = actor_id
+        report.reviewed_at = datetime.now(UTC)
+
+        await db.commit()
+        return report.image_id, previous_status
+
+    reported_image_id, previous_status = await retry_on_transient_conflict(
+        db, _apply, what="report_action"
     )
-    report = result.scalar_one_or_none()
-
-    if not report:
-        raise HTTPException(status_code=404, detail="Report not found")
-
-    if report.status != ReportStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Report has already been processed")
-
-    # Get the image
-    image_result = await db.execute(
-        select(Images).where(Images.image_id == report.image_id)  # type: ignore[arg-type]
-    )
-    image = image_result.scalar_one_or_none()
-
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
-
-    previous_status = image.status
-
-    # All mutation + audit logging goes through the unified service: writes the
-    # public history row, enforces replacement_id for repost, stamps report_id on
-    # the REPORT_ACTION audit row (the report's resolution is derived from it).
-    await apply_image_status_change(
-        db,
-        image,
-        current_user,
-        new_status=action_data.new_status,
-        reason_category=action_data.reason_category,
-        reason=action_data.reason,
-        replacement_id=action_data.replacement_id,
-        action_type=AdminActionType.REPORT_ACTION,
-        report_id=report_id,
-    )
-
-    # Update report
-    report.status = ReportStatus.REVIEWED
-    report.reviewed_by = current_user.user_id
-    report.reviewed_at = datetime.now(UTC)
-
-    await db.commit()
 
     await enqueue_r2_sync_on_status_change(
-        image_id=report.image_id,
+        image_id=reported_image_id,
         old_status=previous_status,
         new_status=action_data.new_status,
     )

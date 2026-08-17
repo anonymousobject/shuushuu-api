@@ -28,8 +28,10 @@ from app.services.ml_suggestion_pipeline import (
     filter_superseded_parents,
     find_superseded_parents,
     generate_and_store_suggestions,
+    persist_predictions,
     store_predictions,
 )
+from tests.transient_conflict import _flaky_commit, _snapshot_conflict_error
 
 PIPELINE = "app.services.ml_suggestion_pipeline"
 
@@ -756,6 +758,53 @@ async def test_store_predictions_skips_ineligible_image(db_session):
         select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
     )
     assert result.scalars().all() == []
+
+
+@pytest.mark.needs_commit
+async def test_persist_predictions_retries_transient_conflict(db_session, tmp_path, monkeypatch):
+    """persist_predictions replays on a transient conflict rather than 500ing.
+
+    The pipeline writes ml_raw_predictions and ml_tag_suggestions for whatever
+    image the worker is on while moderators write the same tables from the
+    request path, so either side can lose a snapshot conflict or a deadlock
+    (#335). The unit is idempotent — INSERT IGNORE for the raw rows, keep-
+    existing for the suggestions — so a replay must leave exactly one row per
+    suggested tag, not two.
+    """
+    tags = [Tags(tag_id=46, title="long hair"), Tags(tag_id=161, title="short hair")]
+    db_session.add_all(tags)
+    await db_session.flush()
+
+    user = await _make_user(db_session, "retry")
+    image = await _make_image(db_session, user, "retry", tmp_path)
+    await db_session.commit()
+    image_id = image.image_id
+
+    predictions = [
+        {"external_tag": "long_hair", "confidence": 0.92, "model_version": "v3"},
+        {"external_tag": "short_hair", "confidence": 0.88, "model_version": "v3"},
+    ]
+    mapped = [
+        {"tag_id": 46, "confidence": 0.92, "model_version": "v3"},
+        {"tag_id": 161, "confidence": 0.88, "model_version": "v3"},
+    ]
+
+    commit_patch, calls = _flaky_commit(1, _snapshot_conflict_error("ml_raw_predictions"))
+    with (
+        commit_patch,
+        patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
+        patch(f"{PIPELINE}.resolve_tag_relationships", _passthrough_resolver),
+    ):
+        created = await persist_predictions(db_session, image_id, predictions)
+
+    assert len(calls) >= 2  # failed attempt + successful retry
+    assert created == 2
+
+    result = await db_session.execute(
+        select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_id)
+    )
+    suggestions = result.scalars().all()
+    assert sorted(s.tag_id for s in suggestions) == [46, 161]
 
 
 @pytest.mark.needs_commit
