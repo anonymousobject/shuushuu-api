@@ -1,4 +1,4 @@
-"""Retry helper for transient MariaDB write conflicts.
+"""Retry helper for transient MariaDB write conflicts. See ADR-0004.
 
 Two different errors, one remedy — end the transaction and replay the unit on a
 fresh one:

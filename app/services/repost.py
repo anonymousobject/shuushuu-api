@@ -166,7 +166,7 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
     # grow with the original's tag count and cover index gaps for tags with no
     # suggestion row — the gaps the ML pipeline inserts into, and the deadlock
     # in #335. A tag the original already carried is not this operation's to
-    # resolve: whatever applied it owned that.
+    # resolve: whatever applied it owned that. (ADR-0005.)
     await approve_pending_suggestions_for_links(
         db, [(original_id, tag_id) for tag_id in sorted(moved_tag_ids)], None
     )
