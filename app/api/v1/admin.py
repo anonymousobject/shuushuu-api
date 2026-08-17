@@ -764,13 +764,20 @@ async def change_image_status(
             locked=status_data.locked,
         )
 
+        # The commit is the LAST statement in the retried unit. Anything after
+        # it that could raise would send a replay through a second audit row
+        # and status-history row on top of a commit that already landed, and
+        # nothing here re-fetches its way out of that.
         await db.commit()
-        await db.refresh(image)
         return image, previous_status
 
     image, previous_status = await retry_on_transient_conflict(
         db, _apply, what="image_status_change"
     )
+
+    # Outside the unit, per the note above: picks up whatever the DB wrote for
+    # itself during the commit (triggers, server defaults).
+    await db.refresh(image)
 
     if status_data.status is not None:
         await enqueue_r2_sync_on_status_change(
@@ -1749,8 +1756,12 @@ async def action_report(
         report.reviewed_by = actor_id
         report.reviewed_at = datetime.now(UTC)
 
+        # Read out before the commit, which is the LAST statement in the unit:
+        # anything after it that could raise would send a replay through a
+        # second audit row on top of a commit that already landed.
+        reported_image_id = report.image_id
         await db.commit()
-        return report.image_id, previous_status
+        return reported_image_id, previous_status
 
     reported_image_id, previous_status = await retry_on_transient_conflict(
         db, _apply, what="report_action"
