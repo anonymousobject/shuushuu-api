@@ -2,12 +2,13 @@
 Pydantic schemas for User endpoints
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, EmailStr, Field, StrictBool, computed_field, field_validator
 
 from app.models.user import UserBase
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+from app.schemas.tag import LinkedTag, LinkPictureInfo
 
 # Canonical set of allowed theme presets. Adding a new preset requires:
 # 1) appending the id here, 2) adding the matching entry to the frontend
@@ -336,3 +337,45 @@ class AcknowledgeWarningsResponse(BaseModel):
 
     acknowledged_count: int
     message: str
+
+
+# ===== Profile Favorite Tags Schemas =====
+
+
+class FavoriteCharacterEntry(BaseModel):
+    """One favorited character combo on a user's public favorites"""
+
+    link_id: int
+    position: int
+    character: LinkedTag
+    source: LinkedTag
+    picture: LinkPictureInfo | None = None
+
+
+class FavoriteTagEntry(BaseModel):
+    """One favorited source/artist tag on a user's public favorites"""
+
+    position: int
+    tag: LinkedTag
+
+
+class UserFavoriteTagsResponse(BaseModel):
+    """A user's public favorites, grouped and position-ordered"""
+
+    characters: list[FavoriteCharacterEntry]
+    sources: list[FavoriteTagEntry]
+    artists: list[FavoriteTagEntry]
+
+
+class FavoriteTagCreate(BaseModel):
+    """Add-favorite body: exactly one of tag_id (source/artist) or link_id"""
+
+    tag_id: int | None = None
+    link_id: int | None = None
+
+
+class FavoriteOrderUpdate(BaseModel):
+    """Atomic per-category reorder: ids must be a permutation of the set"""
+
+    category: Literal["characters", "sources", "artists"]
+    ids: list[int]

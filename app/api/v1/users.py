@@ -6,6 +6,7 @@ import hashlib
 import re
 import secrets
 import tempfile
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
 from typing import Annotated, Any
@@ -23,8 +24,9 @@ from fastapi import (
     status,
 )
 from sqlalchemy import asc, case, delete, desc, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import (
     ImageSortParams,
@@ -32,7 +34,7 @@ from app.api.dependencies import (
     UserRatingsSortParams,
     UserSortParams,
 )
-from app.config import ImageStatus, SuspensionAction, settings
+from app.config import ImageStatus, SuspensionAction, TagType, settings
 from app.core.auth import (
     get_client_ip,
     get_current_user,
@@ -48,8 +50,11 @@ from app.core.redis import get_redis
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
 from app.core.user_loader import image_uploader_load
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
+from app.models.character_source_link import CharacterSourceLinks
+from app.models.character_source_link_picture import CharacterSourceLinkPictures
 from app.models.permissions import UserGroups
 from app.models.refresh_token import RefreshTokens
+from app.models.user_favorite import UserFavoriteLinks, UserFavoriteTags
 from app.models.user_suspension import UserSuspensions
 from app.models.user_tag_affinity import UserTagAffinity
 from app.schemas.image import (
@@ -57,12 +62,19 @@ from app.schemas.image import (
     ImageDetailedResponse,
     ImageWithRatingResponse,
     UserRatingsListResponse,
+    thumbnail_url_for,
 )
+from app.schemas.tag import LinkedTag, LinkPictureInfo
 from app.schemas.taste_profile import TasteProfileResponse, TasteProfileSummary, TasteProfileTag
 from app.schemas.user import (
     AcknowledgeWarningsResponse,
+    FavoriteCharacterEntry,
+    FavoriteOrderUpdate,
+    FavoriteTagCreate,
+    FavoriteTagEntry,
     UserCreate,
     UserCreateResponse,
+    UserFavoriteTagsResponse,
     UserListResponse,
     UserPrivateResponse,
     UserResponse,
@@ -950,6 +962,423 @@ async def get_user_favorites(
         per_page=pagination.per_page,
         images=[ImageDetailedResponse.model_validate(img) for img in images],
     )
+
+
+def _character_link_select() -> Any:
+    """Base 18-column select for one favorited character combo's display row.
+
+    Typed ``Any``, not ``Select[Any]``: the 18-column ``select()`` call below
+    already fails mypy's overload resolution (see its own ignore comment) and
+    resolves to ``Any`` at that point, exactly as it did inline in Task 1 --
+    an explicit ``Select[Any]`` return annotation would make mypy check the
+    chained ``.join()``/``.where()``/``.order_by()`` calls at every call site
+    for real, which is a much bigger surface than this helper is worth.
+
+    Shared by the grouped GET (many rows, one query) and
+    ``_favorite_character_entry`` (one row, filtered by link_id) — the join
+    shape lives here exactly once.
+    """
+    char_tags = aliased(Tags)
+    src_tags = aliased(Tags)
+    return (
+        select(  # type: ignore[call-overload, misc]
+            UserFavoriteLinks.link_id,
+            UserFavoriteLinks.position,
+            char_tags.tag_id,
+            char_tags.title,
+            char_tags.type,
+            char_tags.usage_count,
+            src_tags.tag_id,
+            src_tags.title,
+            src_tags.type,
+            src_tags.usage_count,
+            CharacterSourceLinkPictures.image_id,
+            CharacterSourceLinkPictures.crop_x,
+            CharacterSourceLinkPictures.crop_y,
+            CharacterSourceLinkPictures.crop_w,
+            CharacterSourceLinkPictures.crop_h,
+            Images.filename,
+            Images.status,
+            Images.r2_location,
+        )
+        .join(CharacterSourceLinks, CharacterSourceLinks.id == UserFavoriteLinks.link_id)
+        .join(char_tags, char_tags.tag_id == CharacterSourceLinks.character_tag_id)
+        .join(src_tags, src_tags.tag_id == CharacterSourceLinks.source_tag_id)
+        .outerjoin(
+            CharacterSourceLinkPictures,
+            CharacterSourceLinkPictures.link_id == CharacterSourceLinks.id,
+        )
+        .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
+    )
+
+
+def _character_entry_from_row(row: Any) -> FavoriteCharacterEntry:
+    """Turn one ``_character_link_select`` row into its response entry."""
+    (
+        link_id,
+        position,
+        c_id,
+        c_title,
+        c_type,
+        c_usage,
+        s_id,
+        s_title,
+        s_type,
+        s_usage,
+        pic_image_id,
+        crop_x,
+        crop_y,
+        crop_w,
+        crop_h,
+        filename,
+        status,
+        r2_location,
+    ) = row
+    picture = None
+    # Re-checked at read time: a deactivated image must not leak through.
+    if pic_image_id is not None and status in PUBLIC_IMAGE_STATUSES:
+        picture = LinkPictureInfo(
+            image_id=pic_image_id,
+            thumbnail_url=thumbnail_url_for(filename, status, r2_location),
+            crop_x=crop_x,
+            crop_y=crop_y,
+            crop_w=crop_w,
+            crop_h=crop_h,
+        )
+    return FavoriteCharacterEntry(
+        link_id=link_id,
+        position=position,
+        character=LinkedTag(tag_id=c_id, title=c_title, type=c_type, usage_count=c_usage),
+        source=LinkedTag(tag_id=s_id, title=s_title, type=s_type, usage_count=s_usage),
+        picture=picture,
+    )
+
+
+async def _favorite_character_entry(
+    db: AsyncSession, user_id: int, link_id: int
+) -> FavoriteCharacterEntry | None:
+    """Single-row echo of one favorited combo — shares the grouped GET's join."""
+    result = await db.execute(
+        _character_link_select().where(
+            UserFavoriteLinks.user_id == user_id,
+            UserFavoriteLinks.link_id == link_id,
+        )
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return _character_entry_from_row(row)
+
+
+@router.get("/{user_id}/favorite-tags", response_model=UserFavoriteTagsResponse)
+async def get_user_favorite_tags(
+    user_id: Annotated[int, Path(description="User ID")],
+    db: AsyncSession = Depends(get_db),
+) -> UserFavoriteTagsResponse:
+    """
+    A user's public profile favorites, grouped and position-ordered.
+
+    Characters are per (character, source) link and carry the link's
+    picture when one is set and its image is still publicly visible —
+    the same read-time re-check the tag-detail embed does.
+    """
+    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    if not user_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="User not found")
+
+    link_rows = await db.execute(
+        _character_link_select()
+        .where(UserFavoriteLinks.user_id == user_id)
+        .order_by(UserFavoriteLinks.position)
+    )
+    characters = [_character_entry_from_row(row) for row in link_rows.all()]
+
+    tag_rows = await db.execute(
+        select(  # type: ignore[call-overload]
+            UserFavoriteTags.position,
+            Tags.tag_id,
+            Tags.title,
+            Tags.type,
+            Tags.usage_count,
+        )
+        .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)
+        .where(UserFavoriteTags.user_id == user_id)
+        .order_by(UserFavoriteTags.position)
+    )
+    sources: list[FavoriteTagEntry] = []
+    artists: list[FavoriteTagEntry] = []
+    for position, tag_id, title, tag_type, usage_count in tag_rows.all():
+        entry = FavoriteTagEntry(
+            position=position,
+            tag=LinkedTag(tag_id=tag_id, title=title, type=tag_type, usage_count=usage_count),
+        )
+        (sources if tag_type == TagType.SOURCE else artists).append(entry)
+
+    return UserFavoriteTagsResponse(characters=characters, sources=sources, artists=artists)
+
+
+FAVORITES_PER_CATEGORY_CAP = 20
+
+
+@router.post("/me/favorite-tags", status_code=201)
+async def add_favorite_tag(
+    body: FavoriteTagCreate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> FavoriteCharacterEntry | FavoriteTagEntry:
+    """Add a favorite (source/artist tag by tag_id, character combo by link_id)."""
+    if (body.tag_id is None) == (body.link_id is None):
+        raise HTTPException(status_code=400, detail="Provide exactly one of tag_id or link_id")
+    assert current_user.user_id is not None
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.user_id
+
+    if body.tag_id is not None:
+        tag_result = await db.execute(
+            select(Tags).where(Tags.tag_id == body.tag_id)  # type: ignore[arg-type]
+        )
+        tag = tag_result.scalar_one_or_none()
+        if not tag:
+            raise HTTPException(status_code=404, detail="Tag not found")
+        if tag.type not in (TagType.SOURCE, TagType.ARTIST):
+            raise HTTPException(
+                status_code=400,
+                detail="Only Source or Artist tags can be favorited directly "
+                "(characters are favorited per source combo)",
+            )
+        if tag.alias_of is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot favorite an alias tag; use the canonical tag (id: {tag.alias_of})",
+            )
+        # Capture as primitives too: `tag` is touched again inside the
+        # retried unit below (cap-check join condition, response echo), and
+        # a retry's rollback would expire it just like current_user above.
+        tag_id_val = tag.tag_id
+        tag_title = tag.title
+        tag_type = tag.type
+        tag_usage = tag.usage_count
+
+        # The cap count, max(position) read, and INSERT below are a single
+        # unit that can hit ER_CHECKREAD (1020) under innodb_snapshot_isolation
+        # when it races another write on the same rows (e.g. a double-submit
+        # re-adding/reordering this tag-type). Retry on a fresh snapshot
+        # instead of surfacing a 500 (see app/core/db_retry.py; ADR-0004).
+        # The unit re-fetches its rows.
+        #
+        # That retry does not close every race: two concurrent POSTs for
+        # DIFFERENT tag_ids insert into different rows, so neither locks the
+        # other and no 1020 fires — both can still pass this cap check before
+        # either commits. That residual race is accepted: same-user only,
+        # overshoot bounded to one per in-flight request, and positions
+        # self-heal on the next reorder (which rewrites 0..n-1).
+        async def _apply_tag() -> FavoriteTagEntry:
+            # Cap counts only THIS tag-type's favorites (sources and artists
+            # are independent categories sharing one table).
+            count = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(UserFavoriteTags)
+                    .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
+                    .where(
+                        UserFavoriteTags.user_id == user_id,  # type: ignore[arg-type]
+                        Tags.type == tag_type,  # type: ignore[arg-type]
+                    )
+                )
+            ).scalar() or 0
+            if count >= FAVORITES_PER_CATEGORY_CAP:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Favorite limit reached ({FAVORITES_PER_CATEGORY_CAP} per category)",
+                )
+            max_pos = (
+                await db.execute(
+                    select(func.max(UserFavoriteTags.position))
+                    .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
+                    .where(
+                        UserFavoriteTags.user_id == user_id,  # type: ignore[arg-type]
+                        Tags.type == tag_type,  # type: ignore[arg-type]
+                    )
+                )
+            ).scalar()
+            position = 0 if max_pos is None else max_pos + 1
+            db.add(UserFavoriteTags(user_id=user_id, tag_id=tag_id_val, position=position))
+            try:
+                await db.commit()
+            except IntegrityError:
+                await db.rollback()
+                raise HTTPException(status_code=409, detail="Already favorited") from None
+            return FavoriteTagEntry(
+                position=position,
+                tag=LinkedTag(
+                    tag_id=tag_id_val or 0,
+                    title=tag_title,
+                    type=tag_type,
+                    usage_count=tag_usage,
+                ),
+            )
+
+        return await retry_on_transient_conflict(db, _apply_tag, what="add_favorite_tag")
+
+    # link_id path
+    assert body.link_id is not None  # guaranteed by the XOR check above
+    link_id = body.link_id
+    link_result = await db.execute(
+        select(CharacterSourceLinks).where(
+            CharacterSourceLinks.id == link_id  # type: ignore[arg-type]
+        )
+    )
+    link = link_result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    # Same cap/max-position race and ADR-0004 retry coverage as the tag path
+    # above — see that comment for why.
+    async def _apply_link() -> FavoriteCharacterEntry:
+        count = (
+            await db.execute(
+                select(func.count())
+                .select_from(UserFavoriteLinks)
+                .where(UserFavoriteLinks.user_id == user_id)  # type: ignore[arg-type]
+            )
+        ).scalar() or 0
+        if count >= FAVORITES_PER_CATEGORY_CAP:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Favorite limit reached ({FAVORITES_PER_CATEGORY_CAP} per category)",
+            )
+        max_pos = (
+            await db.execute(
+                select(func.max(UserFavoriteLinks.position)).where(
+                    UserFavoriteLinks.user_id == user_id  # type: ignore[arg-type]
+                )
+            )
+        ).scalar()
+        position = 0 if max_pos is None else max_pos + 1
+        db.add(UserFavoriteLinks(user_id=user_id, link_id=link_id, position=position))
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="Already favorited") from None
+
+        # Echo in the GET's entry shape — reuse the grouped GET's join for one
+        # row. A fresh query every attempt, so no stale-instance risk here.
+        entry = await _favorite_character_entry(db, user_id, link_id)
+        assert entry is not None
+        return entry
+
+    return await retry_on_transient_conflict(db, _apply_link, what="add_favorite_tag")
+
+
+@router.delete("/me/favorite-tags/tag/{tag_id}", status_code=204)
+async def remove_favorite_tag(
+    tag_id: Annotated[int, Path()],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Remove a favorited source/artist tag."""
+    result = await db.execute(
+        select(UserFavoriteTags).where(
+            UserFavoriteTags.user_id == current_user.user_id,  # type: ignore[arg-type]
+            UserFavoriteTags.tag_id == tag_id,  # type: ignore[arg-type]
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not favorited")
+    await db.delete(row)
+    await db.commit()
+
+
+@router.delete("/me/favorite-tags/link/{link_id}", status_code=204)
+async def remove_favorite_link(
+    link_id: Annotated[int, Path()],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Remove a favorited character combo."""
+    result = await db.execute(
+        select(UserFavoriteLinks).where(
+            UserFavoriteLinks.user_id == current_user.user_id,  # type: ignore[arg-type]
+            UserFavoriteLinks.link_id == link_id,  # type: ignore[arg-type]
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not favorited")
+    await db.delete(row)
+    await db.commit()
+
+
+@router.put("/me/favorite-tags/order", status_code=204)
+async def reorder_favorite_tags(
+    body: FavoriteOrderUpdate,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Atomically rewrite one category's positions to match the given id order."""
+    assert current_user.user_id is not None
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.user_id
+
+    # Same shape as user_profile_update's confirmed 1020 site: a
+    # read-then-UPDATE-many-then-commit unit on rows this user exclusively
+    # owns. A double-submit (or a reorder racing an add/remove touching the
+    # same rows) can abort the position UPDATEs under
+    # innodb_snapshot_isolation. Retry on a fresh snapshot instead of
+    # surfacing a 500 (see app/core/db_retry.py; ADR-0004). The unit
+    # re-fetches its rows.
+    async def _apply() -> None:
+        rows: Sequence[UserFavoriteLinks] | Sequence[UserFavoriteTags]
+        if body.category == "characters":
+            rows = (
+                (
+                    await db.execute(
+                        select(UserFavoriteLinks).where(
+                            UserFavoriteLinks.user_id == user_id  # type: ignore[arg-type]
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            current_ids = {row.link_id for row in rows}
+        else:
+            wanted_type = TagType.SOURCE if body.category == "sources" else TagType.ARTIST
+            rows = (
+                (
+                    await db.execute(
+                        select(UserFavoriteTags)
+                        .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
+                        .where(
+                            UserFavoriteTags.user_id == user_id,  # type: ignore[arg-type]
+                            Tags.type == wanted_type,  # type: ignore[arg-type]
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            current_ids = {row.tag_id for row in rows}
+
+        if len(body.ids) != len(current_ids) or set(body.ids) != current_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="ids must be a permutation of the category's current favorites",
+            )
+
+        by_id = {
+            (row.link_id if body.category == "characters" else row.tag_id): row  # type: ignore[union-attr]
+            for row in rows
+        }
+        for position, entry_id in enumerate(body.ids):
+            by_id[entry_id].position = position
+        await db.commit()
+
+    await retry_on_transient_conflict(db, _apply, what="reorder_favorite_tags")
 
 
 @router.get("/{user_id}/ratings", response_model=UserRatingsListResponse)
