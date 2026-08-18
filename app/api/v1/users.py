@@ -1130,6 +1130,9 @@ async def add_favorite_tag(
     if (body.tag_id is None) == (body.link_id is None):
         raise HTTPException(status_code=400, detail="Provide exactly one of tag_id or link_id")
     assert current_user.user_id is not None
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.user_id
 
     if body.tag_id is not None:
         tag_result = await db.execute(
@@ -1149,28 +1152,95 @@ async def add_favorite_tag(
                 status_code=400,
                 detail=f"Cannot favorite an alias tag; use the canonical tag (id: {tag.alias_of})",
             )
-        # Cap counts only THIS tag-type's favorites (sources and artists
-        # are independent categories sharing one table).
+        # Capture as primitives too: `tag` is touched again inside the
+        # retried unit below (cap-check join condition, response echo), and
+        # a retry's rollback would expire it just like current_user above.
+        tag_id_val = tag.tag_id
+        tag_title = tag.title
+        tag_type = tag.type
+        tag_usage = tag.usage_count
+
+        # The cap count, max(position) read, and INSERT below are a single
+        # unit that can hit ER_CHECKREAD (1020) under innodb_snapshot_isolation
+        # when it races another write on the same rows (e.g. a double-submit
+        # re-adding/reordering this tag-type). Retry on a fresh snapshot
+        # instead of surfacing a 500 (see app/core/db_retry.py; ADR-0004).
+        # The unit re-fetches its rows.
         #
-        # TOCTOU: the count check, the max(position) read, and the INSERT
-        # below aren't in one atomic unit, so two concurrent POSTs from the
-        # same user can both pass the cap at 19 (landing at 21) or both read
-        # the same max_pos (tied positions). Accepted, not locked: prod runs
-        # innodb_snapshot_isolation=ON, under which SELECT...FOR UPDATE
-        # raises error 1020 app-wide, so locking here would trade a cosmetic
-        # race for real 500s under contention. The race is same-user-only
-        # (personal curation, never cross-user), overshoot is bounded to one
-        # per in-flight request, and tied positions self-heal on the next
-        # reorder (which rewrites 0..n-1).
+        # That retry does not close every race: two concurrent POSTs for
+        # DIFFERENT tag_ids insert into different rows, so neither locks the
+        # other and no 1020 fires — both can still pass this cap check before
+        # either commits. That residual race is accepted: same-user only,
+        # overshoot bounded to one per in-flight request, and positions
+        # self-heal on the next reorder (which rewrites 0..n-1).
+        async def _apply_tag() -> FavoriteTagEntry:
+            # Cap counts only THIS tag-type's favorites (sources and artists
+            # are independent categories sharing one table).
+            count = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(UserFavoriteTags)
+                    .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
+                    .where(
+                        UserFavoriteTags.user_id == user_id,  # type: ignore[arg-type]
+                        Tags.type == tag_type,  # type: ignore[arg-type]
+                    )
+                )
+            ).scalar() or 0
+            if count >= FAVORITES_PER_CATEGORY_CAP:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Favorite limit reached ({FAVORITES_PER_CATEGORY_CAP} per category)",
+                )
+            max_pos = (
+                await db.execute(
+                    select(func.max(UserFavoriteTags.position))
+                    .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
+                    .where(
+                        UserFavoriteTags.user_id == user_id,  # type: ignore[arg-type]
+                        Tags.type == tag_type,  # type: ignore[arg-type]
+                    )
+                )
+            ).scalar()
+            position = 0 if max_pos is None else max_pos + 1
+            db.add(UserFavoriteTags(user_id=user_id, tag_id=tag_id_val, position=position))
+            try:
+                await db.commit()
+            except IntegrityError:
+                await db.rollback()
+                raise HTTPException(status_code=409, detail="Already favorited") from None
+            return FavoriteTagEntry(
+                position=position,
+                tag=LinkedTag(
+                    tag_id=tag_id_val or 0,
+                    title=tag_title,
+                    type=tag_type,
+                    usage_count=tag_usage,
+                ),
+            )
+
+        return await retry_on_transient_conflict(db, _apply_tag, what="add_favorite_tag")
+
+    # link_id path
+    assert body.link_id is not None  # guaranteed by the XOR check above
+    link_id = body.link_id
+    link_result = await db.execute(
+        select(CharacterSourceLinks).where(
+            CharacterSourceLinks.id == link_id  # type: ignore[arg-type]
+        )
+    )
+    link = link_result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    # Same cap/max-position race and ADR-0004 retry coverage as the tag path
+    # above — see that comment for why.
+    async def _apply_link() -> FavoriteCharacterEntry:
         count = (
             await db.execute(
                 select(func.count())
-                .select_from(UserFavoriteTags)
-                .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
-                .where(
-                    UserFavoriteTags.user_id == current_user.user_id,  # type: ignore[arg-type]
-                    Tags.type == tag.type,  # type: ignore[arg-type]
-                )
+                .select_from(UserFavoriteLinks)
+                .where(UserFavoriteLinks.user_id == user_id)  # type: ignore[arg-type]
             )
         ).scalar() or 0
         if count >= FAVORITES_PER_CATEGORY_CAP:
@@ -1180,76 +1250,26 @@ async def add_favorite_tag(
             )
         max_pos = (
             await db.execute(
-                select(func.max(UserFavoriteTags.position))
-                .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
-                .where(
-                    UserFavoriteTags.user_id == current_user.user_id,  # type: ignore[arg-type]
-                    Tags.type == tag.type,  # type: ignore[arg-type]
+                select(func.max(UserFavoriteLinks.position)).where(
+                    UserFavoriteLinks.user_id == user_id  # type: ignore[arg-type]
                 )
             )
         ).scalar()
         position = 0 if max_pos is None else max_pos + 1
-        db.add(
-            UserFavoriteTags(user_id=current_user.user_id, tag_id=body.tag_id, position=position)
-        )
+        db.add(UserFavoriteLinks(user_id=user_id, link_id=link_id, position=position))
         try:
             await db.commit()
         except IntegrityError:
             await db.rollback()
             raise HTTPException(status_code=409, detail="Already favorited") from None
-        return FavoriteTagEntry(
-            position=position,
-            tag=LinkedTag(
-                tag_id=tag.tag_id or 0,
-                title=tag.title,
-                type=tag.type,
-                usage_count=tag.usage_count,
-            ),
-        )
 
-    # link_id path
-    assert body.link_id is not None  # guaranteed by the XOR check above
-    link_result = await db.execute(
-        select(CharacterSourceLinks).where(
-            CharacterSourceLinks.id == body.link_id  # type: ignore[arg-type]
-        )
-    )
-    link = link_result.scalar_one_or_none()
-    if not link:
-        raise HTTPException(status_code=404, detail="Link not found")
-    # Same cap-check/max-position TOCTOU tradeoff as the tag path above —
-    # accepted there, not locked; see that comment for why.
-    count = (
-        await db.execute(
-            select(func.count())
-            .select_from(UserFavoriteLinks)
-            .where(UserFavoriteLinks.user_id == current_user.user_id)  # type: ignore[arg-type]
-        )
-    ).scalar() or 0
-    if count >= FAVORITES_PER_CATEGORY_CAP:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Favorite limit reached ({FAVORITES_PER_CATEGORY_CAP} per category)",
-        )
-    max_pos = (
-        await db.execute(
-            select(func.max(UserFavoriteLinks.position)).where(
-                UserFavoriteLinks.user_id == current_user.user_id  # type: ignore[arg-type]
-            )
-        )
-    ).scalar()
-    position = 0 if max_pos is None else max_pos + 1
-    db.add(UserFavoriteLinks(user_id=current_user.user_id, link_id=body.link_id, position=position))
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="Already favorited") from None
+        # Echo in the GET's entry shape — reuse the grouped GET's join for one
+        # row. A fresh query every attempt, so no stale-instance risk here.
+        entry = await _favorite_character_entry(db, user_id, link_id)
+        assert entry is not None
+        return entry
 
-    # Echo in the GET's entry shape — reuse the grouped GET's join for one row.
-    entry = await _favorite_character_entry(db, current_user.user_id, body.link_id)
-    assert entry is not None
-    return entry
+    return await retry_on_transient_conflict(db, _apply_link, what="add_favorite_tag")
 
 
 @router.delete("/me/favorite-tags/tag/{tag_id}", status_code=204)
@@ -1300,51 +1320,65 @@ async def reorder_favorite_tags(
 ) -> None:
     """Atomically rewrite one category's positions to match the given id order."""
     assert current_user.user_id is not None
-    rows: Sequence[UserFavoriteLinks] | Sequence[UserFavoriteTags]
-    if body.category == "characters":
-        rows = (
-            (
-                await db.execute(
-                    select(UserFavoriteLinks).where(
-                        UserFavoriteLinks.user_id == current_user.user_id  # type: ignore[arg-type]
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.user_id
+
+    # Same shape as user_profile_update's confirmed 1020 site: a
+    # read-then-UPDATE-many-then-commit unit on rows this user exclusively
+    # owns. A double-submit (or a reorder racing an add/remove touching the
+    # same rows) can abort the position UPDATEs under
+    # innodb_snapshot_isolation. Retry on a fresh snapshot instead of
+    # surfacing a 500 (see app/core/db_retry.py; ADR-0004). The unit
+    # re-fetches its rows.
+    async def _apply() -> None:
+        rows: Sequence[UserFavoriteLinks] | Sequence[UserFavoriteTags]
+        if body.category == "characters":
+            rows = (
+                (
+                    await db.execute(
+                        select(UserFavoriteLinks).where(
+                            UserFavoriteLinks.user_id == user_id  # type: ignore[arg-type]
+                        )
                     )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-        current_ids = {row.link_id for row in rows}
-    else:
-        wanted_type = TagType.SOURCE if body.category == "sources" else TagType.ARTIST
-        rows = (
-            (
-                await db.execute(
-                    select(UserFavoriteTags)
-                    .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
-                    .where(
-                        UserFavoriteTags.user_id == current_user.user_id,  # type: ignore[arg-type]
-                        Tags.type == wanted_type,  # type: ignore[arg-type]
+            current_ids = {row.link_id for row in rows}
+        else:
+            wanted_type = TagType.SOURCE if body.category == "sources" else TagType.ARTIST
+            rows = (
+                (
+                    await db.execute(
+                        select(UserFavoriteTags)
+                        .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)  # type: ignore[arg-type]
+                        .where(
+                            UserFavoriteTags.user_id == user_id,  # type: ignore[arg-type]
+                            Tags.type == wanted_type,  # type: ignore[arg-type]
+                        )
                     )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-        current_ids = {row.tag_id for row in rows}
+            current_ids = {row.tag_id for row in rows}
 
-    if len(body.ids) != len(current_ids) or set(body.ids) != current_ids:
-        raise HTTPException(
-            status_code=400,
-            detail="ids must be a permutation of the category's current favorites",
-        )
+        if len(body.ids) != len(current_ids) or set(body.ids) != current_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="ids must be a permutation of the category's current favorites",
+            )
 
-    by_id = {
-        (row.link_id if body.category == "characters" else row.tag_id): row  # type: ignore[union-attr]
-        for row in rows
-    }
-    for position, entry_id in enumerate(body.ids):
-        by_id[entry_id].position = position
-    await db.commit()
+        by_id = {
+            (row.link_id if body.category == "characters" else row.tag_id): row  # type: ignore[union-attr]
+            for row in rows
+        }
+        for position, entry_id in enumerate(body.ids):
+            by_id[entry_id].position = position
+        await db.commit()
+
+    await retry_on_transient_conflict(db, _apply, what="reorder_favorite_tags")
 
 
 @router.get("/{user_id}/ratings", response_model=UserRatingsListResponse)
