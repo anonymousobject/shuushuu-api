@@ -7,6 +7,8 @@ image's score, so the feed actively avoids content the user routinely
 down-rates — not just fails to boost it.
 """
 
+import math
+import random
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,7 +19,7 @@ from app.config import ImageStatus, settings
 from app.models.tag import Tags
 from app.models.user import Users
 from app.models.user_tag_affinity import UserTagAffinity
-from app.schemas.image import TagSummary
+from app.schemas.image import FavoriteAttribution, TagSummary
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 
 
@@ -27,6 +29,83 @@ class RecommendationPage:
     image_ids: list[int]  # this page's ids, score-ordered
     because: dict[int, list[TagSummary]] = field(default_factory=dict)
     profile_ready: bool = False
+
+
+# Within one favorite's list the recency bias is deliberately sharper than the
+# affinity sample's decay: a favorite has <= TASTE_FAV_PER_FAVORITE_CAP recent
+# matches and fresh ones should lead, while still rotating.
+_FAV_RECENCY_DECAY = 0.97
+
+
+@dataclass
+class FavoritePool:
+    attribution: FavoriteAttribution
+    image_ids: list[int]  # newest-first, already visibility/seen-filtered
+
+
+def _weighted_shuffle(ids: list[int], rng: random.Random, decay: float) -> list[int]:
+    """Rank-weighted shuffle (Efraimidis–Spirakis): item at rank r has weight
+    decay**r and key u**(1/w); sorting keys descending favours early ranks while
+    rotating with the rng. Computed in log space — ln(u)/w preserves the exact
+    ordering and, unlike u**(1/w), never underflows deep ranks into 0.0 ties.
+    decay→0 degenerates to the input order, decay=1.0 to a uniform shuffle."""
+    keyed = []
+    ln_decay = math.log(decay) if decay < 1 else 0
+    for rank, iid in enumerate(ids):
+        # Compute key in log space: ln(u) / decay^rank = ln(u) + rank*ln(decay)
+        # (ln(decay) is negative for decay < 1, so this term is negative and increases with rank)
+        u = max(rng.random(), 1e-300)  # random() may return exactly 0.0
+        key = math.log(u) + rank * ln_decay
+        keyed.append((key, iid))
+    keyed.sort(reverse=True)
+    return [iid for _, iid in keyed]
+
+
+def compose_day_list(
+    affinity_ids: list[int],
+    favorite_pools: list[FavoritePool],
+    rng: random.Random,
+    *,
+    feed_size: int,
+    fav_share: float,
+    affinity_decay: float,
+) -> tuple[list[int], dict[int, FavoriteAttribution]]:
+    """Deterministic given the rng: the day's feed order plus per-image favorite
+    attribution. An image listed by any favorite belongs to the favorites side —
+    it is claimed by the lowest-position favorite listing it and removed from the
+    affinity ranking (cross-pool dedupe; favorites attribution wins). Each slot
+    draws favorites with probability fav_share (round-robin across favorites)
+    while any favorites remain; an exhausted side yields its slots to the other.
+    """
+    attribution: dict[int, FavoriteAttribution] = {}
+    fav_lists: list[list[int]] = []
+    for pool in favorite_pools:
+        fresh = [iid for iid in pool.image_ids if iid not in attribution]
+        for iid in fresh:
+            attribution[iid] = pool.attribution
+        if fresh:
+            fav_lists.append(_weighted_shuffle(fresh, rng, _FAV_RECENCY_DECAY))
+    affinity_order = _weighted_shuffle(
+        [iid for iid in affinity_ids if iid not in attribution], rng, affinity_decay
+    )
+
+    day_list: list[int] = []
+    affinity_next = 0
+    fav_cursor = 0
+    while len(day_list) < feed_size and (fav_lists or affinity_next < len(affinity_order)):
+        draw_favorite = bool(fav_lists) and (
+            affinity_next >= len(affinity_order) or rng.random() < fav_share
+        )
+        if draw_favorite:
+            current = fav_lists[fav_cursor % len(fav_lists)]
+            day_list.append(current.pop(0))
+            if not current:
+                fav_lists.remove(current)
+            fav_cursor += 1
+        else:
+            day_list.append(affinity_order[affinity_next])
+            affinity_next += 1
+    return day_list, {iid: attribution[iid] for iid in day_list if iid in attribution}
 
 
 async def get_recommended_images(
