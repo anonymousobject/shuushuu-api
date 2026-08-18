@@ -28,6 +28,7 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 
 | Date | Effort | Docs |
 | --- | --- | --- |
+| 2026-08-17 | Bundled feed comments (`include_comments` on the images list) | [design](2026-Q3/2026-08-17-bundled-feed-comments-design.md) · [impl](2026-Q3/2026-08-17-bundled-feed-comments-impl.md) |
 | 2026-08-01 | External Artist Identity (pixiv IDs without alias tags) | [design](2026-Q3/2026-08-01-external-artist-identity-design.md) · [impl](2026-Q3/2026-08-01-external-artist-identity-impl.md) |
 | 2026-07-30 | Include upload-time tags in tag & user history | [notes](2026-Q3/2026-07-30-tag-history-fix.md) |
 | 2026-07-26 | Seifuku → School Uniform Flip & Reparent Rollout Plan | [impl](2026-Q3/2026-07-26-school-uniform-flip-impl.md) |
@@ -104,4 +105,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-60 efforts, 88 documents.
+61 efforts, 90 documents.

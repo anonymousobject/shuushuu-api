@@ -82,6 +82,7 @@ from app.schemas.audit import (
     ImageTagHistoryListResponse,
     ImageTagHistoryResponse,
 )
+from app.schemas.comment import CommentResponse
 from app.schemas.common import UserSummary
 from app.schemas.image import (
     TAG_TYPE_SORT_ORDER,
@@ -117,6 +118,7 @@ from app.schemas.user import (
     UserResponse,
     UserWithRatingResponse,
 )
+from app.services.comments import comments_for_images
 from app.services.feed_count_cache import get_feed_counts, get_filtered_count
 from app.services.image_processing import (
     create_thumbnail,
@@ -509,6 +511,13 @@ async def list_images(
             "ignored for other viewers."
         ),
     ] = None,
+    include_comments: Annotated[
+        bool,
+        Query(
+            description="Bundle every comment on the returned images into the "
+            "response, grouped by image id (comments map). Default false."
+        ),
+    ] = False,
     db: AsyncSession = Depends(get_db),
     current_user: Users | None = Depends(get_optional_current_user),
     redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
@@ -1082,11 +1091,19 @@ async def list_images(
 
     await stamp_context_sources(db, response_items)
 
+    comments_map: dict[int, list[CommentResponse]] | None = None
+    if include_comments:
+        comments_map = await comments_for_images(
+            db,
+            [img.image_id for img in images],  # type: ignore[misc]
+        )
+
     return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
         images=response_items,
+        comments=comments_map,
     )
 
 

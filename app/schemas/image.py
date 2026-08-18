@@ -10,6 +10,7 @@ from app.config import TagType, settings
 from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
 from app.models.image import ImageBase, VariantStatus
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+from app.schemas.comment import CommentResponse
 from app.schemas.common import UserSummary
 
 # Sort order for tags in image responses: artist → source → character → theme
@@ -298,6 +299,10 @@ class ImageDetailedListResponse(BaseModel):
     page: int
     per_page: int
     images: list[ImageDetailedResponse]
+    # Populated only when the request sets include_comments=true: every
+    # non-deleted comment for the returned images, oldest first, keyed by
+    # image id. Images without comments are absent from the map.
+    comments: dict[int, list[CommentResponse]] | None = None
 
 
 class ImageUploadResponse(BaseModel):
