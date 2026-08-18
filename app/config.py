@@ -325,6 +325,14 @@ class Settings(BaseSettings):
     TASTE_TOP_TAGS: int = Field(default=30, ge=1)  # positive tags used for candidate generation
     TASTE_CANDIDATE_CAP: int = Field(default=3000, ge=1)  # max candidate images scored per request
     TASTE_FEED_POOL: int = Field(default=500, ge=1)  # max scored feed depth (pagination cap)
+    TASTE_SCORE_POOL: int = Field(default=1500, ge=1)  # scored depth the daily sample draws from
+    TASTE_FAV_SHARE: float = Field(
+        default=0.33, ge=0.0, le=1.0
+    )  # per-slot probability of drawing from the favorites pool
+    TASTE_FAV_PER_FAVORITE_CAP: int = Field(default=100, ge=1)  # recent matches per favorite
+    TASTE_SAMPLE_DECAY: float = Field(
+        default=0.997, gt=0.0, le=1.0
+    )  # per-rank weight decay of the affinity sample; 1.0 = uniform over the pool
     TASTE_DISPLAY_MIN_LIFT: float = Field(
         default=1.5, ge=0.0
     )  # analytics display floor; keeps popularity-only tags (e.g. "long hair") out
