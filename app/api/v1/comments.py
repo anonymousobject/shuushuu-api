@@ -30,6 +30,7 @@ from app.schemas.comment import (
 )
 from app.schemas.comment_report import CommentReportCreate, CommentReportResponse
 from app.schemas.common import UserSummary
+from app.services.comments import comment_user_eager_load
 from app.utils.comment_search import (
     COMMENT_SEARCH_TIMEOUT_SECONDS,
     apply_comment_text_search,
@@ -155,11 +156,7 @@ async def list_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute query
     async with statement_timeout(db, search_timeout):
@@ -184,11 +181,7 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     """
     result = await db.execute(
         select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
+        .options(comment_user_eager_load())
         .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
         .where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
     )
@@ -245,11 +238,7 @@ async def get_image_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute
     result = await db.execute(query)
@@ -307,11 +296,7 @@ async def get_user_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute
     result = await db.execute(query)
@@ -434,11 +419,7 @@ async def create_comment(
     # Re-fetch with eager loading for groups
     result = await db.execute(
         select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
+        .options(comment_user_eager_load())
         .where(Comments.post_id == comment.post_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
@@ -492,13 +473,7 @@ async def update_comment(
 
     # Re-fetch with eager loading for groups
     result = await db.execute(
-        select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
-        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+        select(Comments).options(comment_user_eager_load()).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
 
@@ -582,13 +557,7 @@ async def delete_comment(
 
     # Re-fetch with eager loading for groups
     result = await db.execute(
-        select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
-        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+        select(Comments).options(comment_user_eager_load()).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
 
