@@ -7,14 +7,14 @@ from collections.abc import Sequence
 from sqlalchemy import asc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy.orm.strategy_options import _AbstractLoad
+from sqlalchemy.orm.interfaces import LoaderOption
 
 from app.models import Comments, Users
 from app.models.permissions import UserGroups
 from app.schemas.comment import CommentResponse
 
 
-def comment_user_eager_load() -> _AbstractLoad:
+def comment_user_eager_load() -> LoaderOption:
     """Eager-load chain for a comment's author (user -> user_groups -> group)."""
     return (
         selectinload(Comments.user)  # type: ignore[arg-type]
@@ -39,7 +39,7 @@ async def comments_for_images(
             Comments.deleted == False,  # type: ignore[arg-type]  # noqa: E712
             Comments.image_id.in_(image_ids),  # type: ignore[union-attr]
         )
-        .order_by(asc(Comments.date))  # type: ignore[arg-type]
+        .order_by(asc(Comments.date), asc(Comments.post_id))  # type: ignore[arg-type]
         .options(comment_user_eager_load())
     )
     grouped: dict[int, list[CommentResponse]] = {}
