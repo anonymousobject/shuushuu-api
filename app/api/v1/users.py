@@ -1151,6 +1151,17 @@ async def add_favorite_tag(
             )
         # Cap counts only THIS tag-type's favorites (sources and artists
         # are independent categories sharing one table).
+        #
+        # TOCTOU: the count check, the max(position) read, and the INSERT
+        # below aren't in one atomic unit, so two concurrent POSTs from the
+        # same user can both pass the cap at 19 (landing at 21) or both read
+        # the same max_pos (tied positions). Accepted, not locked: prod runs
+        # innodb_snapshot_isolation=ON, under which SELECT...FOR UPDATE
+        # raises error 1020 app-wide, so locking here would trade a cosmetic
+        # race for real 500s under contention. The race is same-user-only
+        # (personal curation, never cross-user), overshoot is bounded to one
+        # per in-flight request, and tied positions self-heal on the next
+        # reorder (which rewrites 0..n-1).
         count = (
             await db.execute(
                 select(func.count())
@@ -1206,6 +1217,8 @@ async def add_favorite_tag(
     link = link_result.scalar_one_or_none()
     if not link:
         raise HTTPException(status_code=404, detail="Link not found")
+    # Same cap-check/max-position TOCTOU tradeoff as the tag path above —
+    # accepted there, not locked; see that comment for why.
     count = (
         await db.execute(
             select(func.count())
