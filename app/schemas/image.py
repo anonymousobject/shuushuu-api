@@ -4,7 +4,7 @@ Pydantic schemas for Image endpoints
 
 from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.config import TagType, settings
 from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
@@ -75,7 +75,7 @@ class TagSummary(BaseModel):
     context_source_tag_id: int | None = None
 
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
     # Cache reverse mapping from type_id to friendly name
     _TYPE_NAME_MAP = {
