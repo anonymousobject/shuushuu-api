@@ -24,7 +24,7 @@ from fastapi import (
 )
 from sqlalchemy import asc, case, delete, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import (
     ImageSortParams,
@@ -32,7 +32,7 @@ from app.api.dependencies import (
     UserRatingsSortParams,
     UserSortParams,
 )
-from app.config import ImageStatus, SuspensionAction, settings
+from app.config import ImageStatus, SuspensionAction, TagType, settings
 from app.core.auth import (
     get_client_ip,
     get_current_user,
@@ -48,8 +48,11 @@ from app.core.redis import get_redis
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
 from app.core.user_loader import image_uploader_load
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
+from app.models.character_source_link import CharacterSourceLinks
+from app.models.character_source_link_picture import CharacterSourceLinkPictures
 from app.models.permissions import UserGroups
 from app.models.refresh_token import RefreshTokens
+from app.models.user_favorite import UserFavoriteLinks, UserFavoriteTags
 from app.models.user_suspension import UserSuspensions
 from app.models.user_tag_affinity import UserTagAffinity
 from app.schemas.image import (
@@ -57,12 +60,17 @@ from app.schemas.image import (
     ImageDetailedResponse,
     ImageWithRatingResponse,
     UserRatingsListResponse,
+    thumbnail_url_for,
 )
+from app.schemas.tag import LinkedTag, LinkPictureInfo
 from app.schemas.taste_profile import TasteProfileResponse, TasteProfileSummary, TasteProfileTag
 from app.schemas.user import (
     AcknowledgeWarningsResponse,
+    FavoriteCharacterEntry,
+    FavoriteTagEntry,
     UserCreate,
     UserCreateResponse,
+    UserFavoriteTagsResponse,
     UserListResponse,
     UserPrivateResponse,
     UserResponse,
@@ -950,6 +958,123 @@ async def get_user_favorites(
         per_page=pagination.per_page,
         images=[ImageDetailedResponse.model_validate(img) for img in images],
     )
+
+
+@router.get("/{user_id}/favorite-tags", response_model=UserFavoriteTagsResponse)
+async def get_user_favorite_tags(
+    user_id: Annotated[int, Path(description="User ID")],
+    db: AsyncSession = Depends(get_db),
+) -> UserFavoriteTagsResponse:
+    """
+    A user's public profile favorites, grouped and position-ordered.
+
+    Characters are per (character, source) link and carry the link's
+    picture when one is set and its image is still publicly visible —
+    the same read-time re-check the tag-detail embed does.
+    """
+    user_result = await db.execute(select(Users).where(Users.user_id == user_id))  # type: ignore[arg-type]
+    if not user_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="User not found")
+
+    char_tags = aliased(Tags)
+    src_tags = aliased(Tags)
+    link_rows = await db.execute(
+        select(  # type: ignore[call-overload, misc]
+            UserFavoriteLinks.link_id,
+            UserFavoriteLinks.position,
+            char_tags.tag_id,
+            char_tags.title,
+            char_tags.type,
+            char_tags.usage_count,
+            src_tags.tag_id,
+            src_tags.title,
+            src_tags.type,
+            src_tags.usage_count,
+            CharacterSourceLinkPictures.image_id,
+            CharacterSourceLinkPictures.crop_x,
+            CharacterSourceLinkPictures.crop_y,
+            CharacterSourceLinkPictures.crop_w,
+            CharacterSourceLinkPictures.crop_h,
+            Images.filename,
+            Images.status,
+            Images.r2_location,
+        )
+        .join(CharacterSourceLinks, CharacterSourceLinks.id == UserFavoriteLinks.link_id)
+        .join(char_tags, char_tags.tag_id == CharacterSourceLinks.character_tag_id)
+        .join(src_tags, src_tags.tag_id == CharacterSourceLinks.source_tag_id)
+        .outerjoin(
+            CharacterSourceLinkPictures,
+            CharacterSourceLinkPictures.link_id == CharacterSourceLinks.id,
+        )
+        .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
+        .where(UserFavoriteLinks.user_id == user_id)
+        .order_by(UserFavoriteLinks.position)
+    )
+    characters = []
+    for row in link_rows.all():
+        (
+            link_id,
+            position,
+            c_id,
+            c_title,
+            c_type,
+            c_usage,
+            s_id,
+            s_title,
+            s_type,
+            s_usage,
+            pic_image_id,
+            crop_x,
+            crop_y,
+            crop_w,
+            crop_h,
+            filename,
+            status,
+            r2_location,
+        ) = row
+        picture = None
+        # Re-checked at read time: a deactivated image must not leak through.
+        if pic_image_id is not None and status in PUBLIC_IMAGE_STATUSES:
+            picture = LinkPictureInfo(
+                image_id=pic_image_id,
+                thumbnail_url=thumbnail_url_for(filename, status, r2_location),
+                crop_x=crop_x,
+                crop_y=crop_y,
+                crop_w=crop_w,
+                crop_h=crop_h,
+            )
+        characters.append(
+            FavoriteCharacterEntry(
+                link_id=link_id,
+                position=position,
+                character=LinkedTag(tag_id=c_id, title=c_title, type=c_type, usage_count=c_usage),
+                source=LinkedTag(tag_id=s_id, title=s_title, type=s_type, usage_count=s_usage),
+                picture=picture,
+            )
+        )
+
+    tag_rows = await db.execute(
+        select(  # type: ignore[call-overload]
+            UserFavoriteTags.position,
+            Tags.tag_id,
+            Tags.title,
+            Tags.type,
+            Tags.usage_count,
+        )
+        .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)
+        .where(UserFavoriteTags.user_id == user_id)
+        .order_by(UserFavoriteTags.position)
+    )
+    sources: list[FavoriteTagEntry] = []
+    artists: list[FavoriteTagEntry] = []
+    for position, tag_id, title, tag_type, usage_count in tag_rows.all():
+        entry = FavoriteTagEntry(
+            position=position,
+            tag=LinkedTag(tag_id=tag_id, title=title, type=tag_type, usage_count=usage_count),
+        )
+        (sources if tag_type == TagType.SOURCE else artists).append(entry)
+
+    return UserFavoriteTagsResponse(characters=characters, sources=sources, artists=artists)
 
 
 @router.get("/{user_id}/ratings", response_model=UserRatingsListResponse)

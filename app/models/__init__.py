@@ -59,6 +59,7 @@ from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.tag_mapping import TagMappings
 from app.models.user import Users
+from app.models.user_favorite import UserFavoriteLinks, UserFavoriteTags
 from app.models.user_tag_affinity import UserTagAffinity
 
 __all__ = [
@@ -76,6 +77,8 @@ __all__ = [
     "TagMappings",
     "CharacterSourceLinks",
     "CharacterSourceLinkPictures",
+    "UserFavoriteLinks",
+    "UserFavoriteTags",
     "TagAuditLog",
     "TagHistory",
     "ImageRatings",
