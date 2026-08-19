@@ -5,6 +5,13 @@ on:
     branches: [main, dev]
   pull_request:
 
+# Supersede in-flight runs when a newer commit lands on the same ref. Without
+# this a quick follow-up push left the first run going to completion alongside
+# the second, verifying a commit nobody was waiting on any more.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint & Format Check

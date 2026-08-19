@@ -7,6 +7,12 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+# Cancel an in-progress review when a newer commit lands on the same PR, so we
+# don't burn quota reviewing a superseded diff or post duplicate comment sets.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   review:
     name: Claude Review
