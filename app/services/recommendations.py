@@ -1,13 +1,13 @@
 """Live scoring for the personalized /images/recommended feed.
 
 Reads the nightly-precomputed user_tag_affinity profile and scores a capped,
-recency-biased candidate set at request time (measured ≈49 ms for the heaviest
-profile on production-scale data). Negative-affinity tags subtract from an
-image's score, so the feed actively avoids content the user routinely
-down-rates — not just fails to boost it. The day list draws from two pools —
-scored affinity candidates and live favorite recall — composed and shuffled
-with a seed keyed to (user, UTC date) so pagination is stable within a day and
-the feed rotates across days.
+recency-biased candidate set at request time (the scoring query alone measured
+≈49 ms for the heaviest profile on production-scale data). Negative-affinity
+tags subtract from an image's score, so the feed actively avoids content the
+user routinely down-rates — not just fails to boost it. The day list draws
+from two pools — scored affinity candidates and live favorite recall —
+composed and shuffled with a seed keyed to (user, UTC date) so pagination is
+stable within a day and the feed rotates across days.
 """
 
 import math

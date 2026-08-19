@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 from app.config import ImageStatus, TagType
@@ -9,6 +11,7 @@ from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user_favorite import UserFavoriteLinks, UserFavoriteTags
 from app.models.user_tag_affinity import UserTagAffinity
+from app.services.recommendations import get_recommended_images
 
 pytestmark = [pytest.mark.api]
 
@@ -275,3 +278,40 @@ async def test_seen_excluded_from_favorites_pool(
     resp = await authenticated_client.get("/api/v1/images/recommended")
     ids = {im["image_id"] for im in resp.json()["images"]}
     assert 9101 not in ids
+
+
+async def test_day_seed_is_stable_within_a_day_and_rotates_across_days(
+    db_session, sample_user, test_user
+):
+    """Calling the service directly (no affinity profile — favorites-only pool
+    of 10) proves the day param, not just the endpoint's incidental behavior:
+    same day -> identical page; a different day -> same membership, reshuffled
+    order. With 10 items the odds an independently-seeded shuffle reproduces
+    the exact same order by chance are negligible (roughly 1/10! ≈ 1e-7 even
+    under a uniform shuffle; compose_day_list's rank-weighted shuffle is not
+    perfectly uniform, but nowhere near enough to make a coincidental match
+    plausible), so treat the differing-order assertion as effectively exact
+    rather than a true flake risk."""
+    db_session.add(Tags(tag_id=321, type=TagType.SOURCE, title="DaySeed"))
+    for i in range(10):
+        _img(db_session, 9200 + i, test_user.user_id)
+    await db_session.flush()
+    for i in range(10):
+        db_session.add(TagLinks(tag_id=321, image_id=9200 + i, user_id=test_user.user_id))
+    db_session.add(UserFavoriteTags(user_id=sample_user.user_id, tag_id=321, position=0))
+    await db_session.commit()
+
+    page_a1 = await get_recommended_images(
+        db_session, sample_user, page=1, per_page=10, day=date(2026, 1, 1)
+    )
+    page_a2 = await get_recommended_images(
+        db_session, sample_user, page=1, per_page=10, day=date(2026, 1, 1)
+    )
+    assert page_a1.image_ids == page_a2.image_ids
+    assert set(page_a1.image_ids) == {9200 + i for i in range(10)}
+
+    page_b = await get_recommended_images(
+        db_session, sample_user, page=1, per_page=10, day=date(2026, 1, 2)
+    )
+    assert set(page_b.image_ids) == set(page_a1.image_ids)
+    assert page_b.image_ids != page_a1.image_ids
