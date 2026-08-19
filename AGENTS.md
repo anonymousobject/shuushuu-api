@@ -198,3 +198,5 @@ Single-context: `CONTEXT.md` + `docs/adr/` at the repo root — this repo is the
 Plans live in `docs/plans/<YYYY>-Q<N>/` — the quarter comes from the date in the filename — as `<date>-<slug>-design.md` (motivation and approach) and `<date>-<slug>-impl.md` (the executable plan). Commit both; tests and scripts cite them by path. `docs/plans/README.md` is a generated index: rerun `scripts/gen_plans_index.py` after adding or moving a plan.
 
 A plan is a point-in-time record: don't revise one after it ships, and don't treat an old one as describing current code. When implementation settles a decision someone will re-litigate later, distill it into an ADR in `docs/adr/` — that's the durable record, and it's the one to keep current.
+
+Documentation-only commits — `docs/**` and `CONTEXT.md`, but not `docs/agents/` — may be committed directly to `main`; ADRs, plan documents, and CONTEXT terms don't need a branch or PR. Everything else, including `docs/agents/` and this file, still goes branch → PR.
