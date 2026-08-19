@@ -16,8 +16,10 @@ from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus, settings
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.tag import Tags
 from app.models.user import Users
+from app.models.user_favorite import UserFavoriteLinks, UserFavoriteTags
 from app.models.user_tag_affinity import UserTagAffinity
 from app.schemas.image import FavoriteAttribution, TagSummary
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
@@ -227,3 +229,129 @@ async def get_recommended_images(
         for iid, rows in by_image.items()
     }
     return RecommendationPage(total=total, image_ids=page_ids, because=because, profile_ready=True)
+
+
+def _visibility_sql(show_all: bool, hide_reposts: bool) -> tuple[str, str, dict[str, Any]]:
+    """The status/repost filter fragments both feed queries embed (alias ``i``)."""
+    status_clause = "" if show_all else "AND i.status IN :public_statuses"
+    hide_reposts_clause = "AND i.status != :repost_status" if hide_reposts else ""
+    params: dict[str, Any] = {}
+    if not show_all:
+        params["public_statuses"] = list(PUBLIC_IMAGE_STATUSES)
+    if hide_reposts:
+        params["repost_status"] = int(ImageStatus.REPOST)
+    return status_clause, hide_reposts_clause, params
+
+
+async def load_favorite_pools(db: AsyncSession, user: Users, *, cap: int) -> list[FavoritePool]:
+    """The user's favorites as per-favorite recent-match lists, ordered combos
+    (by position) then favorite tags (sources before artists, by position).
+    Recall is per favorite so the composer's round-robin can keep one prolific
+    favorite from monopolising the share; the seen/visibility filter runs once
+    over the union. Matching alias-expands stored (canonical) tag ids."""
+    combo_rows = (
+        await db.execute(
+            select(  # type: ignore[call-overload]
+                CharacterSourceLinks.character_tag_id, CharacterSourceLinks.source_tag_id
+            )
+            .join(UserFavoriteLinks, UserFavoriteLinks.link_id == CharacterSourceLinks.id)
+            .where(UserFavoriteLinks.user_id == user.user_id)
+            .order_by(UserFavoriteLinks.position)
+        )
+    ).all()
+    tag_rows = (
+        await db.execute(
+            select(UserFavoriteTags.tag_id)  # type: ignore[call-overload]
+            .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)
+            .where(UserFavoriteTags.user_id == user.user_id)
+            .order_by(Tags.type, UserFavoriteTags.position)
+        )
+    ).all()
+    if not combo_rows and not tag_rows:
+        return []
+
+    referenced = {tid for row in combo_rows for tid in row} | {r[0] for r in tag_rows}
+    summaries = {
+        r.tag_id: TagSummary(tag_id=r.tag_id, title=r.title, type=r.type)
+        for r in (
+            await db.execute(
+                select(Tags.tag_id, Tags.title, Tags.type).where(  # type: ignore[call-overload]
+                    Tags.tag_id.in_(referenced)  # type: ignore[union-attr]
+                )
+            )
+        ).all()
+    }
+    expand: dict[int, list[int]] = {tid: [tid] for tid in referenced}
+    for r in (
+        await db.execute(
+            select(Tags.tag_id, Tags.alias_of).where(  # type: ignore[call-overload]
+                Tags.alias_of.in_(referenced)  # type: ignore[union-attr]
+            )
+        )
+    ).all():
+        expand[r.alias_of].append(r.tag_id)
+
+    tag_recall = text(
+        """
+        SELECT DISTINCT tl.image_id FROM tag_links tl
+        WHERE tl.tag_id IN :ids ORDER BY tl.image_id DESC LIMIT :cap
+        """
+    ).bindparams(bindparam("ids", expanding=True))
+    combo_recall = text(
+        """
+        SELECT DISTINCT tl1.image_id
+        FROM tag_links tl1 JOIN tag_links tl2 ON tl2.image_id = tl1.image_id
+        WHERE tl1.tag_id IN :char_ids AND tl2.tag_id IN :src_ids
+        ORDER BY tl1.image_id DESC LIMIT :cap
+        """
+    ).bindparams(bindparam("char_ids", expanding=True), bindparam("src_ids", expanding=True))
+
+    recalled: list[tuple[FavoriteAttribution, list[int]]] = []
+    for char_id, src_id in combo_rows:
+        rows = (
+            await db.execute(
+                combo_recall,
+                {"char_ids": expand[char_id], "src_ids": expand[src_id], "cap": cap},
+            )
+        ).all()
+        recalled.append(
+            (
+                FavoriteAttribution(character=summaries[char_id], source=summaries[src_id]),
+                [r.image_id for r in rows],
+            )
+        )
+    for (tag_id,) in tag_rows:
+        rows = (await db.execute(tag_recall, {"ids": expand[tag_id], "cap": cap})).all()
+        recalled.append((FavoriteAttribution(tag=summaries[tag_id]), [r.image_id for r in rows]))
+
+    all_ids = {iid for _, ids in recalled for iid in ids}
+    if not all_ids:
+        return [FavoritePool(attribution=a, image_ids=[]) for a, _ in recalled]
+    status_clause, hide_reposts_clause, params = _visibility_sql(
+        user.show_all_images == 1, user.hide_reposts == 1
+    )
+    filter_stmt = text(
+        f"""
+        SELECT i.image_id FROM images i
+        WHERE i.image_id IN :ids
+          AND i.user_id != :uid
+          {status_clause}
+          {hide_reposts_clause}
+          AND NOT EXISTS (
+              SELECT 1 FROM favorites f
+              WHERE f.user_id = :uid AND f.image_id = i.image_id)
+          AND NOT EXISTS (
+              SELECT 1 FROM image_ratings r
+              WHERE r.user_id = :uid AND r.image_id = i.image_id)
+        """
+    ).bindparams(bindparam("ids", expanding=True))
+    allowed = {
+        r.image_id
+        for r in (
+            await db.execute(filter_stmt, {"ids": list(all_ids), "uid": user.user_id, **params})
+        ).all()
+    }
+    return [
+        FavoritePool(attribution=a, image_ids=[iid for iid in ids if iid in allowed])
+        for a, ids in recalled
+    ]
