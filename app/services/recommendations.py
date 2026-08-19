@@ -78,8 +78,9 @@ def compose_day_list(
 ) -> tuple[list[int], dict[int, FavoriteAttribution]]:
     """Deterministic given the rng: the day's feed order plus per-image favorite
     attribution. An image listed by any favorite belongs to the favorites side —
-    it is claimed by the lowest-position favorite listing it and removed from the
-    affinity ranking (cross-pool dedupe; favorites attribution wins). Each slot
+    it is claimed by the earliest pool in favorite_pools listing it (callers pass
+    combos before tag favorites, each category in position order) and removed from
+    the affinity ranking (cross-pool dedupe; favorites attribution wins). Each slot
     draws favorites with probability fav_share (round-robin across favorites)
     while any favorites remain; an exhausted side yields its slots to the other.
     """
