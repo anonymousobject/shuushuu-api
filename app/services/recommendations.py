@@ -45,15 +45,17 @@ class FavoritePool:
 
 def _weighted_shuffle(ids: list[int], rng: random.Random, decay: float) -> list[int]:
     """Rank-weighted shuffle (Efraimidis–Spirakis): item at rank r has weight
-    decay**r and key u**(1/w); sorting keys descending favours early ranks while
-    rotating with the rng. Computed in log space — ln(u)/w preserves the exact
-    ordering and, unlike u**(1/w), never underflows deep ranks into 0.0 ties.
-    decay→0 degenerates to the input order, decay=1.0 to a uniform shuffle."""
+    decay**r and sorting by u**(1/w) descending favours early ranks while
+    rotating with the rng. Computed via the exact Gumbel-max equivalent
+    rank*ln(decay) - ln(-ln(u)) — the same permutation for the same draws
+    (both sort E/w ascending, E = -ln(u)), but the rank term is linear so it
+    never under- or overflows at any rank or decay. decay→0 degenerates to
+    the input order, decay=1.0 to a uniform shuffle."""
+    ln_decay = math.log(decay)
     keyed = []
     for rank, iid in enumerate(ids):
-        weight = max(decay**rank, 1e-300)  # decay**rank can underflow to 0.0
         u = max(rng.random(), 1e-300)  # random() may return exactly 0.0
-        keyed.append((math.log(u) / weight, iid))
+        keyed.append((rank * ln_decay - math.log(-math.log(u)), iid))
     keyed.sort(reverse=True)
     return [iid for _, iid in keyed]
 
