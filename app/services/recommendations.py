@@ -327,9 +327,8 @@ async def load_favorite_pools(db: AsyncSession, user: Users, *, cap: int) -> lis
     all_ids = {iid for _, ids in recalled for iid in ids}
     if not all_ids:
         return [FavoritePool(attribution=a, image_ids=[]) for a, _ in recalled]
-    status_clause, hide_reposts_clause, params = _visibility_sql(
-        user.show_all_images == 1, user.hide_reposts == 1
-    )
+    show_all = user.show_all_images == 1
+    status_clause, hide_reposts_clause, params = _visibility_sql(show_all, user.hide_reposts == 1)
     filter_stmt = text(
         f"""
         SELECT i.image_id FROM images i
@@ -345,6 +344,8 @@ async def load_favorite_pools(db: AsyncSession, user: Users, *, cap: int) -> lis
               WHERE r.user_id = :uid AND r.image_id = i.image_id)
         """
     ).bindparams(bindparam("ids", expanding=True))
+    if not show_all:
+        filter_stmt = filter_stmt.bindparams(bindparam("public_statuses", expanding=True))
     allowed = {
         r.image_id
         for r in (
