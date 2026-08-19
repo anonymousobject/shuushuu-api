@@ -292,7 +292,7 @@ async def load_favorite_pools(db: AsyncSession, user: Users, *, cap: int) -> lis
             )
             .join(UserFavoriteLinks, UserFavoriteLinks.link_id == CharacterSourceLinks.id)
             .where(UserFavoriteLinks.user_id == user.user_id)
-            .order_by(UserFavoriteLinks.position)
+            .order_by(UserFavoriteLinks.position, UserFavoriteLinks.link_id)
         )
     ).all()
     tag_rows = (
@@ -300,7 +300,7 @@ async def load_favorite_pools(db: AsyncSession, user: Users, *, cap: int) -> lis
             select(UserFavoriteTags.tag_id)  # type: ignore[call-overload]
             .join(Tags, Tags.tag_id == UserFavoriteTags.tag_id)
             .where(UserFavoriteTags.user_id == user.user_id)
-            .order_by(Tags.type, UserFavoriteTags.position)
+            .order_by(Tags.type, UserFavoriteTags.position, UserFavoriteTags.tag_id)
         )
     ).all()
     if not combo_rows and not tag_rows:

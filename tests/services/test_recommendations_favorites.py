@@ -122,3 +122,27 @@ async def test_hide_reposts_respected(db_session, fav_world, test_user):
     pools = await load_favorite_pools(db_session, fav_world, cap=100)
     source = next(p for p in pools if p.attribution.tag and p.attribution.tag.tag_id == SRC)
     assert 9608 not in source.image_ids
+
+
+TIE_LOW = 9705
+TIE_HIGH = 9706
+
+
+async def test_pool_order_deterministic_when_positions_tie(db_session, sample_user):
+    """position is non-unique (the add flow accepts a same-position race, see
+    app/api/v1/users.py's _apply_tag doc comment); tag_id must break the tie
+    so pool order is total and repeated calls agree.
+    """
+    db_session.add(Tags(tag_id=TIE_HIGH, type=TagType.SOURCE, title="tie high"))
+    db_session.add(Tags(tag_id=TIE_LOW, type=TagType.SOURCE, title="tie low"))
+    # Inserted high-id-first to show insertion order isn't what decides this.
+    db_session.add(UserFavoriteTags(user_id=sample_user.user_id, tag_id=TIE_HIGH, position=0))
+    db_session.add(UserFavoriteTags(user_id=sample_user.user_id, tag_id=TIE_LOW, position=0))
+    await db_session.commit()
+
+    first = await load_favorite_pools(db_session, sample_user, cap=100)
+    second = await load_favorite_pools(db_session, sample_user, cap=100)
+
+    order = [p.attribution.tag.tag_id for p in first]
+    assert order == [TIE_LOW, TIE_HIGH]
+    assert [p.attribution.tag.tag_id for p in second] == order
