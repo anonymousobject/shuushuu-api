@@ -1164,13 +1164,17 @@ async def get_recommended(
     db: AsyncSession = Depends(get_db),
 ) -> RecommendedImagesResponse:
     """
-    Personalized feed: images scored against the caller's taste profile.
+    Personalized feed: images scored against the caller's taste profile, plus
+    favorites joined in live.
 
     Live-scored per request from the nightly-refreshed user_tag_affinity table.
     Excludes images the user favorited, rated, or uploaded; applies the standard
-    status-visibility rules and the user's hide_reposts setting. Feed depth is
-    capped at TASTE_FEED_POOL scored images. `profile_ready=false` with an empty
-    list means the user has no profile yet (cold start) — not an error.
+    status-visibility rules and the user's hide_reposts setting. Favorites join
+    the feed live with a ~TASTE_FAV_SHARE page share, and matched images carry
+    `because_favorite` attribution. The feed order reshuffles daily — seeded
+    per user and UTC date, so it stays stable across pages within a day. Feed
+    depth is capped at TASTE_FEED_POOL images. `profile_ready=false` may now
+    accompany a favorites-only feed, not just an empty cold-start one.
     """
     rec = await get_recommended_images(
         db, current_user, page=pagination.page, per_page=pagination.per_page
@@ -1203,13 +1207,14 @@ async def get_recommended(
             continue
         item = RecommendedImageResponse.from_db_model(img, is_favorited=False)
         item.because_tags = rec.because.get(iid, [])
+        item.because_favorite = rec.because_favorite.get(iid)
         items.append(item)
     await stamp_context_sources(db, items)
     return RecommendedImagesResponse(
         total=rec.total,
         page=pagination.page,
         per_page=pagination.per_page,
-        profile_ready=True,
+        profile_ready=rec.profile_ready,
         images=items,
     )
 
