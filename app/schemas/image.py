@@ -423,10 +423,20 @@ class ImageUploadDuplicateResponse(BaseModel):
     existing_image_id: int
 
 
+class FavoriteAttribution(BaseModel):
+    """The user's favorite that drew a feed image: exactly one of ``tag``
+    (source/artist favorite) or ``character``+``source`` (combo favorite) is set."""
+
+    tag: TagSummary | None = None
+    character: TagSummary | None = None
+    source: TagSummary | None = None
+
+
 class RecommendedImageResponse(ImageDetailedResponse):
     """A recommended image plus the profile tags that most contributed to its score."""
 
     because_tags: list[TagSummary] = []
+    because_favorite: FavoriteAttribution | None = None
 
 
 class RecommendedImagesResponse(BaseModel):
