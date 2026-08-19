@@ -50,13 +50,10 @@ def _weighted_shuffle(ids: list[int], rng: random.Random, decay: float) -> list[
     ordering and, unlike u**(1/w), never underflows deep ranks into 0.0 ties.
     decay→0 degenerates to the input order, decay=1.0 to a uniform shuffle."""
     keyed = []
-    ln_decay = math.log(decay) if decay < 1 else 0
     for rank, iid in enumerate(ids):
-        # Compute key in log space: ln(u) / decay^rank = ln(u) + rank*ln(decay)
-        # (ln(decay) is negative for decay < 1, so this term is negative and increases with rank)
+        weight = max(decay**rank, 1e-300)  # decay**rank can underflow to 0.0
         u = max(rng.random(), 1e-300)  # random() may return exactly 0.0
-        key = math.log(u) + rank * ln_decay
-        keyed.append((key, iid))
+        keyed.append((math.log(u) / weight, iid))
     keyed.sort(reverse=True)
     return [iid for _, iid in keyed]
 
