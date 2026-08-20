@@ -2539,6 +2539,11 @@ class TestOwnerStatusChangeSyncsMlSuggestions:
 
 
 @pytest.mark.api
+# mariadb_only: usage_count is maintained by DB triggers, which exist only in
+# the MariaDB migration chain. These become the acceptance tests for whatever
+# mechanism the Postgres counters decision picks (see the tests-on-postgres
+# design doc's deferred list).
+@pytest.mark.mariadb_only
 class TestTagUsageCount:
     """Tests for automatic tag usage_count updates via database triggers."""
 
@@ -3177,6 +3182,7 @@ class TestCommentFilters:
         assert response.status_code == 200
 
     @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.mariadb_only  # asserts MySQL boolean-mode operator semantics
     async def test_commentsearch_boolean_mode_passes_operators_through(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3391,6 +3397,7 @@ class TestCommentFilters:
         assert response.status_code == 200
 
     @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.mariadb_only  # asserts MySQL natural-language-mode OR semantics
     async def test_commentsearch_natural_mode_still_available(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import (
     ColumnElement,
     Integer,
+    Numeric,
     asc,
     case,
     cast,
@@ -522,7 +523,14 @@ async def get_tag_suggestion_stats(
     # Acceptance rate: accepted / (accepted + rejected), null if no decided suggestions
     decided_col = accepted_col + rejected_col
     acceptance_rate_col = case(
-        (decided_col > 0, func.round(accepted_col * 100.0 / decided_col, 1)),
+        # cast to Numeric: the float literal makes the expression double
+        # precision, and Postgres has no round(double precision, int) —
+        # two-arg round needs numeric. MariaDB reads it as DECIMAL(10,4),
+        # same rounding either way.
+        (
+            decided_col > 0,
+            func.round(cast(accepted_col * 100.0 / decided_col, Numeric(10, 4)), 1),
+        ),
         else_=None,
     ).label("acceptance_rate")
 

@@ -28,6 +28,7 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 
 | Date | Effort | Docs |
 | --- | --- | --- |
+| 2026-08-20 | Tests on Postgres — design | [design](2026-Q3/2026-08-20-tests-on-postgres-design.md) · [impl](2026-Q3/2026-08-20-tests-on-postgres-impl.md) |
 | 2026-08-20 | Postgres Proof-of-Concept Implementation Plan | [impl](2026-Q3/2026-08-20-postgres-poc-impl.md) |
 | 2026-08-18 | For You v2: favorites as a live input + daily rotation | [design](2026-Q3/2026-08-18-for-you-favorites-rotation-design.md) · [impl](2026-Q3/2026-08-18-for-you-favorites-rotation-impl.md) |
 | 2026-08-17 | Bundled feed comments (`include_comments` on the images list) | [design](2026-Q3/2026-08-17-bundled-feed-comments-design.md) · [impl](2026-Q3/2026-08-17-bundled-feed-comments-impl.md) |
@@ -107,4 +108,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-63 efforts, 93 documents.
+64 efforts, 95 documents.

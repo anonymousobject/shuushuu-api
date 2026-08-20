@@ -148,6 +148,69 @@ jobs:
             htmlcov/
           retention-days: 7
 
+  test-postgres:
+    name: Tests (Postgres)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: shuushuu
+          POSTGRES_PASSWORD: shuushuu_ci_password
+          POSTGRES_DB: shuushuu_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U shuushuu -d shuushuu_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+          --tmpfs /var/lib/postgresql/data:rw
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Run tests
+        env:
+          SECRET_KEY: test-secret-key-for-ci-only-not-for-production-use-min-32-chars
+          # Same URL for app-level and test engines so nothing reaching
+          # AsyncSessionLocal picks the wrong backend (mirrors the MariaDB job).
+          DATABASE_URL: postgresql+asyncpg://shuushuu:shuushuu_ci_password@127.0.0.1:5432/shuushuu_test
+          TEST_DATABASE_URL: postgresql+asyncpg://shuushuu:shuushuu_ci_password@127.0.0.1:5432/shuushuu_test
+          ENVIRONMENT: development
+          DEBUG: "True"
+          REDIS_URL: redis://localhost:6379/0
+        # No --schema-sync: that suite compares models against the MariaDB
+        # migration chain (mariadb_only by nature).
+        run: |
+          uv run pytest tests/ -v --tb=short --maxfail=5 -n auto --dist loadgroup
+
   # Optional: Security scanning
   security:
     name: Security Scan
