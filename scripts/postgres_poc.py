@@ -68,6 +68,17 @@ async def setup() -> int:
         # username/email/tag-title columns need it (see types.ci_string).
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
         await conn.run_sync(SQLModel.metadata.create_all)
+        # citext has no length modifier, so the VARCHAR(n) caps these columns
+        # had on MariaDB move to CHECK constraints (Postgres-only: a CHECK in
+        # the models' __table_args__ would change the MariaDB DDL and break
+        # schema-sync; a real migration would put these in the PG baseline).
+        for ddl in (
+            "ALTER TABLE users ADD CONSTRAINT ck_users_username_len"
+            " CHECK (char_length(username) <= 30)",
+            "ALTER TABLE users ADD CONSTRAINT ck_users_email_len CHECK (char_length(email) <= 120)",
+            "ALTER TABLE tags ADD CONSTRAINT ck_tags_title_len CHECK (char_length(title) <= 255)",
+        ):
+            await conn.execute(text(ddl))
     async with engine.connect() as conn:
         count = (
             await conn.execute(
