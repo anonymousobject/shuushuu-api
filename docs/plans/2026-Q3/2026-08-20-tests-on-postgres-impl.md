@@ -50,9 +50,18 @@
 
 ### Task 4: Full-suite triage on Postgres
 
-**Files:** As discovered — expect touches in fulltext-mode tests (`tests/api/v1/test_comments.py`, `test_images.py`, tags search tests) and any fixture with dialect-specific SQL.
+**Files:** As discovered. Survey-derived inventory (test-infra survey, 2026-08-20) of expected failures and their dispositions:
 
-- [ ] Run: `TEST_DATABASE_URL=postgresql+asyncpg://... uv run pytest tests/ -q -n 4 --dist loadgroup`; triage every failure per the design rule (fix bugs; `mariadb_only` only for MariaDB-defined semantics; never weaken a MariaDB assertion).
+| Site | Disposition |
+|---|---|
+| `tests/api/v1/test_images.py` ~3085 (BOOLEAN mode), ~3145 (CJK/no-ngram); `test_tags.py` ~1083/1111/1164/1242 (stopwords, min token, boolean ops, tokenization); `test_comments.py` ~155 | `mariadb_only` — InnoDB tokenizer semantics |
+| `tests/api/v1/test_images.py` ~2203, 2239, 2306, 2568, 2578, 2606, 2616 — trigger-maintained counter assertions (`usage_count`, `images.favorites`, `users.posts`) | `mariadb_only` **with a comment naming the counters decision** — these are the acceptance tests for whichever mechanism the counters ADR picks; on a create_all PG schema no triggers exist |
+| `tests/integration/test_statement_timeout.py` (`@@SESSION.max_statement_time`, `SLEEP(2)`) | **rewrite dual-dialect** (`SHOW statement_timeout` / `pg_sleep`) — the app code is already dual-dialect; the property is not MariaDB-defined |
+| `tests/integration/test_fk_constraint_names.py` | `mariadb_only` — asserts the InnoDB per-schema FK-name convention; on PG, create_all makes model↔DB name parity trivially true |
+| `tests/models/test_ml_tag_suggestion.py` sync-engine test | inspect; likely portable via async engine or `mariadb_only` if it probes migration DDL |
+| Everything else (72 `needs_commit` tests are mostly ML-pipeline, not fulltext; seeding is ORM throughout) | expected to pass; failures are bugs to fix |
+
+- [ ] Run: `./run-tests.sh --pg` (full, `-n 4 --dist loadgroup`); triage per the table and the design rule (never weaken a MariaDB assertion).
 - [ ] Re-run both backends green.
 - [ ] Commit per logical fix, then: `feat(tests-pg): suite green on Postgres`
 
