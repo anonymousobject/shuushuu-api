@@ -104,7 +104,7 @@ class Privmsgs(PrivmsgBase, table=True):
     # Public timestamp
     date: datetime = Field(
         default=None,
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     )
 
     # Note: Relationships are intentionally omitted.

@@ -51,7 +51,7 @@ class UserFavoriteLinks(SQLModel, table=True):
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     )
 
     # Relationships intentionally omitted (house style).
@@ -89,5 +89,5 @@ class UserFavoriteTags(SQLModel, table=True):
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     )

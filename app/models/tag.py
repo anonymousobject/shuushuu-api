@@ -115,7 +115,7 @@ class Tags(TagBase, table=True):
     # Public timestamp
     date_added: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     )
 
     # Usage count (number of images with this tag)

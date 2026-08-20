@@ -8,21 +8,25 @@ tzinfo=UTC on read. Naive datetimes are rejected on bind to avoid ambiguous
 UnsignedInt: INT UNSIGNED, matching the legacy schema's ID columns. Models must
 declare the same signedness as the migrations, or create_all-built schemas
 (schema-sync tests) fail FK creation with errno 150 (signed PK <- unsigned FK).
+Postgres has no unsigned ints, so the variant maps to plain INTEGER there
+(values in these columns stay well under the signed 32-bit ceiling today; a
+real data migration must re-verify that).
 
 UnsignedSmallInt: SMALLINT UNSIGNED, same rationale, for the ml_models
-dictionary table (small enough to fit SMALLINT) and its FKs.
+dictionary table (small enough to fit SMALLINT) and its FKs. Plain SMALLINT
+on Postgres.
 """
 
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, Integer, SmallInteger
 from sqlalchemy.dialects.mysql import INTEGER, SMALLINT
 from sqlalchemy.types import TypeDecorator
 
 # Shared type instances, not classes — use as Column(UnsignedInt, ...); don't call them.
-UnsignedInt = INTEGER(unsigned=True)
-UnsignedSmallInt = SMALLINT(unsigned=True)
+UnsignedInt = INTEGER(unsigned=True).with_variant(Integer(), "postgresql")
+UnsignedSmallInt = SMALLINT(unsigned=True).with_variant(SmallInteger(), "postgresql")
 
 
 class UtcDateTime(TypeDecorator[datetime]):

@@ -62,7 +62,7 @@ class RefreshTokens(SQLModel, table=True):
 
     # Expiration
     created_at: datetime = Field(
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     )
     expires_at: datetime = Field(sa_column=Column(UtcDateTime, nullable=False))
 

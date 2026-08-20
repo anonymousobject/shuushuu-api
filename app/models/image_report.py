@@ -97,7 +97,7 @@ class ImageReports(ImageReportBase, table=True):
     # Public timestamp
     created_at: datetime | None = Field(
         default=None,
-        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("CURRENT_TIMESTAMP")),
     )
 
     # Review tracking
