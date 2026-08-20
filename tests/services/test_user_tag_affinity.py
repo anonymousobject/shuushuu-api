@@ -13,7 +13,9 @@ from app.models.user import Users
 from app.models.user_tag_affinity import UserTagAffinity
 from app.services.user_tag_affinity import _LOCK_PREFIX, refresh_user_tag_affinity
 
-pytestmark = [pytest.mark.integration, pytest.mark.needs_commit]
+# mariadb_only: refresh_user_tag_affinity raises NotImplementedError off-MariaDB
+# by design (GET_LOCK, ENGINE=InnoDB helper tables).
+pytestmark = [pytest.mark.integration, pytest.mark.needs_commit, pytest.mark.mariadb_only]
 
 
 async def test_table_roundtrip(db_session):
