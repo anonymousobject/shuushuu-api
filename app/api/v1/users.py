@@ -41,7 +41,7 @@ from app.core.auth import (
     get_current_user_id,
     get_optional_current_user,
 )
-from app.core.database import get_db
+from app.core.database import get_db, is_postgres
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
@@ -143,6 +143,18 @@ async def list_users(
     sort_column = sort_column_map.get(sorting.sort_by, Users.user_id)
     sort_func = desc if sorting.sort_order == "DESC" else asc
 
+    ordered_column: Any = sort_func(sort_column)  # type: ignore[arg-type]
+    if is_postgres(db) and sorting.sort_by in ("last_login", "last_active"):
+        # Nullable sort columns: MariaDB places NULLs first on ASC / last on
+        # DESC and that ordering is the API contract; Postgres defaults to the
+        # opposite. MariaDB has no NULLS FIRST/LAST syntax, so this is
+        # Postgres-only by construction.
+        ordered_column = (
+            ordered_column.nullslast()
+            if sorting.sort_order == "DESC"
+            else ordered_column.nullsfirst()
+        )
+
     # Apply sorting. If a search is present, order by relevance first
     if search:
         s_lower = search.lower()
@@ -157,9 +169,9 @@ async def list_users(
             ),
             else_=2,
         )
-        query = query.order_by(asc(relevance), sort_func(sort_column))  # type: ignore[arg-type]
+        query = query.order_by(asc(relevance), ordered_column)
     else:
-        query = query.order_by(sort_func(sort_column))  # type: ignore[arg-type]
+        query = query.order_by(ordered_column)
 
     # Apply pagination
     query = query.offset(pagination.offset).limit(pagination.per_page)

@@ -56,7 +56,11 @@ async def _get_global_rating_stats(
     # Cache miss or no Redis — query database
     avg_ratings_per_image_result = await db.execute(
         select(
-            func.count(ImageRatings.user_id) / func.count(func.distinct(ImageRatings.image_id))  # type: ignore[arg-type]
+            # NULLIF: with zero ratings this is 0/0 — NULL on MySQL but an
+            # error on Postgres. NULL falls through to the 10.0 default below
+            # on both.
+            func.count(ImageRatings.user_id)  # type: ignore[arg-type]
+            / func.nullif(func.count(func.distinct(ImageRatings.image_id)), 0)
         )
     )
     avg_ratings_per_image = float(avg_ratings_per_image_result.scalar() or 10.0)
