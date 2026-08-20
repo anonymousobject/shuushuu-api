@@ -16,7 +16,6 @@ import argparse
 import asyncio
 import os
 import sys
-from collections import defaultdict
 from typing import Any
 
 DEFAULT_URL = "postgresql+asyncpg://shuushuu:pg_dev_password@localhost:5432/shuushuu"
@@ -29,56 +28,15 @@ SMOKE_USERNAME = "pocuser"
 SMOKE_PASSWORD = "poc-password-123"  # noqa: S105 - throwaway POC credential
 
 
-def _dedupe_index_names(metadata: Any) -> None:
-    """Rename index names that repeat across tables.
-
-    MySQL scopes index names per table; Postgres per schema. The legacy schema
-    reuses a few names (idx_date, idx_tag_id), which is fine on MariaDB but a
-    DuplicateTableError on Postgres. POC-only shim: a real migration would
-    normalize the names in a Postgres baseline migration instead.
-    """
-    by_name = defaultdict(list)
-    for table in metadata.tables.values():
-        for index in table.indexes:
-            by_name[index.name].append((table, index))
-    for entries in by_name.values():
-        if len(entries) > 1:
-            for table, index in entries:
-                index.name = f"{table.name}_{index.name}"
-
-
 async def setup() -> int:
     """Drop and recreate the full schema on the POC database via create_all."""
     from sqlalchemy import text
-    from sqlmodel import SQLModel
 
-    # app.main, not app.models: the models package __init__ does not import
-    # every model module (e.g. user_suspension), but the app wiring does.
-    import app.main  # noqa: F401  (registers all tables on SQLModel.metadata)
     from app.core.database import engine
+    from app.core.pg_schema import build_pg_schema
 
-    _dedupe_index_names(SQLModel.metadata)
     async with engine.begin() as conn:
-        # DROP SCHEMA CASCADE instead of drop_all: the FK graph has cycles
-        # that Postgres won't untangle without CASCADE (MySQL drop_all just
-        # disables FK checks).
-        await conn.execute(text("DROP SCHEMA public CASCADE"))
-        await conn.execute(text("CREATE SCHEMA public"))
-        # citext lives in public, so the DROP SCHEMA above removed it; the
-        # username/email/tag-title columns need it (see types.ci_string).
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
-        await conn.run_sync(SQLModel.metadata.create_all)
-        # citext has no length modifier, so the VARCHAR(n) caps these columns
-        # had on MariaDB move to CHECK constraints (Postgres-only: a CHECK in
-        # the models' __table_args__ would change the MariaDB DDL and break
-        # schema-sync; a real migration would put these in the PG baseline).
-        for ddl in (
-            "ALTER TABLE users ADD CONSTRAINT ck_users_username_len"
-            " CHECK (char_length(username) <= 30)",
-            "ALTER TABLE users ADD CONSTRAINT ck_users_email_len CHECK (char_length(email) <= 120)",
-            "ALTER TABLE tags ADD CONSTRAINT ck_tags_title_len CHECK (char_length(title) <= 255)",
-        ):
-            await conn.execute(text(ddl))
+        await build_pg_schema(conn)
     async with engine.connect() as conn:
         count = (
             await conn.execute(
