@@ -19,6 +19,8 @@ from tests.conftest import TEST_DATABASE_URL_SYNC
 
 
 @pytest.mark.integration
+@pytest.mark.mariadb_only  # guards hand-written migration FK names against the
+# InnoDB per-schema namespace; on Postgres, create_all makes name parity trivial
 def test_all_fks_use_fk_prefix_convention():
     """
     Every FK in the migrated schema must have a name starting with ``fk_``.

@@ -1181,6 +1181,7 @@ class TestFuzzyTagSearch:
         # After stripping ++, "C" is too short, falls back to LIKE "C++%"
         assert data["total"] >= 1
 
+    @pytest.mark.mariadb_only  # asserts InnoDB stopword-list behavior
     async def test_search_with_obfuscated_stopwords(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -3181,6 +3182,11 @@ class TestUpdateTag:
         alias_ext_links = result.all()
         assert len(alias_ext_links) == 0
 
+    # mariadb_only: the recalculation under test counts real tag_links rows,
+    # but its baseline values come from the INSERT/DELETE triggers that exist
+    # only in the MariaDB migration chain (see the counters decision in the
+    # tests-on-postgres design doc).
+    @pytest.mark.mariadb_only
     async def test_setting_alias_updates_usage_counts(
         self, client: AsyncClient, db_session: AsyncSession
     ):

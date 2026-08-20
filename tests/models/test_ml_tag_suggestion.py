@@ -1,11 +1,12 @@
 """Tests for the MlTagSuggestions model against a real database."""
 
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.models.ml_tag_suggestion import MlTagSuggestions
-from tests.conftest import TEST_DATABASE_URL_SYNC
+from tests.conftest import TEST_DATABASE_URL
 
 
 async def test_ml_tag_suggestion_model_creation(db_session, test_image, test_tag):
@@ -54,7 +55,7 @@ async def test_ml_tag_suggestion_unique_constraint(db_session, test_image, test_
         await db_session.commit()
 
 
-def test_status_tag_index_covers_confidence():
+async def test_status_tag_index_covers_confidence():
     """idx_ml_suggestion_status_tag must cover (status, tag_id, confidence).
 
     list_pending_for_tag (app/services/ml_suggestion_queue.py) filters on
@@ -67,12 +68,16 @@ def test_status_tag_index_covers_confidence():
     on confidence (serving the >= filter) and read in reverse to satisfy
     ORDER BY confidence DESC without a sort.
     """
-    engine = create_engine(TEST_DATABASE_URL_SYNC)
+    engine = create_async_engine(TEST_DATABASE_URL)
     try:
-        inspector = inspect(engine)
-        indexes = {idx["name"]: idx for idx in inspector.get_indexes("ml_tag_suggestions")}
+        async with engine.connect() as conn:
+            indexes = await conn.run_sync(
+                lambda sync_conn: {
+                    idx["name"]: idx for idx in inspect(sync_conn).get_indexes("ml_tag_suggestions")
+                }
+            )
     finally:
-        engine.dispose()
+        await engine.dispose()
 
     assert "idx_ml_suggestion_status_tag" in indexes
     assert indexes["idx_ml_suggestion_status_tag"]["column_names"] == [
