@@ -817,7 +817,12 @@ async def list_images(
         if commenter is not None:
             query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
         if commentsearch is not None:
-            query = apply_comment_text_search(query, commentsearch, commentsearch_mode)
+            query = apply_comment_text_search(
+                query,
+                commentsearch,
+                commentsearch_mode,
+                use_fulltext=db.get_bind().dialect.name != "postgresql",
+            )
     elif hascomments is True:
         # Use posts counter field (fast indexed lookup)
         query = query.where(Images.posts > 0)  # type: ignore[arg-type]

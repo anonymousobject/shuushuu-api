@@ -108,6 +108,29 @@ class TestParseCommentSearch:
         assert parsed.like_terms == ["The"]
 
 
+class TestParseWithoutIndex:
+    """index_visible=False (Postgres POC: no fulltext index) — everything rides LIKE.
+
+    See docs/plans/2026-Q3/2026-08-20-postgres-poc-impl.md.
+    """
+
+    def test_indexable_token_goes_to_like(self):
+        parsed = parse_comment_search("birthday", index_visible=False)
+        assert parsed.boolean_query == ""
+        assert parsed.like_terms == ["birthday"]
+
+    def test_negation_still_works(self):
+        parsed = parse_comment_search("happy -birthday", index_visible=False)
+        assert parsed.boolean_query == ""
+        assert parsed.like_terms == ["happy"]
+        assert parsed.not_like_terms == ["birthday"]
+
+    def test_quoted_phrase_becomes_single_like_term(self):
+        parsed = parse_comment_search('"happy birthday"', index_visible=False)
+        assert parsed.boolean_query == ""
+        assert parsed.like_terms == ["happy birthday"]
+
+
 class TestLikePattern:
     def test_wraps_in_wildcards(self):
         assert like_pattern("cat") == "%cat%"

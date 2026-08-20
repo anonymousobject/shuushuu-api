@@ -671,6 +671,10 @@ async def list_tags(
     # Track whether we're using fulltext search and what query string
     fulltext_query_str: str | None = None
 
+    # Postgres has no MySQL FULLTEXT; its LIKE is also case-sensitive (the
+    # MariaDB columns are *_ci), so the fallback uses ILIKE.
+    use_fulltext = db.get_bind().dialect.name != "postgresql"
+
     if search:
         # Hybrid search strategy:
         # - Queries < 3 chars: Use LIKE (autocomplete, prefix matching)
@@ -683,7 +687,21 @@ async def list_tags(
             # Short query: prefix match with LIKE (e.g., "sa" -> "sakura")
             # Escape LIKE special characters to prevent unintended wildcard matching
             escaped_search = _escape_like_pattern(search)
-            query = query.where(Tags.title.like(f"{escaped_search}%"))  # type: ignore[union-attr]
+            prefix_pattern = f"{escaped_search}%"
+            query = query.where(
+                Tags.title.like(prefix_pattern)  # type: ignore[union-attr]
+                if use_fulltext
+                else Tags.title.ilike(prefix_pattern)  # type: ignore[union-attr]
+            )
+        elif not use_fulltext:
+            # Postgres: no index tokenizer to mirror — AND of case-insensitive
+            # contains matches per word keeps word-order independence.
+            # fulltext_query_str stays None so relevance ordering below takes
+            # the LIKE branch (built on portable lower() comparisons).
+            for word in search.split():
+                query = query.where(
+                    Tags.title.ilike(f"%{_escape_like_pattern(word)}%")  # type: ignore[union-attr]
+                )
         else:
             # Long query: word-order independent full-text search with wildcard expansion
             # Split search into words and add wildcard to each word to match partial terms
