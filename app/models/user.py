@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, Relationship, SQLModel
 
-from app.models.types import UtcDateTime
+from app.models.types import UtcDateTime, ci_string
 
 if TYPE_CHECKING:
     from app.models.permissions import UserGroups
@@ -34,7 +34,8 @@ class UserBase(SQLModel):
     """
 
     # Basic information
-    username: str = Field(max_length=30)
+    # ci_string: login and uniqueness are case-insensitive on both dialects
+    username: str = Field(max_length=30, sa_type=ci_string(30))  # type: ignore[call-overload]
 
     # Public profile
     location: str | None = Field(default=None, max_length=100)
@@ -146,7 +147,8 @@ class Users(UserBase, table=True):
     )
 
     # Contact info (privacy-sensitive)
-    email: str = Field(max_length=120)
+    # ci_string: lookups (password reset) and uniqueness are case-insensitive
+    email: str = Field(max_length=120, sa_type=ci_string(120))  # type: ignore[call-overload]
     email_verified: bool = Field(default=False)
     email_verification_token: str | None = Field(default=None, max_length=64)
     email_verification_sent_at: datetime | None = Field(

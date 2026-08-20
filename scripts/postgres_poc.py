@@ -64,6 +64,9 @@ async def setup() -> int:
         # disables FK checks).
         await conn.execute(text("DROP SCHEMA public CASCADE"))
         await conn.execute(text("CREATE SCHEMA public"))
+        # citext lives in public, so the DROP SCHEMA above removed it; the
+        # username/email/tag-title columns need it (see types.ci_string).
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
         await conn.run_sync(SQLModel.metadata.create_all)
     async with engine.connect() as conn:
         count = (

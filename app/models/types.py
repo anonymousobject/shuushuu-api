@@ -20,13 +20,26 @@ on Postgres.
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, SmallInteger
+from sqlalchemy import DateTime, Integer, SmallInteger, String
 from sqlalchemy.dialects.mysql import INTEGER, SMALLINT
-from sqlalchemy.types import TypeDecorator
+from sqlalchemy.dialects.postgresql import CITEXT
+from sqlalchemy.types import TypeDecorator, TypeEngine
 
 # Shared type instances, not classes — use as Column(UnsignedInt, ...); don't call them.
 UnsignedInt = INTEGER(unsigned=True).with_variant(Integer(), "postgresql")
 UnsignedSmallInt = SMALLINT(unsigned=True).with_variant(SmallInteger(), "postgresql")
+
+
+def ci_string(length: int) -> TypeEngine[str]:
+    """VARCHAR(length) on MariaDB; citext on Postgres.
+
+    For natural-key columns (username, email, tag title) whose comparisons were
+    case-insensitive on MariaDB via utf8mb4_unicode_ci. Postgres compares
+    case-sensitively by default, which breaks login/uniqueness semantics; the
+    citext variant restores them at the type level. citext has no length
+    modifier — the length cap on Postgres is application validation only.
+    """
+    return String(length).with_variant(CITEXT(), "postgresql")
 
 
 class UtcDateTime(TypeDecorator[datetime]):

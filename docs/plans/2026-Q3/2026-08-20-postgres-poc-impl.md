@@ -357,6 +357,19 @@ git add scripts/postgres_poc.py
 git commit -m "feat(postgres-poc): schema setup + e2e smoke script"
 ```
 
+### Task 7 (addendum, same day): citext for natural keys
+
+Live testing confirmed the case-sensitivity risk immediately: login with a
+differently-cased username worked on MariaDB (`utf8mb4_unicode_ci`) and failed
+on Postgres. Decision for the POC: `citext` on exactly the three natural-key
+columns whose comparisons the legacy collation was load-bearing for —
+`users.username`, `users.email`, `tags.title` — via `ci_string(length)` in
+`app/models/types.py` (`String(n)` on MariaDB, `CITEXT` variant on Postgres;
+DDL verified identical on MariaDB, schema-sync green). `scripts/postgres_poc.py
+setup` now creates the extension before `create_all`. Everything else stays
+case-sensitive on Postgres. citext drops the length modifier on the PG side;
+the cap remains as application validation.
+
 ### Task 6: Full verification and PR
 
 - [ ] **Step 1: mypy everything touched**
