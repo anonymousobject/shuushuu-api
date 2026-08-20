@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies import CommentSortParams, PaginationParams
 from app.config import AdminActionType, ReportStatus
 from app.core.auth import get_current_user
-from app.core.database import get_db, statement_timeout
+from app.core.database import get_db, is_postgres, statement_timeout
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Comments, Images, Users
@@ -131,7 +131,7 @@ async def list_comments(
             query,
             search_text,  # type: ignore[arg-type]
             search_mode,
-            use_fulltext=db.get_bind().dialect.name != "postgresql",
+            use_fulltext=not is_postgres(db),
         )
     # Only the text-search path can degrade to an unindexed scan; None makes the
     # bound a no-op so plain image_ids/user_id listings are untouched.

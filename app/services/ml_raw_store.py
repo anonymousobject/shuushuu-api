@@ -16,6 +16,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import is_postgres
 from app.core.logging import get_logger
 from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
 
@@ -191,7 +192,7 @@ async def ingest_raw_predictions(
     total_inserted = 0
     for start in range(0, len(rows), _BATCH_SIZE):
         batch = rows[start : start + _BATCH_SIZE]
-        if db.get_bind().dialect.name == "postgresql":
+        if is_postgres(db):
             stmt: Any = pg_insert(MlRawPredictions).values(batch).on_conflict_do_nothing()
         else:
             stmt = mysql_insert(MlRawPredictions).values(batch).prefix_with("IGNORE")

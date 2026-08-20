@@ -8,6 +8,7 @@ from the repost to the original image, then cleans up the repost.
 from sqlalchemy import TextClause, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import is_postgres
 from app.models.favorite import Favorites
 from app.models.image import Images
 from app.models.image_rating import ImageRatings
@@ -28,7 +29,7 @@ def _copy_to_original_sql(
         f"INTO {table} ({insert_cols}) "
         f"SELECT {select_cols} FROM {table} WHERE image_id = :repost_id"
     )
-    if db.get_bind().dialect.name == "postgresql":
+    if is_postgres(db):
         return text(f"INSERT {base} ON CONFLICT DO NOTHING")
     return text(f"INSERT IGNORE {base}")
 

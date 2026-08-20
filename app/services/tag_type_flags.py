@@ -9,6 +9,8 @@ from collections.abc import Collection
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import is_postgres
+
 # Single set-based recompute over a set of image_ids. MariaDB multi-table UPDATE;
 # MAX(t.type = N) is a boolean aggregate (1 if any tag of that type, else 0).
 _RECOMPUTE_SQL = text(
@@ -76,7 +78,7 @@ async def refresh_images_tag_type_flags(db: AsyncSession, image_ids: Collection[
     if not ids:
         return
     await db.flush()
-    sql = _RECOMPUTE_SQL_PG if db.get_bind().dialect.name == "postgresql" else _RECOMPUTE_SQL
+    sql = _RECOMPUTE_SQL_PG if is_postgres(db) else _RECOMPUTE_SQL
     await db.execute(sql, {"ids": ids})
 
 

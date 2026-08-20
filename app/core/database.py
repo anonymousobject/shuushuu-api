@@ -45,6 +45,15 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
+def is_postgres(db: AsyncSession) -> bool:
+    """Whether this session is bound to Postgres — the dialect-branch switch.
+
+    (The MariaDB-only guard in user_tag_affinity deliberately tests
+    `!= "mysql"` instead: it must also refuse any third dialect.)
+    """
+    return db.get_bind().dialect.name == "postgresql"
+
+
 async def get_db() -> AsyncGenerator[AsyncSession]:
     """
     Dependency for getting async database sessions.
@@ -103,7 +112,7 @@ async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIte
 
     # int()/float() coerce the value: SET does not take bind parameters, so this
     # is interpolated, and the coercion is what keeps that safe.
-    if db.get_bind().dialect.name == "postgresql":
+    if is_postgres(db):
         # Postgres takes milliseconds and its DEFAULT restores the session's
         # configured value, matching the MariaDB restore semantics below.
         await db.execute(sql_text(f"SET statement_timeout = {int(seconds * 1000)}"))

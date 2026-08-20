@@ -48,7 +48,7 @@ from app.config import (
     settings,
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
-from app.core.database import get_db, statement_timeout
+from app.core.database import get_db, is_postgres, statement_timeout
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
@@ -821,7 +821,7 @@ async def list_images(
                 query,
                 commentsearch,
                 commentsearch_mode,
-                use_fulltext=db.get_bind().dialect.name != "postgresql",
+                use_fulltext=not is_postgres(db),
             )
     elif hascomments is True:
         # Use posts counter field (fast indexed lookup)
