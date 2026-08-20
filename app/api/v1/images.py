@@ -48,7 +48,7 @@ from app.config import (
     settings,
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
-from app.core.database import get_db, statement_timeout
+from app.core.database import get_db, is_postgres, statement_timeout
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
@@ -817,7 +817,12 @@ async def list_images(
         if commenter is not None:
             query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
         if commentsearch is not None:
-            query = apply_comment_text_search(query, commentsearch, commentsearch_mode)
+            query = apply_comment_text_search(
+                query,
+                commentsearch,
+                commentsearch_mode,
+                use_fulltext=not is_postgres(db),
+            )
     elif hascomments is True:
         # Use posts counter field (fast indexed lookup)
         query = query.where(Images.posts > 0)  # type: ignore[arg-type]

@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies import CommentSortParams, PaginationParams
 from app.config import AdminActionType, ReportStatus
 from app.core.auth import get_current_user
-from app.core.database import get_db, statement_timeout
+from app.core.database import get_db, is_postgres, statement_timeout
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Comments, Images, Users
@@ -127,7 +127,12 @@ async def list_comments(
     searching = bool(search_text and search_text.strip())
     if searching:
         reject_unindexable_comment_search(search_text, search_mode)  # type: ignore[arg-type]
-        query = apply_comment_text_search(query, search_text, search_mode)  # type: ignore[arg-type]
+        query = apply_comment_text_search(
+            query,
+            search_text,  # type: ignore[arg-type]
+            search_mode,
+            use_fulltext=not is_postgres(db),
+        )
     # Only the text-search path can degrade to an unindexed scan; None makes the
     # bound a no-op so plain image_ids/user_id listings are untouched.
     search_timeout = COMMENT_SEARCH_TIMEOUT_SECONDS if searching else None

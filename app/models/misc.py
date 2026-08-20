@@ -70,7 +70,7 @@ class Banners(BannerBase, table=True):
     # Timestamp
     created_at: datetime | None = Field(
         default=None,
-        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("CURRENT_TIMESTAMP")),
     )
 
 
@@ -214,7 +214,7 @@ class DonationBase(SQLModel):
     """
 
     date: datetime = Field(
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     )
     user_id: int | None = Field(default=None)
     nick: str | None = Field(default=None, max_length=30)

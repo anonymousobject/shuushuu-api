@@ -118,7 +118,7 @@ class Comments(CommentBase, table=True):
 
     # Public timestamp
     date: datetime = Field(
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     )
 
     # Public update tracking

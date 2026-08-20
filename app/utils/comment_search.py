@@ -166,8 +166,13 @@ def _is_indexable(token: str) -> bool:
     return len(token) >= MIN_TOKEN_SIZE and token.isascii() and token.lower() not in STOPWORDS
 
 
-def parse_comment_search(raw: str) -> CommentSearchQuery:
-    """Split a user's search string into fulltext and LIKE predicates."""
+def parse_comment_search(raw: str, *, index_visible: bool = True) -> CommentSearchQuery:
+    """Split a user's search string into fulltext and LIKE predicates.
+
+    With ``index_visible=False`` (Postgres POC: there is no fulltext index at
+    all) every term lands on the LIKE lists and ``boolean_query`` stays empty;
+    negation and quoted phrases keep their meaning.
+    """
     parsed = CommentSearchQuery()
     positives: list[str] = []
     negatives: list[str] = []
@@ -183,7 +188,7 @@ def parse_comment_search(raw: str) -> CommentSearchQuery:
             if not phrase:
                 continue
             tokens = _WORD_RE.findall(phrase)
-            if tokens and all(_is_indexable(t) for t in tokens):
+            if index_visible and tokens and all(_is_indexable(t) for t in tokens):
                 # Phrase search stays token-based, matching fulltext semantics
                 # (punctuation and repeated spaces are not significant).
                 quoted = '"' + " ".join(tokens) + '"'
@@ -193,7 +198,7 @@ def parse_comment_search(raw: str) -> CommentSearchQuery:
             continue
 
         for token in _WORD_RE.findall(term):
-            if _is_indexable(token):
+            if index_visible and _is_indexable(token):
                 (negatives if negated else positives).append(token)
             else:
                 (parsed.not_like_terms if negated else parsed.like_terms).append(token)
@@ -226,12 +231,21 @@ def reject_unindexable_comment_search(raw: str, mode: str | None) -> None:
         )
 
 
-def apply_comment_text_search(query: Select[Any], raw: str, mode: str | None) -> Select[Any]:
+def apply_comment_text_search(
+    query: Select[Any], raw: str, mode: str | None, *, use_fulltext: bool = True
+) -> Select[Any]:
     """Add comment-text predicates to `query`.
 
     `query` must already select from / join the Comments table. The bind
     parameter is named `comment_q` so it cannot collide with a caller's own
     parameters.
+
+    ``use_fulltext=False`` (Postgres POC: no MATCH/AGAINST) routes every mode
+    except the explicit ``like`` mode through the parsed path with
+    ``index_visible=False``, so all predicates become (NOT) LIKE. The legacy
+    ``boolean``/``natural`` modes degrade gracefully there: `-term` and quoted
+    phrases keep their meaning, `+`/`*` operators are dropped and terms are
+    simply ANDed.
 
     Callers are expected to skip calling this at all for a blank/whitespace-only
     `raw` -- that means "not searching," not "search for nothing" (see the
@@ -242,20 +256,29 @@ def apply_comment_text_search(query: Select[Any], raw: str, mode: str | None) ->
     """
     effective_mode = mode or "all_words"
 
-    if effective_mode == "boolean":
-        return query.where(sql_text("MATCH(post_text) AGAINST(:comment_q IN BOOLEAN MODE)")).params(
-            comment_q=raw
-        )
-
-    if effective_mode == "natural":
-        return query.where(
-            sql_text("MATCH(post_text) AGAINST(:comment_q IN NATURAL LANGUAGE MODE)")
-        ).params(comment_q=raw)
+    def contains(pattern: str) -> Any:
+        # MariaDB LIKE is case-insensitive via utf8mb4_unicode_ci; Postgres
+        # LIKE is not, so the no-fulltext (Postgres) path must use ILIKE to
+        # keep the same matching semantics.
+        if use_fulltext:
+            return Comments.post_text.like(pattern, escape="\\")  # type: ignore[attr-defined]
+        return Comments.post_text.ilike(pattern, escape="\\")  # type: ignore[attr-defined]
 
     if effective_mode == "like":
-        return query.where(Comments.post_text.like(like_pattern(raw), escape="\\"))  # type: ignore[attr-defined]
+        return query.where(contains(like_pattern(raw)))
 
-    parsed = parse_comment_search(raw)
+    if use_fulltext:
+        if effective_mode == "boolean":
+            return query.where(
+                sql_text("MATCH(post_text) AGAINST(:comment_q IN BOOLEAN MODE)")
+            ).params(comment_q=raw)
+
+        if effective_mode == "natural":
+            return query.where(
+                sql_text("MATCH(post_text) AGAINST(:comment_q IN NATURAL LANGUAGE MODE)")
+            ).params(comment_q=raw)
+
+    parsed = parse_comment_search(raw, index_visible=use_fulltext)
     if parsed.is_empty:
         # Nothing searchable in a non-blank input (e.g. "!!!"): no comment can
         # ever match, so this must return zero rows. A blank/whitespace-only
@@ -268,8 +291,8 @@ def apply_comment_text_search(query: Select[Any], raw: str, mode: str | None) ->
             sql_text("MATCH(post_text) AGAINST(:comment_q IN BOOLEAN MODE)")
         ).params(comment_q=parsed.boolean_query)
     for term in parsed.like_terms:
-        query = query.where(Comments.post_text.like(like_pattern(term), escape="\\"))  # type: ignore[attr-defined]
+        query = query.where(contains(like_pattern(term)))
     for term in parsed.not_like_terms:
         # post_text is NOT NULL (verified), so NOT LIKE needs no NULL guard.
-        query = query.where(~Comments.post_text.like(like_pattern(term), escape="\\"))  # type: ignore[attr-defined]
+        query = query.where(~contains(like_pattern(term)))
     return query

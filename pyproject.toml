@@ -42,6 +42,7 @@ dependencies = [
     "aiosmtplib>=5.1.1",
     "onnxruntime>=1.26.0",  # 1.26.0 is the first release with Python 3.14 wheels
     "numpy>=2.4.1",
+    "asyncpg>=0.31.0",
 ]
 
 [dependency-groups]
