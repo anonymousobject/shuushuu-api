@@ -5,8 +5,13 @@ recorded in
 <shuushuu-frontend-repo>/docs/plans/2026-Q3/2026-08-10-comment-search-and-semantics-impl.md.
 """
 
+from sqlalchemy import select
+from sqlalchemy.dialects import mysql, postgresql
+
+from app.models import Comments
 from app.utils.comment_search import (
     CommentSearchQuery,
+    apply_comment_text_search,
     like_pattern,
     parse_comment_search,
 )
@@ -129,6 +134,41 @@ class TestParseWithoutIndex:
         parsed = parse_comment_search('"happy birthday"', index_visible=False)
         assert parsed.boolean_query == ""
         assert parsed.like_terms == ["happy birthday"]
+
+
+class TestAppliedPredicateDialect:
+    """The LIKE predicates must be case-insensitive on both dialects.
+
+    MariaDB's utf8mb4_unicode_ci makes LIKE case-insensitive by collation;
+    Postgres LIKE is case-sensitive, so the no-fulltext path must emit ILIKE
+    (measured: 'birthday' matched 2790 comments on MariaDB but only 1936 on
+    Postgres with plain LIKE).
+    """
+
+    def test_postgres_fallback_uses_ilike(self):
+        query = apply_comment_text_search(select(Comments), "birthday", None, use_fulltext=False)
+        sql = str(query.compile(dialect=postgresql.dialect()))
+        assert "ILIKE" in sql
+        assert "MATCH" not in sql
+
+    def test_postgres_like_mode_uses_ilike(self):
+        query = apply_comment_text_search(select(Comments), "birthday", "like", use_fulltext=False)
+        sql = str(query.compile(dialect=postgresql.dialect()))
+        assert "ILIKE" in sql
+
+    def test_postgres_negated_term_uses_ilike(self):
+        query = apply_comment_text_search(
+            select(Comments), "-birthday cake", None, use_fulltext=False
+        )
+        sql = str(query.compile(dialect=postgresql.dialect()))
+        assert "NOT ILIKE" in sql
+
+    def test_mysql_path_is_unchanged(self):
+        query = apply_comment_text_search(select(Comments), "happy bd", None)
+        sql = str(query.compile(dialect=mysql.dialect()))
+        assert "MATCH" in sql
+        assert "LIKE" in sql
+        assert "lower(" not in sql  # plain LIKE: collation handles case there
 
 
 class TestLikePattern:

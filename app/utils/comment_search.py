@@ -256,8 +256,16 @@ def apply_comment_text_search(
     """
     effective_mode = mode or "all_words"
 
+    def contains(pattern: str) -> Any:
+        # MariaDB LIKE is case-insensitive via utf8mb4_unicode_ci; Postgres
+        # LIKE is not, so the no-fulltext (Postgres) path must use ILIKE to
+        # keep the same matching semantics.
+        if use_fulltext:
+            return Comments.post_text.like(pattern, escape="\\")  # type: ignore[attr-defined]
+        return Comments.post_text.ilike(pattern, escape="\\")  # type: ignore[attr-defined]
+
     if effective_mode == "like":
-        return query.where(Comments.post_text.like(like_pattern(raw), escape="\\"))  # type: ignore[attr-defined]
+        return query.where(contains(like_pattern(raw)))
 
     if use_fulltext:
         if effective_mode == "boolean":
@@ -283,8 +291,8 @@ def apply_comment_text_search(
             sql_text("MATCH(post_text) AGAINST(:comment_q IN BOOLEAN MODE)")
         ).params(comment_q=parsed.boolean_query)
     for term in parsed.like_terms:
-        query = query.where(Comments.post_text.like(like_pattern(term), escape="\\"))  # type: ignore[attr-defined]
+        query = query.where(contains(like_pattern(term)))
     for term in parsed.not_like_terms:
         # post_text is NOT NULL (verified), so NOT LIKE needs no NULL guard.
-        query = query.where(~Comments.post_text.like(like_pattern(term), escape="\\"))  # type: ignore[attr-defined]
+        query = query.where(~contains(like_pattern(term)))
     return query
