@@ -154,7 +154,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17
+        image: postgres:18
         env:
           POSTGRES_USER: shuushuu
           POSTGRES_PASSWORD: shuushuu_ci_password
@@ -166,7 +166,7 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
-          --tmpfs /var/lib/postgresql/data:rw
+          --tmpfs /var/lib/postgresql:rw
 
       redis:
         image: redis:7-alpine

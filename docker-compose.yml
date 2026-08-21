@@ -52,7 +52,7 @@ services:
   postgres:
     # Pin like mariadb above: bump POSTGRES_IMAGE in .env deliberately; a
     # floating major tag drifts dev away from whatever prod's DB tier runs.
-    image: ${POSTGRES_IMAGE:-postgres:17.11}
+    image: ${POSTGRES_IMAGE:-postgres:18.6}
     container_name: shuushuu-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-shuushuu}
@@ -70,7 +70,12 @@ services:
       # ports overridden empty in docker-compose.prod.yml).
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # postgres:18 images moved the volume mount point to /var/lib/postgresql
+      # (PGDATA lives in a versioned subdir, e.g. .../18/docker). Mounting the
+      # old .../data path would silently put the cluster OUTSIDE this volume —
+      # the exact data-not-where-config-claims failure class from the POC
+      # incident (see the pg-compose-topology plan doc).
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-shuushuu} -d ${POSTGRES_DB:-shuushuu}"]
       interval: 10s
