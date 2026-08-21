@@ -18,8 +18,14 @@ wall-clock at current scale: schema ~5s, load ~7 min, post ~4 min, validate
 ## 1. Prerequisites
 
 - Postgres 18 with the `citext` extension available (bundled contrib; present
-  in the official image and every managed provider). The migration connects
-  as a superuser or owner (needed by `disable triggers` during load).
+  in the official image, in Debian/Ubuntu's `postgresql-18` package, and in
+  every managed provider).
+- The load must connect as a **superuser** — owner is not enough. pgloader's
+  `disable triggers` toggles FK-internal triggers, which only a superuser may
+  do. Grant it for the window and revoke after step 7 (`ALTER ROLE <user>
+  SUPERUSER;` / `NOSUPERUSER`); nothing needs it afterwards, since the app owns
+  its own tables and `citext` is a trusted extension the owner creates in
+  step 3.
 - Docker on the machine running the migration (`dimitri/pgloader:latest`),
   network reach to both databases, and this repo checked out at the cutover
   revision with `uv sync` done.
@@ -112,7 +118,15 @@ those directories once the window closes: `rm -rf /tmp/pg-migration-*`.
 
 Counts are necessary, not sufficient — every smoke check passed while comment
 search was silently missing case-variant rows; a source-vs-target *count
-comparison on the same query* is what caught it. Minimum manual checks:
+comparison on the same query* is what caught it.
+
+`validate` now also fails on any user trigger the load left disabled — the one
+failure counts structurally cannot see, since a database with inert counter
+triggers matches row-for-row (ADR-0009; the check lives in
+`app.core.pg_triggers.disabled_triggers`). Repair is `ALTER TABLE ... ENABLE
+TRIGGER USER`, which owner rights cover, then rerun `validate`.
+
+Minimum manual checks:
 
 - Login with a deliberately wrong-cased username (citext, ADR-0008).
 - The same search (`?search_text=...`) on both stacks: target count ≥ source
@@ -121,6 +135,8 @@ comparison on the same query* is what caught it. Minimum manual checks:
 - Favorite + unfavorite an image; comment; add/remove a tag — counters must
   move (triggers).
 - `SELECT last_value FROM images_image_id_seq` vs `MAX(image_id)`.
+
+Once these pass, revoke the load superuser (step 1) before opening the flip.
 
 ## 8. Flip
 

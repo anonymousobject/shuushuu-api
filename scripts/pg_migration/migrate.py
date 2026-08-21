@@ -212,6 +212,8 @@ async def post() -> None:
 
 
 async def validate() -> None:
+    from app.core.pg_triggers import disabled_triggers
+
     source = create_async_engine(SOURCE_SA_URL)
     target = _target_engine()
 
@@ -252,11 +254,26 @@ async def validate() -> None:
     for table in sorted(target_tables - source_tables - set(_EXCLUDED)):
         print(f"NOTE {table:<34} exists only in target (loads empty)")
 
+    # Counts can't see this: pgloader's `disable triggers` takes the counter
+    # triggers down with the FK internals, and only the FKs get rebuilt (post).
+    # A load that died partway leaves the counters inert on a database whose
+    # every row count matches.
+    async with target.connect() as conn:
+        inert = await disabled_triggers(conn)
+    for name in inert:
+        print(f"DOWN {name:<34} trigger disabled")
+
     await source.dispose()
     await target.dispose()
     if mismatched:
         sys.exit(f"validate: count mismatch in {len(mismatched)} table(s): {mismatched}")
-    print(f"validate: {len(common)} tables match")
+    if inert:
+        sys.exit(
+            f"validate: {len(inert)} trigger(s) left disabled by the load — counters "
+            "would silently stop updating. Re-enable them (ALTER TABLE ... ENABLE "
+            "TRIGGER USER, owner is enough) and rerun validate before taking writes."
+        )
+    print(f"validate: {len(common)} tables match, all triggers enabled")
 
 
 def main() -> None:
