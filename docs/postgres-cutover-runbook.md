@@ -124,8 +124,14 @@ comparison on the same query* is what caught it. Minimum manual checks:
 
 ## 8. Flip
 
-- Point `DATABASE_URL` (api, arq, crons) at
-  `postgresql+asyncpg://.../shuushuu`; start services.
+- **Prod** (DB tier is native/out-of-stack; `docker-compose.prod.yml` stubs
+  it and passes `DATABASE_URL=${DATABASE_URL}` through): set the prod `.env`
+  `DATABASE_URL=postgresql+asyncpg://user:pass@dbhost:5432/shuushuu`, then
+  `docker compose ... up -d api arq-worker`.
+- **Compose-managed environments** (dev; anywhere the DB runs as the
+  `postgres` service in `docker-compose.yml`): set
+  `COMPOSE_DATABASE_URL=postgresql+asyncpg://user:pass@postgres:5432/shuushuu`
+  in `.env` — unset means MariaDB — then `up -d api arq-worker`.
 - nginx resolves upstreams at config load: if the api container was
   recreated, `nginx -s reload`, or 502s follow.
 - Smoke through the public entry point, not just the api port.

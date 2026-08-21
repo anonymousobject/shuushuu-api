@@ -3,8 +3,8 @@
 # Usage: ./run-tests.sh [--pg] [pytest args]
 # With no args, runs the full suite in parallel (-n 4 --dist loadgroup).
 # Pass any args (e.g. a test path) for a plain serial pytest run.
-# --pg runs against the Postgres POC container instead of MariaDB
-# (docker compose -f docker-compose.postgres.yml up -d first).
+# --pg runs against the dev-stack Postgres container instead of MariaDB
+# (docker compose up -d postgres first).
 
 set -e
 
@@ -25,9 +25,10 @@ if [ -f .env ]; then
 fi
 
 if [ "$PG_MODE" = "1" ]; then
-    # After .env so these win. Runs against the Postgres POC container
-    # (docker compose -f docker-compose.postgres.yml up -d first).
-    PG_TEST_URL="postgresql+asyncpg://shuushuu:pg_dev_password@localhost:5432/shuushuu_pytest"
+    # After .env so these win. Runs against the dev-stack Postgres container
+    # (docker compose up -d postgres first). Credentials come from .env like
+    # the MariaDB path below, falling back to the compose dev defaults.
+    PG_TEST_URL="postgresql+asyncpg://${POSTGRES_USER:-shuushuu}:${POSTGRES_PASSWORD:-pg_dev_password}@localhost:5432/shuushuu_pytest"
     export TEST_DATABASE_URL="$PG_TEST_URL"
     # Mirror CI: point the app-level engine at the test DB too, so nothing
     # reaching AsyncSessionLocal outside the get_db override can touch the
