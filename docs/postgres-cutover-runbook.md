@@ -17,7 +17,7 @@ wall-clock at current scale: schema ~5s, load ~7 min, post ~4 min, validate
 
 ## 1. Prerequisites
 
-- Postgres 17 with the `citext` extension available (bundled contrib; present
+- Postgres 18 with the `citext` extension available (bundled contrib; present
   in the official image and every managed provider). The migration connects
   as a superuser or owner (needed by `disable triggers` during load).
 - Docker on the machine running the migration (`dimitri/pgloader:latest`),

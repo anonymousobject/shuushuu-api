@@ -30,7 +30,7 @@ services:
 
   # Same treatment for the transition-target Postgres: prod's Postgres (like
   # MariaDB) lives natively on the DB tier, reached via DATABASE_URL. Without
-  # this stub a prod `up -d` would start a real postgres:17 container with
+  # this stub a prod `up -d` would start a real postgres container with
   # whatever POSTGRES_* creds the prod .env holds.
   postgres:
     image: busybox:latest
