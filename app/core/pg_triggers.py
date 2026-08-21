@@ -197,3 +197,35 @@ async def install_counter_triggers(conn: AsyncConnection) -> None:
     """Install (or refresh) the counter triggers. Idempotent."""
     for ddl in _TRIGGER_DDL:
         await conn.execute(text(ddl))
+
+
+_DISABLED_TRIGGERS_SQL = text(
+    """
+    SELECT c.relname, t.tgname
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND NOT t.tgisinternal
+      AND t.tgenabled <> 'O'
+    ORDER BY c.relname, t.tgname
+    """
+)
+
+
+async def disabled_triggers(conn: AsyncConnection) -> list[str]:
+    """Return ``table.trigger`` for each disabled user trigger, sorted.
+
+    Empty means every trigger this module installs is live. A non-empty result
+    after a migration means pgloader's ``disable triggers`` never got reversed
+    (see tests/integration/test_pg_trigger_state.py) and the counters are inert
+    — repair with ``ALTER TABLE ... ENABLE TRIGGER USER`` before taking writes.
+
+    ``tgenabled`` is 'O' when a trigger fires for origin/local writes, the state
+    every trigger here is created in; 'D' is disabled, and the replica-only
+    states ('R'/'A') would be just as wrong for counters. Internal triggers are
+    excluded because they belong to FK constraints, which ``migrate.py post``
+    rebuilds outright.
+    """
+    rows = await conn.execute(_DISABLED_TRIGGERS_SQL)
+    return [f"{table}.{trigger}" for table, trigger in rows]
