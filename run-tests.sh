@@ -26,8 +26,9 @@ fi
 
 if [ "$PG_MODE" = "1" ]; then
     # After .env so these win. Runs against the dev-stack Postgres container
-    # (docker compose up -d postgres first).
-    PG_TEST_URL="postgresql+asyncpg://shuushuu:pg_dev_password@localhost:5432/shuushuu_pytest"
+    # (docker compose up -d postgres first). Credentials come from .env like
+    # the MariaDB path below, falling back to the compose dev defaults.
+    PG_TEST_URL="postgresql+asyncpg://${POSTGRES_USER:-shuushuu}:${POSTGRES_PASSWORD:-pg_dev_password}@localhost:5432/shuushuu_pytest"
     export TEST_DATABASE_URL="$PG_TEST_URL"
     # Mirror CI: point the app-level engine at the test DB too, so nothing
     # reaching AsyncSessionLocal outside the get_db override can touch the

@@ -28,6 +28,21 @@ services:
       interval: 5s
       retries: 1
 
+  # Same treatment for the transition-target Postgres: prod's Postgres (like
+  # MariaDB) lives natively on the DB tier, reached via DATABASE_URL. Without
+  # this stub a prod `up -d` would start a real postgres:17 container with
+  # whatever POSTGRES_* creds the prod .env holds.
+  postgres:
+    image: busybox:latest
+    entrypoint: ["sleep", "infinity"]
+    restart: "no"
+    volumes: !override []
+    ports: !override []
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      retries: 1
+
   adminer:
     profiles: [disabled]
 
