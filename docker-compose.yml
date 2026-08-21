@@ -65,9 +65,10 @@ services:
       -c effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}
       -c max_connections=200
     ports:
-      # localhost-only: host access is for dev tooling (pytest --pg, psql);
-      # containers reach it in-network as postgres:5432
-      - "127.0.0.1:5432:5432"
+      # Published like mariadb's 3306: dev is reached from other machines on
+      # the local network. Prod never runs this service (stubbed with
+      # ports overridden empty in docker-compose.prod.yml).
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

@@ -9,8 +9,10 @@
    conventions: pinned `${POSTGRES_IMAGE:-postgres:17.11}`, env-var
    credentials with dev defaults, tuning knobs
    (`POSTGRES_SHARED_BUFFERS`/`EFFECTIVE_CACHE_SIZE`), named `postgres_data`
-   volume, `pg_isready` healthcheck, resource limits, **localhost-only** port
-   publish (dev tooling; containers use `postgres:5432` in-network). Dev
+   volume, `pg_isready` healthcheck, resource limits, and a `5432:5432`
+   publish matching mariadb's 3306 (dev is reached from other machines on the
+   LAN; containers use `postgres:5432` in-network, and prod stubs the service
+   with ports overridden empty). Dev
    override adds `-dev` container/volume names and an api `depends_on`.
    Prod is unaffected: its DB tier is native/out-of-stack
    (`docker-compose.prod.yml` stubs it and passes `DATABASE_URL` through).
