@@ -95,6 +95,12 @@ def pytest_configure(config):
         "migration-chain comparison, the affinity guard); skipped when the session "
         "backend is Postgres. See docs/plans/2026-Q3/2026-08-20-tests-on-postgres-design.md.",
     )
+    config.addinivalue_line(
+        "markers",
+        "postgres_only: marks tests of Postgres-defined behavior (e.g. triggers firing "
+        "on FK-cascaded deletes, which InnoDB does not do); skipped when the session "
+        "backend is MariaDB.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -108,6 +114,13 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "mariadb_only" in item.keywords or "schema_sync" in item.keywords:
                 item.add_marker(skip_mariadb)
+    else:
+        skip_postgres = pytest.mark.skip(
+            reason="Postgres-defined behavior (postgres_only); session backend is MariaDB"
+        )
+        for item in items:
+            if "postgres_only" in item.keywords:
+                item.add_marker(skip_postgres)
 
     if not config.getoption("--schema-sync"):
         skip_schema_sync = pytest.mark.skip(reason="need --schema-sync option to run")
