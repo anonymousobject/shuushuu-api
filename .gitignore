@@ -55,6 +55,8 @@ docker-compose.local.yml
 *.sql
 shuushuu-*.sql
 !scripts/*.sql
+# Migration companion DDL (e.g. the frozen PG baseline) is source, not a dump
+!alembic_pg/versions/*.sql
 
 # Logs
 *.log

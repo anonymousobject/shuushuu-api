@@ -106,13 +106,11 @@ def pytest_configure(config):
 def pytest_collection_modifyitems(config, items):
     """Backend- and option-based skips."""
     if IS_POSTGRES:
-        # schema_sync compares the models against the MariaDB migration chain,
-        # so it is MariaDB-only by nature (even when --schema-sync is passed).
         skip_mariadb = pytest.mark.skip(
             reason="MariaDB-defined behavior (mariadb_only); session backend is Postgres"
         )
         for item in items:
-            if "mariadb_only" in item.keywords or "schema_sync" in item.keywords:
+            if "mariadb_only" in item.keywords:
                 item.add_marker(skip_mariadb)
     else:
         skip_postgres = pytest.mark.skip(
@@ -238,18 +236,25 @@ def _setup_postgres_test_database() -> None:
 
     All admin work runs as the test user, which is the compose container's
     bootstrap superuser — none of the MariaDB root/grant machinery applies.
-    Rebuilding via build_pg_schema every session is cheap (~2s); the
-    alembic-head fast path below has no PG equivalent until a PG baseline
-    migration exists.
+    Schema comes from the POSTGRES Alembic chain (alembic_pg/), mirroring the
+    MariaDB path: reuse-and-truncate when already at the chain head, else
+    rebuild by running the chain — which is how broken PG migrations surface
+    in CI instead of being papered over by create_all.
     """
     import asyncio
 
-    from app.core.pg_schema import build_pg_schema
+    from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
 
     url = make_url(TEST_DATABASE_URL)
     test_db_name = url.database
 
-    async def _build() -> None:
+    alembic_cfg = AlembicConfig()
+    alembic_cfg.set_main_option("script_location", "alembic_pg")
+    head_revision = ScriptDirectory.from_config(alembic_cfg).get_current_head()
+
+    async def _prepare() -> bool:
+        """Create/clean the database; return True when the chain must run."""
         # CREATE DATABASE cannot run inside a transaction: AUTOCOMMIT engine.
         admin_engine = create_async_engine(
             url.set(database="postgres"), isolation_level="AUTOCOMMIT"
@@ -266,11 +271,45 @@ def _setup_postgres_test_database() -> None:
         await admin_engine.dispose()
 
         schema_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-        async with schema_engine.begin() as conn:
-            await build_pg_schema(conn)
-        await schema_engine.dispose()
+        try:
+            async with schema_engine.begin() as conn:
+                tables = [
+                    row[0]
+                    for row in await conn.execute(
+                        text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                    )
+                ]
+                current_revision = None
+                if "alembic_version" in tables:
+                    current_revision = (
+                        await conn.execute(text("SELECT version_num FROM alembic_version"))
+                    ).scalar()
+                if current_revision == head_revision:
+                    non_version = [t for t in tables if t != "alembic_version"]
+                    if non_version:
+                        joined = ", ".join(f'"{t}"' for t in non_version)
+                        await conn.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
+                    return False
+                await conn.execute(text("DROP SCHEMA public CASCADE"))
+                await conn.execute(text("CREATE SCHEMA public"))
+                return True
+        finally:
+            await schema_engine.dispose()
 
-    asyncio.run(_build())
+    if asyncio.run(_prepare()):
+        # The async env.py runs its own event loop, so this must happen
+        # outside any asyncio.run of ours.
+        from alembic import command as alembic_command
+
+        prev_alembic_url = os.environ.get("ALEMBIC_DB_URL")
+        os.environ["ALEMBIC_DB_URL"] = TEST_DATABASE_URL
+        try:
+            alembic_command.upgrade(alembic_cfg, "head")
+        finally:
+            if prev_alembic_url is None:
+                del os.environ["ALEMBIC_DB_URL"]
+            else:
+                os.environ["ALEMBIC_DB_URL"] = prev_alembic_url
 
 
 def _setup_mariadb_test_database() -> None:
@@ -461,12 +500,13 @@ async def _truncate_all_tables(engine) -> None:
     if IS_POSTGRES:
         # One statement, no FK-checks toggle: TRUNCATE accepts a table list and
         # CASCADE covers the FK graph. RESTART IDENTITY matches MariaDB
-        # TRUNCATE's auto-increment reset.
+        # TRUNCATE's auto-increment reset. alembic_version survives, like the
+        # MariaDB branch below.
         async with engine.begin() as conn:
             result = await conn.execute(
                 text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
             )
-            tables = [row[0] for row in result]
+            tables = [row[0] for row in result if row[0] != "alembic_version"]
             if tables:
                 joined = ", ".join(f'"{t}"' for t in tables)
                 await conn.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))

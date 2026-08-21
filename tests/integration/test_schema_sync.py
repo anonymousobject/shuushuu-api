@@ -164,6 +164,7 @@ def schema_inspectors():
 
 @pytest.mark.integration
 @pytest.mark.schema_sync
+@pytest.mark.mariadb_only  # compares models against the MariaDB migration chain
 # These tests rebuild fixed-name databases (shuushuu_schema_models/_migrations),
 # so under xdist they must all run on the same worker (--dist loadgroup).
 @pytest.mark.xdist_group("schema_sync")

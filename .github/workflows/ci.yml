@@ -206,10 +206,10 @@ jobs:
           ENVIRONMENT: development
           DEBUG: "True"
           REDIS_URL: redis://localhost:6379/0
-        # No --schema-sync: that suite compares models against the MariaDB
-        # migration chain (mariadb_only by nature).
+        # --schema-sync runs the PG schema-sync test (models vs alembic_pg
+        # chain); the MariaDB schema-sync suite is mariadb_only and skips here.
         run: |
-          uv run pytest tests/ -v --tb=short --maxfail=5 -n auto --dist loadgroup
+          uv run pytest tests/ -v --tb=short --maxfail=5 --schema-sync -n auto --dist loadgroup
 
   # Optional: Security scanning
   security:
