@@ -13,6 +13,8 @@ from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql.elements import quoted_name
 
+from app.core.pg_triggers import install_counter_triggers
+
 # citext has no length modifier, so the VARCHAR(n) caps these columns have on
 # MariaDB move to CHECK constraints (Postgres-only: a CHECK in the models'
 # __table_args__ would change the MariaDB DDL and break schema-sync). ADR-0008.
@@ -61,3 +63,4 @@ async def build_pg_schema(conn: AsyncConnection) -> None:
     await conn.run_sync(SQLModel.metadata.create_all)
     for ddl in _LENGTH_CHECKS:
         await conn.execute(text(ddl))
+    await install_counter_triggers(conn)

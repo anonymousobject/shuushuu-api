@@ -3182,11 +3182,6 @@ class TestUpdateTag:
         alias_ext_links = result.all()
         assert len(alias_ext_links) == 0
 
-    # mariadb_only: the recalculation under test counts real tag_links rows,
-    # but its baseline values come from the INSERT/DELETE triggers that exist
-    # only in the MariaDB migration chain (see the counters decision in the
-    # tests-on-postgres design doc).
-    @pytest.mark.mariadb_only
     async def test_setting_alias_updates_usage_counts(
         self, client: AsyncClient, db_session: AsyncSession
     ):
