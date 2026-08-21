@@ -2,10 +2,10 @@
 
 Part of docs/plans/2026-Q3/2026-08-20-postgres-poc-impl.md. Runs the real
 FastAPI app in-process (httpx ASGI transport, no dependency overrides, real
-Redis from the dev stack) against the Postgres container from
-docker-compose.postgres.yml. MariaDB is untouched.
+Redis from the dev stack) against the dev-stack Postgres container.
+MariaDB is untouched.
 
-    docker compose -f docker-compose.postgres.yml up -d
+    docker compose up -d postgres
     uv run python scripts/postgres_poc.py setup   # drop + create_all schema
     uv run python scripts/postgres_poc.py smoke   # seed + exercise endpoints
 

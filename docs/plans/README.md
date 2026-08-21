@@ -30,6 +30,7 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | --- | --- | --- |
 | 2026-08-21 | Postgres cutover runbook — plan | [impl](2026-Q3/2026-08-21-pg-cutover-runbook-impl.md) |
 | 2026-08-21 | Postgres counter triggers — design | [design](2026-Q3/2026-08-21-pg-counter-triggers-design.md) |
+| 2026-08-21 | Prod-shaped Postgres compose topology — plan | [impl](2026-Q3/2026-08-21-pg-compose-topology-impl.md) |
 | 2026-08-21 | Alembic Postgres baseline — design | [design](2026-Q3/2026-08-21-alembic-pg-baseline-design.md) · [impl](2026-Q3/2026-08-21-alembic-pg-baseline-impl.md) |
 | 2026-08-20 | Tests on Postgres — design | [design](2026-Q3/2026-08-20-tests-on-postgres-design.md) · [impl](2026-Q3/2026-08-20-tests-on-postgres-impl.md) |
 | 2026-08-20 | Postgres Proof-of-Concept Implementation Plan | [impl](2026-Q3/2026-08-20-postgres-poc-impl.md) |
@@ -111,4 +112,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-67 efforts, 99 documents.
+68 efforts, 100 documents.

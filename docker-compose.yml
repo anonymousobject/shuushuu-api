@@ -45,6 +45,46 @@ services:
           cpus: '2'
           memory: 1G
 
+  # Postgres — the transition target (ADR-0010, docs/postgres-cutover-runbook.md).
+  # Runs alongside mariadb for the dual window; api/arq pick their database via
+  # COMPOSE_DATABASE_URL below. In prod the DB tier is native/out-of-stack
+  # (docker-compose.prod.yml stubs it), so this service is dev-only in practice.
+  postgres:
+    # Pin like mariadb above: bump POSTGRES_IMAGE in .env deliberately; a
+    # floating major tag drifts dev away from whatever prod's DB tier runs.
+    image: ${POSTGRES_IMAGE:-postgres:17.11}
+    container_name: shuushuu-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-shuushuu}
+      POSTGRES_USER: ${POSTGRES_USER:-shuushuu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pg_dev_password}
+    # Mirrors the mariadb tuning rationale: keep the hot images table and the
+    # feed COUNT working set in RAM.
+    command: >
+      -c shared_buffers=${POSTGRES_SHARED_BUFFERS:-2GB}
+      -c effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}
+      -c max_connections=200
+    ports:
+      # localhost-only: host access is for dev tooling (pytest --pg, psql);
+      # containers reach it in-network as postgres:5432
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-shuushuu} -d ${POSTGRES_DB:-shuushuu}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 3G # must exceed shared_buffers (2G) + per-connection overhead
+        reservations:
+          cpus: '2'
+          memory: 1G
+
   # Redis (for caching + optional Arq)
   redis:
     image: redis:7-alpine
@@ -92,7 +132,10 @@ services:
     env_file: .env
     environment:
       # Container-specific overrides (hostnames differ from host machine)
-      - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
+      # COMPOSE_DATABASE_URL selects the database for the dual window (see
+      # docs/postgres-cutover-runbook.md): unset -> mariadb; set it to
+      # postgresql+asyncpg://user:pass@postgres:5432/db to run on Postgres.
+      - DATABASE_URL=${COMPOSE_DATABASE_URL:-mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4}
       - REDIS_URL=redis://redis:6379/0
       - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
@@ -104,6 +147,8 @@ services:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
       - ./alembic:/app/alembic
+      - ./alembic_pg:/app/alembic_pg
+      - ./alembic.pg.ini:/app/alembic.pg.ini:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
@@ -179,7 +224,10 @@ services:
     env_file: .env
     environment:
       # Container-specific overrides (hostnames differ from host machine)
-      - DATABASE_URL=mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4
+      # COMPOSE_DATABASE_URL selects the database for the dual window (see
+      # docs/postgres-cutover-runbook.md): unset -> mariadb; set it to
+      # postgresql+asyncpg://user:pass@postgres:5432/db to run on Postgres.
+      - DATABASE_URL=${COMPOSE_DATABASE_URL:-mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4}
       - REDIS_URL=redis://redis:6379/0
       - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
@@ -191,6 +239,8 @@ services:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
       - ./alembic:/app/alembic
+      - ./alembic_pg:/app/alembic_pg
+      - ./alembic.pg.ini:/app/alembic.pg.ini:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
@@ -276,6 +326,8 @@ services:
 
 volumes:
   mariadb_data:
+    driver: local
+  postgres_data:
     driver: local
   redis_data:
     driver: local
