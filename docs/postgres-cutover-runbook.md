@@ -41,10 +41,27 @@ wall-clock at current scale: schema ~5s, load ~7 min, post ~4 min, validate
 - Docker on the machine running the migration (`dimitri/pgloader:latest`),
   network reach to both databases, and this repo checked out at the cutover
   revision with `uv sync` done.
-- Postgres sizing: the MariaDB box runs `innodb_buffer_pool_size=2G` to keep
-  the images table hot; start with `shared_buffers≈2G`,
-  `effective_cache_size≈` the host's real page-cache budget, and revisit
-  after the feed queries have run against real traffic.
+- Postgres sizing: size from the box you are actually migrating, not from the
+  rehearsal. The rule of thumb is `shared_buffers≈25%` of RAM and
+  `effective_cache_size≈` the host's real page-cache budget, revisited once the
+  feed queries have run against real traffic. `effective_cache_size` is a
+  planner hint and reserves nothing; `shared_buffers` is shared memory taken at
+  cluster start, so on a box still running MariaDB it is committed on top of
+  the InnoDB buffer pool, not instead of it.
+
+  | | dev restore (rehearsal) | tomoyo (prod) |
+  |---|---|---|
+  | RAM | — | 31 GB |
+  | MariaDB `innodb_buffer_pool_size` | 2G | **10G** |
+  | PG `shared_buffers` | ≈2G | **8GB** |
+  | PG `effective_cache_size` | — | **16GB** |
+
+  Prod is already deployed at those values by the iac `postgres` role
+  (`host_vars/tomoyo.yml`); they are not a starting suggestion to revisit
+  during the window. Both engines running means 20 of 31 GB committed, which
+  is deliberate and accepted because the coexistence period is short. MariaDB's
+  10G returns to the page cache when it is decommissioned, with no config
+  change needed.
 - Backups configured for the target before cutover day.
 
 ## 2. Pre-cutover source data fixes (days before, not during the window)
