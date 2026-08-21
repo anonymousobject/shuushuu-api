@@ -104,6 +104,10 @@ clean. The pgloader settings in the template are load-bearing — concurrency 1
 (thread race), small batches (heap exhaustion on wide rows), docker `-t`
 (SBCL /dev/tty crash); don't "optimize" them without re-rehearsing.
 
+The rendered load file and pgloader log land in `/tmp/pg-migration-*/`
+(mode 0700) and contain both database URLs **with credentials** — remove
+those directories once the window closes: `rm -rf /tmp/pg-migration-*`.
+
 ## 7. Validate beyond counts
 
 Counts are necessary, not sufficient — every smoke check passed while comment
