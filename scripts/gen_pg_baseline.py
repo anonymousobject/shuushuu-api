@@ -36,7 +36,11 @@ def main() -> None:
     statements: list[str] = ["CREATE EXTENSION IF NOT EXISTS citext"]
 
     def capture(sql, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        statements.append(str(sql.compile(dialect=engine.dialect)).strip())
+        compiled = str(sql.compile(dialect=engine.dialect)).strip()
+        # Per-line rstrip: compiled DDL carries trailing spaces that the
+        # pre-commit whitespace hook would strip, drifting the frozen file
+        # from generator output.
+        statements.append("\n".join(line.rstrip() for line in compiled.splitlines()))
 
     engine = create_mock_engine("postgresql+asyncpg://", capture)
     SQLModel.metadata.create_all(engine, checkfirst=False)
