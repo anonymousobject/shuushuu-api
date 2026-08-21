@@ -26,6 +26,18 @@ wall-clock at current scale: schema ~5s, load ~7 min, post ~4 min, validate
   SUPERUSER;` / `NOSUPERUSER`); nothing needs it afterwards, since the app owns
   its own tables and `citext` is a trusted extension the owner creates in
   step 3.
+
+  In shuushuu prod the role is `shuushuu_user`, and the grant runs **on tomoyo
+  as the `postgres` superuser over the local socket** — `pg_hba` there grants
+  `local all postgres peer`, so no password is involved and nothing lands in a
+  shell history or a journal:
+
+  ```bash
+  sudo -u postgres psql -c 'ALTER ROLE shuushuu_user SUPERUSER;'
+  ```
+
+  It cannot be done over TCP from the migration host: `pg_hba` admits only
+  kyouko, only as `shuushuu_user`, and only to `shuushuu`/`shuushuu_pytest`.
 - Docker on the machine running the migration (`dimitri/pgloader:latest`),
   network reach to both databases, and this repo checked out at the cutover
   revision with `uv sync` done.
@@ -136,7 +148,20 @@ Minimum manual checks:
   move (triggers).
 - `SELECT last_value FROM images_image_id_seq` vs `MAX(image_id)`.
 
-Once these pass, revoke the load superuser (step 1) before opening the flip.
+Once these pass, revoke the load superuser (step 1) before opening the flip —
+on tomoyo, same local socket as the grant — and confirm it actually took:
+
+```bash
+sudo -u postgres psql -c 'ALTER ROLE shuushuu_user NOSUPERUSER;'
+sudo -u postgres psql -tAc \
+  "SELECT rolsuper FROM pg_roles WHERE rolname = 'shuushuu_user';"   # expect: f
+```
+
+If the revoke is forgotten, the next `ansible-playbook playbooks/shuushuu.yml
+--tags postgres` in the iac repo puts it back: `postgresql_user` compares the
+requested `role_attr_flags` against `pg_authid` and re-issues `NOSUPERUSER`,
+reporting `changed`. Treat that as a backstop, not the plan — until someone
+happens to run the play, the application's own runtime role is a superuser.
 
 ## 8. Flip
 
