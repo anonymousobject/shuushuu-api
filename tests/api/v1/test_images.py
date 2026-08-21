@@ -2539,13 +2539,12 @@ class TestOwnerStatusChangeSyncsMlSuggestions:
 
 
 @pytest.mark.api
-# mariadb_only: usage_count is maintained by DB triggers, which exist only in
-# the MariaDB migration chain. These become the acceptance tests for whatever
-# mechanism the Postgres counters decision picks (see the tests-on-postgres
-# design doc's deferred list).
-@pytest.mark.mariadb_only
 class TestTagUsageCount:
-    """Tests for automatic tag usage_count updates via database triggers."""
+    """Tests for automatic tag usage_count updates via database triggers.
+
+    Both backends: the MariaDB migration chain and the Postgres bootstrap
+    (app/core/pg_triggers.py) each install the triggers under test.
+    """
 
     async def test_tag_usage_count_increments_on_add(
         self,
