@@ -1,0 +1,37 @@
+# Grafana contact points.
+#
+# The whole ./docker/grafana/provisioning tree is already mounted read-only
+# into the container, so this directory is picked up with no compose volume
+# change.
+#
+# This file is git-tracked. The secrets MUST stay as $VAR references —
+# never inline the literal token or user key here. They reach the container
+# via the grafana service's environment: block in docker-compose.prod.yml,
+# rendered into .env by the ansible compose_project role from
+# vault/monitoring.yml.
+#
+# Grafana expands $VAR in provisioning files, but coverage for *alerting*
+# provisioning specifically has been inconsistent across versions. The
+# failure is silent: a contact point holding the literal string
+# "$PUSHOVER_API_TOKEN" looks perfectly healthy in the UI and only reveals
+# itself when an alert fails to deliver. Confirm with Alerting → Contact
+# points → Test after deploying; a phone notification is the only real proof.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: pushover
+    receivers:
+      - uid: pushover_primary
+        type: pushover
+        settings:
+          apiToken: $PUSHOVER_API_TOKEN
+          userKey: $PUSHOVER_USER_KEY
+          # priority 1 = high: bypasses Pushover's quiet hours. This rule
+          # only fires on a sustained fault, so it should wake someone.
+          priority: "1"
+          # retry/expire apply to priority 2 (emergency) only; harmless at
+          # priority 1 and left in place so raising the priority later does
+          # not also require remembering to add them.
+          retry: "60"
+          expire: "3600"
