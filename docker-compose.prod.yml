@@ -132,9 +132,18 @@ services:
       # only runs in prod and its public URL is fixed. The .conf glob
       # in nginx.conf picks it up automatically.
       - ./docker/nginx/conf.d/wiki.conf:/etc/nginx/conf.d/wiki.conf:ro
+      # stub_status on :8081 for the Datadog nginx check. Same .conf glob
+      # picks it up. Published to 127.0.0.1 only — see ports below.
+      - ./docker/nginx/conf.d/stub-status.conf:/etc/nginx/conf.d/stub-status.conf:ro
       # LE certs land here via the certbot service. Read-only for nginx;
       # certbot has it RW.
       - ./docker/certbot/conf:/etc/letsencrypt:ro
+    ports:
+      # Appended to the base file's 80/443. Bound to loopback so the status
+      # endpoint is reachable by dd-agent on this host and by nothing off it;
+      # docker is the boundary rather than an nginx allow/deny on a bridge
+      # subnet that can change.
+      - "127.0.0.1:8081:8081"
     depends_on:
       - api
       - frontend
