@@ -290,9 +290,16 @@ services:
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
       - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
-    # No env_file — only GRAFANA_ADMIN_PASSWORD is needed, and it is already
+      # Resolved by the pushover contact point in
+      # provisioning/alerting/contact-points.yaml, which is git-tracked and so
+      # references $PUSHOVER_* rather than carrying the values. Rendered into
+      # .env by the ansible compose_project role from vault/monitoring.yml.
+      - PUSHOVER_API_TOKEN=${PUSHOVER_API_TOKEN}
+      - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY}
+    # No env_file — only the variables enumerated above are needed, and they are
     # substituted via ${VAR} in `environment:` (sourced from .env at compose level).
     # This avoids leaking unrelated DB/Redis/etc. credentials into the Grafana container.
+    # Adding an env_file to save enumerating two lines would quietly undo that.
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
