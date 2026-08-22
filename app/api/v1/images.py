@@ -1750,19 +1750,28 @@ async def get_image_tag_history(
     # Merge in memory and sort by date desc, then a deterministic tiebreak. The
     # row count loaded here is bounded by the image's own tag activity (its current
     # tag_links plus its tag_history rows), which is small in practice — the same
-    # load-all-then-sort approach the user-history endpoint uses. The tiebreak is
-    # (source, id): tag_id for link events vs tag_history_id for history events live
-    # in separate ordinal lanes (0/1) so identical timestamps still order the same
-    # way across requests (the two id spaces are unrelated and could collide).
-    # Both date columns default to current_timestamp; the aware sentinel keeps the
-    # sort total if one is ever null.
+    # load-all-then-sort approach the user-history endpoint uses.
+    #
+    # The tiebreak is (editor, source, id). Editor leads because both date columns
+    # default to current_timestamp, so one save's events all share a second: without
+    # it a second editor's event sorts between two of the first editor's purely on
+    # id, and one save reads as two. Then (source, id): tag_id for link events vs
+    # tag_history_id for history events live in separate ordinal lanes (0/1) so
+    # identical timestamps still order the same way across requests (the two id
+    # spaces are unrelated and could collide). The aware sentinel keeps the sort
+    # total if a date is ever null, and 0 stands in for an unknown editor.
     epoch = datetime(1, 1, 1, tzinfo=UTC)
-    events: list[tuple[datetime, int, int, ImageTagHistoryResponse]] = []
+
+    def editor_id(user: Users | None) -> int:
+        return user.user_id if user is not None and user.user_id is not None else 0
+
+    events: list[tuple[datetime, int, int, int, ImageTagHistoryResponse]] = []
 
     for link, tag, user in link_rows:
         events.append(
             (
                 link.date_linked or epoch,
+                editor_id(user),
                 0,  # source lane: link events
                 link.tag_id or 0,
                 ImageTagHistoryResponse(
@@ -1789,6 +1798,7 @@ async def get_image_tag_history(
         events.append(
             (
                 history.date or epoch,
+                editor_id(user),
                 1,  # source lane: history events
                 history.tag_history_id or 0,
                 ImageTagHistoryResponse(
@@ -1803,11 +1813,11 @@ async def get_image_tag_history(
             )
         )
 
-    events.sort(key=lambda e: (e[0], e[1], e[2]), reverse=True)
+    events.sort(key=lambda e: (e[0], e[1], e[2], e[3]), reverse=True)
 
     total = len(events)
     start = pagination.offset
-    items = [event[3] for event in events[start : start + pagination.per_page]]
+    items = [event[4] for event in events[start : start + pagination.per_page]]
 
     return ImageTagHistoryListResponse(
         total=total,
