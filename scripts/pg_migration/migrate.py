@@ -145,6 +145,12 @@ def load() -> None:
                 "run",
                 "--rm",
                 "-t",
+                # --userns=host is required, not a convenience: a daemon with
+                # userns-remap enabled refuses --network host outright, and
+                # without it the remapped container root cannot read the 0600
+                # load file below (it holds both URLs, credentials included, so
+                # loosening the mode is not the trade to make).
+                "--userns=host",
                 "--network",
                 "host",
                 "-v",

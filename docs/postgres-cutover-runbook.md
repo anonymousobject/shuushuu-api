@@ -1,8 +1,9 @@
 # Postgres cutover runbook
 
 Migrating production from MariaDB to Postgres. Every step here was executed
-at prod scale (46.5M rows) against the dev restore on 2026-08-20/21; the
-sharp edges are annotated with what they cost when first hit. The executable
+at prod scale against the dev restore on 2026-08-20/21, and end-to-end from
+kyouko into the prod target on 2026-08-21 (52.3M rows); the sharp edges are
+annotated with what they cost when first hit. The executable
 half lives in `scripts/pg_migration/` (`migrate.py` + the pgloader template).
 
 Related decisions: ADR-0008 (citext), ADR-0009 (counter triggers), ADR-0010
@@ -11,9 +12,16 @@ Related decisions: ADR-0008 (citext), ADR-0009 (counter triggers), ADR-0010
 ## 0. Rehearse first
 
 Run this entire runbook against a scratch target database before the real
-window. All tooling is idempotent — a failed step reruns safely. Rehearsal
-wall-clock at current scale: schema ~5s, load ~7 min, post ~4 min, validate
-~2 min.
+window. All tooling is idempotent — a failed step reruns safely.
+
+Rehearse on the machine that will run the real migration, not just against a
+representative source: the 2026-08-21 rehearsal was the first to run from
+kyouko, and it immediately failed on a docker/userns incompatibility (step 6)
+that every earlier rehearsal elsewhere had missed. A rehearsal that skips the
+real host does not cover the host.
+
+Wall-clock, kyouko → tomoyo at 52.3M rows / 2.4 GB: `load` 3m10s, the other
+four steps ~41s combined, ~3m50s for `all`.
 
 ## 1. Prerequisites
 
@@ -137,7 +145,9 @@ validate (per-table source-vs-target counts; exits non-zero on any diff).
 Steps can be rerun individually; `prep` + `load` restart a botched copy from
 clean. The pgloader settings in the template are load-bearing — concurrency 1
 (thread race), small batches (heap exhaustion on wide rows), docker `-t`
-(SBCL /dev/tty crash); don't "optimize" them without re-rehearsing.
+(SBCL /dev/tty crash), docker `--userns=host` (a daemon with `userns-remap`
+refuses `--network host`, and the remapped container root cannot read the
+0600 load file); don't "optimize" them without re-rehearsing.
 
 The rendered load file and pgloader log land in `/tmp/pg-migration-*/`
 (mode 0700) and contain both database URLs **with credentials** — remove
