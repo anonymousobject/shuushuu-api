@@ -8,6 +8,7 @@ These tests cover the /api/v1/images endpoints including:
 """
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
@@ -2837,6 +2838,77 @@ class TestCommentFilters:
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 0
+
+    @pytest.mark.parametrize("sort_by", ["favorites", "last_post", "total_pixels"])
+    async def test_filter_by_commenter_with_non_id_sort(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sort_by: str,
+    ):
+        """Comment filters must work with sorts that are not image_id.
+
+        The commenter/commentsearch path JOINs Comments and applies DISTINCT to
+        the id subquery. Postgres requires every ORDER BY expression to appear in
+        a SELECT DISTINCT select list; MySQL does not. Sorts whose get_column()
+        resolves to image_id (image_id, date_added) hid this — every other sort
+        raised InvalidColumnReferenceError and returned 500 in production.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username=f"sortcommenter_{sort_by}",
+            email=f"sc_{sort_by}@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000003",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Two images the user commented on, with different sort-column values so
+        # the ordering assertion below is meaningful rather than incidental.
+        low_data = sample_image_data.copy()
+        low_data.update({"filename": f"low_{sort_by}", "md5_hash": f"lo{sort_by:>014}"[:32]})
+        high_data = sample_image_data.copy()
+        high_data.update({"filename": f"high_{sort_by}", "md5_hash": f"hi{sort_by:>014}"[:32]})
+        low, high = Images(**low_data), Images(**high_data)
+        db_session.add_all([low, high])
+        await db_session.flush()
+
+        low_value, high_value = {
+            "favorites": (1, 99),
+            "last_post": (
+                datetime(2020, 1, 1, tzinfo=UTC),
+                datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            # decimal(6,3) unsigned megapixels in prod — keep inside the range.
+            "total_pixels": (Decimal("0.100"), Decimal("200.000")),
+        }[sort_by]
+        setattr(low, sort_by, low_value)
+        setattr(high, sort_by, high_value)
+
+        db_session.add_all(
+            [
+                Comments(image_id=low.image_id, user_id=user.id, post_text="a"),
+                Comments(image_id=high.image_id, user_id=user.id, post_text="b"),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images?commenter={user.id}&sort_by={sort_by}&sort_order=DESC"
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["total"] == 2
+        # DISTINCT must not drop or duplicate rows, and the sort must be honored.
+        assert [img["filename"] for img in data["images"]] == [
+            f"high_{sort_by}",
+            f"low_{sort_by}",
+        ]
 
     async def test_filter_by_comment_text_like_search(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict

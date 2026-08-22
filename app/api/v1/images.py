@@ -988,11 +988,22 @@ async def list_images(
     # Subquery: Apply all filters, sort, and limit to get matching image_ids
     # When comment filters are used with JOIN, apply distinct() to avoid duplicate rows
     # (one image can have multiple comments)
-    image_id_subquery = (
-        query.with_only_columns(Images.image_id.label("image_id"))  # type: ignore[union-attr]
-    )
     # Only need distinct when we JOIN with Comments (commenter or commentsearch filters)
-    if commenter is not None or commentsearch is not None:
+    needs_distinct = commenter is not None or commentsearch is not None
+
+    subquery_columns = [Images.image_id.label("image_id")]  # type: ignore[union-attr]
+    if needs_distinct and sort_column.key != "image_id":
+        # Postgres rejects an ORDER BY expression that is absent from a SELECT
+        # DISTINCT select list; MySQL permits it, which is why this only broke
+        # after the cutover. Adding the sort column cannot change which rows
+        # survive DISTINCT: it comes from Images, so it is constant per
+        # image_id and (image_id, sort_column) collapses exactly as image_id
+        # alone. Sorts whose get_column() already resolves to image_id
+        # (image_id, date_added) satisfy the rule and must not add a duplicate.
+        subquery_columns.append(sort_column)
+
+    image_id_subquery = query.with_only_columns(*subquery_columns)
+    if needs_distinct:
         image_id_subquery = image_id_subquery.distinct()
 
     imageset = (
