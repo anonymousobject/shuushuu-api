@@ -132,9 +132,18 @@ services:
       # only runs in prod and its public URL is fixed. The .conf glob
       # in nginx.conf picks it up automatically.
       - ./docker/nginx/conf.d/wiki.conf:/etc/nginx/conf.d/wiki.conf:ro
+      # stub_status on :8081 for the Datadog nginx check. Same .conf glob
+      # picks it up. Published to 127.0.0.1 only — see ports below.
+      - ./docker/nginx/conf.d/stub-status.conf:/etc/nginx/conf.d/stub-status.conf:ro
       # LE certs land here via the certbot service. Read-only for nginx;
       # certbot has it RW.
       - ./docker/certbot/conf:/etc/letsencrypt:ro
+    ports:
+      # Appended to the base file's 80/443. Bound to loopback so the status
+      # endpoint is reachable by dd-agent on this host and by nothing off it;
+      # docker is the boundary rather than an nginx allow/deny on a bridge
+      # subnet that can change.
+      - "127.0.0.1:8081:8081"
     depends_on:
       - api
       - frontend
@@ -281,9 +290,16 @@ services:
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
       - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
-    # No env_file — only GRAFANA_ADMIN_PASSWORD is needed, and it is already
+      # Resolved by the pushover contact point in
+      # provisioning/alerting/contact-points.yaml, which is git-tracked and so
+      # references $PUSHOVER_* rather than carrying the values. Rendered into
+      # .env by the ansible compose_project role from vault/monitoring.yml.
+      - PUSHOVER_API_TOKEN=${PUSHOVER_API_TOKEN}
+      - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY}
+    # No env_file — only the variables enumerated above are needed, and they are
     # substituted via ${VAR} in `environment:` (sourced from .env at compose level).
     # This avoids leaking unrelated DB/Redis/etc. credentials into the Grafana container.
+    # Adding an env_file to save enumerating two lines would quietly undo that.
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
