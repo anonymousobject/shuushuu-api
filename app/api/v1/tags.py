@@ -73,6 +73,7 @@ from app.schemas.tag import (
     TagWithStats,
 )
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
+from app.services.character_source_counts import get_shared_image_counts
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
@@ -1056,7 +1057,7 @@ async def get_characters_for_source(
     )
 
 
-def _linked_tag_entry(row: Any) -> dict[str, Any]:
+def _linked_tag_entry(row: Any, shared_counts: dict[int, int]) -> dict[str, Any]:
     """Build a LinkedTagWithPicture dict from a get_tag relationship row."""
     (
         tag_id,
@@ -1079,6 +1080,8 @@ def _linked_tag_entry(row: Any) -> dict[str, Any]:
         "type": tag_type,
         "usage_count": usage_count,
         "link_id": link_id,
+        # Absent from the map means the two tags never co-occur.
+        "shared_image_count": shared_counts.get(tag_id, 0),
     }
     # Re-checked at read time: an image deactivated after being chosen must
     # not leak through the embed — the card falls back to its placeholder.
@@ -1094,10 +1097,21 @@ def _linked_tag_entry(row: Any) -> dict[str, Any]:
     return entry
 
 
+def _rank_by_shared_images(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order linked-tag entries by shared image count, most first.
+
+    The caller's query already ordered them by title, and Python's sort is
+    stable, so title remains the tiebreaker without repeating the collation
+    here.
+    """
+    return sorted(entries, key=lambda entry: -entry["shared_image_count"])
+
+
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
     current_user: Users | None = Depends(get_optional_current_user),
 ) -> TagWithStats:
     """
@@ -1219,8 +1233,8 @@ async def get_tag(
     characters: list[dict[str, Any]] = []
 
     if tag.type == TagType.CHARACTER:
-        # Get all sources linked to this character
-        # Sorted by usage_count descending with title as tiebreaker
+        # Get all sources linked to this character, ranked by how many images
+        # carry both tags (see _rank_by_shared_images) with title as tiebreaker
         sources_result = await db.execute(
             select(  # type: ignore[call-overload]
                 Tags.tag_id,
@@ -1247,13 +1261,16 @@ async def get_tag(
             )
             .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.character_tag_id == tag_id)
-            .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
+            .order_by(Tags.title)
         )
-        sources = [_linked_tag_entry(row) for row in sources_result.all()]
+        shared_counts = await get_shared_image_counts(db, tag_id, "source", redis_client)
+        sources = _rank_by_shared_images(
+            [_linked_tag_entry(row, shared_counts) for row in sources_result.all()]
+        )
 
     elif tag.type == TagType.SOURCE:
-        # Get all characters linked to this source
-        # Sorted by usage_count descending with title as tiebreaker
+        # Get all characters linked to this source, ranked by how many images
+        # carry both tags (see _rank_by_shared_images) with title as tiebreaker
         characters_result = await db.execute(
             select(  # type: ignore[call-overload]
                 Tags.tag_id,
@@ -1280,9 +1297,12 @@ async def get_tag(
             )
             .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.source_tag_id == tag_id)
-            .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
+            .order_by(Tags.title)
         )
-        characters = [_linked_tag_entry(row) for row in characters_result.all()]
+        shared_counts = await get_shared_image_counts(db, tag_id, "character", redis_client)
+        characters = _rank_by_shared_images(
+            [_linked_tag_entry(row, shared_counts) for row in characters_result.all()]
+        )
 
     return TagWithStats(
         tag_id=tag.tag_id or 0,

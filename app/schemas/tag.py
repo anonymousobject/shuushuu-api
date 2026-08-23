@@ -161,6 +161,10 @@ class LinkedTagWithPicture(LinkedTag):
 
     link_id: int
     picture: LinkPictureInfo | None = None
+    # Images carrying both this tag and the one being viewed - what the list is
+    # ordered by. Raw tag_links intersection, so it is comparable to
+    # usage_count rather than to the status-aware total_image_count.
+    shared_image_count: int = 0
 
 
 class TagWithStats(TagResponse):
