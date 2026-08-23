@@ -1,54 +1,38 @@
 """
-Shared database utilities for migration and restore scripts.
+Helpers for restore_prod_db.py: a pg_dump of prod into the compose postgres service.
 
-Extracted from migrate_legacy_db.py to avoid duplication between
-the legacy migration script and the prod restore script.
+Every database step runs inside the running ``postgres`` compose service via
+``docker compose exec -T postgres psql``. That is deliberate:
+
+- the container's psql matches the server (a plain pg_dump from 18 opens with
+  ``\\restrict``, which older clients reject);
+- the unix socket is trust-authenticated in the official image, so no password
+  is parsed, printed, or passed around on the host;
+- the script can only ever reach the local stack — the prod overlay replaces
+  the service with a busybox stub.
+
+The alembic and search-reindex steps run in the api service for the same
+reason: the container already holds the DATABASE_URL / MEILISEARCH_URL that
+resolve on the compose network.
 """
 
 import os
-import shlex
+import re
 import subprocess
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import IO, Any
 
-import bcrypt
+from dotenv import dotenv_values
 
-# Development/test databases where test users should be created
-DEV_TEST_DATABASES = {"shuushuu_dev", "shuushuu_test"}
+# Compose service names (see docker-compose.yml)
+POSTGRES_SERVICE = "postgres"
+API_SERVICE = "api"
 
-# Test accounts to create in dev/test databases
-# Typed as list[dict[str, Any]] to avoid mypy issues with mixed value types
-TEST_ACCOUNTS: list[dict[str, Any]] = [
-    {
-        "username": "testUser",
-        "password": "shuutestuser",
-        "email": "test1@shuushuu.com",
-        "admin": 0,
-        "group": None,
-    },
-    {
-        "username": "testadmin",
-        "password": "shuutestadmin",
-        "email": "testadmin@shuushuu.com",
-        "admin": 1,
-        "group": "Admins",
-    },
-    {
-        "username": "testmod",
-        "password": "shuutestmod",
-        "email": "testmod@shuushuu.com",
-        "admin": 0,
-        "group": "Mods",
-    },
-    {
-        "username": "testtagger",
-        "password": "shuutesttagger",
-        "email": "testtagger@shuushuu.com",
-        "admin": 0,
-        "group": "Taggers",
-    },
-]
+# Database to connect to while the target is being dropped and recreated
+MAINTENANCE_DATABASE = "postgres"
+
+# Ownership statements pg_dump emits alongside each object definition
+_OWNER_TO = re.compile(r"^ALTER .* OWNER TO (\w+);$")
 
 
 def print_header(text: str, width: int = 80) -> None:
@@ -58,43 +42,30 @@ def print_header(text: str, width: int = 80) -> None:
     print("=" * width + "\n")
 
 
-def parse_database_url(database_url: str) -> dict[str, str]:
+def load_db_config(project_root: Path) -> dict[str, str]:
     """
-    Parse DATABASE_URL into connection components.
+    Identify the target database the way docker-compose.yml does.
 
-    Example: mysql+aiomysql://user:pass@localhost:3306/dbname
-    Returns: {host, port, user, password, database}
+    The postgres service is created from POSTGRES_DB / POSTGRES_USER, which
+    compose interpolates from the shell environment and then .env, with the
+    defaults below. Resolve them the same way so the script and the container
+    never disagree about which database is being replaced.
     """
-    # Remove the driver prefix if present
-    url = database_url.replace("mysql+aiomysql://", "mysql://")
-    parsed = urlparse(url)
-
+    from_file = dotenv_values(project_root / ".env")
+    values = {key: value for key, value in from_file.items() if value is not None}
+    values.update(os.environ)
     return {
-        "host": parsed.hostname or "localhost",
-        "port": str(parsed.port or 3306),
-        "user": parsed.username or "root",
-        "password": parsed.password or "",
-        "database": parsed.path.lstrip("/") if parsed.path else "",
+        "database": values.get("POSTGRES_DB", "shuushuu"),
+        "user": values.get("POSTGRES_USER", "shuushuu"),
     }
 
 
-def get_database_url() -> str:
-    """Get DATABASE_URL from environment."""
-    # Try to load from .env file
-    env_file = Path(__file__).parent.parent / ".env"
-    if env_file.exists():
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("DATABASE_URL="):
-                    return line.split("=", 1)[1].strip('"').strip("'")
-
-    # Fall back to environment variable
-    return os.environ.get("DATABASE_URL", "")
-
-
 async def run_command(
-    cmd: list[str], description: str, cwd: Path | None = None, env: dict[str, str] | None = None
+    cmd: list[str],
+    description: str,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    stdin: IO[Any] | None = None,
 ) -> bool:
     """
     Run a shell command and return success status.
@@ -104,13 +75,13 @@ async def run_command(
         description: Human-readable description for logging
         cwd: Working directory (defaults to project root)
         env: Optional environment variables to override/add
+        stdin: Optional open file to feed the process on standard input
 
     Returns:
         True if successful, False otherwise
     """
     print(f"Running: {description}")
-    safe_cmd = [arg if not arg.startswith("--password=") else "--password=***" for arg in cmd]
-    print(f"Command: {' '.join(safe_cmd)}\n")
+    print(f"Command: {' '.join(cmd)}\n")
 
     try:
         # Merge environment variables
@@ -124,6 +95,7 @@ async def run_command(
             check=False,
             capture_output=False,
             env=command_env,
+            stdin=stdin,
         )
 
         if result.returncode != 0:
@@ -138,130 +110,108 @@ async def run_command(
         return False
 
 
-# Compose service name of the MariaDB container (see docker-compose.yml)
-MARIADB_SERVICE = "mariadb"
-
-# Port MariaDB listens on inside the container. The published port can differ
-# (a host running a second dev instance remaps it, e.g. 13306), so anything
-# executing inside the container must dial this one, not the published one.
-MARIADB_INTERNAL_PORT = "3306"
-
-
-def _resolve_connection(db_config: dict[str, str], use_docker: bool) -> tuple[str, str]:
+def _psql_cmd(db_config: dict[str, str], database: str | None = None) -> list[str]:
     """
-    Resolve the (host, port) the mariadb client should dial.
+    psql inside the compose postgres service, failing on the first SQL error.
 
-    Inside the compose service the server is reached on its internal port; the
-    published port from DATABASE_URL is meaningless there. From the host the
-    Docker hostname 'mariadb' does not resolve, so dial localhost on the
-    published port instead.
+    psql's default is to report errors and exit 0 regardless, which would turn
+    a half-applied restore into a "success"; ON_ERROR_STOP makes it exit 3.
     """
-    if use_docker:
-        return "127.0.0.1", MARIADB_INTERNAL_PORT
-
-    host = db_config["host"]
-    if host == MARIADB_SERVICE:
-        host = "localhost"
-    return host, db_config["port"]
-
-
-def _maybe_docker_exec(cmd: list[str], use_docker: bool) -> list[str]:
-    """
-    Optionally run a mariadb client command inside the compose MariaDB service.
-
-    When use_docker is True the command is prefixed with
-    `docker compose exec -T mariadb` so the client bundled in the running
-    container is used instead of a host-installed binary. `-T` disables
-    pseudo-TTY allocation so piped stdin (e.g. a SQL dump) is forwarded.
-
-    The command must run from the project root so docker compose resolves the
-    correct project; run_command defaults cwd to the project root.
-    """
-    if use_docker:
-        return ["docker", "compose", "exec", "-T", MARIADB_SERVICE, *cmd]
-    return cmd
-
-
-def _build_mysql_cmd(db_config: dict[str, str], use_docker: bool = False) -> list[str]:
-    """Build base mariadb CLI command from db config."""
-    host, port = _resolve_connection(db_config, use_docker)
-
-    cmd = [
-        "mariadb",
-        f"--host={host}",
-        f"--port={port}",
-        f"--user={db_config['user']}",
+    return [
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        POSTGRES_SERVICE,
+        "psql",
+        "-U",
+        db_config["user"],
+        "-d",
+        database or db_config["database"],
+        "-v",
+        "ON_ERROR_STOP=1",
     ]
 
-    if db_config["password"]:
-        cmd.append(f"--password={db_config['password']}")
 
-    cmd.append(db_config["database"])
-    return _maybe_docker_exec(cmd, use_docker)
-
-
-def _hash_password(password: str) -> str:
-    """Hash a password with bcrypt."""
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
-
-
-async def drop_and_create_database(db_config: dict[str, str], use_docker: bool = False) -> bool:
+async def drop_and_create_database(db_config: dict[str, str]) -> bool:
     """
-    Drop and recreate the database.
+    Drop and recreate the target database.
 
-    Args:
-        db_config: Database connection parameters
-        use_docker: If True, run the mariadb client inside the compose
-            MariaDB service instead of using the host binary
+    Runs against the maintenance database: Postgres refuses to drop the
+    database you are connected to. FORCE terminates any session still on it
+    (the api and worker are stopped by then; adminer or a forgotten shell are
+    the usual stragglers).
 
     Returns:
         True if successful, False otherwise
     """
-    database_name = db_config["database"]
+    database = db_config["database"]
+    print(f"⚠️  Dropping database '{database}' if it exists...")
 
-    print(f"⚠️  Dropping database '{database_name}' if it exists...")
-
-    host, port = _resolve_connection(db_config, use_docker)
-    if not use_docker and db_config["host"] == MARIADB_SERVICE:
-        print("Note: Replacing Docker hostname 'mariadb' with 'localhost' for host execution")
-
-    # Build mysql command for drop/create (no database name appended: the
-    # target database is being dropped, so connect to the server itself)
-    mysql_cmd = [
-        "mariadb",
-        f"--host={host}",
-        f"--port={port}",
-        f"--user={db_config['user']}",
+    cmd = _psql_cmd(db_config, MAINTENANCE_DATABASE) + [
+        "-c",
+        f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)',
+        "-c",
+        f'CREATE DATABASE "{database}" OWNER "{db_config["user"]}"',
     ]
-
-    if db_config["password"]:
-        mysql_cmd.append(f"--password={db_config['password']}")
-
-    # Drop database
-    drop_cmd = mysql_cmd + [
-        "-e",
-        f"DROP DATABASE IF EXISTS `{database_name}`; CREATE DATABASE `{database_name}` CHARACTER SET utf8mb3 COLLATE utf8mb3_unicode_ci;",
-    ]
-
-    success = await run_command(
-        _maybe_docker_exec(drop_cmd, use_docker),
-        f"Drop and create database '{database_name}'",
-    )
-
-    return success
+    return await run_command(cmd, f"Drop and create database '{database}'")
 
 
-async def import_sql_dump(
-    sql_file: Path, db_config: dict[str, str], use_docker: bool = False
-) -> bool:
+def dump_owner_roles(sql_file: Path) -> set[str]:
     """
-    Import SQL dump file into database.
+    Roles that own objects in a plain-format pg_dump.
 
-    Args:
-        sql_file: Path to SQL dump file
-        db_config: Database connection parameters
-        use_docker: If True, run the mariadb client inside the compose
-            MariaDB service instead of using the host binary
+    pg_dump records ownership as ``ALTER ... OWNER TO role;`` next to each
+    object definition, all of which precede the data section. Scanning stops
+    at the first COPY so row content — which is user text and can contain
+    anything — is never mistaken for a statement.
+    """
+    roles: set[str] = set()
+    with sql_file.open(encoding="utf-8", errors="replace") as dump:
+        for line in dump:
+            if line.startswith("COPY "):
+                break
+            match = _OWNER_TO.match(line.rstrip("\n"))
+            if match:
+                roles.add(match.group(1))
+    return roles
+
+
+async def ensure_roles(roles: set[str], db_config: dict[str, str]) -> bool:
+    """
+    Create the dump's owner roles so its ALTER ... OWNER TO statements succeed.
+
+    A prod dump names the prod role; dev has no such role and the load would
+    stop at the first ownership statement. Rather than rewriting the dump
+    stream, give each missing role a NOLOGIN existence; reassign_ownership()
+    hands its objects to the dev role afterwards.
+
+    Returns:
+        True if successful (or nothing to do), False otherwise
+    """
+    if not roles:
+        return True
+
+    statements = [
+        "DO $$ BEGIN "
+        f"IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN "
+        f'CREATE ROLE "{role}" NOLOGIN; '
+        "END IF; END $$"
+        for role in sorted(roles)
+    ]
+    cmd = _psql_cmd(db_config, MAINTENANCE_DATABASE)
+    for statement in statements:
+        cmd += ["-c", statement]
+    return await run_command(cmd, f"Ensure owner roles exist: {', '.join(sorted(roles))}")
+
+
+async def import_sql_dump(sql_file: Path, db_config: dict[str, str]) -> bool:
+    """
+    Load a plain-format pg_dump into the (empty) target database.
+
+    The dump is streamed over stdin into the container's psql as a single
+    transaction: a failure anywhere leaves an empty database rather than a
+    partial one, and ON_ERROR_STOP makes the failure visible.
 
     Returns:
         True if successful, False otherwise
@@ -273,115 +223,72 @@ async def import_sql_dump(
     print(f"Importing SQL dump from: {sql_file}")
     print(f"Into database: {db_config['database']}")
 
-    host, port = _resolve_connection(db_config, use_docker)
+    cmd = _psql_cmd(db_config) + ["--single-transaction", "-f", "-"]
+    with sql_file.open("rb") as dump:
+        return await run_command(cmd, f"Import SQL dump into '{db_config['database']}'", stdin=dump)
 
-    # Build mysql import command with optimizations for large imports
-    # Use 1GB for max-allowed-packet (in bytes)
-    # Strip LOCK/UNLOCK TABLES from dump to avoid locking conflicts with
-    # triggers or foreign keys that reference tables not in the current lock set.
-    mysql_cmd = [
-        "mariadb",
-        f"--host={host}",
-        f"--port={port}",
-        f"--user={db_config['user']}",
+
+async def reassign_ownership(roles: set[str], db_config: dict[str, str]) -> bool:
+    """
+    Give everything the dump's roles own to the dev role.
+
+    The placeholder roles from ensure_roles() stay behind, empty and unable to
+    log in; the next restore finds them already present.
+
+    Returns:
+        True if successful (or nothing to do), False otherwise
+    """
+    if not roles:
+        return True
+
+    cmd = _psql_cmd(db_config)
+    for role in sorted(roles):
+        cmd += ["-c", f'REASSIGN OWNED BY "{role}" TO "{db_config["user"]}"']
+    return await run_command(cmd, f"Reassign ownership to '{db_config['user']}'")
+
+
+async def analyze_database(db_config: dict[str, str]) -> bool:
+    """
+    Collect planner statistics.
+
+    A dump restores rows, not statistics; until autovacuum gets around to the
+    big tables the planner is guessing, and the first feed queries crawl.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    cmd = _psql_cmd(db_config) + ["-c", "ANALYZE"]
+    return await run_command(cmd, f"Analyze database '{db_config['database']}'")
+
+
+async def run_alembic_upgrade(project_root: Path) -> bool:
+    """
+    Apply any Postgres-chain migrations the dump predates.
+
+    Runs in a one-off api container (the service itself is stopped during a
+    restore) so alembic sees the same DATABASE_URL the application does.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    cmd = [
+        "docker",
+        "compose",
+        "run",
+        "--rm",
+        "-T",
+        "--no-deps",
+        API_SERVICE,
+        "uv",
+        "run",
+        "--no-project",
+        "alembic",
+        "-c",
+        "alembic.pg.ini",
+        "upgrade",
+        "head",
     ]
-
-    if db_config["password"]:
-        mysql_cmd.append(f"--password={db_config['password']}")
-
-    mysql_cmd.extend(
-        [
-            db_config["database"],
-            "--max-allowed-packet=1073741824",  # 1GB in bytes
-        ]
-    )
-
-    # Run the client inside the container when requested; sed still runs on the
-    # host (the dump file lives on the host) and pipes into the container's
-    # stdin via `docker compose exec -T`.
-    mysql_cmd = _maybe_docker_exec(mysql_cmd, use_docker)
-
-    database = db_config["database"]
-
-    # Build the full command with proper shell quoting via shlex.quote
-    # Pipe through sed to:
-    # - Strip LOCK/UNLOCK TABLES (avoid locking conflicts with triggers/FKs)
-    # - Strip DEFINER clauses (prod user may differ from local dev user)
-    # - Rewrite ALTER DATABASE to target the local database name (prod dumps
-    #   emit ALTER DATABASE `prod_db` around trigger definitions for charset
-    #   changes; if the prod db name doesn't exist locally, these fail and
-    #   abort the import in batch mode)
-    cmd_str = " ".join(shlex.quote(arg) for arg in mysql_cmd)
-    alter_db_sed = f"s/^ALTER DATABASE `[^`]*`/ALTER DATABASE `{database}`/g"
-    import_cmd = (
-        f"sed"
-        f" -e '/^LOCK TABLES/d; /^UNLOCK TABLES/d'"
-        f" -e 's/ DEFINER[ ]*=[ ]*[^ ]*@[^ ]* / /g'"
-        f" -e {shlex.quote(alter_db_sed)}"
-        f" {shlex.quote(str(sql_file))} | {cmd_str}"
-    )
-
-    success = await run_command(
-        ["bash", "-c", import_cmd],
-        f"Import SQL dump into '{db_config['database']}'",
-    )
-
-    return success
-
-
-async def stamp_initial_migration(project_root: Path, database_url: str, revision: str) -> bool:
-    """
-    Stamp database with a migration revision.
-
-    Args:
-        project_root: Project root directory
-        database_url: Database URL to use (with localhost instead of mariadb)
-        revision: Alembic revision ID to stamp
-
-    Returns:
-        True if successful, False otherwise
-    """
-    # Convert async URL to sync URL for alembic
-    sync_url = database_url.replace("mysql+aiomysql://", "mysql+pymysql://")
-
-    # Use alembic's -x option to override the database URL directly
-    # This avoids issues with environment variables being overridden by .env
-    cmd = ["uv", "run", "alembic", "-x", f"dbUrl={sync_url}", "stamp", revision]
-
-    success = await run_command(
-        cmd,
-        f"Stamp database with migration ({revision})",
-        cwd=project_root,
-    )
-
-    return success
-
-
-async def run_alembic_upgrade(project_root: Path, database_url: str) -> bool:
-    """
-    Run alembic upgrade head to apply all migrations.
-
-    Args:
-        project_root: Project root directory
-        database_url: Database URL to use (with localhost instead of mariadb)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    # Convert async URL to sync URL for alembic
-    sync_url = database_url.replace("mysql+aiomysql://", "mysql+pymysql://")
-
-    # Use alembic's -x option to override the database URL directly
-    # This avoids issues with environment variables being overridden by .env
-    cmd = ["uv", "run", "alembic", "-x", f"dbUrl={sync_url}", "upgrade", "head"]
-
-    success = await run_command(
-        cmd,
-        "Run alembic migrations (upgrade head)",
-        cwd=project_root,
-    )
-
-    return success
+    return await run_command(cmd, "Run alembic migrations (upgrade head)", cwd=project_root)
 
 
 async def stop_docker_services(project_root: Path) -> bool:
@@ -430,7 +337,7 @@ async def reindex_search(project_root: Path) -> bool:
     """
     Rebuild the Meilisearch tags index from the database.
 
-    A restore repopulates MySQL and leaves Meilisearch untouched, so search
+    A restore repopulates Postgres and leaves Meilisearch untouched, so search
     silently returns stale or empty results until the index is rebuilt — the
     failure is invisible from the API, which answers normally with nothing in
     it.
@@ -449,7 +356,7 @@ async def reindex_search(project_root: Path) -> bool:
         "compose",
         "exec",
         "-T",
-        "api",
+        API_SERVICE,
         "uv",
         "run",
         "--no-project",
@@ -464,78 +371,30 @@ async def reindex_search(project_root: Path) -> bool:
     )
 
 
-async def create_test_user(
-    db_config: dict[str, str], dry_run: bool = False, use_docker: bool = False
-) -> bool:
+async def create_test_users(project_root: Path) -> bool:
     """
-    Create test users for development/test databases.
+    Create the dev test accounts (scripts/create_test_users.py).
 
-    Only creates users if the database name is in DEV_TEST_DATABASES.
-    Uses INSERT IGNORE to avoid errors if users already exist.
-
-    Args:
-        db_config: Database connection parameters
-        dry_run: If True, only show what would be done
-        use_docker: If True, run the mariadb client inside the compose
-            MariaDB service instead of using the host binary
+    Runs in a one-off api container: the accounts go in through the Users
+    model so its Python-side defaults fill the NOT NULL columns that have no
+    database default, and that needs the app and its DATABASE_URL. Re-running
+    is harmless; existing accounts are skipped.
 
     Returns:
-        True if successful (or skipped for non-dev databases), False on error
+        True if successful, False otherwise
     """
-    database_name = db_config["database"]
-
-    # Only create test users for dev/test databases
-    if database_name not in DEV_TEST_DATABASES:
-        print(
-            f"Skipping test user creation (database '{database_name}' is not a dev/test database)"
-        )
-        return True
-
-    print(f"Creating test users for database '{database_name}'...")
-
-    if dry_run:
-        for account in TEST_ACCOUNTS:
-            role = f"admin={account['admin']}, group={account['group'] or 'none'}"
-            print(f"  Would create user: {account['username']} ({role})")
-            print(f"  Email: {account['email']}")
-            print(f"  Password: {account['password']}")
-        return True
-
-    mysql_cmd = _build_mysql_cmd(db_config, use_docker=use_docker)
-
-    for account in TEST_ACCOUNTS:
-        hashed_password = _hash_password(account["password"])
-
-        # Insert user (INSERT IGNORE to skip if exists)
-        # Note: images_per_page DB default is 10 but app default is 20, so we set it explicitly
-        sql = f"""
-            INSERT IGNORE INTO users (username, password, password_type, salt, email, active, email_verified, admin, images_per_page)
-            VALUES ('{account["username"]}', '{hashed_password}', 'bcrypt', '', '{account["email"]}', 1, 1, {account["admin"]}, 20);
-        """
-
-        # Add group assignment if specified
-        if account["group"]:
-            sql += f"""
-            INSERT IGNORE INTO user_groups (user_id, group_id)
-            SELECT u.user_id, g.group_id
-            FROM users u
-            JOIN `groups` g ON g.title = '{account["group"]}'
-            WHERE u.username = '{account["username"]}';
-            """
-
-        insert_cmd = mysql_cmd + ["-e", sql]
-
-        success = await run_command(
-            insert_cmd,
-            f"Create test user '{account['username']}'",
-        )
-
-        if success:
-            role = f"admin={account['admin']}, group={account['group'] or 'none'}"
-            print(
-                f"  ✓ Test user '{account['username']}' created ({role}, password: {account['password']})"
-            )
-        else:
-            return False
-
-    return True
+    cmd = [
+        "docker",
+        "compose",
+        "run",
+        "--rm",
+        "-T",
+        "--no-deps",
+        API_SERVICE,
+        "uv",
+        "run",
+        "--no-project",
+        "python",
+        "scripts/create_test_users.py",
+    ]
+    return await run_command(cmd, "Create test users", cwd=project_root)

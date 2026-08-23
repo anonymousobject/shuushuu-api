@@ -43,6 +43,7 @@ dependencies = [
     "onnxruntime>=1.26.0",  # 1.26.0 is the first release with Python 3.14 wheels
     "numpy>=2.4.1",
     "asyncpg>=0.31.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [dependency-groups]

@@ -225,4 +225,6 @@ Postgres data is disposable: next attempt starts at `prep` again.
   (`is_postgres` call sites keep the Postgres arm), drop
   `aiomysql`/`pymysql`, delete `alembic/` and rename `alembic_pg/` into
   place, retire `UnsignedInt`/`mariadb_only`, delete the FULLTEXT tokenizer
-  simulation alongside the FTS decision, rework `scripts/db_utils.py`.
+  simulation alongside the FTS decision. (`scripts/restore_prod_db.py` and
+  `scripts/db_utils.py` already take a pg_dump; `migrate_legacy_db.py` is
+  gone.)
