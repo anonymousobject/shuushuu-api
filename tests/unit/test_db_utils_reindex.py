@@ -1,6 +1,6 @@
 """Tests for the post-restore search reindex step.
 
-A restore repopulates MySQL but leaves Meilisearch holding whatever it had
+A restore repopulates the database but leaves Meilisearch holding whatever it had
 before, so the instance has a silently stale search index until it is rebuilt.
 The rebuild runs inside the api container (reindex_search.py reads
 settings.DATABASE_URL directly, and the compose hostnames only resolve there),
