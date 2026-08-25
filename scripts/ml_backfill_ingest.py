@@ -55,9 +55,7 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Ingest ML inference results into the database."
-    )
+    parser = argparse.ArgumentParser(description="Ingest ML inference results into the database.")
     parser.add_argument("results", nargs="+", help="Result JSONL file(s) from ml_backfill_infer.py")
     parser.add_argument(
         "--checkpoint",

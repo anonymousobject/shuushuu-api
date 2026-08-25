@@ -19,6 +19,8 @@ from tests.conftest import TEST_DATABASE_URL_SYNC
 
 
 @pytest.mark.integration
+@pytest.mark.mariadb_only  # guards hand-written migration FK names against the
+# InnoDB per-schema namespace; on Postgres, create_all makes name parity trivial
 def test_all_fks_use_fk_prefix_convention():
     """
     Every FK in the migrated schema must have a name starting with ``fk_``.
@@ -39,9 +41,7 @@ def test_all_fks_use_fk_prefix_convention():
                 name = fk.get("name") or ""
                 cols = ",".join(fk.get("constrained_columns") or [])
                 if not name.startswith("fk_"):
-                    failures.append(
-                        f"{table}({cols}): expected fk_-prefixed name, got {name!r}"
-                    )
+                    failures.append(f"{table}({cols}): expected fk_-prefixed name, got {name!r}")
     finally:
         engine.dispose()
 
@@ -49,6 +49,5 @@ def test_all_fks_use_fk_prefix_convention():
         pytest.fail(
             "FK constraints without explicit fk_-prefixed names found. "
             "Add `name=` to the ForeignKeyConstraint(...) in the migration "
-            "that created the table. Convention: fk_<table>_<column>.\n\n"
-            + "\n".join(failures)
+            "that created the table. Convention: fk_<table>_<column>.\n\n" + "\n".join(failures)
         )

@@ -76,7 +76,7 @@ class UserSuspensions(SQLModel, table=True):
 
     # When the action occurred
     actioned_at: datetime = Field(
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     )
 
     # Suspension details (only for SuspensionAction.SUSPENDED action)

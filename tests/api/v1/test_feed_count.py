@@ -57,7 +57,9 @@ async def _img(db, owner, md5, status):
 
 
 async def _login(client, username):
-    r = await client.post("/api/v1/auth/login", json={"username": username, "password": "TestPassword123!"})
+    r = await client.post(
+        "/api/v1/auth/login", json={"username": username, "password": "TestPassword123!"}
+    )
     assert r.status_code == 200
     return r.json()["access_token"]
 
@@ -101,7 +103,9 @@ class TestFastFeedCount:
             db_session, or_(Images.status.in_(VISIBLE), Images.user_id == a.user_id)
         )
         token = await _login(client, a.username)
-        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        r = await client.get(
+            "/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"}
+        )
         assert r.json()["total"] == expected_a
         # sanity: a has hidden images, so this strictly exceeds the anon total
         assert expected_a > expected_anon
@@ -115,7 +119,9 @@ class TestFastFeedCount:
 
         expected_all = await _ground_truth(db_session)
         token = await _login(client, a.username)
-        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        r = await client.get(
+            "/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"}
+        )
         assert r.json()["total"] == expected_all
 
     async def test_explicit_filters_fall_back_to_exact_count(
@@ -140,7 +146,6 @@ class TestFastFeedCount:
         r = await client.get(f"/api/v1/images/?user_id={b.user_id}&per_page=1", headers=h)
         assert r.json()["total"] == expected_b
 
-
     async def test_bare_feed_total_excludes_reposts_for_hide_reposts_viewer(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -157,7 +162,9 @@ class TestFastFeedCount:
             ),
         )
         token = await _login(client, viewer.username)
-        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        r = await client.get(
+            "/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"}
+        )
         assert r.json()["total"] == expected
 
         # Sanity: hiding reposts strictly reduces the total (the seed has a repost).
@@ -170,9 +177,11 @@ class TestFastFeedCount:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         owner = await _user(db_session, "fcOwnRep", show_all=0, hide_reposts=1)
-        await _img(db_session, owner, "or0" + "0" * 29, 1)   # own active (visible)
+        await _img(db_session, owner, "or0" + "0" * 29, 1)  # own active (visible)
         await _img(db_session, owner, "or1" + "1" * 29, -1)  # own repost (public, hidden by pref)
-        await _img(db_session, owner, "or2" + "2" * 29, 0)   # own deactivated (hidden, but own -> visible)
+        await _img(
+            db_session, owner, "or2" + "2" * 29, 0
+        )  # own deactivated (hidden, but own -> visible)
 
         expected = await _ground_truth(
             db_session,
@@ -182,7 +191,9 @@ class TestFastFeedCount:
             ),
         )
         token = await _login(client, owner.username)
-        r = await client.get("/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"})
+        r = await client.get(
+            "/api/v1/images/?per_page=1", headers={"Authorization": f"Bearer {token}"}
+        )
         assert r.json()["total"] == expected
 
 
@@ -192,7 +203,12 @@ class TestFeedCountCache:
         """The three global counts are TTL-cached (no per-mutation invalidation): a new
         image isn't reflected until the entry expires or is cleared. Also guards the
         str<->int round-trip through Redis."""
-        from app.services.feed_count_cache import _KEY_HIDDEN, _KEY_REPOST, _KEY_TOTAL, get_feed_counts
+        from app.services.feed_count_cache import (
+            _KEY_HIDDEN,
+            _KEY_REPOST,
+            _KEY_TOTAL,
+            get_feed_counts,
+        )
 
         await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
         try:
@@ -201,7 +217,9 @@ class TestFeedCountCache:
             await _img(db_session, a, "c1" + "0" * 30, 0)
 
             total1, hidden1, repost1 = await get_feed_counts(db_session, redis_client)
-            assert isinstance(total1, int) and isinstance(hidden1, int) and isinstance(repost1, int)  # parsed back from str
+            assert (
+                isinstance(total1, int) and isinstance(hidden1, int) and isinstance(repost1, int)
+            )  # parsed back from str
 
             # New image is NOT reflected while the cache is warm (TTL, no invalidation).
             await _img(db_session, a, "c2" + "0" * 30, 1)
@@ -215,17 +233,259 @@ class TestFeedCountCache:
             await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
 
     async def test_feed_counts_include_repost_count(self, db_session: AsyncSession, redis_client):
-        from app.services.feed_count_cache import _KEY_HIDDEN, _KEY_REPOST, _KEY_TOTAL, get_feed_counts
+        from app.services.feed_count_cache import (
+            _KEY_HIDDEN,
+            _KEY_REPOST,
+            _KEY_TOTAL,
+            get_feed_counts,
+        )
 
         await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
         try:
             u = await _user(db_session, "fcRepost", show_all=0)
-            await _img(db_session, u, "fr0" + "0" * 29, 1)   # active
+            await _img(db_session, u, "fr0" + "0" * 29, 1)  # active
             await _img(db_session, u, "fr1" + "1" * 29, -1)  # repost
             total, hidden, repost = await get_feed_counts(db_session, redis_client)
             assert isinstance(repost, int) and repost >= 1
         finally:
             await redis_client.delete(_KEY_TOTAL, _KEY_HIDDEN, _KEY_REPOST)
+
+
+async def _tag(db, title):
+    from app.models.tag import Tags
+
+    t = Tags(title=title, type=1)
+    db.add(t)
+    await db.commit()
+    await db.refresh(t)
+    return t
+
+
+async def _link(db, tag, img):
+    from app.models.tag_link import TagLinks
+
+    db.add(TagLinks(tag_id=tag.tag_id, image_id=img.image_id))
+    await db.commit()
+
+
+async def _clear_filtered_keys(redis_client):
+    keys = await redis_client.keys("feed:count:filtered:*")
+    if keys:
+        await redis_client.delete(*keys)
+
+
+@pytest.mark.api
+class TestFilteredCountCache:
+    """Filtered (non-bare-feed) pagination totals are TTL-cached per filter signature."""
+
+    async def test_filtered_total_cached_within_ttl(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        await _clear_filtered_keys(redis_client)
+        try:
+            owner = await _user(db_session, "fltCache")
+            tag = await _tag(db_session, "flt-cache-tag")
+            img = await _img(db_session, owner, "f0" + "0" * 30, 1)
+            await _link(db_session, tag, img)
+
+            r1 = await client_real_redis.get(f"/api/v1/images/?tags={tag.tag_id}&per_page=1")
+            total1 = r1.json()["total"]
+            assert total1 == 1
+
+            # A newly tagged image is NOT reflected while the cache is warm.
+            img2 = await _img(db_session, owner, "f1" + "1" * 30, 1)
+            await _link(db_session, tag, img2)
+            r2 = await client_real_redis.get(f"/api/v1/images/?tags={tag.tag_id}&per_page=1")
+            assert r2.json()["total"] == total1
+
+            # Once the entry is gone, a recompute picks it up.
+            await _clear_filtered_keys(redis_client)
+            r3 = await client_real_redis.get(f"/api/v1/images/?tags={tag.tag_id}&per_page=1")
+            assert r3.json()["total"] == total1 + 1
+        finally:
+            await _clear_filtered_keys(redis_client)
+
+    async def test_distinct_filters_get_distinct_cache_entries(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        await _clear_filtered_keys(redis_client)
+        try:
+            owner = await _user(db_session, "fltDistinct")
+            tag_a = await _tag(db_session, "flt-distinct-a")
+            tag_b = await _tag(db_session, "flt-distinct-b")
+            img_a = await _img(db_session, owner, "fa" + "0" * 30, 1)
+            img_b1 = await _img(db_session, owner, "fb" + "1" * 30, 1)
+            img_b2 = await _img(db_session, owner, "fc" + "2" * 30, 1)
+            await _link(db_session, tag_a, img_a)
+            await _link(db_session, tag_b, img_b1)
+            await _link(db_session, tag_b, img_b2)
+
+            r_a = await client_real_redis.get(f"/api/v1/images/?tags={tag_a.tag_id}&per_page=1")
+            r_b = await client_real_redis.get(f"/api/v1/images/?tags={tag_b.tag_id}&per_page=1")
+            assert r_a.json()["total"] == 1
+            assert r_b.json()["total"] == 2
+            # Both signatures live in the cache side by side (no key collision).
+            assert len(await redis_client.keys("feed:count:filtered:*")) == 2
+
+            # Cached entries keep serving the right totals per filter.
+            assert (
+                await client_real_redis.get(f"/api/v1/images/?tags={tag_a.tag_id}&per_page=1")
+            ).json()["total"] == 1
+            assert (
+                await client_real_redis.get(f"/api/v1/images/?tags={tag_b.tag_id}&per_page=1")
+            ).json()["total"] == 2
+        finally:
+            await _clear_filtered_keys(redis_client)
+
+    async def test_viewer_visibility_is_part_of_the_cache_key(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        """An anon viewer and a show_all viewer see different totals for the same tag
+        filter when a hidden image carries the tag — the cache must not leak one
+        viewer class's total to the other."""
+        await _clear_filtered_keys(redis_client)
+        try:
+            viewer = await _user(db_session, "fltShowAll", show_all=1)
+            tag = await _tag(db_session, "flt-visibility-tag")
+            visible = await _img(db_session, viewer, "fv" + "0" * 30, 1)
+            hidden = await _img(db_session, viewer, "fh" + "1" * 30, 0)
+            await _link(db_session, tag, visible)
+            await _link(db_session, tag, hidden)
+
+            # Anon first, so its entry is warm when the authed request lands.
+            r_anon = await client_real_redis.get(f"/api/v1/images/?tags={tag.tag_id}&per_page=1")
+            assert r_anon.json()["total"] == 1
+
+            token = await _login(client_real_redis, viewer.username)
+            r_auth = await client_real_redis.get(
+                f"/api/v1/images/?tags={tag.tag_id}&per_page=1",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r_auth.json()["total"] == 2
+            assert len(await redis_client.keys("feed:count:filtered:*")) == 2
+        finally:
+            await _clear_filtered_keys(redis_client)
+
+    async def test_show_all_zero_viewers_share_the_public_count_entry(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        """The default logged-in count decomposes into a shared public term (cached once
+        per filter combo) plus a live per-viewer own-hidden term — two show_all=0
+        viewers must not each warm a private entry for the same tag filter."""
+        await _clear_filtered_keys(redis_client)
+        try:
+            viewer_a = await _user(db_session, "fltShareA")
+            viewer_b = await _user(db_session, "fltShareB")
+            tag = await _tag(db_session, "flt-share-tag")
+            public_img = await _img(db_session, viewer_b, "fs" + "0" * 30, 1)
+            hidden_of_a = await _img(db_session, viewer_a, "fs" + "1" * 30, 0)
+            await _link(db_session, tag, public_img)
+            await _link(db_session, tag, hidden_of_a)
+
+            token_a = await _login(client_real_redis, viewer_a.username)
+            r_a = await client_real_redis.get(
+                f"/api/v1/images/?tags={tag.tag_id}&per_page=1",
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+            assert r_a.json()["total"] == 2  # public + own hidden
+
+            token_b = await _login(client_real_redis, viewer_b.username)
+            r_b = await client_real_redis.get(
+                f"/api/v1/images/?tags={tag.tag_id}&per_page=1",
+                headers={"Authorization": f"Bearer {token_b}"},
+            )
+            assert r_b.json()["total"] == 1  # public only; b owns no hidden match
+
+            # One shared entry for the public term — NOT one per viewer.
+            assert len(await redis_client.keys("feed:count:filtered:*")) == 1
+        finally:
+            await _clear_filtered_keys(redis_client)
+
+    async def test_own_hidden_term_is_live_while_public_term_is_cached(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        """A show_all=0 viewer's own newly hidden upload shows up immediately (live
+        term); a new public upload lags until the cached public term expires."""
+        await _clear_filtered_keys(redis_client)
+        try:
+            viewer = await _user(db_session, "fltLive")
+            tag = await _tag(db_session, "flt-live-tag")
+            public_img = await _img(db_session, viewer, "fl" + "0" * 30, 1)
+            await _link(db_session, tag, public_img)
+            token = await _login(client_real_redis, viewer.username)
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"/api/v1/images/?tags={tag.tag_id}&per_page=1"
+
+            assert (await client_real_redis.get(url, headers=headers)).json()["total"] == 1
+
+            # Own hidden upload: reflected immediately despite the warm cache.
+            own_hidden = await _img(db_session, viewer, "fl" + "1" * 30, 0)
+            await _link(db_session, tag, own_hidden)
+            assert (await client_real_redis.get(url, headers=headers)).json()["total"] == 2
+
+            # New public image: NOT reflected while the public term is cached.
+            public_2 = await _img(db_session, viewer, "fl" + "2" * 30, 1)
+            await _link(db_session, tag, public_2)
+            assert (await client_real_redis.get(url, headers=headers)).json()["total"] == 2
+        finally:
+            await _clear_filtered_keys(redis_client)
+
+    async def test_decomposed_total_respects_hide_reposts(
+        self, client_real_redis: AsyncClient, db_session: AsyncSession, redis_client
+    ):
+        """hide_reposts folds into the shared public term: a public repost is excluded,
+        and the viewer's own hidden images still count exactly once."""
+        await _clear_filtered_keys(redis_client)
+        try:
+            viewer = await _user(db_session, "fltHR", hide_reposts=1)
+            tag = await _tag(db_session, "flt-hr-tag")
+            active = await _img(db_session, viewer, "fh" + "0" * 30, 1)
+            repost = await _img(db_session, viewer, "fh" + "1" * 30, -1)
+            own_hidden = await _img(db_session, viewer, "fh" + "2" * 30, 0)
+            for img in (active, repost, own_hidden):
+                await _link(db_session, tag, img)
+
+            token = await _login(client_real_redis, viewer.username)
+            r = await client_real_redis.get(
+                f"/api/v1/images/?tags={tag.tag_id}&per_page=1",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            # active (public) + own hidden; the repost is public but hidden by pref.
+            assert r.json()["total"] == 2
+        finally:
+            await _clear_filtered_keys(redis_client)
+
+
+@pytest.mark.unit
+class TestFilteredCountKey:
+    """The cache key is derived from the compiled count query + bind params."""
+
+    def test_same_query_shape_and_params_produce_the_same_key(self):
+        from app.services.feed_count_cache import filtered_count_key
+
+        def build():
+            return (
+                select(func.count()).select_from(Images).where(Images.status.in_([1, 2])).subquery()
+            )
+
+        key1 = filtered_count_key(select(func.count()).select_from(build()))
+        key2 = filtered_count_key(select(func.count()).select_from(build()))
+        assert key1 == key2
+        assert key1.startswith("feed:count:filtered:")
+
+    def test_different_params_produce_different_keys(self):
+        from app.services.feed_count_cache import filtered_count_key
+
+        def count_for(statuses):
+            sub = (
+                select(func.count())
+                .select_from(Images)
+                .where(Images.status.in_(statuses))
+                .subquery()
+            )
+            return select(func.count()).select_from(sub)
+
+        assert filtered_count_key(count_for([1, 2])) != filtered_count_key(count_for([1, 3]))
 
 
 @pytest.mark.unit

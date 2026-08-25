@@ -46,10 +46,7 @@ SWINV2 = "wd-swinv2-tagger-v3"
 
 def _preds(*tag_ids: int, model: str = CAFORMER, confidence: float = 0.9) -> list[dict[str, Any]]:
     """Build canned predictions already carrying internal tag_ids (resolvers will be patched out)."""
-    return [
-        {"tag_id": tid, "confidence": confidence, "model_version": model}
-        for tid in tag_ids
-    ]
+    return [{"tag_id": tid, "confidence": confidence, "model_version": model} for tid in tag_ids]
 
 
 async def _resolver_passthrough(db, suggestions):
@@ -127,10 +124,14 @@ async def test_adds_pending_for_new_implied_tag(db_session, monkeypatch):
     assert added == 1
 
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     row = rows[0]
     assert row.tag_id == 101
@@ -156,15 +157,21 @@ async def test_deletes_stale_same_model_pending(db_session, monkeypatch):
     # tag 201 — stale pending (same model, NOT in new implied set)
     db_session.add(
         MlTagSuggestions(
-            image_id=image.image_id, tag_id=201, confidence=0.8,
-            model_version=CAFORMER, status="pending",
+            image_id=image.image_id,
+            tag_id=201,
+            confidence=0.8,
+            model_version=CAFORMER,
+            status="pending",
         )
     )
     # tag 202 — still-implied pending (same model, IS in new implied set)
     db_session.add(
         MlTagSuggestions(
-            image_id=image.image_id, tag_id=202, confidence=0.8,
-            model_version=CAFORMER, status="pending",
+            image_id=image.image_id,
+            tag_id=202,
+            confidence=0.8,
+            model_version=CAFORMER,
+            status="pending",
         )
     )
     await db_session.commit()
@@ -182,10 +189,14 @@ async def test_deletes_stale_same_model_pending(db_session, monkeypatch):
     assert added == 0
 
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     tag_ids = {r.tag_id for r in rows}
     # Stale tag 201 must be gone
@@ -211,8 +222,11 @@ async def test_preserves_different_model_pending(db_session, monkeypatch):
     # tag 301 — pending from swinv2, NOT in caformer implied set
     db_session.add(
         MlTagSuggestions(
-            image_id=image.image_id, tag_id=301, confidence=0.85,
-            model_version=SWINV2, status="pending",
+            image_id=image.image_id,
+            tag_id=301,
+            confidence=0.85,
+            model_version=SWINV2,
+            status="pending",
         )
     )
     await db_session.commit()
@@ -230,10 +244,14 @@ async def test_preserves_different_model_pending(db_session, monkeypatch):
     assert added == 1
 
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     by_tag = {r.tag_id: r for r in rows}
 
     # swinv2 row for tag 301 must still be there — cross-source clobber guard
@@ -261,12 +279,18 @@ async def test_preserves_approved_and_rejected(db_session, monkeypatch):
     await _make_tags(db_session, 401, 402)
 
     approved_row = MlTagSuggestions(
-        image_id=image.image_id, tag_id=401, confidence=0.9,
-        model_version=CAFORMER, status="approved",
+        image_id=image.image_id,
+        tag_id=401,
+        confidence=0.9,
+        model_version=CAFORMER,
+        status="approved",
     )
     rejected_row = MlTagSuggestions(
-        image_id=image.image_id, tag_id=402, confidence=0.9,
-        model_version=CAFORMER, status="rejected",
+        image_id=image.image_id,
+        tag_id=402,
+        confidence=0.9,
+        model_version=CAFORMER,
+        status="rejected",
     )
     db_session.add_all([approved_row, rejected_row])
     await db_session.commit()
@@ -283,10 +307,14 @@ async def test_preserves_approved_and_rejected(db_session, monkeypatch):
     assert added == 0
 
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows) == 2
     by_tag = {r.tag_id: r for r in rows}
 
@@ -311,8 +339,11 @@ async def test_does_not_reset_approved_when_tag_removed(db_session, monkeypatch)
 
     # Approved suggestion; tag 501 is NOT in TagLinks (tag was removed from image)
     approved_row = MlTagSuggestions(
-        image_id=image.image_id, tag_id=501, confidence=0.9,
-        model_version=CAFORMER, status="approved",
+        image_id=image.image_id,
+        tag_id=501,
+        confidence=0.9,
+        model_version=CAFORMER,
+        status="approved",
     )
     db_session.add(approved_row)
     await db_session.commit()
@@ -329,10 +360,14 @@ async def test_does_not_reset_approved_when_tag_removed(db_session, monkeypatch)
     assert added == 0
 
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     # remap_image must not have reset the approved row — it stays approved
     assert rows[0].status == "approved", "approved row must NOT be reset by remap_image"
@@ -385,10 +420,14 @@ async def test_remap_image_from_store_creates_suggestion(db_session, monkeypatch
     assert added == 1
 
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].tag_id == 601
     assert rows[0].status == "pending"
@@ -419,8 +458,11 @@ async def test_does_not_duplicate_tag_held_by_another_model(db_session, monkeypa
     # tag 601 (T) — existing pending row from a DIFFERENT model (swinv2)
     db_session.add(
         MlTagSuggestions(
-            image_id=image.image_id, tag_id=601, confidence=0.75,
-            model_version=SWINV2_FULL, status="pending",
+            image_id=image.image_id,
+            tag_id=601,
+            confidence=0.75,
+            model_version=SWINV2_FULL,
+            status="pending",
         )
     )
     await db_session.commit()
@@ -439,10 +481,14 @@ async def test_does_not_duplicate_tag_held_by_another_model(db_session, monkeypa
     assert added == 1
 
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     # Exactly one row for tag T — no duplication
     t_rows = [r for r in rows if r.tag_id == 601]
@@ -511,11 +557,13 @@ async def test_remap_images_for_tag_scopes_to_mapped_images(db_session, monkeypa
     def _resolver_for_tag_801(rows):
         """Return tag_id=801 only when the prediction list is non-empty (image A),
         otherwise return empty (image B will have no blue_eyes prediction)."""
+
         async def _inner(db, suggestions):
             if not suggestions:
                 return []
             # Passthrough for the known external_tag; inject tag_id
             return [dict(r) for r in rows]
+
         return _inner
 
     with (
@@ -529,20 +577,28 @@ async def test_remap_images_for_tag_scopes_to_mapped_images(db_session, monkeypa
 
     # Image A must have a pending suggestion for internal tag 801
     rows_a = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_a.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_a.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows_a) == 1
     assert rows_a[0].tag_id == 801
     assert rows_a[0].status == "pending"
 
     # Image B must have NO suggestion rows
     rows_b = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_b.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image_b.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert rows_b == [], "image B must not receive any suggestion (unrelated raw pred)"
 
 
@@ -577,14 +633,18 @@ async def test_run_rolls_back_and_continues_after_failed_image(
 
     db_session.add(
         MlRawPredictions(
-            image_id=image_bad.image_id, model_id=model_row.id,
-            external_tag_id=ext_bad.id, confidence=0.9,
+            image_id=image_bad.image_id,
+            model_id=model_row.id,
+            external_tag_id=ext_bad.id,
+            confidence=0.9,
         )
     )
     db_session.add(
         MlRawPredictions(
-            image_id=image_good.image_id, model_id=model_row.id,
-            external_tag_id=ext_good.id, confidence=0.9,
+            image_id=image_good.image_id,
+            model_id=model_row.id,
+            external_tag_id=ext_good.id,
+            confidence=0.9,
         )
     )
     await db_session.commit()
@@ -600,13 +660,9 @@ async def test_run_rolls_back_and_continues_after_failed_image(
         out = []
         for s in suggestions:
             if s["external_tag"] == "bad_ext":
-                out.append(
-                    {"tag_id": missing_tag_id, "confidence": 0.9, "model_version": CAFORMER}
-                )
+                out.append({"tag_id": missing_tag_id, "confidence": 0.9, "model_version": CAFORMER})
             elif s["external_tag"] == "good_ext":
-                out.append(
-                    {"tag_id": good_tag_id, "confidence": 0.9, "model_version": CAFORMER}
-                )
+                out.append({"tag_id": good_tag_id, "confidence": 0.9, "model_version": CAFORMER})
         return out
 
     class _SessionCtx:
@@ -636,20 +692,28 @@ async def test_run_rolls_back_and_continues_after_failed_image(
 
     # The good image processed despite the bad one failing first.
     rows_good = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == good_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == good_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows_good) == 1, "later image must still be processed after a failure"
     assert rows_good[0].tag_id == good_tag_id
     assert rows_good[0].status == "pending"
 
     # The bad image stored nothing (its commit was rolled back).
     rows_bad = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == bad_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == bad_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert rows_bad == []
 
     # The failure was counted and logged (exactly one error, for the bad image).
@@ -703,10 +767,14 @@ async def test_remap_image_from_store_ignores_other_model(db_session, monkeypatc
     assert added == 0
 
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert rows == [], "swinv2 raw predictions must not be picked up by caformer remap"
 
 
@@ -736,8 +804,12 @@ async def test_remap_skips_suggestion_ineligible_image(db_session, monkeypatch):
 
     assert added == 0
     rows = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == image.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert rows == []

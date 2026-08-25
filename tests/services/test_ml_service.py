@@ -48,9 +48,7 @@ class TestMLTagSuggestionServiceLoadModels:
     ) -> None:
         """Missing WD-Tagger files → FileNotFoundError naming the expected path."""
         monkeypatch.setattr("app.services.ml_service.settings.ML_MODELS_PATH", str(tmp_path))
-        monkeypatch.setattr(
-            "app.services.ml_service.settings.ML_MODEL_NAME", "wd-swinv2-tagger-v3"
-        )
+        monkeypatch.setattr("app.services.ml_service.settings.ML_MODEL_NAME", "wd-swinv2-tagger-v3")
 
         service = MLTagSuggestionService()
         with pytest.raises(FileNotFoundError, match=str(tmp_path)):

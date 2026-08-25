@@ -240,7 +240,7 @@ class Settings(BaseSettings):
     )
     REGISTRATION_RATE_WINDOW_HOURS: int = Field(default=1, description="Rate limit window in hours")
 
-    # URL Import (see docs/plans/2026-07-06-url-import-design.md)
+    # URL Import (see <shuushuu-frontend-repo>/docs/plans/2026-Q3/2026-07-06-url-import-design.md)
     URL_RESOLVE_RATE_PER_MINUTE: int = 5
     URL_RESOLVE_GLOBAL_RATE_PER_MINUTE: int = 60
     EXTERNAL_FETCH_RATE_PER_MINUTE: int = 40
@@ -325,6 +325,14 @@ class Settings(BaseSettings):
     TASTE_TOP_TAGS: int = Field(default=30, ge=1)  # positive tags used for candidate generation
     TASTE_CANDIDATE_CAP: int = Field(default=3000, ge=1)  # max candidate images scored per request
     TASTE_FEED_POOL: int = Field(default=500, ge=1)  # max scored feed depth (pagination cap)
+    TASTE_SCORE_POOL: int = Field(default=1500, ge=1)  # scored depth the daily sample draws from
+    TASTE_FAV_SHARE: float = Field(
+        default=0.33, ge=0.0, le=1.0
+    )  # per-slot probability of drawing from the favorites pool
+    TASTE_FAV_PER_FAVORITE_CAP: int = Field(default=100, ge=1)  # recent matches per favorite
+    TASTE_SAMPLE_DECAY: float = Field(
+        default=0.997, gt=0.0, le=1.0
+    )  # per-rank weight decay of the affinity sample; 1.0 = uniform over the pool
     TASTE_DISPLAY_MIN_LIFT: float = Field(
         default=1.5, ge=0.0
     )  # analytics display floor; keeps popularity-only tags (e.g. "long hair") out
@@ -527,6 +535,11 @@ class TagAuditActionType:
     PARENT_REMOVED = "parent_removed"
     SOURCE_LINKED = "source_linked"
     SOURCE_UNLINKED = "source_unlinked"
+
+    # Character-source link picture events. Rows carry character_tag_id +
+    # source_tag_id, same shape as SOURCE_LINKED/UNLINKED.
+    PICTURE_SET = "picture_set"
+    PICTURE_REMOVED = "picture_removed"
 
     # External-link events. link_url on the audit row identifies the affected
     # link; reordering is deliberately not audited (cosmetic display order).

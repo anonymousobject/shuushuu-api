@@ -47,7 +47,7 @@ async def import_mappings(db: AsyncSession, csv_path: Path) -> dict[str, object]
     external_tag rows are skipped). Returns a summary dict of counts."""
     # Pre-load mappable internal tags for case-insensitive title lookup.
     result = await db.execute(
-        select(Tags.tag_id, Tags.title).where(Tags.type.in_(MAPPABLE_TAG_TYPES))  # type: ignore[attr-defined]
+        select(Tags.tag_id, Tags.title).where(Tags.type.in_(MAPPABLE_TAG_TYPES))  # type: ignore[call-overload,attr-defined]
     )
     internal_tags: dict[str, int] = {}
     ambiguous_titles: set[str] = set()
@@ -80,9 +80,9 @@ async def import_mappings(db: AsyncSession, csv_path: Path) -> dict[str, object]
     id_to_title: dict[int, str | None] = {}
     if explicit_ids:
         res = await db.execute(
-            select(Tags.tag_id, Tags.title).where(Tags.tag_id.in_(explicit_ids))  # type: ignore[attr-defined]
+            select(Tags.tag_id, Tags.title).where(Tags.tag_id.in_(explicit_ids))  # type: ignore[call-overload,union-attr]
         )
-        id_to_title = {tag_id: title for tag_id, title in res.all()}
+        id_to_title = dict(res.all())  # type: ignore[arg-type]
 
     created = 0
     updated = 0

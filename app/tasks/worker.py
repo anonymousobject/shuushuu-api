@@ -6,6 +6,7 @@ Run worker with: uv run arq app.tasks.worker.WorkerSettings
 
 import asyncio
 import hashlib
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -218,6 +219,16 @@ class WorkerSettings:
     max_jobs = 10  # Process up to 10 jobs concurrently
     job_timeout = 300  # 5 minutes max per job
     keep_result = settings.ARQ_KEEP_RESULT  # Keep results for 1 hour
+
+    # Health: the compose healthcheck runs `arq --check` against this class.
+    # arq's default health key is queue-scoped, so during a zero-downtime
+    # rollout the OLD replica would keep it fresh and mask a broken NEW one —
+    # rollout would drain the healthy worker and leave zero. Keying by hostname
+    # (= container id) makes the check reflect this container's worker only;
+    # `arq --check` runs in the same container, so it computes the same key.
+    # Stale keys self-clean: arq sets the key with TTL = interval + 1s.
+    health_check_interval = 15
+    health_check_key = f"arq:health:{socket.gethostname()}"
 
     # Lifecycle hooks
     on_startup = startup

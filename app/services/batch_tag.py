@@ -4,6 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.models.image import Images
 from app.models.tag import Tags
@@ -32,126 +33,141 @@ async def batch_add_tags(
 
     Returns a response listing which pairs were added and which were skipped.
     """
-    added: list[BatchTagResultItem] = []
-    skipped: list[BatchTagSkippedItem] = []
 
-    # 1. Resolve tags: fetch all, resolve aliases, collect missing
-    resolved_tags: dict[int, int | None] = {}  # original_tag_id -> resolved_tag_id or None
-    for tag_id in tag_ids:
-        tag_result = await db.execute(
-            select(Tags).where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
-        )
-        tag = tag_result.scalar_one_or_none()
-        if not tag:
-            resolved_tags[tag_id] = None
-            continue
-        # Resolve alias inline (avoids importing from route layer)
-        resolved_tags[tag_id] = tag.alias_of if tag.alias_of else tag_id
+    # The TagLinks/TagHistory INSERTs take locking reads on their FK parents
+    # (tags, images, users) and the usage_count trigger on tag_links keeps those
+    # parent rows moving, so under innodb_snapshot_isolation a concurrent tag
+    # write aborts this batch with ER_CHECKREAD (1020). Retry the whole
+    # fetch-through-commit unit on a fresh snapshot (see app/core/db_retry.py).
+    # The accumulators are built inside the unit: reusing lists from a failed
+    # attempt would report every pair once per attempt.
+    async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:
+        added: list[BatchTagResultItem] = []
+        skipped: list[BatchTagSkippedItem] = []
 
-    missing_tag_ids = {tid for tid, rid in resolved_tags.items() if rid is None}
+        # 1. Resolve tags: fetch all, resolve aliases, collect missing
+        resolved_tags: dict[int, int | None] = {}  # original_tag_id -> resolved_tag_id or None
+        for tag_id in tag_ids:
+            tag_result = await db.execute(
+                select(Tags).where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
+            )
+            tag = tag_result.scalar_one_or_none()
+            if not tag:
+                resolved_tags[tag_id] = None
+                continue
+            # Resolve alias inline (avoids importing from route layer)
+            resolved_tags[tag_id] = tag.alias_of if tag.alias_of else tag_id
 
-    # 2. Fetch existing images in one query
-    valid_resolved_tag_ids = {rid for rid in resolved_tags.values() if rid is not None}
-    existing_image_result = await db.execute(
-        select(Images.image_id).where(  # type: ignore[call-overload]
-            Images.image_id.in_(image_ids)  # type: ignore[union-attr]
-        )
-    )
-    existing_image_ids = {row[0] for row in existing_image_result.all()}
+        missing_tag_ids = {tid for tid, rid in resolved_tags.items() if rid is None}
 
-    # 3. Fetch existing tag links in one query
-    existing_links: set[tuple[int, int]] = set()
-    if existing_image_ids and valid_resolved_tag_ids:
-        links_result = await db.execute(
-            select(TagLinks.image_id, TagLinks.tag_id).where(  # type: ignore[call-overload]
-                TagLinks.image_id.in_(existing_image_ids),  # type: ignore[attr-defined]
-                TagLinks.tag_id.in_(valid_resolved_tag_ids),  # type: ignore[attr-defined]
+        # 2. Fetch existing images in one query
+        valid_resolved_tag_ids = {rid for rid in resolved_tags.values() if rid is not None}
+        existing_image_result = await db.execute(
+            select(Images.image_id).where(  # type: ignore[call-overload]
+                Images.image_id.in_(image_ids)  # type: ignore[union-attr]
             )
         )
-        existing_links = {(row[0], row[1]) for row in links_result.all()}
+        existing_image_ids = {row[0] for row in existing_image_result.all()}
 
-    # 4. Process each image-tag pair
-    for image_id in image_ids:
-        for original_tag_id in tag_ids:
-            resolved_tag_id = resolved_tags[original_tag_id]
-
-            if original_tag_id in missing_tag_ids:
-                skipped.append(
-                    BatchTagSkippedItem(
-                        image_id=image_id,
-                        tag_id=original_tag_id,
-                        reason="tag_not_found",
-                    )
+        # 3. Fetch existing tag links in one query
+        existing_links: set[tuple[int, int]] = set()
+        if existing_image_ids and valid_resolved_tag_ids:
+            links_result = await db.execute(
+                select(TagLinks.image_id, TagLinks.tag_id).where(  # type: ignore[call-overload]
+                    TagLinks.image_id.in_(existing_image_ids),  # type: ignore[attr-defined]
+                    TagLinks.tag_id.in_(valid_resolved_tag_ids),  # type: ignore[attr-defined]
                 )
-                continue
+            )
+            existing_links = {(row[0], row[1]) for row in links_result.all()}
 
-            assert resolved_tag_id is not None  # guaranteed by missing_tag_ids check
+        # 4. Process each image-tag pair
+        for image_id in image_ids:
+            for original_tag_id in tag_ids:
+                resolved_tag_id = resolved_tags[original_tag_id]
 
-            if image_id not in existing_image_ids:
-                skipped.append(
-                    BatchTagSkippedItem(
+                if original_tag_id in missing_tag_ids:
+                    skipped.append(
+                        BatchTagSkippedItem(
+                            image_id=image_id,
+                            tag_id=original_tag_id,
+                            reason="tag_not_found",
+                        )
+                    )
+                    continue
+
+                assert resolved_tag_id is not None  # guaranteed by missing_tag_ids check
+
+                if image_id not in existing_image_ids:
+                    skipped.append(
+                        BatchTagSkippedItem(
+                            image_id=image_id,
+                            tag_id=resolved_tag_id,
+                            reason="image_not_found",
+                        )
+                    )
+                    continue
+
+                if (image_id, resolved_tag_id) in existing_links:
+                    skipped.append(
+                        BatchTagSkippedItem(
+                            image_id=image_id,
+                            tag_id=resolved_tag_id,
+                            reason="already_tagged",
+                        )
+                    )
+                    continue
+
+                db.add(
+                    TagLinks(
                         image_id=image_id,
                         tag_id=resolved_tag_id,
-                        reason="image_not_found",
+                        user_id=user_id,
                     )
                 )
-                continue
 
-            if (image_id, resolved_tag_id) in existing_links:
-                skipped.append(
-                    BatchTagSkippedItem(
+                db.add(
+                    TagHistory(
                         image_id=image_id,
                         tag_id=resolved_tag_id,
-                        reason="already_tagged",
+                        action="a",
+                        user_id=user_id,
                     )
                 )
-                continue
 
-            db.add(
-                TagLinks(
-                    image_id=image_id,
-                    tag_id=resolved_tag_id,
-                    user_id=user_id,
+                added.append(
+                    BatchTagResultItem(
+                        image_id=image_id,
+                        tag_id=resolved_tag_id,
+                    )
                 )
-            )
 
-            db.add(
-                TagHistory(
-                    image_id=image_id,
-                    tag_id=resolved_tag_id,
-                    action="a",
-                    user_id=user_id,
-                )
-            )
+                # Track as existing to prevent duplicates within same batch
+                existing_links.add((image_id, resolved_tag_id))
 
-            added.append(
-                BatchTagResultItem(
-                    image_id=image_id,
-                    tag_id=resolved_tag_id,
-                )
-            )
-
-            # Track as existing to prevent duplicates within same batch
-            existing_links.add((image_id, resolved_tag_id))
-
-    # Resolve any matching pending ML suggestions (applying a tag out of band
-    # is an implicit approval; keeps the review queue's pending counts honest).
-    await approve_pending_suggestions_for_links(
-        db, [(item.image_id, item.tag_id) for item in added], user_id
-    )
-
-    await refresh_images_tag_type_flags(db, {item.image_id for item in added})
-
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        logger.warning(
-            "batch_tag_integrity_error", user_id=user_id, tag_ids=tag_ids, image_ids=image_ids
+        # Resolve any matching pending ML suggestions (applying a tag out of
+        # band is an implicit approval; keeps the review queue's pending counts
+        # honest).
+        await approve_pending_suggestions_for_links(
+            db, [(item.image_id, item.tag_id) for item in added], user_id
         )
-        raise
 
-    # Sync affected tags to Meilisearch (usage_count updated by DB trigger)
+        await refresh_images_tag_type_flags(db, {item.image_id for item in added})
+
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            logger.warning(
+                "batch_tag_integrity_error", user_id=user_id, tag_ids=tag_ids, image_ids=image_ids
+            )
+            raise
+
+        return added, skipped
+
+    added, skipped = await retry_on_transient_conflict(db, _apply, what="batch_tag_add")
+
+    # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
+    # Non-DB side effect: stays outside the retried unit so it never repeats.
     affected_tag_ids = {item.tag_id for item in added}
     if affected_tag_ids:
         tag_results = await db.execute(
@@ -173,130 +189,142 @@ async def batch_remove_tags(
 
     Returns a response listing which pairs were removed and which were skipped.
     """
-    removed: list[BatchTagResultItem] = []
-    skipped: list[BatchTagSkippedItem] = []
 
-    # 1. Resolve tags: fetch all, resolve aliases, collect missing
-    resolved_tags: dict[int, int | None] = {}  # original_tag_id -> resolved_tag_id or None
-    for tag_id in tag_ids:
-        tag_result = await db.execute(
-            select(Tags).where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
-        )
-        tag = tag_result.scalar_one_or_none()
-        if not tag:
-            resolved_tags[tag_id] = None
-            continue
-        resolved_tags[tag_id] = tag.alias_of if tag.alias_of else tag_id
+    # Same snapshot-conflict exposure as the add path: the TagHistory INSERTs
+    # locking-read their FK parents and the DELETE's usage_count trigger keeps
+    # the parent `tags` rows moving. Retry the whole fetch-through-commit unit
+    # on a fresh snapshot (see app/core/db_retry.py). The accumulators are built
+    # inside the unit so a retry cannot report a pair once per attempt.
+    async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:
+        removed: list[BatchTagResultItem] = []
+        skipped: list[BatchTagSkippedItem] = []
 
-    missing_tag_ids = {tid for tid, rid in resolved_tags.items() if rid is None}
+        # 1. Resolve tags: fetch all, resolve aliases, collect missing
+        resolved_tags: dict[int, int | None] = {}  # original_tag_id -> resolved_tag_id or None
+        for tag_id in tag_ids:
+            tag_result = await db.execute(
+                select(Tags).where(Tags.tag_id == tag_id)  # type: ignore[arg-type]
+            )
+            tag = tag_result.scalar_one_or_none()
+            if not tag:
+                resolved_tags[tag_id] = None
+                continue
+            resolved_tags[tag_id] = tag.alias_of if tag.alias_of else tag_id
 
-    # 2. Fetch existing images in one query
-    valid_resolved_tag_ids = {rid for rid in resolved_tags.values() if rid is not None}
-    existing_image_result = await db.execute(
-        select(Images.image_id).where(  # type: ignore[call-overload]
-            Images.image_id.in_(image_ids)  # type: ignore[union-attr]
-        )
-    )
-    existing_image_ids = {row[0] for row in existing_image_result.all()}
+        missing_tag_ids = {tid for tid, rid in resolved_tags.items() if rid is None}
 
-    # 3. Fetch existing tag links in one query
-    existing_links: set[tuple[int, int]] = set()
-    if existing_image_ids and valid_resolved_tag_ids:
-        links_result = await db.execute(
-            select(TagLinks.image_id, TagLinks.tag_id).where(  # type: ignore[call-overload]
-                TagLinks.image_id.in_(existing_image_ids),  # type: ignore[attr-defined]
-                TagLinks.tag_id.in_(valid_resolved_tag_ids),  # type: ignore[attr-defined]
+        # 2. Fetch existing images in one query
+        valid_resolved_tag_ids = {rid for rid in resolved_tags.values() if rid is not None}
+        existing_image_result = await db.execute(
+            select(Images.image_id).where(  # type: ignore[call-overload]
+                Images.image_id.in_(image_ids)  # type: ignore[union-attr]
             )
         )
-        existing_links = {(row[0], row[1]) for row in links_result.all()}
+        existing_image_ids = {row[0] for row in existing_image_result.all()}
 
-    # 4. Categorize each image-tag pair into removed/skipped
-    pairs_to_remove: list[tuple[int, int]] = []
-    for image_id in image_ids:
-        for original_tag_id in tag_ids:
-            resolved_tag_id = resolved_tags[original_tag_id]
-
-            if original_tag_id in missing_tag_ids:
-                skipped.append(
-                    BatchTagSkippedItem(
-                        image_id=image_id,
-                        tag_id=original_tag_id,
-                        reason="tag_not_found",
-                    )
+        # 3. Fetch existing tag links in one query
+        existing_links: set[tuple[int, int]] = set()
+        if existing_image_ids and valid_resolved_tag_ids:
+            links_result = await db.execute(
+                select(TagLinks.image_id, TagLinks.tag_id).where(  # type: ignore[call-overload]
+                    TagLinks.image_id.in_(existing_image_ids),  # type: ignore[attr-defined]
+                    TagLinks.tag_id.in_(valid_resolved_tag_ids),  # type: ignore[attr-defined]
                 )
-                continue
+            )
+            existing_links = {(row[0], row[1]) for row in links_result.all()}
 
-            assert resolved_tag_id is not None
+        # 4. Categorize each image-tag pair into removed/skipped
+        pairs_to_remove: list[tuple[int, int]] = []
+        for image_id in image_ids:
+            for original_tag_id in tag_ids:
+                resolved_tag_id = resolved_tags[original_tag_id]
 
-            if image_id not in existing_image_ids:
-                skipped.append(
-                    BatchTagSkippedItem(
+                if original_tag_id in missing_tag_ids:
+                    skipped.append(
+                        BatchTagSkippedItem(
+                            image_id=image_id,
+                            tag_id=original_tag_id,
+                            reason="tag_not_found",
+                        )
+                    )
+                    continue
+
+                assert resolved_tag_id is not None
+
+                if image_id not in existing_image_ids:
+                    skipped.append(
+                        BatchTagSkippedItem(
+                            image_id=image_id,
+                            tag_id=resolved_tag_id,
+                            reason="image_not_found",
+                        )
+                    )
+                    continue
+
+                if (image_id, resolved_tag_id) not in existing_links:
+                    skipped.append(
+                        BatchTagSkippedItem(
+                            image_id=image_id,
+                            tag_id=resolved_tag_id,
+                            reason="not_tagged",
+                        )
+                    )
+                    continue
+
+                pairs_to_remove.append((image_id, resolved_tag_id))
+                removed.append(
+                    BatchTagResultItem(
                         image_id=image_id,
                         tag_id=resolved_tag_id,
-                        reason="image_not_found",
                     )
                 )
-                continue
 
-            if (image_id, resolved_tag_id) not in existing_links:
-                skipped.append(
-                    BatchTagSkippedItem(
+                # Track as removed to prevent duplicate processing within same batch
+                existing_links.discard((image_id, resolved_tag_id))
+
+        # 5. Batch delete all tag links in a single statement
+        if pairs_to_remove:
+            from sqlalchemy import tuple_
+
+            await db.execute(
+                delete(TagLinks).where(
+                    tuple_(TagLinks.image_id, TagLinks.tag_id).in_(  # type: ignore[arg-type]
+                        pairs_to_remove
+                    )
+                )
+            )
+
+            # Record history for all removed pairs
+            for image_id, tag_id in pairs_to_remove:
+                db.add(
+                    TagHistory(
                         image_id=image_id,
-                        tag_id=resolved_tag_id,
-                        reason="not_tagged",
+                        tag_id=tag_id,
+                        action="r",
+                        user_id=user_id,
                     )
                 )
-                continue
 
-            pairs_to_remove.append((image_id, resolved_tag_id))
-            removed.append(
-                BatchTagResultItem(
-                    image_id=image_id,
-                    tag_id=resolved_tag_id,
-                )
+        await refresh_images_tag_type_flags(db, {item.image_id for item in removed})
+
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            logger.warning(
+                "batch_tag_remove_integrity_error",
+                user_id=user_id,
+                tag_ids=tag_ids,
+                image_ids=image_ids,
             )
+            raise
 
-            # Track as removed to prevent duplicate processing within same batch
-            existing_links.discard((image_id, resolved_tag_id))
+        return removed, skipped
 
-    # 5. Batch delete all tag links in a single statement
-    if pairs_to_remove:
-        from sqlalchemy import tuple_
+    removed, skipped = await retry_on_transient_conflict(db, _apply, what="batch_tag_remove")
 
-        await db.execute(
-            delete(TagLinks).where(
-                tuple_(TagLinks.image_id, TagLinks.tag_id).in_(  # type: ignore[arg-type]
-                    pairs_to_remove
-                )
-            )
-        )
-
-        # Record history for all removed pairs
-        for image_id, tag_id in pairs_to_remove:
-            db.add(
-                TagHistory(
-                    image_id=image_id,
-                    tag_id=tag_id,
-                    action="r",
-                    user_id=user_id,
-                )
-            )
-
-    await refresh_images_tag_type_flags(db, {item.image_id for item in removed})
-
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        logger.warning(
-            "batch_tag_remove_integrity_error",
-            user_id=user_id,
-            tag_ids=tag_ids,
-            image_ids=image_ids,
-        )
-        raise
-
-    # Sync affected tags to Meilisearch (usage_count updated by DB trigger)
+    # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
+    # Non-DB side effect: stays outside the retried unit so it never repeats.
     affected_tag_ids = {item.tag_id for item in removed}
     if affected_tag_ids:
         tag_results = await db.execute(

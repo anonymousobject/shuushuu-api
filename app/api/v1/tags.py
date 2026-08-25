@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import (
     ColumnElement,
     Integer,
+    Numeric,
     asc,
     case,
     cast,
@@ -31,13 +32,14 @@ from sqlalchemy.orm import aliased, selectinload
 from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
 from app.config import ImageStatus, TagAuditActionType, TagType
 from app.core.auth import get_current_user, get_optional_current_user
-from app.core.database import get_db
+from app.core.database import get_db, is_postgres
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
 from app.core.redis import get_redis
 from app.core.user_loader import image_uploader_load
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
+from app.models.character_source_link_picture import CharacterSourceLinkPictures
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
 from app.models.permissions import UserGroups
@@ -50,7 +52,7 @@ from app.schemas.audit import (
     TagHistoryResponse,
 )
 from app.schemas.common import UserSummary
-from app.schemas.image import ImageListResponse, ImageResponse
+from app.schemas.image import ImageListResponse, ImageResponse, thumbnail_url_for
 from app.schemas.tag import (
     BatchTagAction,
     BatchTagRequest,
@@ -59,6 +61,8 @@ from app.schemas.tag import (
     CharacterSourceLinkListResponse,
     CharacterSourceLinkResponse,
     LinkedTag,
+    LinkPictureResponse,
+    LinkPictureSet,
     TagCreate,
     TagExternalLinkCreate,
     TagExternalLinkReorder,
@@ -70,6 +74,7 @@ from app.schemas.tag import (
 )
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
 from app.services.artist_identity import parse_identity_url, resolve_identity, site_display_name
+from app.services.character_source_counts import get_shared_image_counts
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
@@ -418,6 +423,70 @@ async def validate_tag_relationships(
             )
 
 
+# A source can carry hundreds of characters, so the error names a sample
+# rather than every counterpart.
+_LINKED_TAG_SAMPLE_SIZE = 5
+
+
+def _linked_tag_sample(titles: list[str]) -> str:
+    """Render counterpart titles for an error message, capped in length."""
+    sample = ", ".join(f"'{title}'" for title in titles[:_LINKED_TAG_SAMPLE_SIZE])
+    remaining = len(titles) - _LINKED_TAG_SAMPLE_SIZE
+    return f"{sample} and {remaining} more" if remaining > 0 else sample
+
+
+async def validate_character_source_links_for_type(
+    db: AsyncSession, *, tag_id: int, new_type: int
+) -> None:
+    """Reject a type change that would orphan the tag's character-source links.
+
+    Links are only reachable from a CHARACTER tag's page (its sources) and a
+    SOURCE tag's page (its characters), and both sides are type-checked when a
+    link is created. A tag retyped out of either role therefore leaves its rows
+    behind as orphans: invisible on its own page, still listed on the
+    counterpart's. Blocking keeps the link (and its picture crop) intact and
+    puts the delete in the moderator's hands.
+
+    Raises HTTPException(400) on validation failure.
+    """
+    if new_type != TagType.CHARACTER:
+        linked_sources = await db.execute(
+            select(Tags.title)  # type: ignore[call-overload]
+            .join(CharacterSourceLinks, Tags.tag_id == CharacterSourceLinks.source_tag_id)
+            .where(CharacterSourceLinks.character_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        source_titles = [row[0] for row in linked_sources]
+        if source_titles:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot change tag type: this tag is linked as a character to "
+                    f"{len(source_titles)} source tag(s): {_linked_tag_sample(source_titles)}. "
+                    f"Remove the character-source link(s) first."
+                ),
+            )
+
+    if new_type != TagType.SOURCE:
+        linked_characters = await db.execute(
+            select(Tags.title)  # type: ignore[call-overload]
+            .join(CharacterSourceLinks, Tags.tag_id == CharacterSourceLinks.character_tag_id)
+            .where(CharacterSourceLinks.source_tag_id == tag_id)
+            .order_by(Tags.title)
+        )
+        character_titles = [row[0] for row in linked_characters]
+        if character_titles:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot change tag type: this tag is linked as a source to "
+                    f"{len(character_titles)} character tag(s): "
+                    f"{_linked_tag_sample(character_titles)}. "
+                    f"Remove the character-source link(s) first."
+                ),
+            )
+
+
 @router.get("/suggestion-stats", response_model=TagSuggestionStatsResponse)
 async def get_tag_suggestion_stats(
     pagination: Annotated[PaginationParams, Depends()],
@@ -456,7 +525,14 @@ async def get_tag_suggestion_stats(
     # Acceptance rate: accepted / (accepted + rejected), null if no decided suggestions
     decided_col = accepted_col + rejected_col
     acceptance_rate_col = case(
-        (decided_col > 0, func.round(accepted_col * 100.0 / decided_col, 1)),
+        # cast to Numeric: the float literal makes the expression double
+        # precision, and Postgres has no round(double precision, int) —
+        # two-arg round needs numeric. MariaDB reads it as DECIMAL(10,4),
+        # same rounding either way.
+        (
+            decided_col > 0,
+            func.round(cast(accepted_col * 100.0 / decided_col, Numeric(10, 4)), 1),
+        ),
         else_=None,
     ).label("acceptance_rate")
 
@@ -605,6 +681,10 @@ async def list_tags(
     # Track whether we're using fulltext search and what query string
     fulltext_query_str: str | None = None
 
+    # Postgres has no MySQL FULLTEXT; its LIKE is also case-sensitive (the
+    # MariaDB columns are *_ci), so the fallback uses ILIKE.
+    use_fulltext = not is_postgres(db)
+
     if search:
         # Hybrid search strategy:
         # - Queries < 3 chars: Use LIKE (autocomplete, prefix matching)
@@ -617,7 +697,21 @@ async def list_tags(
             # Short query: prefix match with LIKE (e.g., "sa" -> "sakura")
             # Escape LIKE special characters to prevent unintended wildcard matching
             escaped_search = _escape_like_pattern(search)
-            query = query.where(Tags.title.like(f"{escaped_search}%"))  # type: ignore[union-attr]
+            prefix_pattern = f"{escaped_search}%"
+            query = query.where(
+                Tags.title.like(prefix_pattern)  # type: ignore[union-attr]
+                if use_fulltext
+                else Tags.title.ilike(prefix_pattern)  # type: ignore[union-attr]
+            )
+        elif not use_fulltext:
+            # Postgres: no index tokenizer to mirror — AND of case-insensitive
+            # contains matches per word keeps word-order independence.
+            # fulltext_query_str stays None so relevance ordering below takes
+            # the LIKE branch (built on portable lower() comparisons).
+            for word in search.split():
+                query = query.where(
+                    Tags.title.ilike(f"%{_escape_like_pattern(word)}%")  # type: ignore[union-attr]
+                )
         else:
             # Long query: word-order independent full-text search with wildcard expansion
             # Split search into words and add wildcard to each word to match partial terms
@@ -964,10 +1058,61 @@ async def get_characters_for_source(
     )
 
 
+def _linked_tag_entry(row: Any, shared_counts: dict[int, int]) -> dict[str, Any]:
+    """Build a LinkedTagWithPicture dict from a get_tag relationship row."""
+    (
+        tag_id,
+        title,
+        tag_type,
+        usage_count,
+        link_id,
+        pic_image_id,
+        crop_x,
+        crop_y,
+        crop_w,
+        crop_h,
+        filename,
+        status,
+        r2_location,
+    ) = row
+    entry: dict[str, Any] = {
+        "tag_id": tag_id,
+        "title": title,
+        "type": tag_type,
+        "usage_count": usage_count,
+        "link_id": link_id,
+        # Absent from the map means the two tags never co-occur.
+        "shared_image_count": shared_counts.get(tag_id, 0),
+    }
+    # Re-checked at read time: an image deactivated after being chosen must
+    # not leak through the embed — the card falls back to its placeholder.
+    if pic_image_id is not None and status in PUBLIC_IMAGE_STATUSES:
+        entry["picture"] = {
+            "image_id": pic_image_id,
+            "thumbnail_url": thumbnail_url_for(filename, status, r2_location),
+            "crop_x": crop_x,
+            "crop_y": crop_y,
+            "crop_w": crop_w,
+            "crop_h": crop_h,
+        }
+    return entry
+
+
+def _rank_by_shared_images(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order linked-tag entries by shared image count, most first.
+
+    The caller's query already ordered them by title, and Python's sort is
+    stable, so title remains the tiebreaker without repeating the collation
+    here.
+    """
+    return sorted(entries, key=lambda entry: -entry["shared_image_count"])
+
+
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     db: AsyncSession = Depends(get_db),
+    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
     current_user: Users | None = Depends(get_optional_current_user),
 ) -> TagWithStats:
     """
@@ -1089,38 +1234,76 @@ async def get_tag(
     characters: list[dict[str, Any]] = []
 
     if tag.type == TagType.CHARACTER:
-        # Get all sources linked to this character
-        # Sorted by usage_count descending with title as tiebreaker
+        # Get all sources linked to this character, ranked by how many images
+        # carry both tags (see _rank_by_shared_images) with title as tiebreaker
         sources_result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
+            select(  # type: ignore[call-overload]
+                Tags.tag_id,
+                Tags.title,
+                Tags.type,
+                Tags.usage_count,
+                CharacterSourceLinks.id,
+                CharacterSourceLinkPictures.image_id,
+                CharacterSourceLinkPictures.crop_x,
+                CharacterSourceLinkPictures.crop_y,
+                CharacterSourceLinkPictures.crop_w,
+                CharacterSourceLinkPictures.crop_h,
+                Images.filename,
+                Images.status,
+                Images.r2_location,
+            )
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.source_tag_id,
             )
+            .outerjoin(
+                CharacterSourceLinkPictures,
+                CharacterSourceLinkPictures.link_id == CharacterSourceLinks.id,
+            )
+            .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.character_tag_id == tag_id)
-            .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
+            .order_by(Tags.title)
         )
-        sources = [
-            {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
-            for row in sources_result.all()
-        ]
+        shared_counts = await get_shared_image_counts(db, tag_id, "source", redis_client)
+        sources = _rank_by_shared_images(
+            [_linked_tag_entry(row, shared_counts) for row in sources_result.all()]
+        )
 
     elif tag.type == TagType.SOURCE:
-        # Get all characters linked to this source
-        # Sorted by usage_count descending with title as tiebreaker
+        # Get all characters linked to this source, ranked by how many images
+        # carry both tags (see _rank_by_shared_images) with title as tiebreaker
         characters_result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.type, Tags.usage_count)  # type: ignore[call-overload]
+            select(  # type: ignore[call-overload]
+                Tags.tag_id,
+                Tags.title,
+                Tags.type,
+                Tags.usage_count,
+                CharacterSourceLinks.id,
+                CharacterSourceLinkPictures.image_id,
+                CharacterSourceLinkPictures.crop_x,
+                CharacterSourceLinkPictures.crop_y,
+                CharacterSourceLinkPictures.crop_w,
+                CharacterSourceLinkPictures.crop_h,
+                Images.filename,
+                Images.status,
+                Images.r2_location,
+            )
             .join(
                 CharacterSourceLinks,
                 Tags.tag_id == CharacterSourceLinks.character_tag_id,
             )
+            .outerjoin(
+                CharacterSourceLinkPictures,
+                CharacterSourceLinkPictures.link_id == CharacterSourceLinks.id,
+            )
+            .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.source_tag_id == tag_id)
-            .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
+            .order_by(Tags.title)
         )
-        characters = [
-            {"tag_id": row[0], "title": row[1], "type": row[2], "usage_count": row[3]}
-            for row in characters_result.all()
-        ]
+        shared_counts = await get_shared_image_counts(db, tag_id, "character", redis_client)
+        characters = _rank_by_shared_images(
+            [_linked_tag_entry(row, shared_counts) for row in characters_result.all()]
+        )
 
     return TagWithStats(
         tag_id=tag.tag_id or 0,
@@ -1642,6 +1825,32 @@ async def update_tag(
         alias_of=alias_id,
     )
 
+    if new_type != tag.type:
+        # An alias is a synonym of its canonical -- same concept, same type. A
+        # request that edits the type without touching alias_of never reaches
+        # the check above, so re-validate against the existing canonical here.
+        # Only the type match is re-run: feeding the existing target through
+        # validate_tag_relationships would also re-run the chain and children
+        # checks and 400 unrelated edits on legacy rows.
+        if "alias_of" not in update_data and tag.alias_of is not None:
+            canonical_result = await db.execute(
+                select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
+            )
+            canonical_tag = canonical_result.scalar_one_or_none()
+            if canonical_tag is not None and canonical_tag.type != new_type:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot give an alias a different type than its canonical. "
+                        f"This tag is an alias of '{canonical_tag.title}' "
+                        f"(id: {tag.alias_of}), which has type {canonical_tag.type}, "
+                        f"not {new_type}. Retype the canonical instead: the change "
+                        f"cascades to its aliases."
+                    ),
+                )
+
+        await validate_character_source_links_for_type(db, tag_id=tag_id, new_type=new_type)
+
     # Update fields
     for key, value in update_data.items():
         setattr(tag, key, value)
@@ -1672,6 +1881,7 @@ async def update_tag(
         db.add(audit_entry)
 
     # Check for type change
+    type_cascaded_alias_ids: list[int | None] = []
     if tag.type != original_type:
         audit_entry = TagAuditLog(
             tag_id=tag_id,
@@ -1688,6 +1898,30 @@ async def update_tag(
             select(TagLinks.image_id).where(TagLinks.tag_id == tag_id)  # type: ignore[call-overload]
         )
         await refresh_images_tag_type_flags(db, [row[0] for row in affected])
+
+        # Aliases are synonyms of their canonical tag -- same concept, same
+        # type by definition -- so a type change cascades to incoming aliases.
+        # They carry no tag_links (invariant), so no flag recompute needed.
+        type_cascade_result = await db.execute(
+            select(Tags).where(
+                Tags.alias_of == tag_id,  # type: ignore[arg-type]
+                Tags.tag_id != tag_id,  # type: ignore[arg-type]
+            )
+        )
+        type_cascade_aliases = type_cascade_result.scalars().all()
+        for cascade_alias in type_cascade_aliases:
+            db.add(
+                TagAuditLog(
+                    tag_id=cascade_alias.tag_id,
+                    action_type=TagAuditActionType.TYPE_CHANGE,
+                    old_type=cascade_alias.type,
+                    new_type=tag.type,
+                    user_id=current_user.user_id,
+                )
+            )
+            cascade_alias.type = tag.type
+            db.add(cascade_alias)
+        type_cascaded_alias_ids = [alias.tag_id for alias in type_cascade_aliases]
 
     # Check for alias change
     if tag.alias_of != original_alias_of:
@@ -1774,6 +2008,7 @@ async def update_tag(
             db.add(audit_entry)
 
     # Migrate tag_links when alias is set
+    reparented_alias_ids: list[int | None] = []
     if tag.alias_of is not None and tag.alias_of != original_alias_of:
         canonical_id = tag.alias_of
 
@@ -1912,6 +2147,39 @@ async def update_tag(
                 .values(character_tag_id=canonical_id)
             )
 
+        # Re-point incoming aliases (tags that were aliased to this tag) so they
+        # follow straight to the new canonical tag instead of chaining through
+        # a tag that's now itself an alias (P -> A -> B, not P -> A, A -> B).
+        incoming_aliases_result = await db.execute(
+            select(Tags).where(
+                Tags.alias_of == tag_id,  # type: ignore[arg-type]
+                Tags.tag_id != tag_id,  # type: ignore[arg-type]
+            )
+        )
+        incoming_aliases = incoming_aliases_result.scalars().all()
+        reparented_alias_ids = [incoming_alias.tag_id for incoming_alias in incoming_aliases]
+        for incoming_alias in incoming_aliases:
+            db.add(
+                TagAuditLog(
+                    tag_id=incoming_alias.tag_id,
+                    action_type=TagAuditActionType.ALIAS_REMOVED,
+                    old_alias_of=tag_id,
+                    new_alias_of=None,
+                    user_id=current_user.user_id,
+                )
+            )
+            db.add(
+                TagAuditLog(
+                    tag_id=incoming_alias.tag_id,
+                    action_type=TagAuditActionType.ALIAS_SET,
+                    old_alias_of=None,
+                    new_alias_of=canonical_id,
+                    user_id=current_user.user_id,
+                )
+            )
+            incoming_alias.alias_of = canonical_id
+            db.add(incoming_alias)
+
     db.add(tag)
     await db.commit()
     await db.refresh(tag)
@@ -1927,6 +2195,17 @@ async def update_tag(
         canonical_tag = canonical_result.scalar_one_or_none()
         if canonical_tag:
             await sync_tag_to_search(canonical_tag, db=db)
+
+    # Re-pointed and type-cascaded incoming aliases also need re-syncing: their
+    # indexed canonical tag / type changed. A combined type+alias request can
+    # cascade the same alias into both sets, so dedupe before syncing.
+    cascaded_alias_ids = set(reparented_alias_ids) | set(type_cascaded_alias_ids)
+    if cascaded_alias_ids:
+        cascaded_result = await db.execute(
+            select(Tags).where(Tags.tag_id.in_(cascaded_alias_ids))  # type: ignore[union-attr]
+        )
+        for cascaded_alias in cascaded_result.scalars().all():
+            await sync_tag_to_search(cascaded_alias, db=db)
 
     return TagResponse.model_validate(tag)
 
@@ -2426,4 +2705,165 @@ async def delete_character_source_link(
     db.add(audit)
 
     await db.delete(link)
+    await db.commit()
+
+
+@character_source_links_router.put("/{link_id}/picture", response_model=LinkPictureResponse)
+async def set_character_source_link_picture(
+    link_id: Annotated[int, Path(description="Link ID")],
+    body: LinkPictureSet,
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> LinkPictureResponse:
+    """Set or replace a link's representative picture. Requires TAG_CREATE."""
+    link_result = await db.execute(
+        select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)  # type: ignore[arg-type]
+    )
+    link = link_result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    # Captured now: the IntegrityError fallback below does a db.rollback(),
+    # which expires every ORM object in the session (link and current_user
+    # included). Re-reading their attributes afterwards would trigger an
+    # implicit lazy load that raises MissingGreenlet in an async session.
+    character_tag_id = link.character_tag_id
+    source_tag_id = link.source_tag_id
+    current_user_id = current_user.user_id
+
+    image_result = await db.execute(
+        select(Images).where(Images.image_id == body.image_id)  # type: ignore[arg-type]
+    )
+    image = image_result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    if image.status not in PUBLIC_IMAGE_STATUSES:
+        raise HTTPException(status_code=400, detail="Image is not publicly visible")
+
+    # The picture must actually depict this pair: the image has to carry both
+    # the character and the source tag. Alias tags deliberately don't count —
+    # links themselves are canonical-only (see create_character_source_link).
+    tag_rows = await db.execute(
+        select(TagLinks.tag_id).where(  # type: ignore[call-overload]
+            TagLinks.image_id == body.image_id,
+            TagLinks.tag_id.in_([character_tag_id, source_tag_id]),  # type: ignore[attr-defined]
+        )
+    )
+    present = {row[0] for row in tag_rows.all()}
+    missing = {character_tag_id, source_tag_id} - present
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image must carry both linked tags (missing tag ids: {sorted(missing)})",
+        )
+
+    if body.crop_x + body.crop_w > 1 or body.crop_y + body.crop_h > 1:
+        raise HTTPException(status_code=400, detail="Crop rectangle extends beyond the image")
+
+    # Roughly square in pixel terms (5% tolerance). Skipped when stored
+    # dimensions are 0 (legacy rows) — squareness is unknowable there.
+    if image.width and image.height:
+        crop_px_w = body.crop_w * image.width
+        crop_px_h = body.crop_h * image.height
+        if abs(crop_px_w - crop_px_h) > 0.05 * max(crop_px_w, crop_px_h):
+            raise HTTPException(status_code=400, detail="Crop must be square (within 5% tolerance)")
+
+    def _apply_fields(pic: CharacterSourceLinkPictures) -> None:
+        """Overwrite an existing picture row's fields and bump set_at."""
+        pic.image_id = body.image_id
+        pic.crop_x = body.crop_x
+        pic.crop_y = body.crop_y
+        pic.crop_w = body.crop_w
+        pic.crop_h = body.crop_h
+        pic.set_by_user_id = current_user_id
+        pic.set_at = datetime.now(UTC)
+
+    def _add_audit() -> None:
+        db.add(
+            TagAuditLog(
+                tag_id=character_tag_id,
+                action_type=TagAuditActionType.PICTURE_SET,
+                character_tag_id=character_tag_id,
+                source_tag_id=source_tag_id,
+                user_id=current_user_id,
+            )
+        )
+
+    existing_result = await db.execute(
+        select(CharacterSourceLinkPictures).where(
+            CharacterSourceLinkPictures.link_id == link_id  # type: ignore[arg-type]
+        )
+    )
+    picture = existing_result.scalar_one_or_none()
+    if picture:
+        _apply_fields(picture)
+    else:
+        picture = CharacterSourceLinkPictures(
+            link_id=link_id,
+            image_id=body.image_id,
+            crop_x=body.crop_x,
+            crop_y=body.crop_y,
+            crop_w=body.crop_w,
+            crop_h=body.crop_h,
+            set_by_user_id=current_user_id,
+        )
+        db.add(picture)
+
+    _add_audit()
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two concurrent PUTs on a link with no existing picture both see
+        # `picture is None` above and both try to INSERT with the same PK
+        # (link_id). The loser's INSERT collides with the winner's on
+        # commit. A 409 here would break PUT's idempotent-set semantics, so
+        # fall back to an UPDATE against the row the winner just committed —
+        # the loser's crop still lands as the final state.
+        await db.rollback()
+        existing_result = await db.execute(
+            select(CharacterSourceLinkPictures).where(
+                CharacterSourceLinkPictures.link_id == link_id  # type: ignore[arg-type]
+            )
+        )
+        picture = existing_result.scalar_one()
+        _apply_fields(picture)
+        _add_audit()
+        await db.commit()
+
+    await db.refresh(picture)
+    return LinkPictureResponse.model_validate(picture)
+
+
+@character_source_links_router.delete("/{link_id}/picture", status_code=204)
+async def delete_character_source_link_picture(
+    link_id: Annotated[int, Path(description="Link ID")],
+    current_user: Annotated[Users, Depends(get_current_user)],
+    _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Remove a link's representative picture. Requires TAG_CREATE."""
+    result = await db.execute(
+        select(CharacterSourceLinkPictures).where(
+            CharacterSourceLinkPictures.link_id == link_id  # type: ignore[arg-type]
+        )
+    )
+    picture = result.scalar_one_or_none()
+    if not picture:
+        raise HTTPException(status_code=404, detail="Link has no picture")
+
+    link_result = await db.execute(
+        select(CharacterSourceLinks).where(CharacterSourceLinks.id == link_id)  # type: ignore[arg-type]
+    )
+    link = link_result.scalar_one()
+    db.add(
+        TagAuditLog(
+            tag_id=link.character_tag_id,
+            action_type=TagAuditActionType.PICTURE_REMOVED,
+            character_tag_id=link.character_tag_id,
+            source_tag_id=link.source_tag_id,
+            user_id=current_user.user_id,
+        )
+    )
+    await db.delete(picture)
     await db.commit()

@@ -579,6 +579,80 @@ class TestTagAuditLogTypeChange:
         assert audit_entry.new_type == TagType.CHARACTER
         assert audit_entry.user_id == admin.user_id
 
+    async def test_type_change_cascaded_to_incoming_alias_creates_audit_log_entry(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Changing A's type cascades to incoming alias P's type, and that
+        cascade gets its own TYPE_CHANGE audit entry attributed to the admin
+        who made the edit on A."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="typecascadeauditadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="typecascadeauditadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # A (about to change type), P (existing incoming alias of A)
+        tag_a = Tags(title="type cascade audit A", desc="", type=TagType.THEME)
+        db_session.add(tag_a)
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+
+        tag_p = Tags(
+            title="type cascade audit P", desc="", type=TagType.THEME, alias_of=tag_a.tag_id
+        )
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "typecascadeauditadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change A's type only
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "type cascade audit A", "type": TagType.CHARACTER},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # P's audit trail should show a TYPE_CHANGE entry (THEME -> CHARACTER)
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(
+                TagAuditLog.tag_id == tag_p.tag_id,
+                TagAuditLog.action_type == TagAuditActionType.TYPE_CHANGE,
+            )
+        )
+        audit_entries = audit_result.scalars().all()
+
+        assert len(audit_entries) == 1
+        audit_entry = audit_entries[0]
+        assert audit_entry.old_type == TagType.THEME
+        assert audit_entry.new_type == TagType.CHARACTER
+        assert audit_entry.user_id == admin.user_id
+
 
 @pytest.mark.api
 class TestTagAuditLogAliasChange:
@@ -750,6 +824,83 @@ class TestTagAuditLogAliasChange:
         assert audit_entry.old_alias_of == target_tag.tag_id
         assert audit_entry.new_alias_of is None
         assert audit_entry.user_id == admin.user_id
+
+    async def test_reparenting_incoming_alias_creates_audit_log_pair(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """When A gets aliased to B, an existing alias P of A (P -> A) is
+        re-pointed to B and gets its own ALIAS_REMOVED/ALIAS_SET pair, logged
+        as a system-initiated side effect of the acting admin's edit."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="chainreparentauditadmin",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="chainreparentauditadmin@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # A (about to be aliased to B), P (existing incoming alias of A), B (new canonical)
+        tag_a = Tags(title="chain audit A", desc="", type=TagType.ARTIST)
+        tag_b = Tags(title="chain audit B", desc="", type=TagType.ARTIST)
+        db_session.add_all([tag_a, tag_b])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_b)
+
+        tag_p = Tags(title="chain audit P", desc="", type=TagType.ARTIST, alias_of=tag_a.tag_id)
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "chainreparentauditadmin", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Alias A -> B
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "chain audit A", "alias_of": tag_b.tag_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+        # P's audit trail should show ALIAS_REMOVED (P -> A) then ALIAS_SET (P -> B)
+        audit_result = await db_session.execute(
+            select(TagAuditLog).where(TagAuditLog.tag_id == tag_p.tag_id).order_by(TagAuditLog.id)
+        )
+        audit_entries = audit_result.scalars().all()
+
+        assert len(audit_entries) == 2
+        removed_entry, set_entry = audit_entries
+        assert removed_entry.action_type == TagAuditActionType.ALIAS_REMOVED
+        assert removed_entry.old_alias_of == tag_a.tag_id
+        assert removed_entry.new_alias_of is None
+        assert removed_entry.user_id == admin.user_id
+
+        assert set_entry.action_type == TagAuditActionType.ALIAS_SET
+        assert set_entry.old_alias_of is None
+        assert set_entry.new_alias_of == tag_b.tag_id
+        assert set_entry.user_id == admin.user_id
 
 
 @pytest.mark.api
@@ -1324,9 +1475,7 @@ class TestGetTagHistory:
         assert entry["user"]["user_id"] == admin.user_id
         assert entry["user"]["username"] == "historyuseradmin"
 
-    async def test_get_tag_history_404_for_nonexistent_tag(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_get_tag_history_404_for_nonexistent_tag(self, client: AsyncClient) -> None:
         """Should return 404 for nonexistent tag."""
         response = await client.get("/api/v1/tags/99999999/history")
         assert response.status_code == 404
@@ -1381,14 +1530,12 @@ class TestGetTagHistory:
         for i in range(3):
             await client.put(
                 f"/api/v1/tags/{tag.tag_id}",
-                json={"title": f"pagination tag v{i+2}", "desc": "test", "type": TagType.THEME},
+                json={"title": f"pagination tag v{i + 2}", "desc": "test", "type": TagType.THEME},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
 
         # Get first page with per_page=2
-        response = await client.get(
-            f"/api/v1/tags/{tag.tag_id}/history?page=1&per_page=2"
-        )
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/history?page=1&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 1
@@ -1397,9 +1544,7 @@ class TestGetTagHistory:
         assert data["total"] >= 3
 
         # Get second page
-        response = await client.get(
-            f"/api/v1/tags/{tag.tag_id}/history?page=2&per_page=2"
-        )
+        response = await client.get(f"/api/v1/tags/{tag.tag_id}/history?page=2&per_page=2")
         assert response.status_code == 200
         data = response.json()
         assert data["page"] == 2
@@ -1689,10 +1834,10 @@ class TestTagAuditLogExternalLinks:
         assert response.status_code == 201
 
         entries = (
-            await db_session.execute(
-                select(TagAuditLog).where(TagAuditLog.tag_id == tag.tag_id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(TagAuditLog).where(TagAuditLog.tag_id == tag.tag_id)))
+            .scalars()
+            .all()
+        )
 
         assert len(entries) == 1
         assert entries[0].action_type == TagAuditActionType.LINK_ADDED
@@ -1728,10 +1873,10 @@ class TestTagAuditLogExternalLinks:
         ).status_code == 409
 
         entries = (
-            await db_session.execute(
-                select(TagAuditLog).where(TagAuditLog.tag_id == tag_id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(TagAuditLog).where(TagAuditLog.tag_id == tag_id)))
+            .scalars()
+            .all()
+        )
         assert len(entries) == 1
 
     async def test_delete_link_creates_link_removed_entry(
@@ -1754,12 +1899,16 @@ class TestTagAuditLogExternalLinks:
         assert response.status_code == 204
 
         entries = (
-            await db_session.execute(
-                select(TagAuditLog)
-                .where(TagAuditLog.tag_id == tag.tag_id)
-                .where(TagAuditLog.action_type == TagAuditActionType.LINK_REMOVED)
+            (
+                await db_session.execute(
+                    select(TagAuditLog)
+                    .where(TagAuditLog.tag_id == tag.tag_id)
+                    .where(TagAuditLog.action_type == TagAuditActionType.LINK_REMOVED)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         assert len(entries) == 1
         assert entries[0].link_url == "https://example.com/gone"
@@ -1790,10 +1939,10 @@ class TestTagAuditLogExternalLinks:
         assert response.status_code == 200
 
         entries = (
-            await db_session.execute(
-                select(TagAuditLog).where(TagAuditLog.tag_id == tag.tag_id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(TagAuditLog).where(TagAuditLog.tag_id == tag.tag_id)))
+            .scalars()
+            .all()
+        )
         # Only the two link_added rows from setup.
         assert [e.action_type for e in entries] == [TagAuditActionType.LINK_ADDED] * 2
 
@@ -1810,13 +1959,17 @@ class TestTagAuditLogExternalLinks:
 
     async def _link_entries(self, db_session: AsyncSession, tag_id: int, action: str):
         return (
-            await db_session.execute(
-                select(TagAuditLog)
-                .where(TagAuditLog.tag_id == tag_id)
-                .where(TagAuditLog.action_type == action)
-                .order_by(TagAuditLog.id)
+            (
+                await db_session.execute(
+                    select(TagAuditLog)
+                    .where(TagAuditLog.tag_id == tag_id)
+                    .where(TagAuditLog.action_type == action)
+                    .order_by(TagAuditLog.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     async def test_marking_link_dead_creates_entry(
         self, client: AsyncClient, db_session: AsyncSession
@@ -1879,9 +2032,7 @@ class TestTagAuditLogExternalLinks:
         )
 
         assert (
-            await self._link_entries(
-                db_session, tag.tag_id, TagAuditActionType.LINK_DEAD_CLEARED
-            )
+            await self._link_entries(db_session, tag.tag_id, TagAuditActionType.LINK_DEAD_CLEARED)
             == []
         )
 
@@ -1977,7 +2128,11 @@ class TestTagAuditLogExternalLinks:
         shared = "https://example.com/shared"
         unique = "https://example.com/unique"
 
-        for tag_id, url in ((canonical.tag_id, shared), (alias.tag_id, shared), (alias.tag_id, unique)):
+        for tag_id, url in (
+            (canonical.tag_id, shared),
+            (alias.tag_id, shared),
+            (alias.tag_id, unique),
+        ):
             created = await client.post(
                 f"/api/v1/tags/{tag_id}/links", json={"url": url}, headers=headers
             )
@@ -2012,7 +2167,9 @@ class TestTagAuditLogExternalLinks:
 class TestTagAuditLogCreation:
     """A tag born as an alias or child must have that recorded."""
 
-    async def _admin_token(self, client: AsyncClient, db_session: AsyncSession, username: str) -> str:
+    async def _admin_token(
+        self, client: AsyncClient, db_session: AsyncSession, username: str
+    ) -> str:
         for title, desc in (("tag_create", "Create tags"), ("tag_update", "Update tags")):
             db_session.add(Perms(title=title, desc=desc))
         await db_session.commit()
@@ -2032,9 +2189,7 @@ class TestTagAuditLogCreation:
 
         perms = (await db_session.execute(select(Perms))).scalars().all()
         for perm in perms:
-            db_session.add(
-                UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1)
-            )
+            db_session.add(UserPerms(user_id=admin.user_id, perm_id=perm.perm_id, permvalue=1))
         await db_session.commit()
 
         login = await client.post(
@@ -2065,10 +2220,10 @@ class TestTagAuditLogCreation:
         new_id = response.json()["tag_id"]
 
         entries = (
-            await db_session.execute(
-                select(TagAuditLog).where(TagAuditLog.tag_id == new_id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(TagAuditLog).where(TagAuditLog.tag_id == new_id)))
+            .scalars()
+            .all()
+        )
 
         assert len(entries) == 1
         assert entries[0].action_type == TagAuditActionType.ALIAS_SET
@@ -2097,10 +2252,10 @@ class TestTagAuditLogCreation:
         new_id = response.json()["tag_id"]
 
         entries = (
-            await db_session.execute(
-                select(TagAuditLog).where(TagAuditLog.tag_id == new_id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(TagAuditLog).where(TagAuditLog.tag_id == new_id)))
+            .scalars()
+            .all()
+        )
 
         assert len(entries) == 1
         assert entries[0].action_type == TagAuditActionType.PARENT_SET
@@ -2133,10 +2288,10 @@ class TestTagAuditLogCreation:
         new_id = response.json()["tag_id"]
 
         entries = (
-            await db_session.execute(
-                select(TagAuditLog).where(TagAuditLog.tag_id == new_id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(TagAuditLog).where(TagAuditLog.tag_id == new_id)))
+            .scalars()
+            .all()
+        )
 
         assert len(entries) == 2
         by_action = {entry.action_type: entry for entry in entries}
@@ -2158,10 +2313,14 @@ class TestTagAuditLogCreation:
         assert response.status_code == 200
 
         entries = (
-            await db_session.execute(
-                select(TagAuditLog).where(TagAuditLog.tag_id == response.json()["tag_id"])
+            (
+                await db_session.execute(
+                    select(TagAuditLog).where(TagAuditLog.tag_id == response.json()["tag_id"])
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert entries == []
 
 
@@ -2253,9 +2412,7 @@ class TestTagHistoryIncomingRelations:
         assert items[0]["action_type"] == TagAuditActionType.RENAME
         assert items[0]["subject_tag"]["tag_id"] == tag.tag_id
 
-    async def test_link_fields_are_exposed(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_link_fields_are_exposed(self, client: AsyncClient, db_session: AsyncSession):
         tag = Tags(title="link fields exposed", type=TagType.THEME)
         db_session.add(tag)
         await db_session.commit()

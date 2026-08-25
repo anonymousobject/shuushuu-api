@@ -52,9 +52,7 @@ class TestHealth:
         ):
             yield
 
-    async def test_reports_unsynced_count_and_oldest_age(
-        self, db_session, monkeypatch, tmp_path
-    ):
+    async def test_reports_unsynced_count_and_oldest_age(self, db_session, monkeypatch, tmp_path):
         from app.models.image import Images
 
         monkeypatch.setattr(settings, "R2_ENABLED", True)
@@ -94,9 +92,7 @@ class TestPurgeCacheCommand:
         ):
             yield
 
-    async def test_calls_cloudflare_with_all_variant_urls(
-        self, db_session, monkeypatch
-    ):
+    async def test_calls_cloudflare_with_all_variant_urls(self, db_session, monkeypatch):
         from app.models.image import Images, VariantStatus
 
         monkeypatch.setattr(settings, "R2_ENABLED", True)
@@ -115,9 +111,7 @@ class TestPurgeCacheCommand:
         )
         await db_session.commit()
 
-        with patch(
-            "scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with patch("scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge:
             await purge_cache_command(image_id=42)
         mock_purge.assert_awaited_once()
         urls = mock_purge.await_args.args[0]
@@ -134,9 +128,7 @@ class TestResyncImage:
         ):
             yield
 
-    async def test_prints_state_for_known_image(
-        self, db_session, monkeypatch, capsys
-    ):
+    async def test_prints_state_for_known_image(self, db_session, monkeypatch, capsys):
         from app.models.image import Images
 
         monkeypatch.setattr(settings, "R2_ENABLED", True)
@@ -162,9 +154,7 @@ class TestResyncImage:
         assert "image 99" in out
         assert "fullsize" in out and "thumbs" in out
 
-    async def test_prints_not_found_for_missing_image(
-        self, db_session, monkeypatch, capsys
-    ):
+    async def test_prints_not_found_for_missing_image(self, db_session, monkeypatch, capsys):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         await resync_image(99999999)
         assert "not found" in capsys.readouterr().out
@@ -210,9 +200,10 @@ class TestForceReuploadImage:
         await db_session.commit()
 
         mock_r2 = _attach_bulk_session(AsyncMock())
-        with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2), patch(
-            "scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with (
+            patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2),
+            patch("scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
             await force_reupload_image(image_id=50, dry_run=False)
 
         assert mock_r2.delete_object.await_count == 4
@@ -220,9 +211,7 @@ class TestForceReuploadImage:
         # Public bucket -> purge CDN after reupload.
         mock_purge.assert_awaited_once()
 
-    async def test_private_bucket_does_not_purge(
-        self, db_session, monkeypatch, tmp_path
-    ):
+    async def test_private_bucket_does_not_purge(self, db_session, monkeypatch, tmp_path):
         from app.models.image import Images
 
         monkeypatch.setattr(settings, "R2_ENABLED", True)
@@ -241,17 +230,16 @@ class TestForceReuploadImage:
         await db_session.commit()
 
         mock_r2 = _attach_bulk_session(AsyncMock())
-        with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2), patch(
-            "scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with (
+            patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2),
+            patch("scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
             await force_reupload_image(image_id=51, dry_run=False)
 
         assert mock_r2.upload_file.await_count == 2  # fullsize + thumbs only
         mock_purge.assert_not_awaited()
 
-    async def test_dry_run_does_not_touch_r2(
-        self, db_session, monkeypatch, tmp_path
-    ):
+    async def test_dry_run_does_not_touch_r2(self, db_session, monkeypatch, tmp_path):
         from app.models.image import Images
 
         monkeypatch.setattr(settings, "R2_ENABLED", True)
@@ -270,18 +258,17 @@ class TestForceReuploadImage:
         await db_session.commit()
 
         mock_r2 = _attach_bulk_session(AsyncMock())
-        with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2), patch(
-            "scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with (
+            patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2),
+            patch("scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
             await force_reupload_image(image_id=52, dry_run=True)
 
         mock_r2.delete_object.assert_not_awaited()
         mock_r2.upload_file.assert_not_awaited()
         mock_purge.assert_not_awaited()
 
-    async def test_r2_location_none_refuses(
-        self, db_session, monkeypatch, tmp_path, capsys
-    ):
+    async def test_r2_location_none_refuses(self, db_session, monkeypatch, tmp_path, capsys):
         from app.models.image import Images
 
         monkeypatch.setattr(settings, "R2_ENABLED", True)
@@ -306,9 +293,7 @@ class TestForceReuploadImage:
         mock_r2.upload_file.assert_not_awaited()
         assert "reconcile" in capsys.readouterr().out
 
-    async def test_missing_local_file_skips_variant(
-        self, db_session, monkeypatch, tmp_path
-    ):
+    async def test_missing_local_file_skips_variant(self, db_session, monkeypatch, tmp_path):
         from app.models.image import Images
 
         monkeypatch.setattr(settings, "R2_ENABLED", True)
@@ -329,16 +314,15 @@ class TestForceReuploadImage:
         await db_session.commit()
 
         mock_r2 = _attach_bulk_session(AsyncMock())
-        with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2), patch(
-            "scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock
+        with (
+            patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2),
+            patch("scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock),
         ):
             await force_reupload_image(image_id=54, dry_run=False)
 
         assert mock_r2.upload_file.await_count == 1  # fullsize only
 
-    async def test_prints_not_found_for_missing_image(
-        self, db_session, monkeypatch, capsys
-    ):
+    async def test_prints_not_found_for_missing_image(self, db_session, monkeypatch, capsys):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         await force_reupload_image(image_id=99999999, dry_run=False)
         assert "not found" in capsys.readouterr().out
@@ -378,9 +362,7 @@ class TestVerify:
             report = await verify(sample=None)
         assert report["discrepancies"] == []
 
-    async def test_none_with_unexpected_object_reports_unexpected(
-        self, db_session, monkeypatch
-    ):
+    async def test_none_with_unexpected_object_reports_unexpected(self, db_session, monkeypatch):
         """NONE row + object present in either bucket -> leaked upload."""
         from app.models.image import Images
 
@@ -406,9 +388,7 @@ class TestVerify:
         kinds = {d["kind"] for d in report["discrepancies"]}
         assert "unexpected" in kinds
 
-    async def test_cross_bucket_orphan_reports_wrong_bucket(
-        self, db_session, monkeypatch
-    ):
+    async def test_cross_bucket_orphan_reports_wrong_bucket(self, db_session, monkeypatch):
         """PUBLIC row with copy also in private bucket -> incomplete move."""
         from app.models.image import Images
 
@@ -432,9 +412,7 @@ class TestVerify:
         kinds = {d["kind"] for d in report["discrepancies"]}
         assert "wrong_bucket" in kinds
 
-    async def test_missing_from_expected_bucket_reports_missing(
-        self, db_session, monkeypatch
-    ):
+    async def test_missing_from_expected_bucket_reports_missing(self, db_session, monkeypatch):
         """PUBLIC row with object missing from public bucket -> report missing."""
         from app.models.image import Images
 

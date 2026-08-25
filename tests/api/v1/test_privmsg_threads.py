@@ -35,7 +35,10 @@ async def login(client: AsyncClient, username: str) -> str:
         "/api/v1/auth/login",
         json={"username": username, "password": "TestPassword123!"},
     )
-    assert response.status_code == 200
+    # Named in the message: a bare `assert 401 == 200` inside a shared helper
+    # doesn't say which user failed to log in, and this helper is the first
+    # thing every test here calls (#338).
+    assert response.status_code == 200, f"login({username!r}) failed: {response.text}"
     return response.json()["access_token"]
 
 
@@ -69,7 +72,7 @@ class TestGetThreads:
             "/api/v1/privmsgs/threads",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
         assert data["total"] >= 1
 
@@ -83,7 +86,7 @@ class TestGetThreads:
     async def test_list_threads_unauthenticated(self, client: AsyncClient):
         """Test listing threads without authentication."""
         response = await client.get("/api/v1/privmsgs/threads")
-        assert response.status_code == 401
+        assert response.status_code == 401, response.text
 
     async def test_list_threads_filter_unread(self, client: AsyncClient, db_session: AsyncSession):
         """Test filtering threads to only unread."""
@@ -95,15 +98,25 @@ class TestGetThreads:
 
         t1 = str(uuid.uuid4())
         msg1 = Privmsgs(
-            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
-            subject="Read thread", text="Hi", thread_id=t1, date=now, viewed=1,
+            from_user_id=user_b.user_id,
+            to_user_id=user_a.user_id,
+            subject="Read thread",
+            text="Hi",
+            thread_id=t1,
+            date=now,
+            viewed=1,
         )
         db_session.add(msg1)
 
         t2 = str(uuid.uuid4())
         msg2 = Privmsgs(
-            from_user_id=user_c.user_id, to_user_id=user_a.user_id,
-            subject="Unread thread", text="Hey", thread_id=t2, date=now, viewed=0,
+            from_user_id=user_c.user_id,
+            to_user_id=user_a.user_id,
+            subject="Unread thread",
+            text="Hey",
+            thread_id=t2,
+            date=now,
+            viewed=0,
         )
         db_session.add(msg2)
         await db_session.commit()
@@ -113,21 +126,26 @@ class TestGetThreads:
             "/api/v1/privmsgs/threads?filter=unread",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
         thread_ids = [t["thread_id"] for t in data["threads"]]
         assert t2 in thread_ids
         assert t1 not in thread_ids
 
-    async def test_threads_exclude_left_conversations(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_threads_exclude_left_conversations(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test that left (soft-deleted) conversations don't appear."""
         user_a = await create_user(db_session, "left_a")
         user_b = await create_user(db_session, "left_b")
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
-            subject="Left thread", text="Bye", thread_id=thread_id,
+            from_user_id=user_b.user_id,
+            to_user_id=user_a.user_id,
+            subject="Left thread",
+            text="Bye",
+            thread_id=thread_id,
             to_del=1,
         )
         db_session.add(msg)
@@ -138,11 +156,13 @@ class TestGetThreads:
             "/api/v1/privmsgs/threads",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         thread_ids = [t["thread_id"] for t in response.json()["threads"]]
         assert thread_id not in thread_ids
 
-    async def test_threads_sorted_by_latest_message(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_threads_sorted_by_latest_message(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test threads are sorted by most recent message date."""
         user_a = await create_user(db_session, "sort_a")
         user_b = await create_user(db_session, "sort_b")
@@ -151,16 +171,28 @@ class TestGetThreads:
         now = datetime.now(UTC)
 
         t1 = str(uuid.uuid4())
-        db_session.add(Privmsgs(
-            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
-            subject="Old", text="Old msg", thread_id=t1, date=now - timedelta(hours=1),
-        ))
+        db_session.add(
+            Privmsgs(
+                from_user_id=user_b.user_id,
+                to_user_id=user_a.user_id,
+                subject="Old",
+                text="Old msg",
+                thread_id=t1,
+                date=now - timedelta(hours=1),
+            )
+        )
 
         t2 = str(uuid.uuid4())
-        db_session.add(Privmsgs(
-            from_user_id=user_c.user_id, to_user_id=user_a.user_id,
-            subject="New", text="New msg", thread_id=t2, date=now,
-        ))
+        db_session.add(
+            Privmsgs(
+                from_user_id=user_c.user_id,
+                to_user_id=user_a.user_id,
+                subject="New",
+                text="New msg",
+                thread_id=t2,
+                date=now,
+            )
+        )
         await db_session.commit()
 
         token = await login(client, "sort_a")
@@ -168,7 +200,7 @@ class TestGetThreads:
             "/api/v1/privmsgs/threads",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         threads = response.json()["threads"]
         thread_ids = [t["thread_id"] for t in threads]
         assert thread_ids.index(t2) < thread_ids.index(t1)
@@ -178,7 +210,9 @@ class TestGetThreads:
 class TestSendThreadedMessage:
     """Tests for POST /api/v1/privmsgs with thread_id."""
 
-    async def test_send_new_message_creates_thread(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_send_new_message_creates_thread(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
         """Test sending a new message generates a thread_id."""
         user_a = await create_user(db_session, "send_a", email_verified=True)
         user_b = await create_user(db_session, "send_b", email_verified=True)
@@ -189,7 +223,7 @@ class TestSendThreadedMessage:
             json={"to_user_id": user_b.user_id, "subject": "New thread", "message": "Hello"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 201
+        assert response.status_code == 201, response.text
         data = response.json()
         assert "thread_id" in data
         assert data["thread_id"] is not None
@@ -202,8 +236,11 @@ class TestSendThreadedMessage:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Original", text="First msg", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Original",
+            text="First msg",
+            thread_id=thread_id,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -219,24 +256,36 @@ class TestSendThreadedMessage:
             },
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 201
+        assert response.status_code == 201, response.text
         data = response.json()
         assert data["thread_id"] == thread_id
 
-    async def test_reply_resets_recipient_del_flag(self, client: AsyncClient, db_session: AsyncSession):
-        """Test that replying to a left thread resets the recipient's del flag."""
+    async def test_reply_resets_recipient_del_flag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that replying to a left thread resets the recipient's del flag.
+
+        Failed once in a full sequential run and has not been reproduced since
+        (#338). Nothing here is order-dependent as far as the investigation
+        got, so the assertions below carry enough state to identify which step
+        broke if it happens again.
+        """
         user_a = await create_user(db_session, "reset_a", email_verified=True)
         user_b = await create_user(db_session, "reset_b", email_verified=True)
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Left", text="Old msg", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Left",
+            text="Old msg",
+            thread_id=thread_id,
             to_del=1,  # user_b left the thread
         )
         db_session.add(msg)
         await db_session.commit()
         await db_session.refresh(msg)
+        assert msg.to_del == 1, "fixture message did not persist with to_del=1"
 
         # user_a sends a new message in the thread
         token = await login(client, "reset_a")
@@ -250,11 +299,15 @@ class TestSendThreadedMessage:
             },
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 201
+        assert response.status_code == 201, response.text
 
         # user_b's del flag on old messages should be reset
         await db_session.refresh(msg)
-        assert msg.to_del == 0
+        assert msg.to_del == 0, (
+            f"to_del not reset on privmsg_id={msg.privmsg_id} "
+            f"(thread_id={thread_id}, to_user_id={msg.to_user_id}, "
+            f"expected recipient {user_b.user_id})"
+        )
 
 
 @pytest.mark.api
@@ -287,7 +340,7 @@ class TestGetThreadMessages:
             f"/api/v1/privmsgs/threads/{thread_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
         assert len(data["messages"]) == 3
         # Should be ordered chronologically (oldest first)
@@ -301,8 +354,12 @@ class TestGetThreadMessages:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_b.user_id, to_user_id=user_a.user_id,
-            subject="Unread", text="Please read", thread_id=thread_id, viewed=0,
+            from_user_id=user_b.user_id,
+            to_user_id=user_a.user_id,
+            subject="Unread",
+            text="Please read",
+            thread_id=thread_id,
+            viewed=0,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -313,7 +370,7 @@ class TestGetThreadMessages:
             f"/api/v1/privmsgs/threads/{thread_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
 
         # Check DB: message should now be viewed
         await db_session.refresh(msg)
@@ -327,8 +384,11 @@ class TestGetThreadMessages:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Private", text="Secret", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Private",
+            text="Secret",
+            thread_id=thread_id,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -338,7 +398,7 @@ class TestGetThreadMessages:
             f"/api/v1/privmsgs/threads/{thread_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 403
+        assert response.status_code == 403, response.text
 
     async def test_get_thread_not_found(self, client: AsyncClient, db_session: AsyncSession):
         """Test 404 for nonexistent thread."""
@@ -348,7 +408,7 @@ class TestGetThreadMessages:
             "/api/v1/privmsgs/threads/nonexistent-thread-id",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 404
+        assert response.status_code == 404, response.text
 
 
 @pytest.mark.api
@@ -364,8 +424,11 @@ class TestLeaveThread:
         msgs = []
         for i in range(2):
             msg = Privmsgs(
-                from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-                subject="Leave test", text=f"Msg {i}", thread_id=thread_id,
+                from_user_id=user_a.user_id,
+                to_user_id=user_b.user_id,
+                subject="Leave test",
+                text=f"Msg {i}",
+                thread_id=thread_id,
             )
             db_session.add(msg)
             msgs.append(msg)
@@ -378,7 +441,7 @@ class TestLeaveThread:
             f"/api/v1/privmsgs/threads/{thread_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 204
+        assert response.status_code == 204, response.text
 
         # Verify to_del is set for all messages
         for m in msgs:
@@ -392,8 +455,11 @@ class TestLeaveThread:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Leave send", text="Msg", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Leave send",
+            text="Msg",
+            thread_id=thread_id,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -404,7 +470,7 @@ class TestLeaveThread:
             f"/api/v1/privmsgs/threads/{thread_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 204
+        assert response.status_code == 204, response.text
 
         await db_session.refresh(msg)
         assert msg.from_del == 1
@@ -417,8 +483,11 @@ class TestLeaveThread:
 
         thread_id = str(uuid.uuid4())
         msg = Privmsgs(
-            from_user_id=user_a.user_id, to_user_id=user_b.user_id,
-            subject="Private", text="Secret", thread_id=thread_id,
+            from_user_id=user_a.user_id,
+            to_user_id=user_b.user_id,
+            subject="Private",
+            text="Secret",
+            thread_id=thread_id,
         )
         db_session.add(msg)
         await db_session.commit()
@@ -428,4 +497,4 @@ class TestLeaveThread:
             f"/api/v1/privmsgs/threads/{thread_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 403
+        assert response.status_code == 403, response.text

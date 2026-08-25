@@ -97,6 +97,11 @@ async def refresh_user_tag_affinity(
     ``< 0`` as "skipped") without touching any tables if another refresh already
     holds the lock.
     """
+    if db.get_bind().dialect.name != "mysql":
+        raise NotImplementedError(
+            "refresh_user_tag_affinity is MariaDB-only (GET_LOCK, ENGINE=InnoDB "
+            "helper tables); see docs/plans/2026-Q3/2026-08-20-postgres-poc-impl.md"
+        )
     db_name = (await db.execute(text("SELECT DATABASE()"))).scalar()
     lock_name = f"{_LOCK_PREFIX}:{db_name}"
     locked = (await db.execute(text("SELECT GET_LOCK(:n, 0)"), {"n": lock_name})).scalar()

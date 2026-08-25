@@ -16,6 +16,7 @@ from app.models.admin_action import AdminActions
 # User-related models
 from app.models.ban import Bans
 from app.models.character_source_link import CharacterSourceLinks
+from app.models.character_source_link_picture import CharacterSourceLinkPictures
 from app.models.comment import Comments
 from app.models.comment_report import CommentReports
 
@@ -58,6 +59,7 @@ from app.models.tag_history import TagHistory
 from app.models.tag_link import TagLinks
 from app.models.tag_mapping import TagMappings
 from app.models.user import Users
+from app.models.user_favorite import UserFavoriteLinks, UserFavoriteTags
 from app.models.user_tag_affinity import UserTagAffinity
 
 __all__ = [
@@ -74,6 +76,9 @@ __all__ = [
     "TagExternalLinks",
     "TagMappings",
     "CharacterSourceLinks",
+    "CharacterSourceLinkPictures",
+    "UserFavoriteLinks",
+    "UserFavoriteTags",
     "TagAuditLog",
     "TagHistory",
     "ImageRatings",

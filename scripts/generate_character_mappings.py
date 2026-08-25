@@ -156,8 +156,12 @@ def classify(
         ids = index.norm_to_ids[n]
         if len(ids) == 1:
             mt = "exact_stripped" if had_qualifier else "exact"
-            return MatchResult(danbooru_name, str(ids[0]), index.id_to_title[ids[0]], mt, 100, "", "map")
-        return MatchResult(danbooru_name, "", "", "ambiguous", 100, _candidates_str(index, ids), "review")
+            return MatchResult(
+                danbooru_name, str(ids[0]), index.id_to_title[ids[0]], mt, 100, "", "map"
+            )
+        return MatchResult(
+            danbooru_name, "", "", "ambiguous", 100, _candidates_str(index, ids), "review"
+        )
 
     # 2. name-order swap (sorted tokens)
     sk = sorted_key(n)
@@ -165,8 +169,12 @@ def classify(
         ids = index.sorted_to_ids[sk]
         if len(ids) == 1:
             mt = "swap_stripped" if had_qualifier else "swap"
-            return MatchResult(danbooru_name, str(ids[0]), index.id_to_title[ids[0]], mt, 100, "", "map")
-        return MatchResult(danbooru_name, "", "", "ambiguous", 100, _candidates_str(index, ids), "review")
+            return MatchResult(
+                danbooru_name, str(ids[0]), index.id_to_title[ids[0]], mt, 100, "", "map"
+            )
+        return MatchResult(
+            danbooru_name, "", "", "ambiguous", 100, _candidates_str(index, ids), "review"
+        )
 
     # 3. fuzzy fallback (review only)
     if use_fuzzy and n and index.norm_choices:
@@ -178,8 +186,18 @@ def classify(
             ids = index.norm_to_ids[cand_norm]
             title = index.norm_to_title[cand_norm]
             if len(ids) == 1:
-                return MatchResult(danbooru_name, str(ids[0]), title, "fuzzy", round(score), "", "review")
-            return MatchResult(danbooru_name, "", title, "fuzzy", round(score), _candidates_str(index, ids), "review")
+                return MatchResult(
+                    danbooru_name, str(ids[0]), title, "fuzzy", round(score), "", "review"
+                )
+            return MatchResult(
+                danbooru_name,
+                "",
+                title,
+                "fuzzy",
+                round(score),
+                _candidates_str(index, ids),
+                "review",
+            )
 
     return MatchResult(danbooru_name, "", "", "none", 0, "", "ignore")
 
@@ -199,22 +217,25 @@ def match_all(
     ]
 
 
-def apply_linked_only(
-    results: list[MatchResult], linked_ids: set[int]
-) -> list[MatchResult]:
+def apply_linked_only(results: list[MatchResult], linked_ids: set[int]) -> list[MatchResult]:
     """Restrict auto-`map` to the launchable set: keep `map` only when the internal
     tag is source-linked (clean per analysis) AND the mapping is a clean 1:1 (no
     other Danbooru name maps to the same internal tag). Everything else is demoted
     to `review` with the reason recorded. Non-map results pass through unchanged."""
-    map_counts = Counter(r.internal_tag_id for r in results if r.action == "map" and r.internal_tag_id)
+    map_counts = Counter(
+        r.internal_tag_id for r in results if r.action == "map" and r.internal_tag_id
+    )
     out: list[MatchResult] = []
     for r in results:
         if r.action == "map" and r.internal_tag_id:
             if int(r.internal_tag_id) not in linked_ids:
-                r = replace(r, action="review", candidates="needs source link (internal tag unlinked)")
+                r = replace(
+                    r, action="review", candidates="needs source link (internal tag unlinked)"
+                )
             elif map_counts[r.internal_tag_id] > 1:
                 r = replace(
-                    r, action="review",
+                    r,
+                    action="review",
                     candidates="merge collision (multiple Danbooru names -> this tag); needs source-aware",
                 )
         out.append(r)
@@ -236,7 +257,9 @@ async def load_internal_characters() -> list[tuple[int, str]]:
     async with get_async_session() as db:
         rows = (
             await db.execute(
-                select(Tags.tag_id, Tags.title).where(Tags.type == CHARACTER_TYPE)  # type: ignore[arg-type]
+                select(Tags.tag_id, Tags.title).where(  # type: ignore[call-overload]
+                    Tags.type == CHARACTER_TYPE
+                )
             )
         ).all()
     return [(tag_id, title) for tag_id, title in rows]
@@ -272,7 +295,9 @@ def summarize(results: list[MatchResult]) -> None:
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate Danbooru->internal character tag mappings (draft).")
+    parser = argparse.ArgumentParser(
+        description="Generate Danbooru->internal character tag mappings (draft)."
+    )
     parser.add_argument("--vocab", type=Path, default=DEFAULT_VOCAB, help="model selected_tags.csv")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT, help="output draft CSV")
     parser.add_argument("--fuzzy-threshold", type=int, default=DEFAULT_FUZZY_THRESHOLD)
@@ -307,11 +332,14 @@ async def main() -> None:
 
     if args.linked_only:
         async with get_async_session() as db:
-            linked_ids = set(
-                (await db.execute(select(CharacterSourceLinks.character_tag_id).distinct())).scalars().all()
-            )
+            linked_stmt = select(  # type: ignore[call-overload]
+                CharacterSourceLinks.character_tag_id
+            ).distinct()
+            linked_ids = set((await db.execute(linked_stmt)).scalars().all())
         results = apply_linked_only(results, linked_ids)
-        print(f"linked-only: restricted auto-map to {len(linked_ids)} source-linked internal characters")
+        print(
+            f"linked-only: restricted auto-map to {len(linked_ids)} source-linked internal characters"
+        )
 
     summarize(results)
 

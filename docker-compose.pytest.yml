@@ -34,7 +34,8 @@
 # `pytest -n auto` runs clean 3x in a row with zero connection-death errors,
 # and ~8x faster (~172 s -> ~21 s) thanks to the small pool + tmpfs.
 #
-# Isolated from the dev/test/prod stacks: own container name, own port (3316),
+# Isolated from the dev/test/prod stacks: own container name, own port (3316 by
+# default, PYTEST_DB_PORT to move it),
 # ephemeral tmpfs data. Use it via the Makefile:
 #
 #   make pytest            # start this DB (if needed) and run the suite on it
@@ -56,8 +57,10 @@ services:
       --innodb_buffer_pool_size=256M
     ports:
       # localhost-only bind: credentials are hardcoded throwaway values and must
-      # never be network-reachable from off-host
-      - "127.0.0.1:3316:3306"
+      # never be network-reachable from off-host.
+      # Port defaults to 3316; set PYTEST_DB_PORT in .env on a host where that
+      # is taken. The Makefile reads the same variable so the suite follows.
+      - "127.0.0.1:${PYTEST_DB_PORT:-3316}:3306"
     # RAM-backed datadir: the pytest databases are ephemeral and rebuilt each
     # session, so there is nothing to persist. Also makes migrations/truncates
     # dramatically faster than fsync-ing to disk.

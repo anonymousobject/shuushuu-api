@@ -83,9 +83,7 @@ class TestSyncImageStatusJob:
             )
         mock_r2.copy_object.assert_not_awaited()
 
-    async def test_public_to_protected_copies_deletes_and_purges(
-        self, db_session, monkeypatch
-    ):
+    async def test_public_to_protected_copies_deletes_and_purges(self, db_session, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.example.com")
         # Simulate post-commit state: status already changed to REVIEW,
@@ -106,9 +104,10 @@ class TestSyncImageStatusJob:
         mock_r2 = AsyncMock()
         mock_r2.object_exists = AsyncMock(return_value=True)
 
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2), patch(
-            "app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            patch("app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
             await sync_image_status_job(
                 {},
                 image_id=img.image_id,
@@ -125,9 +124,7 @@ class TestSyncImageStatusJob:
         assert all(u.startswith("https://cdn.example.com/") for u in urls)
         assert len(urls) == 3
 
-    async def test_protected_to_public_copies_deletes_no_purge(
-        self, db_session, monkeypatch
-    ):
+    async def test_protected_to_public_copies_deletes_no_purge(self, db_session, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         img = Images(
             user_id=1,
@@ -142,9 +139,10 @@ class TestSyncImageStatusJob:
 
         mock_r2 = AsyncMock()
         mock_r2.object_exists = AsyncMock(return_value=True)
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2), patch(
-            "app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            patch("app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
             await sync_image_status_job(
                 {},
                 image_id=img.image_id,
@@ -177,8 +175,9 @@ class TestSyncImageStatusJob:
         mock_r2 = AsyncMock()
         mock_r2.object_exists = AsyncMock(return_value=False)
 
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2), patch(
-            "app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            patch("app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock),
         ):
             result = await sync_image_status_job(
                 {},
@@ -192,9 +191,7 @@ class TestSyncImageStatusJob:
         await db_session.refresh(img)
         assert img.r2_location == R2Location.PUBLIC
 
-    async def test_replay_when_src_missing_but_dst_exists_flips_db(
-        self, db_session, monkeypatch
-    ):
+    async def test_replay_when_src_missing_but_dst_exists_flips_db(self, db_session, monkeypatch):
         """Replay after prior run moved objects but failed before DB flip.
 
         Source is empty, destination has all variants → treat as already moved,
@@ -220,9 +217,10 @@ class TestSyncImageStatusJob:
 
         mock_r2.object_exists = AsyncMock(side_effect=object_exists)
 
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2), patch(
-            "app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock
-        ) as mock_purge:
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            patch("app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
             result = await sync_image_status_job(
                 {},
                 image_id=img.image_id,

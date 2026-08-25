@@ -553,9 +553,9 @@ async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -
     async with r2.bulk_session():
         async with get_async_session() as db:
             result = await db.execute(
-                select(Users.user_id, Users.avatar).where(
-                    Users.avatar != "",  # type: ignore[arg-type]
-                    Users.avatar_in_r2 == False,  # type: ignore[arg-type]  # noqa: E712
+                select(Users.user_id, Users.avatar).where(  # type: ignore[call-overload]
+                    Users.avatar != "",
+                    Users.avatar_in_r2 == False,  # noqa: E712
                 )
             )
             rows = result.all()

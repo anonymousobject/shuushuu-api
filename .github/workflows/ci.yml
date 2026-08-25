@@ -5,6 +5,13 @@ on:
     branches: [main, dev]
   pull_request:
 
+# Supersede in-flight runs when a newer commit lands on the same ref. Without
+# this a quick follow-up push left the first run going to completion alongside
+# the second, verifying a commit nobody was waiting on any more.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint & Format Check
@@ -140,6 +147,69 @@ jobs:
           path: |
             htmlcov/
           retention-days: 7
+
+  test-postgres:
+    name: Tests (Postgres)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: shuushuu
+          POSTGRES_PASSWORD: shuushuu_ci_password
+          POSTGRES_DB: shuushuu_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U shuushuu -d shuushuu_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+          --tmpfs /var/lib/postgresql:rw
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Run tests
+        env:
+          SECRET_KEY: test-secret-key-for-ci-only-not-for-production-use-min-32-chars
+          # Same URL for app-level and test engines so nothing reaching
+          # AsyncSessionLocal picks the wrong backend (mirrors the MariaDB job).
+          DATABASE_URL: postgresql+asyncpg://shuushuu:shuushuu_ci_password@127.0.0.1:5432/shuushuu_test
+          TEST_DATABASE_URL: postgresql+asyncpg://shuushuu:shuushuu_ci_password@127.0.0.1:5432/shuushuu_test
+          ENVIRONMENT: development
+          DEBUG: "True"
+          REDIS_URL: redis://localhost:6379/0
+        # --schema-sync runs the PG schema-sync test (models vs alembic_pg
+        # chain); the MariaDB schema-sync suite is mariadb_only and skips here.
+        run: |
+          uv run pytest tests/ -v --tb=short --maxfail=5 --schema-sync -n auto --dist loadgroup
 
   # Optional: Security scanning
   security:

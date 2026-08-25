@@ -1,10 +1,18 @@
 #!/bin/bash
 # Test runner script for shuushuu-api
-# Usage: ./run-tests.sh [pytest args]
+# Usage: ./run-tests.sh [--pg] [pytest args]
 # With no args, runs the full suite in parallel (-n 4 --dist loadgroup).
 # Pass any args (e.g. a test path) for a plain serial pytest run.
+# --pg runs against the dev-stack Postgres container instead of MariaDB
+# (docker compose up -d postgres first).
 
 set -e
+
+PG_MODE=0
+if [ "$1" = "--pg" ]; then
+    shift
+    PG_MODE=1
+fi
 
 # Load environment variables from .env file if it exists
 # This ensures test credentials stay in sync with actual database credentials
@@ -14,6 +22,19 @@ if [ -f .env ]; then
     set -a
     . .env
     set +a
+fi
+
+if [ "$PG_MODE" = "1" ]; then
+    # After .env so these win. Runs against the dev-stack Postgres container
+    # (docker compose up -d postgres first). Credentials come from .env like
+    # the MariaDB path below, falling back to the compose dev defaults.
+    PG_TEST_URL="postgresql+asyncpg://${POSTGRES_USER:-shuushuu}:${POSTGRES_PASSWORD:-pg_dev_password}@localhost:5432/shuushuu_pytest"
+    export TEST_DATABASE_URL="$PG_TEST_URL"
+    # Mirror CI: point the app-level engine at the test DB too, so nothing
+    # reaching AsyncSessionLocal outside the get_db override can touch the
+    # dev database (or pick the wrong dialect) during a test run.
+    export DATABASE_URL="$PG_TEST_URL"
+    echo "Running against Postgres ($PG_TEST_URL)"
 fi
 
 # Set test-specific credentials (can be overridden by environment)

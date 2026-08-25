@@ -79,9 +79,7 @@ async def create_test_image(db_session: AsyncSession, user_id: int) -> Images:
     return image
 
 
-async def grant_permissions(
-    db_session: AsyncSession, user_id: int, perm_titles: list[str]
-):
+async def grant_permissions(db_session: AsyncSession, user_id: int, perm_titles: list[str]):
     """Grant multiple permissions to a user via a group."""
     # Get or create a test group
     result = await db_session.execute(select(Groups).where(Groups.title == "audit_test_admin"))
@@ -129,9 +127,7 @@ async def grant_permissions(
 class TestReportDismissAuditLog:
     """Tests for audit logging when dismissing reports."""
 
-    async def test_dismiss_creates_audit_entry(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_dismiss_creates_audit_entry(self, client: AsyncClient, db_session: AsyncSession):
         """Dismissing a report creates REPORT_DISMISS audit entry."""
         admin, password = await create_admin_user(db_session, "dismissadmin1")
         await grant_permissions(db_session, admin.user_id, ["report_manage"])
@@ -174,9 +170,7 @@ class TestReportDismissAuditLog:
 class TestReportActionAuditLog:
     """Tests for audit logging when taking action on reports."""
 
-    async def test_action_creates_audit_entry(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_action_creates_audit_entry(self, client: AsyncClient, db_session: AsyncSession):
         """Taking action on a report creates REPORT_ACTION audit entry."""
         admin, password = await create_admin_user(db_session, "actionadmin1")
         await grant_permissions(db_session, admin.user_id, ["report_manage"])
@@ -265,9 +259,7 @@ class TestReviewStartAuditLog:
     ):
         """Escalating a report creates REVIEW_START audit entry."""
         admin, password = await create_admin_user(db_session, "escadmin1")
-        await grant_permissions(
-            db_session, admin.user_id, ["report_manage", "review_start"]
-        )
+        await grant_permissions(db_session, admin.user_id, ["report_manage", "review_start"])
         token = await login_user(client, admin.username, password)
 
         image = await create_test_image(db_session, admin.user_id)
@@ -311,9 +303,7 @@ class TestReviewStartAuditLog:
 class TestReviewVoteAuditLog:
     """Tests for audit logging when voting on reviews."""
 
-    async def test_vote_creates_audit_entry(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_vote_creates_audit_entry(self, client: AsyncClient, db_session: AsyncSession):
         """Casting a vote creates REVIEW_VOTE audit entry."""
         admin, password = await create_admin_user(db_session, "voteadmin1")
         await grant_permissions(db_session, admin.user_id, ["review_vote"])
@@ -361,9 +351,7 @@ class TestReviewVoteAuditLog:
 class TestReviewCloseAuditLog:
     """Tests for audit logging when closing reviews."""
 
-    async def test_close_creates_audit_entry(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_close_creates_audit_entry(self, client: AsyncClient, db_session: AsyncSession):
         """Closing a review creates REVIEW_CLOSE audit entry."""
         admin, password = await create_admin_user(db_session, "closeadmin1")
         await grant_permissions(db_session, admin.user_id, ["review_close_early"])
@@ -411,9 +399,7 @@ class TestReviewCloseAuditLog:
 class TestReviewExtendAuditLog:
     """Tests for audit logging when extending reviews."""
 
-    async def test_extend_creates_audit_entry(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_extend_creates_audit_entry(self, client: AsyncClient, db_session: AsyncSession):
         """Extending a review creates REVIEW_EXTEND audit entry."""
         admin, password = await create_admin_user(db_session, "extendadmin1")
         await grant_permissions(db_session, admin.user_id, ["review_start"])

@@ -10,19 +10,19 @@ The triggers will maintain these counts going forward automatically.
 """
 
 import asyncio
-from sqlalchemy import select, func, update, text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-from app.models import Tags, TagLinks
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from app.config import settings
+from app.models import TagLinks, Tags
 
 
 async def backfill_usage_counts() -> None:
     """Calculate usage_count for all tags based on tag_links."""
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
 
-    async_session = sessionmaker(
+    async_session = async_sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False, future=True
     )
 
@@ -31,10 +31,9 @@ async def backfill_usage_counts() -> None:
 
         # Get count of how many images have each tag
         # Count DISTINCT image_ids per tag_id to handle if the same image has the same tag multiple times
-        stmt = (
-            select(TagLinks.tag_id, func.count(func.distinct(TagLinks.image_id)).label("count"))
-            .group_by(TagLinks.tag_id)
-        )
+        stmt = select(  # type: ignore[call-overload]
+            TagLinks.tag_id, func.count(func.distinct(TagLinks.image_id)).label("count")
+        ).group_by(TagLinks.tag_id)
         result = await db.execute(stmt)
         tag_counts = result.all()
 
@@ -58,17 +57,25 @@ async def backfill_usage_counts() -> None:
         # Show statistics
         stats_result = await db.execute(
             select(
-                func.count(Tags.tag_id).label("total_tags"),
+                func.count(Tags.tag_id).label("total_tags"),  # type: ignore[arg-type]
                 func.sum(Tags.usage_count).label("total_usage"),
                 func.avg(Tags.usage_count).label("avg_usage"),
                 func.max(Tags.usage_count).label("max_usage"),
             )
         )
         stats = stats_result.first()
-        print(f"\nStatistics:")
+        # An aggregate SELECT with no GROUP BY always returns exactly one row
+        # (COUNT/SUM/AVG/MAX over zero rows still produce a row of
+        # zeros/NULLs), so this can't actually be None.
+        assert stats is not None
+        print("\nStatistics:")
         print(f"  Total tags: {stats[0]}")
         print(f"  Total usage count: {stats[1]}")
-        print(f"  Average usage per tag: {stats[2]:.2f}" if stats and stats[2] is not None else "  Average usage per tag: 0.00")
+        print(
+            f"  Average usage per tag: {stats[2]:.2f}"
+            if stats and stats[2] is not None
+            else "  Average usage per tag: 0.00"
+        )
         print(f"  Most used tag has: {stats[3]} images")
 
     await engine.dispose()

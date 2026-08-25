@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field, computed_field, field_validator
 from app.config import TagType, settings
 from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
 from app.models.image import ImageBase, VariantStatus
-from app.schemas.base import UTCDatetime
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+from app.schemas.comment import CommentResponse
 from app.schemas.common import UserSummary
 
 # Sort order for tags in image responses: artist → source → character → theme
@@ -38,6 +39,27 @@ def sort_tag_links_for_display(tag_links: list) -> list:  # type: ignore[type-ar
     )
 
 
+def _cdn_eligible(status: int, r2_location: int) -> bool:
+    """True when a direct-CDN URL can be emitted for these storage fields.
+
+    All three must hold: R2 enabled, status publicly-viewable, and the
+    canonical object in the public bucket. A mismatch falls back to the
+    protected path, which routes on current r2_location.
+    """
+    return (
+        settings.R2_ENABLED
+        and status in PUBLIC_IMAGE_STATUSES_FOR_R2
+        and r2_location == R2Location.PUBLIC
+    )
+
+
+def thumbnail_url_for(filename: str | None, status: int, r2_location: int) -> str:
+    """Thumbnail URL (always WebP). Shared by ImageResponse and tag embeds."""
+    if _cdn_eligible(status, r2_location):
+        return f"{settings.R2_PUBLIC_CDN_URL}/thumbs/{filename}.webp"
+    return f"{settings.IMAGE_BASE_URL}/thumbs/{filename}.webp"
+
+
 class TagSummary(BaseModel):
     """Minimal tag info for embedding"""
 
@@ -45,6 +67,12 @@ class TagSummary(BaseModel):
     tag: str = Field(alias="title")  # Maps from Tags.title
     type_id: int = Field(alias="type")  # Maps from Tags.type
     usage_count: int = 0  # Needed by feed title composer; non-breaking.
+
+    # Set only on character-type entries when the image carries EXACTLY ONE
+    # source linked to this character (character_source_links) — the
+    # contextual compound-search rule; None otherwise. Stamped post-build by
+    # app.services.tag_context.stamp_context_sources.
+    context_source_tag_id: int | None = None
 
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True, "populate_by_name": True}
@@ -121,11 +149,7 @@ class ImageResponse(ImageBase):
         status but PRIVATE location during a bucket move) falls back to the
         /images/ path, which the endpoint routes based on current r2_location.
         """
-        return (
-            settings.R2_ENABLED
-            and self.status in PUBLIC_IMAGE_STATUSES_FOR_R2
-            and self.r2_location == R2Location.PUBLIC
-        )
+        return _cdn_eligible(self.status, self.r2_location)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -139,9 +163,7 @@ class ImageResponse(ImageBase):
     @property
     def thumbnail_url(self) -> str:
         """Thumbnail URL (always WebP)."""
-        if self._should_use_cdn():
-            return f"{settings.R2_PUBLIC_CDN_URL}/thumbs/{self.filename}.webp"
-        return f"{settings.IMAGE_BASE_URL}/thumbs/{self.filename}.webp"
+        return thumbnail_url_for(self.filename, self.status, self.r2_location)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -230,6 +252,37 @@ class ImageDetailedResponse(ImageResponse):
         return cls(**data)
 
 
+class ImageWithRatingResponse(ImageDetailedResponse):
+    """An image plus the rating the subject user gave it.
+
+    Mirrors ``UserWithRatingResponse`` (app/schemas/user.py), which serves the
+    opposite direction of the same relation. ``subject_rating`` defaults to 0 —
+    outside the valid 1-10 range — because ``from_db_model`` has no rating
+    parameter, so the endpoint assigns it after construction the way
+    ``list_images`` assigns ``ml_suggestion_count``.
+
+    The name is ``subject_rating`` for two reasons. It cannot be ``rating``:
+    ``ImageBase.rating`` is already the image's own average, inherited here as a
+    float, and redeclaring it would drop the average from the response. It
+    cannot be ``user_rating`` either: that means "the rating *you* gave"
+    everywhere else, so a moderator would read the subject's score under a name
+    that says "yours". "Subject" is right in both cases — the user whose list
+    this is, who is the viewer when self and someone else when a moderator.
+    """
+
+    subject_rating: int = 0
+    rated_at: UTCDatetimeOptional = None
+
+
+class UserRatingsListResponse(BaseModel):
+    """Schema for a paginated list of images a user has rated."""
+
+    total: int
+    page: int
+    per_page: int
+    images: list[ImageWithRatingResponse]
+
+
 class ImageListResponse(BaseModel):
     """Schema for paginated image list with basic image data"""
 
@@ -246,6 +299,10 @@ class ImageDetailedListResponse(BaseModel):
     page: int
     per_page: int
     images: list[ImageDetailedResponse]
+    # Populated only when the request sets include_comments=true: every
+    # non-deleted comment for the returned images, oldest first, keyed by
+    # image id. Images without comments are absent from the map.
+    comments: dict[int, list[CommentResponse]] | None = None
 
 
 class ImageUploadResponse(BaseModel):
@@ -366,10 +423,20 @@ class ImageUploadDuplicateResponse(BaseModel):
     existing_image_id: int
 
 
+class FavoriteAttribution(BaseModel):
+    """The user's favorite that drew a feed image: exactly one of ``tag``
+    (source/artist favorite) or ``character``+``source`` (combo favorite) is set."""
+
+    tag: TagSummary | None = None
+    character: TagSummary | None = None
+    source: TagSummary | None = None
+
+
 class RecommendedImageResponse(ImageDetailedResponse):
     """A recommended image plus the profile tags that most contributed to its score."""
 
     because_tags: list[TagSummary] = []
+    because_favorite: FavoriteAttribution | None = None
 
 
 class RecommendedImagesResponse(BaseModel):

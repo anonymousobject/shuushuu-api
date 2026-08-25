@@ -14,8 +14,14 @@ from app.models.user import Users
 
 
 async def _make_user(db, username, password="TestPassword123!"):
-    user = Users(username=username, password=get_password_hash(password),
-                 password_type="bcrypt", salt="", email=f"{username}@example.com", active=1)
+    user = Users(
+        username=username,
+        password=get_password_hash(password),
+        password_type="bcrypt",
+        salt="",
+        email=f"{username}@example.com",
+        active=1,
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -43,13 +49,26 @@ async def _login(client, username, password="TestPassword123!"):
 
 
 async def _img_with_report(db, owner, md5):
-    img = Images(filename="rep", ext="jpg", md5_hash=md5, user_id=owner.user_id,
-                 width=10, height=10, filesize=100, status=1)
+    img = Images(
+        filename="rep",
+        ext="jpg",
+        md5_hash=md5,
+        user_id=owner.user_id,
+        width=10,
+        height=10,
+        filesize=100,
+        status=1,
+    )
     db.add(img)
     await db.commit()
     await db.refresh(img)
-    report = ImageReports(image_id=img.image_id, user_id=owner.user_id, category=2,
-                          reason_text="looks AI", status=ReportStatus.PENDING)
+    report = ImageReports(
+        image_id=img.image_id,
+        user_id=owner.user_id,
+        category=2,
+        reason_text="looks AI",
+        status=ReportStatus.PENDING,
+    )
     db.add(report)
     await db.commit()
     await db.refresh(report)

@@ -22,19 +22,18 @@ This script:
 
 import asyncio
 import re
-from typing import Optional
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
-from app.models import Comments
 from app.core.logging import get_logger
+from app.models import Comments
 
 logger = get_logger(__name__)
 
 
-def extract_quoted_text(comment_text: str) -> Optional[str]:
+def extract_quoted_text(comment_text: str) -> str | None:
     """
     Extract quoted text from comment.
     Supports two formats:
@@ -47,9 +46,8 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
     Returns the quoted text without markup, or None if no quotes found.
     """
 
-
     # Try BBCode format: extract innermost quote recursively
-    def extract_innermost_quote(text: str) -> Optional[str]:
+    def extract_innermost_quote(text: str) -> str | None:
         # Find the first opening quote tag
         # Handles: [quote="username"], [quote=&quot;username&quot;], and plain [quote]
         start_match = re.search(r'\[quote(?:=(?:"[^"]*"|&quot;[^&]*&quot;))?\]', text)
@@ -65,9 +63,9 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
             # Look for next quote tag (all quote styles)
             # Note: [quote] won't match inside [quote="..."] because find() looks for exact string
             next_open_dq = text.find('[quote="', pos)
-            next_open_eq = text.find('[quote=&quot;', pos)
-            next_open_plain = text.find('[quote]', pos)
-            next_close = text.find('[/quote]', pos)
+            next_open_eq = text.find("[quote=&quot;", pos)
+            next_open_plain = text.find("[quote]", pos)
+            next_close = text.find("[/quote]", pos)
 
             # Determine which comes first
             next_opens = [x for x in [next_open_dq, next_open_eq, next_open_plain] if x != -1]
@@ -87,7 +85,7 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
                 if depth == 0:
                     content = text[start_pos:next_close]
                     # Check if there are nested quotes inside (any format)
-                    if '[quote=' in content or '[quote]' in content:
+                    if "[quote=" in content or "[quote]" in content:
                         # Recursively extract the innermost quote
                         inner = extract_innermost_quote(content)
                         return inner if inner else content.strip()
@@ -103,16 +101,16 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
         return innermost
 
     # Try Markdown format: lines starting with > or >>
-    lines = comment_text.split('\n')
+    lines = comment_text.split("\n")
     quoted_lines = []
 
     for line in lines:
         stripped = line.strip()
         # Handle both > and >> prefixes
-        if stripped.startswith('>>'):
+        if stripped.startswith(">>"):
             quoted = stripped[2:].lstrip()
             quoted_lines.append(quoted)
-        elif stripped.startswith('>'):
+        elif stripped.startswith(">"):
             quoted = stripped[1:].lstrip()
             quoted_lines.append(quoted)
         elif quoted_lines:
@@ -120,7 +118,7 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
             break
 
     if quoted_lines:
-        return '\n'.join(quoted_lines)
+        return "\n".join(quoted_lines)
 
     return None
 
@@ -128,18 +126,22 @@ def extract_quoted_text(comment_text: str) -> Optional[str]:
 def remove_quoted_text(comment_text: str) -> str:
     """Remove quoted text from comment (all formats)."""
 
-
     # Remove BBCode format: [quote="..."], [quote=&quot;...&quot;], or plain [quote]
-    text = re.sub(r'\[quote(?:=(?:"[^"]*"|&quot;[^&]*&quot;))?\].*?\[/quote\]', '', comment_text, flags=re.DOTALL)
+    text = re.sub(
+        r'\[quote(?:=(?:"[^"]*"|&quot;[^&]*&quot;))?\].*?\[/quote\]',
+        "",
+        comment_text,
+        flags=re.DOTALL,
+    )
 
     # Remove Markdown format: lines starting with > or >>
-    lines = text.split('\n')
+    lines = text.split("\n")
     result_lines = []
     skipping_quotes = True
 
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith('>>') or stripped.startswith('>'):
+        if stripped.startswith(">>") or stripped.startswith(">"):
             skipping_quotes = True
             continue
         elif skipping_quotes and not stripped:
@@ -150,7 +152,7 @@ def remove_quoted_text(comment_text: str) -> str:
             result_lines.append(line)
 
     # Join and strip leading/trailing whitespace
-    return '\n'.join(result_lines).strip()
+    return "\n".join(result_lines).strip()
 
 
 async def find_parent_comment(
@@ -158,7 +160,7 @@ async def find_parent_comment(
     image_id: int,
     current_comment_id: int,
     db: AsyncSession,
-) -> Optional[int]:
+) -> int | None:
     """
     Find a parent comment by exact text match.
 
@@ -174,9 +176,9 @@ async def find_parent_comment(
     # Find exact text match on this image
     result = await db.execute(
         select(Comments).where(
-            (Comments.image_id == image_id) &
-            (Comments.post_id != current_comment_id) &
-            (Comments.post_text == quoted_text)
+            (Comments.image_id == image_id)  # type: ignore[arg-type]
+            & (Comments.post_id != current_comment_id)
+            & (Comments.post_text == quoted_text)
         )
     )
     comment = result.scalars().first()
@@ -192,7 +194,9 @@ async def find_parent_comment(
     return None
 
 
-async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, auto_confirm: bool = False) -> None:
+async def migrate_quoted_comments(
+    dry_run: bool = True, batch_size: int = 5000, auto_confirm: bool = False
+) -> None:
     """
     Main migration function (two-pass approach for correctness).
 
@@ -215,9 +219,9 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
         logger.info("migration_step", step="1_load_quoted_comments")
         result = await db.execute(
             select(Comments).where(
-                (Comments.post_text.like('%[quote=%')) |
-                (Comments.post_text.like('%[quote]%')) |
-                (Comments.post_text.like('>%'))
+                (Comments.post_text.like("%[quote=%"))  # type: ignore[attr-defined]
+                | (Comments.post_text.like("%[quote]%"))  # type: ignore[attr-defined]
+                | (Comments.post_text.like(">%"))  # type: ignore[attr-defined]
             )
         )
         quoted_comments = result.scalars().all()
@@ -231,14 +235,17 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
 
         # Build index of all comments by image_id for fast lookups
         logger.info("migration_step", step="3_indexing_comments")
-        image_ids = set(c.image_id for c in quoted_comments)
+        image_ids = {c.image_id for c in quoted_comments}
 
         # Fetch only necessary fields for matching (reduces memory)
         result = await db.execute(
-            select(Comments.post_id, Comments.image_id, Comments.post_text)
-            .where(Comments.image_id.in_(image_ids))
+            select(  # type: ignore[call-overload]
+                Comments.post_id, Comments.image_id, Comments.post_text
+            ).where(
+                Comments.image_id.in_(image_ids)  # type: ignore[union-attr]
+            )
         )
-        comments_by_image: dict[int, list] = {}
+        comments_by_image: dict[int | None, list[tuple[int | None, str]]] = {}
         for row in result.all():
             if row.image_id not in comments_by_image:
                 comments_by_image[row.image_id] = []
@@ -282,11 +289,13 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
                 new_text = remove_quoted_text(comment.post_text)
 
                 # Add to batch updates
-                updates_batch.append({
-                    'post_id': comment.post_id,
-                    'parent_id': parent_id,
-                    'new_text': new_text,
-                })
+                updates_batch.append(
+                    {
+                        "post_id": comment.post_id,
+                        "parent_id": parent_id,
+                        "new_text": new_text,
+                    }
+                )
             # No matching parent found (could be anonymous quote or orphaned quote)
             # Left as-is - the markdown parser will render [quote]...[/quote] as blockquotes
 
@@ -304,11 +313,13 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
                 )
 
         # PASS 2: Apply all updates in batches
-        logger.info("migration_step", step="6_pass2_applying_updates", total_updates=len(updates_batch))
+        logger.info(
+            "migration_step", step="6_pass2_applying_updates", total_updates=len(updates_batch)
+        )
 
         if not dry_run and updates_batch:
             for batch_start in range(0, len(updates_batch), batch_size):
-                batch = updates_batch[batch_start:batch_start + batch_size]
+                batch = updates_batch[batch_start : batch_start + batch_size]
 
                 # Use bulk UPDATE with CASE statements for maximum performance
                 # Build parameterized CASE expressions and IN clause to avoid SQL injection
@@ -318,12 +329,8 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
                 params = {}
                 for u in batch:
                     suffix = u["post_id"]
-                    parent_case_fragments.append(
-                        f"WHEN :post_id_{suffix} THEN :parent_id_{suffix}"
-                    )
-                    text_case_fragments.append(
-                        f"WHEN :post_id_{suffix} THEN :text_{suffix}"
-                    )
+                    parent_case_fragments.append(f"WHEN :post_id_{suffix} THEN :parent_id_{suffix}")
+                    text_case_fragments.append(f"WHEN :post_id_{suffix} THEN :text_{suffix}")
                     in_clause_fragments.append(f":post_id_{suffix}")
                     params[f"post_id_{suffix}"] = u["post_id"]
                     params[f"parent_id_{suffix}"] = u["parent_id"]
@@ -381,7 +388,7 @@ async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000, 
         print(f"Parent comments found:       {comments_matched:,}")
         print(f"Comments updated:            {comments_updated:,}")
         print(f"Dry run mode:                {dry_run}")
-        print(f"Total time:                  {int(elapsed_total)}s ({elapsed_total/60:.1f}m)")
+        print(f"Total time:                  {int(elapsed_total)}s ({elapsed_total / 60:.1f}m)")
         print("=" * 60 + "\n")
 
 
@@ -393,7 +400,9 @@ if __name__ == "__main__":
     # Suppress aiomysql cleanup warnings (harmless)
     warnings.filterwarnings("ignore", message=".*Event loop is closed.*")
 
-    parser = argparse.ArgumentParser(description="Migrate quoted comments to parent_comment_id relationships")
+    parser = argparse.ArgumentParser(
+        description="Migrate quoted comments to parent_comment_id relationships"
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -434,7 +443,11 @@ if __name__ == "__main__":
 
     # Run with proper cleanup
     try:
-        asyncio.run(migrate_quoted_comments(dry_run=args.dry_run, batch_size=args.batch_size, auto_confirm=args.auto_confirm))
+        asyncio.run(
+            migrate_quoted_comments(
+                dry_run=args.dry_run, batch_size=args.batch_size, auto_confirm=args.auto_confirm
+            )
+        )
     finally:
         # Ensure all async tasks are cleaned up
         pass

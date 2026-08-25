@@ -55,6 +55,7 @@ def _with_jpeg_suffix(fullsize_url: str) -> str:
 
 class BlueskyResolver:
     site = "bluesky"
+    example_url: str | None = "https://bsky.app/profile/example.bsky.social/post/3kabcdefghij"
 
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None

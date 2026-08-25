@@ -3,6 +3,9 @@ services:
   mariadb:
     container_name: shuushuu-mariadb-dev
 
+  postgres:
+    container_name: shuushuu-postgres-dev
+
   redis:
     container_name: shuushuu-redis-dev
 
@@ -17,6 +20,10 @@ services:
     environment:
       - NGINX_HOST=localhost
       - NGINX_PORT=80
+      # Host port of the Vite dev server nginx proxies '/' to. Override in .env
+      # on a host where 5173 is taken (e.g. a second instance alongside another
+      # stack); the frontend's DEV_PORT must match.
+      - FRONTEND_DEV_PORT=${FRONTEND_DEV_PORT:-5173}
     restart: unless-stopped
     depends_on:
       - api
@@ -25,6 +32,11 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
+    depends_on:
+      # Dev runs on Postgres (COMPOSE_DATABASE_URL in .env); wait for it like
+      # the base file waits for mariadb. Merges with the base depends_on map.
+      postgres:
+        condition: service_healthy
 
   arq-worker:
     restart: unless-stopped
@@ -42,6 +54,9 @@ volumes:
   # Override generic volume names with dev-specific names for data isolation
   mariadb_data:
     name: mariadb_data_dev
+    driver: local
+  postgres_data:
+    name: postgres_data_dev
     driver: local
   redis_data:
     name: redis_data_dev

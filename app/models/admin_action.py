@@ -15,8 +15,7 @@ see git history for `prune_admin_actions`.)
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKeyConstraint, Index, text
-from sqlalchemy.dialects.mysql import JSON
+from sqlalchemy import JSON, ForeignKeyConstraint, Index, text
 from sqlmodel import Column, Field, SQLModel
 
 from app.models.types import UnsignedInt, UtcDateTime
@@ -102,7 +101,7 @@ class AdminActions(SQLModel, table=True):
     # Timestamp (indexed for time-ordered lookups)
     created_at: datetime | None = Field(
         default=None,
-        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("CURRENT_TIMESTAMP")),
     )
 
     # Note: Relationships are intentionally omitted.

@@ -164,6 +164,7 @@ def schema_inspectors():
 
 @pytest.mark.integration
 @pytest.mark.schema_sync
+@pytest.mark.mariadb_only  # compares models against the MariaDB migration chain
 # These tests rebuild fixed-name databases (shuushuu_schema_models/_migrations),
 # so under xdist they must all run on the same worker (--dist loadgroup).
 @pytest.mark.xdist_group("schema_sync")
@@ -235,7 +236,7 @@ class TestSchemaSync:
         flags image_id/user_id/tag_id signedness and TINYINT/MEDIUMTEXT drift,
         but fixing those cascades into the images/users/tags parent PKs — that
         full-schema type audit is tracked separately
-        (docs/plans/2026-06-10-schema-sync-signed-unsigned-drift.md).
+        (docs/plans/2026-Q2/2026-06-10-schema-sync-signed-unsigned-drift.md).
         """
         models_inspector, migrations_inspector = schema_inspectors
 

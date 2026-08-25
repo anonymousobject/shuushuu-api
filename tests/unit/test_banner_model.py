@@ -1,6 +1,6 @@
 """Tests for Banner model."""
 
-from app.models.misc import BannerSize, BannerTheme, Banners, UserBannerPins, UserBannerPreferences
+from app.models.misc import Banners, BannerSize, BannerTheme, UserBannerPins, UserBannerPreferences
 
 
 class TestBannerSize:

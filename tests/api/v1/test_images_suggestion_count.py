@@ -19,7 +19,6 @@ from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
 from app.models.user import Users
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -118,9 +117,7 @@ class TestMlSuggestionCountOnImageList:
     def _enable_badge(self, monkeypatch):
         monkeypatch.setattr(settings, "ML_SUGGESTION_BADGE_ENABLED", True)
 
-    async def test_tagger_sees_pending_count(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_tagger_sees_pending_count(self, client: AsyncClient, db_session: AsyncSession):
         """A user with IMAGE_TAG_ADD sees ml_suggestion_count == N for their image."""
         owner = await _make_user(db_session, "tc_tagger_owner")
         tagger = await _make_user(db_session, "tc_tagger")
@@ -144,9 +141,7 @@ class TestMlSuggestionCountOnImageList:
         assert matching, "Seeded image not found in list"
         assert matching[0]["ml_suggestion_count"] == 2
 
-    async def test_plain_user_sees_none(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_plain_user_sees_none(self, client: AsyncClient, db_session: AsyncSession):
         """A user without IMAGE_TAG_ADD (and not admin) gets ml_suggestion_count=None."""
         owner = await _make_user(db_session, "tc_plain_owner")
         plain = await _make_user(db_session, "tc_plain")

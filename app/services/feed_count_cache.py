@@ -9,9 +9,13 @@ non-issue for a pagination counter over a million-row feed, and not worth the
 invalidation coupling.
 """
 
+import hashlib
+from typing import Any
+
 import redis.asyncio as redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 
 from app.config import ImageStatus
 from app.models.image import Images
@@ -24,6 +28,7 @@ FEED_COUNT_TTL = 60
 _KEY_TOTAL = "feed:count:total"
 _KEY_HIDDEN = "feed:count:hidden"
 _KEY_REPOST = "feed:count:repost"
+_FILTERED_KEY_PREFIX = "feed:count:filtered:"
 
 
 async def get_feed_counts(
@@ -66,3 +71,41 @@ async def get_feed_counts(
         await redis_client.setex(_KEY_REPOST, FEED_COUNT_TTL, repost)
 
     return total, hidden, repost
+
+
+def filtered_count_key(count_query: Select[Any]) -> str:
+    """Cache key for a filtered list_images count: hash of compiled SQL + bind params.
+
+    Keying on the compiled query (rather than a hand-assembled filter signature)
+    guarantees every WHERE clause — including the viewer-visibility branch and any
+    filter added later — is part of the key, so distinct queries can never share
+    an entry. The cost is key churn when the generated SQL changes (SQLAlchemy
+    upgrade, query refactor): entries miss once and repopulate.
+    """
+    compiled = count_query.compile()
+    material = str(compiled) + "|" + repr(sorted(compiled.params.items()))
+    return _FILTERED_KEY_PREFIX + hashlib.sha256(material.encode()).hexdigest()
+
+
+async def get_filtered_count(
+    db: AsyncSession,
+    count_query: Select[Any],
+    redis_client: redis.Redis | None = None,  # type: ignore[type-arg]
+) -> int:
+    """TTL-cached pagination total for a filtered (non-bare-feed) list_images query.
+
+    Popular tag filters make the exact count a ~million-row semijoin (~700ms) that
+    was recomputed on every page of every viewer; the page query itself is ~1ms.
+    Same staleness contract as the global feed counts above.
+    """
+    key = filtered_count_key(count_query)
+    if redis_client is not None:
+        cached = await redis_client.get(key)
+        if cached is not None:
+            return int(cached)
+
+    total = (await db.execute(count_query)).scalar() or 0
+
+    if redis_client is not None:
+        await redis_client.setex(key, FEED_COUNT_TTL, total)
+    return total

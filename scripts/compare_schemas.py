@@ -15,14 +15,15 @@ import os
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, create_engine, text
 
 
-def get_table_schema(engine, db_name: str) -> dict:
+def get_table_schema(engine: Engine, db_name: str) -> dict[str, Any]:
     """Get schema information for all tables in a database."""
     schema = {}
 
@@ -60,7 +61,7 @@ def get_table_schema(engine, db_name: str) -> dict:
     return schema
 
 
-def compare_tables(test_schema: dict, dev_schema: dict) -> None:
+def compare_tables(test_schema: dict[str, Any], dev_schema: dict[str, Any]) -> None:
     """Compare tables between two schemas."""
     test_tables = set(test_schema.keys())
     dev_tables = set(dev_schema.keys())
@@ -88,7 +89,12 @@ def compare_tables(test_schema: dict, dev_schema: dict) -> None:
         print()
 
 
-def compare_columns(table: str, test_cols: list, dev_cols: list, show_all: bool = False) -> None:
+def compare_columns(
+    table: str,
+    test_cols: list[dict[str, Any]],
+    dev_cols: list[dict[str, Any]],
+    show_all: bool = False,
+) -> None:
     """Compare columns for a specific table."""
     test_fields = {col["field"]: col for col in test_cols}
     dev_fields = {col["field"]: col for col in dev_cols}
@@ -161,7 +167,7 @@ def main() -> None:
     test_db = "shuushuu_migration_test"
     dev_db = os.getenv("DB_NAME", "shuushuu")
 
-    print(f"Comparing:")
+    print("Comparing:")
     print(f"  📦 Test DB:  {test_db} (fresh from SQLModel + migrations)")
     print(f"  🔧 Dev DB:   {dev_db} (current development database)")
     print()
@@ -214,6 +220,7 @@ def main() -> None:
                     for test_col, dev_col in zip(
                         sorted(test_cols, key=lambda c: c["field"]),
                         sorted(dev_cols, key=lambda c: c["field"]),
+                        strict=True,
                     ):
                         if (
                             test_col["type"] != dev_col["type"]

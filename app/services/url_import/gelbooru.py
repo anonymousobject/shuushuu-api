@@ -25,6 +25,7 @@ _REFERER = {"Referer": "https://gelbooru.com/"}
 
 class GelbooruResolver:
     site = "gelbooru"
+    example_url: str | None = "https://gelbooru.com/index.php?page=post&s=view&id=1234567"
 
     def _post_id(self, url: str) -> str | None:
         parsed = urlparse(url)

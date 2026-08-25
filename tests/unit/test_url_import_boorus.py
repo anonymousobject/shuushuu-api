@@ -104,7 +104,9 @@ class TestDanbooru:
                 await DanbooruResolver().resolve(self.URL, client)
 
     async def test_off_host_preview_url_rejects_whole_post(self):
-        async with _client({**self.POST, "preview_file_url": "https://evil.example/a.jpg"}) as client:
+        async with _client(
+            {**self.POST, "preview_file_url": "https://evil.example/a.jpg"}
+        ) as client:
             with pytest.raises(UpstreamError):
                 await DanbooruResolver().resolve(self.URL, client)
 

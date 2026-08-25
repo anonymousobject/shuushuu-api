@@ -18,7 +18,7 @@ from sqlalchemy import Column, ForeignKeyConstraint, Index, text
 from sqlmodel import Field, SQLModel
 
 from app.config import TagType
-from app.models.types import UtcDateTime
+from app.models.types import UtcDateTime, ci_string
 
 
 class TagBase(SQLModel):
@@ -32,7 +32,8 @@ class TagBase(SQLModel):
     """
 
     # Basic information
-    title: str | None = Field(default=None, max_length=255)
+    # ci_string: title matching/dedupe is case-insensitive on both dialects
+    title: str | None = Field(default=None, max_length=255, sa_type=ci_string(255))  # type: ignore[call-overload]
     desc: str | None = Field(default=None, max_length=200)
     type: int = Field(
         default=TagType.THEME,
@@ -115,7 +116,7 @@ class Tags(TagBase, table=True):
     # Public timestamp
     date_added: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     )
 
     # Usage count (number of images with this tag)

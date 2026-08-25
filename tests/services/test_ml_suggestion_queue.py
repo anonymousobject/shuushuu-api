@@ -4,7 +4,6 @@ These tests exercise the service layer directly against the real test DB.
 No mocked behavior is asserted; all assertions target real DB rows.
 """
 
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
@@ -45,7 +44,9 @@ async def _make_image(db: AsyncSession, user: Users, suffix: str) -> Images:
     return image
 
 
-async def _make_tag(db: AsyncSession, user: Users, suffix: str, tag_type: int = TagType.THEME) -> Tags:
+async def _make_tag(
+    db: AsyncSession, user: Users, suffix: str, tag_type: int = TagType.THEME
+) -> Tags:
     tag = Tags(title=f"queue tag {suffix}", type=tag_type, user_id=user.user_id)
     db.add(tag)
     await db.flush()
@@ -268,7 +269,9 @@ class TestListPendingForTag:
         assert len(items) == 1
         assert items[0][0] == pending.suggestion_id
 
-    async def test_excludes_suggestions_whose_tag_is_already_applied(self, db_session: AsyncSession):
+    async def test_excludes_suggestions_whose_tag_is_already_applied(
+        self, db_session: AsyncSession
+    ):
         """A pending suggestion whose tag was applied out of band is not listed.
 
         Covers the review-queue staleness bug: tags applied without going
@@ -291,7 +294,9 @@ class TestListPendingForTag:
         assert len(items) == 1
         assert items[0][0] == remaining.suggestion_id
 
-    async def test_item_structure_has_suggestion_id_image_id_confidence(self, db_session: AsyncSession):
+    async def test_item_structure_has_suggestion_id_image_id_confidence(
+        self, db_session: AsyncSession
+    ):
         """Each item is a (suggestion_id, image_id, confidence) tuple."""
         user = await _make_user(db_session, "lst5")
         image = await _make_image(db_session, user, "lst5a")
@@ -344,7 +349,9 @@ class TestCountPendingByTagLimitAndSearch:
         results, _total = await count_pending_by_tag(db_session, per_page=2)
 
         tag_ids = [r[0] for r in results]
-        assert len([tid for tid in tag_ids if tid in {tag_x.tag_id, tag_y.tag_id, tag_z.tag_id}]) <= 2
+        assert (
+            len([tid for tid in tag_ids if tid in {tag_x.tag_id, tag_y.tag_id, tag_z.tag_id}]) <= 2
+        )
         # The two returned tags from this seed must be tag_x and tag_y (highest counts)
         seeded_ids = {tid for tid in tag_ids if tid in {tag_x.tag_id, tag_y.tag_id, tag_z.tag_id}}
         assert tag_x.tag_id in seeded_ids
@@ -443,7 +450,7 @@ class TestCountPendingByTagPagination:
         # 12 images so each tag gets exactly 1 pending suggestion
         images = [await _make_image(db_session, user, f"pag1_{i}") for i in range(12)]
         tags = [await _make_tag(db_session, user, f"pag1_t{i}") for i in range(12)]
-        for img, tag in zip(images, tags):
+        for img, tag in zip(images, tags, strict=True):
             await _make_suggestion(db_session, img, tag)
         await db_session.commit()
 
@@ -464,7 +471,7 @@ class TestCountPendingByTagPagination:
         images = [await _make_image(db_session, user, f"pag2_{i}") for i in range(12)]
         tags = [await _make_tag(db_session, user, f"pag2_t{i}") for i in range(12)]
         seeded_tag_ids = {tag.tag_id for tag in tags}
-        for img, tag in zip(images, tags):
+        for img, tag in zip(images, tags, strict=True):
             await _make_suggestion(db_session, img, tag)
         await db_session.commit()
 
@@ -494,11 +501,11 @@ class TestCountPendingByTagPagination:
         assert seeded_ids.index(tag_hi.tag_id) < seeded_ids.index(tag_lo.tag_id)
 
 
-async def _make_child_tag(
-    db: AsyncSession, user: Users, suffix: str, parent: Tags
-) -> Tags:
+async def _make_child_tag(db: AsyncSession, user: Users, suffix: str, parent: Tags) -> Tags:
     tag = Tags(
-        title=f"queue tag {suffix}", type=TagType.THEME, user_id=user.user_id,
+        title=f"queue tag {suffix}",
+        type=TagType.THEME,
+        user_id=user.user_id,
         inheritedfrom_id=parent.tag_id,
     )
     db.add(tag)
@@ -531,9 +538,7 @@ class TestListPendingDescendantHiding:
         )
         assert total == 1
 
-    async def test_pending_grandchild_hides_grandparent_row(
-        self, db_session: AsyncSession
-    ):
+    async def test_pending_grandchild_hides_grandparent_row(self, db_session: AsyncSession):
         """Transitive: the intermediate tag has NO suggestion row at all."""
         user = await _make_user(db_session, "hide2")
         image = await _make_image(db_session, user, "hide2")

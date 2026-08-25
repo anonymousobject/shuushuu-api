@@ -29,7 +29,8 @@ help:
 	@echo "  test-build-frontend     Rebuild frontend image"
 	@echo ""
 	@echo "Python test suite (isolated DB on :3316):"
-	@echo "  pytest       Run the pytest suite (-n auto) against an isolated MariaDB"
+	@echo "  pytest       Run the pytest suite against an isolated MariaDB"
+	@echo "               (workers: PYTEST_WORKERS in .env, default auto)"
 	@echo "  pytest-db-up   Start the isolated pytest MariaDB"
 	@echo "  pytest-db-down Stop the isolated pytest MariaDB"
 	@echo ""
@@ -42,7 +43,7 @@ help:
 	@echo "  prod-build   Build all production images"
 	@echo "  prod-build-frontend  Rebuild frontend image"
 	@echo "  prod-migrate Apply DB migrations (run BEFORE prod-deploy when a release has one)"
-	@echo "  prod-deploy  Zero-downtime rollout of app service(s) (default: api frontend)"
+	@echo "  prod-deploy  Zero-downtime rollout of app service(s) (default: api frontend arq-worker)"
 	@echo "  prod-restart Force-recreate service(s) — CAUSES DOWNTIME; use for nginx/infra"
 	@echo ""
 	@echo "Other:"
@@ -72,10 +73,13 @@ COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml
 # and self-documents the expected window (plugin default is only 60s).
 ROLLOUT_PROD = docker rollout --timeout 90 -f docker-compose.yml -f docker-compose.prod.yml
 
-# App services that support zero-downtime rollout: stateless, fronted by nginx
-# which re-resolves their service name via Docker DNS at request time. Override
-# by passing service names, e.g. `make prod-deploy api`.
-ROLLOUT_SERVICES = api frontend
+# App services that support zero-downtime rollout. api/frontend are stateless
+# and fronted by nginx, which re-resolves their service name via Docker DNS at
+# request time. arq-worker is queue-fed rather than nginx-fronted, but rolls
+# just as safely: arq claims jobs atomically and cron jobs dedup via
+# deterministic ids, so the transient two-replica overlap never double-runs
+# anything. Override by passing service names, e.g. `make prod-deploy api`.
+ROLLOUT_SERVICES = api frontend arq-worker
 DEPLOY_SERVICES = $(if $(ARGS),$(ARGS),$(ROLLOUT_SERVICES))
 
 # Development targets
@@ -128,18 +132,36 @@ test-build-frontend: check-env-test
 # pytest targets — run the Python unit/integration suite against an isolated,
 # right-sized MariaDB (docker-compose.pytest.yml) instead of the shared,
 # memory-saturated dev container. See that file's header for the OOM root cause
-# this avoids. This is the supported way to run `pytest -n auto` locally.
-COMPOSE_PYTEST = docker compose -f docker-compose.pytest.yml
-# Pin the suite at the isolated DB (port 3316) regardless of what .env holds.
+# this avoids. This is the supported way to run the suite locally.
+# Host port for the isolated DB. Defaults to 3316; a host where that is taken
+# (a second instance alongside another stack) sets PYTEST_DB_PORT in .env.
+# Compose reads .env by itself, make does not, so pull the same value through
+# here — and hand it back to compose explicitly so a value coming from the
+# environment or the command line reaches both halves.
+PYTEST_DB_PORT ?= $(shell sed -n 's/^PYTEST_DB_PORT=[[:space:]]*//p' .env 2>/dev/null | tail -1)
+ifeq ($(strip $(PYTEST_DB_PORT)),)
+PYTEST_DB_PORT := 3316
+endif
+COMPOSE_PYTEST = PYTEST_DB_PORT=$(PYTEST_DB_PORT) docker compose -f docker-compose.pytest.yml
+# xdist worker count, same .env-or-default mechanism. 'auto' takes every core,
+# which is right on a machine doing nothing else; a host also running a dev
+# stack (or two) wants a cap, since each worker carries its own DB connections
+# and temp tables on top of whatever the stack already holds. Overshooting here
+# is what invites the OOM killer, not a slow suite.
+PYTEST_WORKERS ?= $(shell sed -n 's/^PYTEST_WORKERS=[[:space:]]*//p' .env 2>/dev/null | tail -1)
+ifeq ($(strip $(PYTEST_WORKERS)),)
+PYTEST_WORKERS := auto
+endif
+# Pin the suite at the isolated DB regardless of what else .env holds.
 # DATABASE_URL is what the app engine builds from at import; the TEST_DB_*
 # components are what conftest builds the test engine AND the root admin engine
 # (which creates the per-worker databases) from -- the root path reads
 # TEST_DB_HOST/TEST_DB_PORT, not TEST_DATABASE_URL, so set the components.
 PYTEST_DB_ENV = \
-	DATABASE_URL="mysql+aiomysql://shuushuu:shuushuu_password@127.0.0.1:3316/shuushuu_pytest?charset=utf8mb4" \
-	DATABASE_URL_SYNC="mysql+pymysql://shuushuu:shuushuu_password@127.0.0.1:3316/shuushuu_pytest?charset=utf8mb4" \
+	DATABASE_URL="mysql+aiomysql://shuushuu:shuushuu_password@127.0.0.1:$(PYTEST_DB_PORT)/shuushuu_pytest?charset=utf8mb4" \
+	DATABASE_URL_SYNC="mysql+pymysql://shuushuu:shuushuu_password@127.0.0.1:$(PYTEST_DB_PORT)/shuushuu_pytest?charset=utf8mb4" \
 	TEST_DB_HOST=127.0.0.1 \
-	TEST_DB_PORT=3316 \
+	TEST_DB_PORT=$(PYTEST_DB_PORT) \
 	TEST_DB_USER=shuushuu \
 	TEST_DB_PASSWORD=shuushuu_password \
 	TEST_DB_NAME=shuushuu_pytest \
@@ -152,7 +174,7 @@ pytest-db-down:
 	$(COMPOSE_PYTEST) down
 
 pytest: pytest-db-up
-	$(PYTEST_DB_ENV) uv run pytest -n auto --dist loadgroup $(ARGS)
+	$(PYTEST_DB_ENV) uv run pytest -n $(PYTEST_WORKERS) --dist loadgroup $(ARGS)
 
 # Production targets
 prod: check-env-prod
@@ -193,8 +215,14 @@ prod-migrate: check-env-prod
 # time. docker-rollout starts a new replica, waits for its healthcheck, then
 # drains the old one — nginx re-resolves the service name via Docker DNS, so no
 # requests are dropped. Does NOT run migrations (see prod-migrate).
+#
+# arq-worker is always built, even when ARGS narrows the rollout set: skipping
+# its rebuild is how the worker once kept running an image whose deps predated
+# a uv.lock bump until its freshness check crash-looped it (2026-08). The
+# rollout no-ops when the built image is unchanged, so this costs nothing on
+# deploys that don't touch Python code.
 prod-deploy: check-env-prod
-	$(COMPOSE_PROD) build $(DEPLOY_SERVICES)
+	$(COMPOSE_PROD) build $(sort $(DEPLOY_SERVICES) arq-worker)
 	@for svc in $(DEPLOY_SERVICES); do \
 		echo "==> Rolling out $$svc (zero-downtime)"; \
 		$(ROLLOUT_PROD) $$svc || exit 1; \

@@ -28,11 +28,18 @@ import argparse
 import asyncio
 import sys
 import time
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import httpx
-from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import Row, func, select, update
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 # Add parent directory to path so we can import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -48,7 +55,7 @@ async def check_iqdb_available() -> bool:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(iqdb_url)
             return response.status_code in (200, 404)  # 404 is OK, means server is up
-    except (httpx.RequestError, httpx.TimeoutException):
+    except httpx.RequestError, httpx.TimeoutException:
         return False
 
 
@@ -130,20 +137,20 @@ def _get_thumbnail_path(image_id: int, filename: str) -> Path:
 
 
 async def iter_image_batches(
-    engine, batch_size: int, start_from: int, *, only_missing_hash: bool
-):
+    engine: AsyncEngine, batch_size: int, start_from: int, *, only_missing_hash: bool
+) -> AsyncIterator[Sequence[Row[Any]]]:
     """Yield batches of (image_id, filename, iqdb_hash) using keyset pagination."""
     last_id = start_from
     while True:
         async with engine.connect() as conn:
             query = (
-                select(Images.image_id, Images.filename, Images.iqdb_hash)
-                .where(Images.image_id > last_id)
+                select(Images.image_id, Images.filename, Images.iqdb_hash)  # type: ignore[call-overload]
+                .where(Images.image_id > last_id)  # type: ignore[operator]
                 .order_by(Images.image_id)
                 .limit(batch_size)
             )
             if only_missing_hash:
-                query = query.where(Images.iqdb_hash.is_(None))
+                query = query.where(Images.iqdb_hash.is_(None))  # type: ignore[union-attr]
             result = await conn.execute(query)
             rows = result.fetchall()
 
@@ -153,20 +160,24 @@ async def iter_image_batches(
         last_id = rows[-1][0]
 
 
-async def get_image_count(engine, start_from: int, *, only_missing_hash: bool) -> int:
+async def get_image_count(engine: AsyncEngine, start_from: int, *, only_missing_hash: bool) -> int:
     """Return the count of images to process."""
     async with engine.connect() as conn:
-        query = select(func.count()).select_from(Images).where(Images.image_id > start_from)
+        query = (
+            select(func.count()).select_from(Images).where(Images.image_id > start_from)  # type: ignore[operator, arg-type]
+        )
         if only_missing_hash:
-            query = query.where(Images.iqdb_hash.is_(None))
+            query = query.where(Images.iqdb_hash.is_(None))  # type: ignore[union-attr]
         result = await conn.execute(query)
-        return result.scalar_one()
+        count = result.scalar_one()
+        assert isinstance(count, int)
+        return count
 
 
 async def _process_one(
     semaphore: asyncio.Semaphore,
     http_client: httpx.Client,
-    session_factory,
+    session_factory: async_sessionmaker[AsyncSession],
     image_id: int,
     filename: str,
     dry_run: bool,
@@ -197,7 +208,7 @@ async def _process_one(
                 async with session_factory() as session, session.begin():
                     await session.execute(
                         update(Images)
-                        .where(Images.image_id == image_id)
+                        .where(Images.image_id == image_id)  # type: ignore[arg-type]
                         .values(iqdb_hash=iqdb_hash)
                     )
             except Exception as e:
@@ -250,9 +261,7 @@ async def populate_iqdb(
 
     # Count images to process
     print("\nCounting images to process...")
-    total_images = await get_image_count(
-        engine, start_from, only_missing_hash=only_missing_hash
-    )
+    total_images = await get_image_count(engine, start_from, only_missing_hash=only_missing_hash)
     print(f"Found {total_images} images to process")
 
     if total_images == 0:

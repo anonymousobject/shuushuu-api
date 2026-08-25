@@ -51,9 +51,7 @@ async def temp_dt_table(engine: AsyncEngine):
 class TestUtcDateTimeRoundTrip:
     """End-to-end round-trip through the aiomysql driver."""
 
-    async def test_utc_aware_round_trips(
-        self, engine: AsyncEngine, temp_dt_table: Table
-    ):
+    async def test_utc_aware_round_trips(self, engine: AsyncEngine, temp_dt_table: Table):
         """A UTC-aware datetime survives write+read with tz preserved."""
         ts = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -63,9 +61,7 @@ class TestUtcDateTimeRoundTrip:
 
         async with engine.connect() as conn:
             row = (
-                await conn.execute(
-                    select(temp_dt_table.c.ts).where(temp_dt_table.c.id == row_id)
-                )
+                await conn.execute(select(temp_dt_table.c.ts).where(temp_dt_table.c.id == row_id))
             ).one()
 
         loaded = row.ts
@@ -87,9 +83,7 @@ class TestUtcDateTimeRoundTrip:
 
         async with engine.connect() as conn:
             row = (
-                await conn.execute(
-                    select(temp_dt_table.c.ts).where(temp_dt_table.c.id == row_id)
-                )
+                await conn.execute(select(temp_dt_table.c.ts).where(temp_dt_table.c.id == row_id))
             ).one()
 
         loaded = row.ts
@@ -97,9 +91,7 @@ class TestUtcDateTimeRoundTrip:
         assert loaded == ts_est  # equal as instants
         assert loaded.tzinfo == UTC
 
-    async def test_naive_datetime_bind_raises(
-        self, engine: AsyncEngine, temp_dt_table: Table
-    ):
+    async def test_naive_datetime_bind_raises(self, engine: AsyncEngine, temp_dt_table: Table):
         """Binding a naive datetime raises TypeError before hitting the DB.
 
         SQLAlchemy wraps bind-time exceptions in StatementError; assert the

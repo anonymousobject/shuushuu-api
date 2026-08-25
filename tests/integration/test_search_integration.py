@@ -16,7 +16,9 @@ from app.models.tag import Tags
 from app.services.search import SearchService, configure_tags_index
 
 MEILISEARCH_URL = os.getenv("MEILISEARCH_URL", "http://localhost:7700")
-MEILISEARCH_KEY = os.getenv("MEILISEARCH_API_KEY") or os.getenv("MEILI_MASTER_KEY", "dev_master_key")
+MEILISEARCH_KEY = os.getenv("MEILISEARCH_API_KEY") or os.getenv(
+    "MEILI_MASTER_KEY", "dev_master_key"
+)
 
 # Use a test-specific index prefix to avoid colliding with dev data.
 # Suffix with the xdist worker id so parallel workers don't share an index.
@@ -61,16 +63,83 @@ async def search_service(meilisearch_client):
     search_module.TAGS_INDEX_NAME = original_name
 
 
-async def _wait_for_indexing(client: AsyncClient, index_name: str, timeout: float = 5.0):
+# Wall-clock ceiling for Meilisearch to settle. Generous on purpose: the loop
+# below returns the moment nothing is pending, so a large budget costs nothing
+# when the host is healthy and only buys patience when it is not. The suite
+# runs under `-n auto`, and parallelism alone stretches these waits well past
+# their serial cost (measured 0.83s serial vs 2.77s in a full parallel run) —
+# a tight budget turns ordinary load into an intermittent failure in whichever
+# test happens to be running when Meilisearch is slowest.
+_INDEXING_TIMEOUT_SECONDS = 30.0
+
+
+async def _wait_for_indexing(
+    client: AsyncClient, index_name: str, timeout: float = _INDEXING_TIMEOUT_SECONDS
+):
     """Wait for Meilisearch to finish processing all pending tasks for the index."""
     start = time.monotonic()
-    while time.monotonic() - start < timeout:
+    pending_count = 0
+    while True:
+        elapsed = time.monotonic() - start
+        if elapsed >= timeout:
+            break
         tasks = await client.get_tasks(index_ids=[index_name])
         pending = [t for t in tasks.results if t.status in ("enqueued", "processing")]
         if not pending:
             return
+        pending_count = len(pending)
         await asyncio.sleep(0.1)
-    raise TimeoutError("Meilisearch did not finish indexing in time")
+    raise TimeoutError(
+        f"Meilisearch did not settle for index {index_name!r}: "
+        f"{pending_count} task(s) still enqueued or processing "
+        f"after {timeout}s"
+    )
+
+
+class _FakeTask:
+    def __init__(self, status: str):
+        self.status = status
+
+
+class _FakeTaskList:
+    def __init__(self, results):
+        self.results = results
+
+
+class _StubClient:
+    """Reports a fixed set of task states; no Meilisearch required."""
+
+    def __init__(self, statuses):
+        self._statuses = statuses
+
+    async def get_tasks(self, index_ids=None):
+        return _FakeTaskList([_FakeTask(s) for s in self._statuses])
+
+
+class TestWaitForIndexing:
+    """The helper's timeout contract.
+
+    Its budget is a wall-clock ceiling on how long Meilisearch may take to
+    settle, and blowing it is how this file fails when the host is loaded.
+    The message therefore has to say what was still pending and how long it
+    waited — a bare "did not finish indexing in time" sends whoever hits it
+    hunting through unrelated parts of the suite.
+    """
+
+    async def test_returns_once_no_tasks_are_pending(self):
+        client = _StubClient(["succeeded", "succeeded"])
+        await _wait_for_indexing(client, "tags_test", timeout=0.5)
+
+    async def test_timeout_reports_index_pending_count_and_budget(self):
+        client = _StubClient(["processing", "enqueued", "succeeded"])
+
+        with pytest.raises(TimeoutError) as exc_info:
+            await _wait_for_indexing(client, "tags_test_gw3", timeout=0.3)
+
+        message = str(exc_info.value)
+        assert "tags_test_gw3" in message
+        assert "2" in message  # the two still-pending tasks
+        assert "0.3" in message  # the budget that was exceeded
 
 
 @pytest.mark.integration
@@ -161,3 +230,30 @@ class TestSearchServiceIntegration:
 
         result = await search_service.search_tags("swimsuit")
         assert result.tag_ids[0] == 51  # Higher usage_count first
+
+    async def test_numeric_query_does_not_typo_match_close_numbers(
+        self, search_service, meilisearch_client
+    ):
+        """A numeric query must only match its exact digits, never a close number.
+
+        Mods paste pixiv artist IDs to check whether the artist already exists;
+        a one-digit-off fuzzy match silently returns the wrong artist.
+        """
+        tag = Tags(tag_id=60, title="TKennshou", type=TagType.ARTIST, usage_count=5)
+        await search_service.index_tag(tag, external_urls=["https://www.pixiv.net/users/21412050"])
+        await _wait_for_indexing(meilisearch_client, TEST_INDEX_NAME)
+
+        exact = await search_service.search_tags("21412050")
+        assert 60 in exact.tag_ids
+
+        off_by_one = await search_service.search_tags("21412051")
+        assert 60 not in off_by_one.tag_ids
+
+    async def test_text_typo_tolerance_still_applies(self, search_service, meilisearch_client):
+        """Disabling typos on numbers must not affect typo tolerance for text."""
+        tag = Tags(tag_id=61, title="Kinomoto", type=TagType.CHARACTER, usage_count=10)
+        await search_service.index_tag(tag)
+        await _wait_for_indexing(meilisearch_client, TEST_INDEX_NAME)
+
+        result = await search_service.search_tags("kinomto")
+        assert 61 in result.tag_ids

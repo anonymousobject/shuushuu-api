@@ -75,17 +75,15 @@ class TestMigrateRepostData:
 
         # Favorite now on original
         fav_count = await db_session.execute(
-            select(func.count()).select_from(Favorites).where(
-                Favorites.image_id == original.image_id
-            )
+            select(func.count())
+            .select_from(Favorites)
+            .where(Favorites.image_id == original.image_id)
         )
         assert fav_count.scalar() == 1
 
         # No favorites on repost
         fav_count = await db_session.execute(
-            select(func.count()).select_from(Favorites).where(
-                Favorites.image_id == repost.image_id
-            )
+            select(func.count()).select_from(Favorites).where(Favorites.image_id == repost.image_id)
         )
         assert fav_count.scalar() == 0
 
@@ -104,17 +102,17 @@ class TestMigrateRepostData:
 
         # Rating now on original
         rating_count = await db_session.execute(
-            select(func.count()).select_from(ImageRatings).where(
-                ImageRatings.image_id == original.image_id
-            )
+            select(func.count())
+            .select_from(ImageRatings)
+            .where(ImageRatings.image_id == original.image_id)
         )
         assert rating_count.scalar() == 1
 
         # No ratings on repost
         rating_count = await db_session.execute(
-            select(func.count()).select_from(ImageRatings).where(
-                ImageRatings.image_id == repost.image_id
-            )
+            select(func.count())
+            .select_from(ImageRatings)
+            .where(ImageRatings.image_id == repost.image_id)
         )
         assert rating_count.scalar() == 0
 
@@ -125,9 +123,7 @@ class TestMigrateRepostData:
         repost = await _create_image(db_session, user.user_id, "repo3")
         tag = await _create_tag(db_session, "test tag")
 
-        db_session.add(TagLinks(
-            tag_id=tag.tag_id, image_id=repost.image_id, user_id=user.user_id
-        ))
+        db_session.add(TagLinks(tag_id=tag.tag_id, image_id=repost.image_id, user_id=user.user_id))
         await db_session.flush()
 
         result = await migrate_repost_data(repost.image_id, original.image_id, db_session)
@@ -136,17 +132,13 @@ class TestMigrateRepostData:
 
         # Tag link now on original
         tag_count = await db_session.execute(
-            select(func.count()).select_from(TagLinks).where(
-                TagLinks.image_id == original.image_id
-            )
+            select(func.count()).select_from(TagLinks).where(TagLinks.image_id == original.image_id)
         )
         assert tag_count.scalar() == 1
 
         # No tag links on repost
         tag_count = await db_session.execute(
-            select(func.count()).select_from(TagLinks).where(
-                TagLinks.image_id == repost.image_id
-            )
+            select(func.count()).select_from(TagLinks).where(TagLinks.image_id == repost.image_id)
         )
         assert tag_count.scalar() == 0
 
@@ -165,9 +157,9 @@ class TestMigrateRepostData:
         assert result["favorites_moved"] == 0
 
         fav_count = await db_session.execute(
-            select(func.count()).select_from(Favorites).where(
-                Favorites.image_id == original.image_id
-            )
+            select(func.count())
+            .select_from(Favorites)
+            .where(Favorites.image_id == original.image_id)
         )
         assert fav_count.scalar() == 1
 
@@ -200,7 +192,9 @@ class TestMigrateRepostData:
         repost = await _create_image(db_session, user.user_id, "repo6")
         tag = await _create_tag(db_session, "duptag")
 
-        db_session.add(TagLinks(tag_id=tag.tag_id, image_id=original.image_id, user_id=user.user_id))
+        db_session.add(
+            TagLinks(tag_id=tag.tag_id, image_id=original.image_id, user_id=user.user_id)
+        )
         db_session.add(TagLinks(tag_id=tag.tag_id, image_id=repost.image_id, user_id=user.user_id))
         await db_session.flush()
 
@@ -209,9 +203,7 @@ class TestMigrateRepostData:
         assert result["tags_moved"] == 0
 
         tag_count = await db_session.execute(
-            select(func.count()).select_from(TagLinks).where(
-                TagLinks.image_id == original.image_id
-            )
+            select(func.count()).select_from(TagLinks).where(TagLinks.image_id == original.image_id)
         )
         assert tag_count.scalar() == 1
 
@@ -279,9 +271,9 @@ class TestMigrateRepostData:
         db_session.add(theme_tag)
         await db_session.flush()
         await db_session.refresh(theme_tag)
-        db_session.add(TagLinks(
-            tag_id=theme_tag.tag_id, image_id=original.image_id, user_id=user.user_id
-        ))
+        db_session.add(
+            TagLinks(tag_id=theme_tag.tag_id, image_id=original.image_id, user_id=user.user_id)
+        )
 
         # repost has an artist tag (type=3)
         repost = await _create_image(db_session, user.user_id, "repo10")
@@ -289,9 +281,9 @@ class TestMigrateRepostData:
         db_session.add(artist_tag)
         await db_session.flush()
         await db_session.refresh(artist_tag)
-        db_session.add(TagLinks(
-            tag_id=artist_tag.tag_id, image_id=repost.image_id, user_id=user.user_id
-        ))
+        db_session.add(
+            TagLinks(tag_id=artist_tag.tag_id, image_id=repost.image_id, user_id=user.user_id)
+        )
 
         # Establish baseline flags
         await refresh_images_tag_type_flags(db_session, [original.image_id, repost.image_id])

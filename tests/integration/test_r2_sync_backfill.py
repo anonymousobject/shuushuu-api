@@ -39,15 +39,9 @@ class TestBackfillLocations:
         monkeypatch.setattr(settings, "R2_ENABLED", True)
         monkeypatch.setattr(settings, "R2_ALLOW_BULK_BACKFILL", True)
 
-        db_session.add(
-            Images(user_id=1, filename="a", ext="jpg", status=ImageStatus.ACTIVE)
-        )
-        db_session.add(
-            Images(user_id=1, filename="b", ext="jpg", status=ImageStatus.REVIEW)
-        )
-        db_session.add(
-            Images(user_id=1, filename="c", ext="jpg", status=ImageStatus.REPOST)
-        )
+        db_session.add(Images(user_id=1, filename="a", ext="jpg", status=ImageStatus.ACTIVE))
+        db_session.add(Images(user_id=1, filename="b", ext="jpg", status=ImageStatus.REVIEW))
+        db_session.add(Images(user_id=1, filename="c", ext="jpg", status=ImageStatus.REPOST))
         await db_session.commit()
 
         await backfill_locations(batch_size=2)

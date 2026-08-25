@@ -48,7 +48,9 @@ async def test_deactivate_sets_fields_history_and_audit(db_session: AsyncSession
     img = await _mk_image(db_session, actor.user_id)
 
     await change_image_status(
-        db_session, img, actor,
+        db_session,
+        img,
+        actor,
         new_status=ImageStatus.DEACTIVATED,
         reason_category=DeactivationReason.SPAM,
         reason="advertising",
@@ -61,17 +63,23 @@ async def test_deactivate_sets_fields_history_and_audit(db_session: AsyncSession
     assert img.status_reason == "advertising"
     assert img.status_user_id == actor.user_id
 
-    hist = (await db_session.execute(
-        select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
-    )).scalars().all()
+    hist = (
+        (
+            await db_session.execute(
+                select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(hist) == 1
     assert hist[0].new_status == ImageStatus.DEACTIVATED
     assert hist[0].reason_category == DeactivationReason.SPAM
     assert hist[0].reason == "advertising"
 
-    action = (await db_session.execute(
-        select(AdminActions).where(AdminActions.image_id == img.image_id)
-    )).scalar_one()
+    action = (
+        await db_session.execute(select(AdminActions).where(AdminActions.image_id == img.image_id))
+    ).scalar_one()
     assert action.action_type == AdminActionType.IMAGE_STATUS_CHANGE
     assert action.details["new_status"] == ImageStatus.DEACTIVATED
     assert action.details["reason"] == "advertising"  # free-text reason in the audit row itself
@@ -90,9 +98,15 @@ async def test_no_history_row_when_status_unchanged(db_session: AsyncSession):
     img = await _mk_image(db_session, actor.user_id)
     await change_image_status(db_session, img, actor, locked=True)  # lock only
     await db_session.commit()
-    hist = (await db_session.execute(
-        select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
-    )).scalars().all()
+    hist = (
+        (
+            await db_session.execute(
+                select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert hist == []
     assert img.locked == 1
 
@@ -100,17 +114,27 @@ async def test_no_history_row_when_status_unchanged(db_session: AsyncSession):
 async def test_system_actor_writes_null_user(db_session: AsyncSession):
     img = await _mk_image(db_session, 1, status=ImageStatus.REVIEW)
     await change_image_status(
-        db_session, img, None, new_status=ImageStatus.ACTIVE,
-        action_type=AdminActionType.REVIEW_CLOSE, extra_details={"automatic": True},
+        db_session,
+        img,
+        None,
+        new_status=ImageStatus.ACTIVE,
+        action_type=AdminActionType.REVIEW_CLOSE,
+        extra_details={"automatic": True},
     )
     await db_session.commit()
-    hist = (await db_session.execute(
-        select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
-    )).scalars().all()
+    hist = (
+        (
+            await db_session.execute(
+                select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert hist and hist[0].user_id is None  # system action
-    action = (await db_session.execute(
-        select(AdminActions).where(AdminActions.image_id == img.image_id)
-    )).scalar_one()
+    action = (
+        await db_session.execute(select(AdminActions).where(AdminActions.image_id == img.image_id))
+    ).scalar_one()
     assert action.action_type == AdminActionType.REVIEW_CLOSE
     assert action.user_id is None
     assert action.details["automatic"] is True
@@ -125,14 +149,21 @@ async def test_report_id_stamped_on_audit_row(db_session: AsyncSession):
     await db_session.refresh(report)
 
     await change_image_status(
-        db_session, img, actor, new_status=ImageStatus.DEACTIVATED,
-        reason_category=DeactivationReason.SPAM, reason="ad",
-        action_type=AdminActionType.REPORT_ACTION, report_id=report.report_id,
+        db_session,
+        img,
+        actor,
+        new_status=ImageStatus.DEACTIVATED,
+        reason_category=DeactivationReason.SPAM,
+        reason="ad",
+        action_type=AdminActionType.REPORT_ACTION,
+        report_id=report.report_id,
     )
     await db_session.commit()
-    action = (await db_session.execute(
-        select(AdminActions).where(AdminActions.report_id == report.report_id)
-    )).scalar_one()
+    action = (
+        await db_session.execute(
+            select(AdminActions).where(AdminActions.report_id == report.report_id)
+        )
+    ).scalar_one()
     assert action.action_type == AdminActionType.REPORT_ACTION
     assert action.details["reason"] == "ad"
 
@@ -173,7 +204,10 @@ async def test_triage_unhide_requires_reason(db_session: AsyncSession):
     img = await _mk_image(db_session, actor.user_id, status=ImageStatus.DEACTIVATED)
     with pytest.raises(HTTPException) as exc:
         await change_image_status(
-            db_session, img, actor, new_status=ImageStatus.SPOILER,
+            db_session,
+            img,
+            actor,
+            new_status=ImageStatus.SPOILER,
             action_type=AdminActionType.REPORT_ACTION,
         )
     assert exc.value.status_code == 400
@@ -197,14 +231,25 @@ async def test_status_history_row_records_report_id(db_session: AsyncSession):
     await db_session.commit()
     await db_session.refresh(report)
     await change_image_status(
-        db_session, img, actor, new_status=ImageStatus.DEACTIVATED,
-        reason_category=DeactivationReason.INAPPROPRIATE, reason="x",
-        action_type=AdminActionType.REPORT_ACTION, report_id=report.report_id,
+        db_session,
+        img,
+        actor,
+        new_status=ImageStatus.DEACTIVATED,
+        reason_category=DeactivationReason.INAPPROPRIATE,
+        reason="x",
+        action_type=AdminActionType.REPORT_ACTION,
+        report_id=report.report_id,
     )
     await db_session.commit()
-    hist = (await db_session.execute(
-        select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
-    )).scalars().all()
+    hist = (
+        (
+            await db_session.execute(
+                select(ImageStatusHistory).where(ImageStatusHistory.image_id == img.image_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert hist[0].report_id == report.report_id
     assert hist[0].review_id is None
 
@@ -241,10 +286,14 @@ async def test_status_change_syncs_ml_suggestions(db_session: AsyncSession):
     await db_session.commit()
 
     remaining = (
-        await db_session.execute(
-            select(MlTagSuggestions).where(MlTagSuggestions.image_id == img.image_id)
+        (
+            await db_session.execute(
+                select(MlTagSuggestions).where(MlTagSuggestions.image_id == img.image_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert remaining == []
 
 

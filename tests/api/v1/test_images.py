@@ -8,9 +8,8 @@ These tests cover the /api/v1/images endpoints including:
 """
 
 from datetime import UTC, datetime
-from unittest.mock import patch
+from decimal import Decimal
 
-import pymysql
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -21,7 +20,9 @@ from app.config import TagType, settings
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import Groups, UserGroups
+from app.models.tag_history import TagHistory
 from app.services.tag_type_flags import refresh_image_tag_type_flags
+from tests.transient_conflict import _db_error, _flaky_flush, _snapshot_conflict_error
 
 
 @pytest.mark.api
@@ -2540,7 +2541,11 @@ class TestOwnerStatusChangeSyncsMlSuggestions:
 
 @pytest.mark.api
 class TestTagUsageCount:
-    """Tests for automatic tag usage_count updates via database triggers."""
+    """Tests for automatic tag usage_count updates via database triggers.
+
+    Both backends: the MariaDB migration chain and the Postgres bootstrap
+    (app/core/pg_triggers.py) each install the triggers under test.
+    """
 
     async def test_tag_usage_count_increments_on_add(
         self,
@@ -2625,7 +2630,7 @@ class TestTagUsageCount:
         """Test that usage_count tracks multiple images with the same tag."""
         # Create multiple images
         images = []
-        for i in range(3):
+        for _i in range(3):
             image_data = sample_image_data.copy()
             image_data["user_id"] = sample_user.user_id
             image = Images(**image_data)
@@ -2834,6 +2839,77 @@ class TestCommentFilters:
         data = response.json()
         assert data["total"] == 0
 
+    @pytest.mark.parametrize("sort_by", ["favorites", "last_post", "total_pixels"])
+    async def test_filter_by_commenter_with_non_id_sort(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sort_by: str,
+    ):
+        """Comment filters must work with sorts that are not image_id.
+
+        The commenter/commentsearch path JOINs Comments and applies DISTINCT to
+        the id subquery. Postgres requires every ORDER BY expression to appear in
+        a SELECT DISTINCT select list; MySQL does not. Sorts whose get_column()
+        resolves to image_id (image_id, date_added) hid this — every other sort
+        raised InvalidColumnReferenceError and returned 500 in production.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username=f"sortcommenter_{sort_by}",
+            email=f"sc_{sort_by}@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000003",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Two images the user commented on, with different sort-column values so
+        # the ordering assertion below is meaningful rather than incidental.
+        low_data = sample_image_data.copy()
+        low_data.update({"filename": f"low_{sort_by}", "md5_hash": f"lo{sort_by:>014}"[:32]})
+        high_data = sample_image_data.copy()
+        high_data.update({"filename": f"high_{sort_by}", "md5_hash": f"hi{sort_by:>014}"[:32]})
+        low, high = Images(**low_data), Images(**high_data)
+        db_session.add_all([low, high])
+        await db_session.flush()
+
+        low_value, high_value = {
+            "favorites": (1, 99),
+            "last_post": (
+                datetime(2020, 1, 1, tzinfo=UTC),
+                datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            # decimal(6,3) unsigned megapixels in prod — keep inside the range.
+            "total_pixels": (Decimal("0.100"), Decimal("200.000")),
+        }[sort_by]
+        setattr(low, sort_by, low_value)
+        setattr(high, sort_by, high_value)
+
+        db_session.add_all(
+            [
+                Comments(image_id=low.image_id, user_id=user.id, post_text="a"),
+                Comments(image_id=high.image_id, user_id=user.id, post_text="b"),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images?commenter={user.id}&sort_by={sort_by}&sort_order=DESC"
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["total"] == 2
+        # DISTINCT must not drop or duplicate rows, and the sort must be honored.
+        assert [img["filename"] for img in data["images"]] == [
+            f"high_{sort_by}",
+            f"low_{sort_by}",
+        ]
+
     async def test_filter_by_comment_text_like_search(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3016,16 +3092,479 @@ class TestCommentFilters:
         assert data["total"] == 1
         assert data["images"][0]["filename"] == "img1"
 
-    async def test_commentsearch_boolean_mode(
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_defaults_to_all_words(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
-        """Test comment search with boolean fulltext mode (requires FULLTEXT index)."""
-        import pytest
+        """Multi-word search requires ALL words, not any of them."""
+        from app.models import Comments
 
-        # Skip this test if running in environment without FULLTEXT index
-        # In production, the fulltext index is created by Alembic migration
-        # This test is primarily for documenting the feature
-        pytest.skip("Requires FULLTEXT index on posts.post_text - test in production environment")
+        user = Users(
+            username="allwords_user",
+            email="allwords@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000010",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        both = Images(**{**sample_image_data, "user_id": user.user_id})
+        happy_only = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add_all([both, happy_only])
+        await db_session.flush()
+
+        db_session.add_all(
+            [
+                Comments(
+                    image_id=both.image_id,
+                    user_id=user.user_id,
+                    post_text="happy birthday to you",
+                ),
+                Comments(
+                    image_id=happy_only.image_id,
+                    user_id=user.user_id,
+                    post_text="such a happy picture",
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=happy birthday")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert both.image_id in returned
+        assert happy_only.image_id not in returned
+
+        # Pin the literal mode string the frontend sends explicitly
+        # (+page.server.ts) -- it must be accepted and behave like the
+        # implicit default, or the two repos silently drift apart.
+        response = await client.get(
+            "/api/v1/images?commentsearch=happy birthday&commentsearch_mode=all_words"
+        )
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert both.image_id in returned
+        assert happy_only.image_id not in returned
+
+    async def test_commentsearch_mode_rejects_unknown_value(self, client: AsyncClient):
+        """A typo'd mode must 422, not silently fall through to the default."""
+        response = await client.get("/api/v1/images?commentsearch=happy&commentsearch_mode=bogus")
+        assert response.status_code == 422
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_short_token_does_not_zero_results(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A sub-min-token-size word must narrow via LIKE, not wipe the results.
+
+        `MATCH(...) AGAINST('+happy +bd' IN BOOLEAN MODE)` returns 0 rows.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="shorttok_user",
+            email="shorttok@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000011",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        match = Images(**{**sample_image_data, "user_id": user.user_id})
+        no_match = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add_all([match, no_match])
+        await db_session.flush()
+
+        db_session.add_all(
+            [
+                Comments(
+                    image_id=match.image_id,
+                    user_id=user.user_id,
+                    post_text="happy bd friend",
+                ),
+                Comments(
+                    image_id=no_match.image_id,
+                    user_id=user.user_id,
+                    post_text="happy day friend",
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=happy bd")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert match.image_id in returned
+        assert no_match.image_id not in returned
+
+    async def test_commentsearch_rejects_only_short_ascii_terms(self, client: AsyncClient):
+        """A search of nothing but 1-2 character ASCII words is refused.
+
+        It can only be served by an unindexed scan (~0.5s on the count, ~0.8s on
+        the page, flat regardless of match count) for a result nobody wants.
+        """
+        response = await client.get("/api/v1/images?commentsearch=ab")
+        assert response.status_code == 400
+        assert "at least" in response.json()["detail"].lower()
+
+        response = await client.get("/api/v1/images?commentsearch=ab cd")
+        assert response.status_code == 400
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_allows_short_non_ascii_terms(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """CJK must never be refused: LIKE is the only path it has.
+
+        MariaDB has no ngram parser, so a short Japanese term is unindexable by
+        definition. Refusing it would break Japanese comment search outright.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="cjk_user",
+            email="cjk@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000019",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(image_id=image.image_id, user_id=user.user_id, post_text="とても猫")
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=猫")
+        assert response.status_code == 200
+        assert image.image_id in {img["image_id"] for img in response.json()["images"]}
+
+    async def test_commentsearch_allows_a_short_term_beside_an_indexable_one(
+        self, client: AsyncClient
+    ):
+        """One indexable term is enough to keep the query index-backed."""
+        response = await client.get("/api/v1/images?commentsearch=happy bd")
+        assert response.status_code == 200
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.mariadb_only  # asserts MySQL boolean-mode operator semantics
+    async def test_commentsearch_boolean_mode_passes_operators_through(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """`boolean` mode hands raw operators to MySQL rather than parsing them.
+
+        Pinned because it was the only mode with no coverage. A trailing wildcard is
+        the discriminator: MySQL expands `wombat*` to the token "wombats", whereas
+        the all_words parser strips `*` as a non-word character and searches for the
+        exact token "wombat", which does not match. So this test fails if boolean
+        mode ever falls through to the default — asserted explicitly below.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="boolmode_user",
+            email="boolmode@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000017",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        wanted = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(wanted)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=wanted.image_id,
+                user_id=user.user_id,
+                post_text="wombats appreciation thread",
+            )
+        )
+        await db_session.commit()
+
+        boolean_hit = await client.get(
+            "/api/v1/images?commentsearch=wombat*&commentsearch_mode=boolean"
+        )
+        assert boolean_hit.status_code == 200
+        assert wanted.image_id in {img["image_id"] for img in boolean_hit.json()["images"]}
+
+        # The same string under the default mode must NOT match, or the test above
+        # would pass even if boolean mode stopped being wired up at all.
+        default_miss = await client.get("/api/v1/images?commentsearch=wombat*")
+        assert default_miss.status_code == 200
+        assert wanted.image_id not in {img["image_id"] for img in default_miss.json()["images"]}
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_ignores_soft_deleted_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A soft-deleted comment must not make its image match.
+
+        /comments filters `deleted == False` everywhere, so a match found only in a
+        deleted comment yields a card with no visible matching comment. Reachable
+        today by searching the word "deleted", because soft-delete rewrites
+        post_text to "[deleted]": 56 images on the dev copy match only that way.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="softdel_user",
+            email="softdel@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000015",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        only_deleted = Images(**{**sample_image_data, "user_id": user.user_id})
+        still_visible = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add_all([only_deleted, still_visible])
+        await db_session.flush()
+
+        db_session.add_all(
+            [
+                Comments(
+                    image_id=only_deleted.image_id,
+                    user_id=user.user_id,
+                    post_text="quokka sighting",
+                    deleted=True,
+                ),
+                Comments(
+                    image_id=still_visible.image_id,
+                    user_id=user.user_id,
+                    post_text="quokka sighting",
+                    deleted=False,
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=quokka sighting")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert still_visible.image_id in returned
+        assert only_deleted.image_id not in returned
+
+    async def test_exclude_commenter_ignores_soft_deleted_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A deleted comment must not exclude an image either.
+
+        The anti-join is the third place that reasons about who commented, and it
+        had the same gap: a comment /comments will never show could still hide an
+        image from someone's results.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username="softdel_excl",
+            email="softdele@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000018",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                post_text="retracted",
+                deleted=True,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?exclude_commenter={user.user_id}")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert image.image_id in returned
+
+    async def test_commenter_ignores_soft_deleted_comments(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """The same join backs `commenter`, so it must agree about deletion too."""
+        from app.models import Comments
+
+        user = Users(
+            username="softdel_commenter",
+            email="softdelc@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000016",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        only_deleted = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(only_deleted)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=only_deleted.image_id,
+                user_id=user.user_id,
+                post_text="gone",
+                deleted=True,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images?commenter={user.user_id}")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert only_deleted.image_id not in returned
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    async def test_commentsearch_stopword_does_not_zero_results(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """`the` is an InnoDB stopword; `+the +cat` returns 0 rows."""
+        from app.models import Comments
+
+        user = Users(
+            username="stopword_user",
+            email="stopword@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000012",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                post_text="the cat is sitting",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=the cat")
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert image.image_id in returned
+
+    async def test_commentsearch_special_characters_do_not_500(
+        self, client: AsyncClient, sample_image_data: dict
+    ):
+        """`@` and `)` are ERROR 1064 in boolean mode if passed through raw."""
+        response = await client.get("/api/v1/images?commentsearch=happy@birthday)")
+        assert response.status_code == 200
+
+    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.mariadb_only  # asserts MySQL natural-language-mode OR semantics
+    async def test_commentsearch_natural_mode_still_available(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """The old OR behaviour remains reachable via an explicit mode."""
+        from app.models import Comments
+
+        user = Users(
+            username="natural_user",
+            email="natural@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000013",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                post_text="such a happy picture",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/images?commentsearch=happy birthday&commentsearch_mode=natural"
+        )
+        assert response.status_code == 200
+        returned = {img["image_id"] for img in response.json()["images"]}
+        assert image.image_id in returned
+
+    async def test_commentsearch_unsearchable_query_returns_zero_rows(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A non-blank query with nothing indexable or LIKE-able (e.g. "!!!") must
+        match nothing -- not silently degrade to "images that have comments"."""
+        from app.models import Comments
+
+        user = Users(
+            username="unsearchable_user",
+            email="unsearchable@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000015",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        image = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(image)
+        await db_session.flush()
+        db_session.add(
+            Comments(image_id=image.image_id, user_id=user.user_id, post_text="happy birthday")
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images?commentsearch=!!!")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["images"] == []
+        # The count and the page must agree, or pagination lies.
+        assert data["total"] == 0
+
+    async def test_commentsearch_blank_applies_no_filter(
+        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
+    ):
+        """A blank/whitespace-only query means "not searching" -- an image with no
+        comments at all must still be returned, unlike a real comment filter (which
+        would exclude it via the Comments JOIN)."""
+        user = Users(
+            username="blanksearch_user",
+            email="blanksearch@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000016",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        no_comments = Images(**{**sample_image_data, "user_id": user.user_id})
+        db_session.add(no_comments)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/images", params={"commentsearch": "   "})
+        assert response.status_code == 200
+        data = response.json()
+        returned = {img["image_id"] for img in data["images"]}
+        assert no_comments.image_id in returned
+        # A blank commentsearch must also fall into the bare-default-feed fast
+        # count path (no JOIN), not the exact-subquery count -- both must agree
+        # with the page, or pagination lies.
+        assert data["total"] == 1
 
     async def test_commentsearch_like_mode(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
@@ -3201,9 +3740,7 @@ class TestCommentFilters:
         await db_session.flush()
 
         for text in ["First!", "Also this.", "And one more."]:
-            db_session.add(
-                Comments(image_id=image.image_id, user_id=user.id, post_text=text)
-            )
+            db_session.add(Comments(image_id=image.image_id, user_id=user.id, post_text=text))
         await db_session.commit()
 
         response = await client.get(f"/api/v1/images?commenter={user.id}")
@@ -4034,34 +4571,6 @@ class TestRateImage:
         assert data["num_ratings"] == 1
 
 
-def _db_error(errno: int, message: str) -> OperationalError:
-    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
-    return OperationalError("UPDATE ...", None, pymysql.err.OperationalError(errno, message))
-
-
-def _snapshot_conflict_error() -> OperationalError:
-    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD)."""
-    return _db_error(1020, "Record has changed since last read in table 'images'")
-
-
-def _flaky_flush(fail_times: int, error: OperationalError):
-    """Patch AsyncSession.flush to raise `error` for the first `fail_times`
-    calls, then delegate to the real flush. Only a route's explicit
-    ``await db.flush()`` goes through AsyncSession.flush (autoflush runs inside
-    the sync Session), so the first intercepted call is the counter write.
-    Returns (patch_ctx, calls) where calls records each intercepted flush."""
-    real_flush = AsyncSession.flush
-    calls: list[int] = []
-
-    async def flush(self, *args, **kwargs):
-        calls.append(1)
-        if len(calls) <= fail_times:
-            raise error
-        await real_flush(self, *args, **kwargs)
-
-    return patch.object(AsyncSession, "flush", flush), calls
-
-
 @pytest.mark.api
 class TestFavoriteRatingSnapshotConflictRetry:
     """favorite/unfavorite/rate do read-modify-write UPDATEs on shared
@@ -4213,9 +4722,193 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
         with flush_patch, pytest.raises(OperationalError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
+
+        assert len(calls) == 1  # not retried
+
+
+@pytest.mark.api
+class TestTagWriteSnapshotConflictRetry:
+    """Adding or removing a tag INSERTs into tag_history, whose tag_id/image_id/
+    user_id are FK columns — so InnoDB takes a locking read on each parent row.
+    The usage_count triggers on tag_links keep the parent `tags` row moving, and
+    the image_posts trigger does the same to `users`, so under
+    innodb_snapshot_isolation a concurrent tag write aborts this one with
+    ER_CHECKREAD (errno 1020). Two users tagging at the same moment is enough.
+
+    Both paths must retry on a fresh snapshot instead of surfacing a 500.
+
+    Each test captures image_id/tag_id as ints before calling the endpoint: the
+    app under test shares this session (conftest overrides get_db with
+    db_session), so the retry's real rollback expires the fixture instances.
+    Production never sees that — the request session is nobody else's.
+    """
+
+    @pytest.mark.needs_commit
+    async def test_add_tag_retries_snapshot_conflict_and_succeeds(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """A transient 1020 during the tag add is retried and the tag lands once.
+
+        needs_commit: the retry performs a real session rollback to obtain a
+        fresh snapshot; under the default SAVEPOINT isolation that rollback
+        would unwind the fixture's committed image/tag rows too, which cannot
+        happen in production where they are durably committed.
+        """
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="snapshot_retry_add", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image_id: int = image.image_id
+        tag_id: int = tag.tag_id
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        with flush_patch:
+            response = await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
+
+        assert response.status_code == 201, response.text
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        # The link landed exactly once despite the retry.
+        links = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,
+                TagLinks.tag_id == tag_id,
+            )
+        )
+        assert len(list(links.scalars().all())) == 1
+
+        # ...and so did its history row: a replayed unit must not double-log.
+        history = await db_session.execute(
+            select(TagHistory).where(
+                TagHistory.image_id == image_id,
+                TagHistory.tag_id == tag_id,
+                TagHistory.action == "a",
+            )
+        )
+        assert len(list(history.scalars().all())) == 1
+
+    @pytest.mark.needs_commit
+    async def test_remove_tag_retries_snapshot_conflict_and_succeeds(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """A transient 1020 during the tag removal is retried and the link goes."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="snapshot_retry_remove", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image_id: int = image.image_id
+        tag_id: int = tag.tag_id
+
+        db_session.add(TagLinks(image_id=image_id, tag_id=tag_id, user_id=sample_user.user_id))
+        await db_session.commit()
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        with flush_patch:
+            response = await authenticated_client.delete(f"/api/v1/images/{image_id}/tags/{tag_id}")
+
+        assert response.status_code == 204, response.text
+        assert len(calls) >= 2
+
+        links = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,
+                TagLinks.tag_id == tag_id,
+            )
+        )
+        assert links.scalar_one_or_none() is None
+
+        history = await db_session.execute(
+            select(TagHistory).where(
+                TagHistory.image_id == image_id,
+                TagHistory.tag_id == tag_id,
+                TagHistory.action == "r",
+            )
+        )
+        assert len(list(history.scalars().all())) == 1
+
+    @pytest.mark.needs_commit
+    async def test_add_tag_gives_up_after_bounded_retries(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """A persistent 1020 propagates after a bounded number of attempts."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="snapshot_retry_bounded", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image_id: int = image.image_id
+        tag_id: int = tag.tag_id
+
+        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
+        with flush_patch, pytest.raises(OperationalError):
+            await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
+
+        assert len(calls) == 3  # bounded: no infinite retry loop
+
+    async def test_add_tag_does_not_retry_other_db_errors(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: Users,
+        sample_image_data: dict,
+    ):
+        """Non-1020 database errors propagate immediately with no retry."""
+        image_data = sample_image_data.copy()
+        image_data["user_id"] = sample_user.user_id
+        image = Images(**image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        tag = Tags(title="snapshot_retry_other_error", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        image_id: int = image.image_id
+        tag_id: int = tag.tag_id
+
+        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
+        with flush_patch, pytest.raises(OperationalError):
+            await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert len(calls) == 1  # not retried
 
@@ -4235,7 +4928,7 @@ class TestGetImageRatings:
 
         # Create ratings from multiple users
         users = []
-        for i, rating_value in enumerate([5, 8, 10]):
+        for i in range(3):
             user = Users(
                 username=f"rater_{i}",
                 password="hashed",
@@ -4676,9 +5369,16 @@ class TestHideReposts:
         # results — matrix tests must exercise the PUBLIC-status path, not own-image.
         from app.config import ImageStatus
         from app.core.security import get_password_hash
+
         if owner_id is None:
-            owner = Users(username="hr_seed_owner", password=get_password_hash("TestPassword123!"),
-                          password_type="bcrypt", salt="", email="hr_seed_owner@test.com", active=1)
+            owner = Users(
+                username="hr_seed_owner",
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email="hr_seed_owner@test.com",
+                active=1,
+            )
             db.add(owner)
             await db.commit()
             await db.refresh(owner)
@@ -4691,15 +5391,33 @@ class TestHideReposts:
             (ImageStatus.DEACTIVATED, "deact_img"),
         ]
         for i, (st, fn) in enumerate(rows):
-            db.add(Images(filename=fn, ext="jpg", md5_hash=f"hr{i:030d}",
-                          user_id=owner_id, width=10, height=10, filesize=100, status=st))
+            db.add(
+                Images(
+                    filename=fn,
+                    ext="jpg",
+                    md5_hash=f"hr{i:030d}",
+                    user_id=owner_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=st,
+                )
+            )
         await db.commit()
 
     async def _user(self, db, name, show_all=0, hide_reposts=0):
         from app.core.security import get_password_hash
-        u = Users(username=name, password=get_password_hash("TestPassword123!"),
-                  password_type="bcrypt", salt="", email=f"{name}@test.com",
-                  active=1, show_all_images=show_all, hide_reposts=hide_reposts)
+
+        u = Users(
+            username=name,
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email=f"{name}@test.com",
+            active=1,
+            show_all_images=show_all,
+            hide_reposts=hide_reposts,
+        )
         db.add(u)
         await db.commit()
         await db.refresh(u)
@@ -4707,6 +5425,7 @@ class TestHideReposts:
 
     def _hdr(self, user):
         from app.core.security import create_access_token
+
         return {"Authorization": f"Bearer {create_access_token(user.user_id)}"}
 
     async def test_show_all_0_hide_0_shows_repost(self, client, db_session):
@@ -4753,38 +5472,68 @@ class TestHideReposts:
 
     async def test_random_excludes_reposts_when_hiding(self, client, db_session):
         from app.config import ImageStatus
+
         owner = await self._user(db_session, "hr_rand_owner")
         viewer = await self._user(db_session, "hr_rand", show_all=0, hide_reposts=1)
         for i in range(3):
-            db_session.add(Images(filename=f"r_rep{i}", ext="jpg", md5_hash=f"rr{i:030d}",
-                                  user_id=owner.user_id, width=10, height=10, filesize=100,
-                                  status=ImageStatus.REPOST))
+            db_session.add(
+                Images(
+                    filename=f"r_rep{i}",
+                    ext="jpg",
+                    md5_hash=f"rr{i:030d}",
+                    user_id=owner.user_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=ImageStatus.REPOST,
+                )
+            )
         await db_session.commit()
         # Only reposts exist; with hide_reposts the visible count is 0 -> /random 404s.
-        resp = await client.get("/api/v1/images/random?per_page=1",
-                                headers=self._hdr(viewer), follow_redirects=False)
+        resp = await client.get(
+            "/api/v1/images/random?per_page=1", headers=self._hdr(viewer), follow_redirects=False
+        )
         assert resp.status_code == 404
 
     async def test_random_counts_reposts_when_not_hiding(self, client, db_session):
         from app.config import ImageStatus
+
         owner = await self._user(db_session, "hr_rand_owner2")
         viewer = await self._user(db_session, "hr_rand2", show_all=0, hide_reposts=0)
         for i in range(3):
-            db_session.add(Images(filename=f"r2_rep{i}", ext="jpg", md5_hash=f"rs{i:030d}",
-                                  user_id=owner.user_id, width=10, height=10, filesize=100,
-                                  status=ImageStatus.REPOST))
+            db_session.add(
+                Images(
+                    filename=f"r2_rep{i}",
+                    ext="jpg",
+                    md5_hash=f"rs{i:030d}",
+                    user_id=owner.user_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=ImageStatus.REPOST,
+                )
+            )
         await db_session.commit()
         # Control: reposts are public, so without hiding they ARE counted -> a page exists.
-        resp = await client.get("/api/v1/images/random?per_page=1",
-                                headers=self._hdr(viewer), follow_redirects=False)
+        resp = await client.get(
+            "/api/v1/images/random?per_page=1", headers=self._hdr(viewer), follow_redirects=False
+        )
         assert resp.status_code == 302
 
     async def test_repost_bookmark_returns_null_page(self, client, db_session):
         from app.config import ImageStatus
+
         viewer = await self._user(db_session, "hr_bm", show_all=0, hide_reposts=1)
-        rep = Images(filename="bm_rep", ext="jpg", md5_hash="bm" + "0" * 30,
-                     user_id=viewer.user_id, width=10, height=10, filesize=100,
-                     status=ImageStatus.REPOST)
+        rep = Images(
+            filename="bm_rep",
+            ext="jpg",
+            md5_hash="bm" + "0" * 30,
+            user_id=viewer.user_id,
+            width=10,
+            height=10,
+            filesize=100,
+            status=ImageStatus.REPOST,
+        )
         db_session.add(rep)
         await db_session.commit()
         await db_session.refresh(rep)
@@ -4795,20 +5544,37 @@ class TestHideReposts:
 
     async def test_bookmark_position_excludes_reposts_when_hiding(self, client, db_session):
         from app.config import ImageStatus
+
         owner = await self._user(db_session, "hr_bm_pos_owner")
         viewer = await self._user(db_session, "hr_bm_pos", show_all=0, hide_reposts=1)
         viewer.images_per_page = 2
-        bm = Images(filename="bm_active", ext="jpg", md5_hash="bp" + "0" * 30,
-                    user_id=owner.user_id, width=10, height=10, filesize=100,
-                    status=ImageStatus.ACTIVE)
+        bm = Images(
+            filename="bm_active",
+            ext="jpg",
+            md5_hash="bp" + "0" * 30,
+            user_id=owner.user_id,
+            width=10,
+            height=10,
+            filesize=100,
+            status=ImageStatus.ACTIVE,
+        )
         db_session.add(bm)
         await db_session.commit()
         await db_session.refresh(bm)
         # 3 reposts created AFTER bm -> higher image_ids -> sort BEFORE bm in DESC order.
         for i in range(3):
-            db_session.add(Images(filename=f"bp_rep{i}", ext="jpg", md5_hash=f"bq{i:030d}",
-                                  user_id=owner.user_id, width=10, height=10, filesize=100,
-                                  status=ImageStatus.REPOST))
+            db_session.add(
+                Images(
+                    filename=f"bp_rep{i}",
+                    ext="jpg",
+                    md5_hash=f"bq{i:030d}",
+                    user_id=owner.user_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=ImageStatus.REPOST,
+                )
+            )
         viewer.bookmark = bm.image_id
         await db_session.commit()
         # hide_reposts: the 3 reposts before bm aren't counted -> position 0 -> page 1.
@@ -4817,19 +5583,36 @@ class TestHideReposts:
 
     async def test_bookmark_position_counts_reposts_when_not_hiding(self, client, db_session):
         from app.config import ImageStatus
+
         owner = await self._user(db_session, "hr_bm_pos_owner2")
         viewer = await self._user(db_session, "hr_bm_pos2", show_all=0, hide_reposts=0)
         viewer.images_per_page = 2
-        bm = Images(filename="bm_active2", ext="jpg", md5_hash="bp2" + "0" * 29,
-                    user_id=owner.user_id, width=10, height=10, filesize=100,
-                    status=ImageStatus.ACTIVE)
+        bm = Images(
+            filename="bm_active2",
+            ext="jpg",
+            md5_hash="bp2" + "0" * 29,
+            user_id=owner.user_id,
+            width=10,
+            height=10,
+            filesize=100,
+            status=ImageStatus.ACTIVE,
+        )
         db_session.add(bm)
         await db_session.commit()
         await db_session.refresh(bm)
         for i in range(3):
-            db_session.add(Images(filename=f"bp2_rep{i}", ext="jpg", md5_hash=f"bz{i:030d}",
-                                  user_id=owner.user_id, width=10, height=10, filesize=100,
-                                  status=ImageStatus.REPOST))
+            db_session.add(
+                Images(
+                    filename=f"bp2_rep{i}",
+                    ext="jpg",
+                    md5_hash=f"bz{i:030d}",
+                    user_id=owner.user_id,
+                    width=10,
+                    height=10,
+                    filesize=100,
+                    status=ImageStatus.REPOST,
+                )
+            )
         viewer.bookmark = bm.image_id
         await db_session.commit()
         # Control: reposts counted -> 3 before bm -> position 3 -> page ceil(4/2)=2.
@@ -4886,9 +5669,7 @@ class TestExcludeFavoritedByUserId:
         """Excluding user1 drops images 0 and 1, keeps 2 and 3."""
         user1, _user2, images = await self._setup(db_session, sample_image_data)
 
-        response = await client.get(
-            f"/api/v1/images?exclude_favorited_by_user_id={user1.user_id}"
-        )
+        response = await client.get(f"/api/v1/images?exclude_favorited_by_user_id={user1.user_id}")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
@@ -4928,9 +5709,7 @@ class TestExcludeFavoritedByUserId:
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         too_many = ",".join(str(i) for i in range(1, settings.MAX_SEARCH_USERS + 2))
-        response = await client.get(
-            f"/api/v1/images?exclude_favorited_by_user_id={too_many}"
-        )
+        response = await client.get(f"/api/v1/images?exclude_favorited_by_user_id={too_many}")
         assert response.status_code == 400
         assert str(settings.MAX_SEARCH_USERS) in response.json()["detail"]
 
@@ -4973,15 +5752,9 @@ class TestExcludeCommenter:
             images.append(image)
         await db_session.flush()
 
-        db_session.add(
-            Comments(image_id=images[0].image_id, user_id=user1.id, post_text="First!")
-        )
-        db_session.add(
-            Comments(image_id=images[0].image_id, user_id=user2.id, post_text="Second!")
-        )
-        db_session.add(
-            Comments(image_id=images[1].image_id, user_id=user2.id, post_text="Nice!")
-        )
+        db_session.add(Comments(image_id=images[0].image_id, user_id=user1.id, post_text="First!"))
+        db_session.add(Comments(image_id=images[0].image_id, user_id=user2.id, post_text="Second!"))
+        db_session.add(Comments(image_id=images[1].image_id, user_id=user2.id, post_text="Nice!"))
         await db_session.commit()
         return user1, user2, images
 

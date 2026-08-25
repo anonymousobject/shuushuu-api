@@ -1,6 +1,6 @@
 """URL-import endpoints: resolve external post URLs and proxy vetted image fetches.
 
-Design: docs/plans/2026-07-06-url-import-design.md (frontend repo).
+Design: <shuushuu-frontend-repo>/docs/plans/2026-Q3/2026-07-06-url-import-design.md
 """
 
 import io
@@ -17,7 +17,12 @@ from app.core.auth import VerifiedUser
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.redis import get_redis
-from app.schemas.url_import import ResolvedImageOut, UrlResolveRequest, UrlResolveResponse
+from app.schemas.url_import import (
+    ImportSiteResponse,
+    ResolvedImageOut,
+    UrlResolveRequest,
+    UrlResolveResponse,
+)
 from app.services.artist_identity import SITE_PIXIV, ArtistIdentity, resolve_identity
 from app.services.rate_limit import check_external_fetch_rate_limit, check_url_resolve_rate_limit
 from app.services.url_import import (
@@ -25,6 +30,7 @@ from app.services.url_import import (
     PostNotFoundError,
     RestrictedContentError,
     UpstreamError,
+    advertised_sites,
     get_resolver,
     supported_sites,
 )
@@ -36,6 +42,21 @@ router = APIRouter(prefix="/images", tags=["url-import"])
 
 RESOLVE_TIMEOUT_SECONDS = 15.0
 FETCH_TIMEOUT_SECONDS = 30.0
+
+
+@router.get("/import-sites", response_model=list[ImportSiteResponse])
+async def list_import_sites(response: Response) -> list[ImportSiteResponse]:
+    """Sites the URL importer accepts, with a sample URL shape for each.
+
+    Public and cacheable: a static capability list with no user data. The
+    upload page fetches this during SSR to populate its supported-sites
+    popover, so the list can never drift from the resolver registry.
+    """
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return [
+        ImportSiteResponse(site=entry.site, example_url=entry.example_url)
+        for entry in advertised_sites()
+    ]
 
 
 def _make_http_client(timeout: float) -> httpx.AsyncClient:
@@ -107,10 +128,7 @@ async def resolve_url(
     if resolver is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                "Unsupported site. Supported: "
-                + ", ".join(site for site in supported_sites() if site != "fixture")
-            ),
+            detail=("Unsupported site. Supported: " + ", ".join(supported_sites())),
         )
     try:
         async with _make_http_client(RESOLVE_TIMEOUT_SECONDS) as client:

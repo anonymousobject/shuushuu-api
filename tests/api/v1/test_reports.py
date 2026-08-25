@@ -8,9 +8,9 @@ Tests cover:
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
     AdminActionType,
@@ -31,6 +31,7 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
+from tests.transient_conflict import _flaky_flush, _snapshot_conflict_error
 
 
 async def create_auth_user(
@@ -158,9 +159,7 @@ async def add_tag_to_image(db_session: AsyncSession, image_id: int, tag_id: int)
 class TestUserReportEndpoint:
     """Tests for POST /api/v1/images/{image_id}/report endpoint."""
 
-    async def test_report_image_success(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_report_image_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test successful image report by authenticated user."""
         user, password = await create_auth_user(db_session)
         image = await create_test_image(db_session, user.user_id)
@@ -182,9 +181,7 @@ class TestUserReportEndpoint:
         assert data["status_label"] == "Pending"
         assert data["category_label"] == "Inappropriate Image"
 
-    async def test_report_image_category_only(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_report_image_category_only(self, client: AsyncClient, db_session: AsyncSession):
         """Test report with category only, no reason_text."""
         user, password = await create_auth_user(db_session)
         image = await create_test_image(db_session, user.user_id)
@@ -215,9 +212,7 @@ class TestUserReportEndpoint:
 
         assert response.status_code == 401
 
-    async def test_report_nonexistent_image(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_report_nonexistent_image(self, client: AsyncClient, db_session: AsyncSession):
         """Test reporting non-existent image returns 404."""
         user, password = await create_auth_user(db_session)
         token = await login_user(client, user.username, password)
@@ -527,7 +522,6 @@ class TestAdminReportsList:
         assert 1 in categories  # REPOST
         assert 4 in categories  # TAG_SUGGESTIONS
 
-
     async def test_list_reports_includes_reviewed_by_username(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -632,9 +626,7 @@ class TestAdminReportsList:
 class TestAdminGetReport:
     """Tests for GET /api/v1/admin/reports/{report_id} endpoint."""
 
-    async def test_get_report_success(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_report_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test fetching a single image report by ID."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "report_view")
@@ -710,9 +702,7 @@ class TestAdminGetReport:
         assert data["suggested_tags"] is not None
         assert len(data["suggested_tags"]) == 2
 
-    async def test_get_report_not_found(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_report_not_found(self, client: AsyncClient, db_session: AsyncSession):
         """Test 404 for nonexistent report."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "report_view")
@@ -725,9 +715,7 @@ class TestAdminGetReport:
 
         assert response.status_code == 404
 
-    async def test_get_report_no_permission(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_get_report_no_permission(self, client: AsyncClient, db_session: AsyncSession):
         """Test 403 when user lacks permission."""
         user, password = await create_auth_user(db_session)
         token = await login_user(client, user.username, password)
@@ -747,9 +735,7 @@ class TestAdminGetReport:
         await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
         token = await login_user(client, tagger.username, password)
 
-        admin, _ = await create_auth_user(
-            db_session, username="admin", email="admin@example.com"
-        )
+        admin, _ = await create_auth_user(db_session, username="admin", email="admin@example.com")
         image = await create_test_image(db_session, admin.user_id)
         report = ImageReports(
             image_id=image.image_id,
@@ -777,9 +763,7 @@ class TestAdminGetReport:
         await grant_permission(db_session, tagger.user_id, "tag_suggestion_apply")
         token = await login_user(client, tagger.username, password)
 
-        admin, _ = await create_auth_user(
-            db_session, username="admin", email="admin@example.com"
-        )
+        admin, _ = await create_auth_user(db_session, username="admin", email="admin@example.com")
         image = await create_test_image(db_session, admin.user_id)
         report = ImageReports(
             image_id=image.image_id,
@@ -803,9 +787,7 @@ class TestAdminGetReport:
 class TestAdminReportDismiss:
     """Tests for POST /api/v1/admin/reports/{report_id}/dismiss endpoint."""
 
-    async def test_dismiss_report_success(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_dismiss_report_success(self, client: AsyncClient, db_session: AsyncSession):
         """Test dismissing a report."""
         admin, password = await create_auth_user(db_session, username="admin", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
@@ -1041,10 +1023,18 @@ class TestAdminReportAction:
         img = (await db_session.execute(select(Images).where(Images.image_id == iid))).scalar_one()
         assert img.status == ImageStatus.DEACTIVATED
         assert img.reason_category == DeactivationReason.LOW_QUALITY
-        hist = (await db_session.execute(
-            select(ImageStatusHistory).where(ImageStatusHistory.image_id == iid)
-        )).scalars().all()
-        assert any(h.new_status == ImageStatus.DEACTIVATED and h.reason == "too blurry" for h in hist)
+        hist = (
+            (
+                await db_session.execute(
+                    select(ImageStatusHistory).where(ImageStatusHistory.image_id == iid)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert any(
+            h.new_status == ImageStatus.DEACTIVATED and h.reason == "too blurry" for h in hist
+        )
 
     async def test_resolved_report_exposes_action_and_reason(
         self, client: AsyncClient, db_session: AsyncSession
@@ -1056,8 +1046,11 @@ class TestAdminReportAction:
         token = await login_user(client, admin.username, password)
         image = await create_test_image(db_session, admin.user_id)
         report = ImageReports(
-            image_id=image.image_id, user_id=admin.user_id, category=2,
-            reason_text="i think this is AI", status=ReportStatus.PENDING,
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=2,
+            reason_text="i think this is AI",
+            status=ReportStatus.PENDING,
         )
         db_session.add(report)
         await db_session.commit()
@@ -1092,17 +1085,24 @@ class TestAdminReportAction:
         token = await login_user(client, admin.username, password)
         image = await create_test_image(db_session, admin.user_id)
         report = ImageReports(
-            image_id=image.image_id, user_id=admin.user_id, category=4,
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
             status=ReportStatus.REVIEWED,
         )
         db_session.add(report)
         await db_session.commit()
         await db_session.refresh(report)
         # The audit row apply_tag_suggestions writes: REPORT_ACTION, no new_status.
-        db_session.add(AdminActions(
-            user_id=admin.user_id, action_type=AdminActionType.REPORT_ACTION,
-            report_id=report.report_id, image_id=image.image_id,
-            details={"action": "apply_tag_suggestions"}))
+        db_session.add(
+            AdminActions(
+                user_id=admin.user_id,
+                action_type=AdminActionType.REPORT_ACTION,
+                report_id=report.report_id,
+                image_id=image.image_id,
+                details={"action": "apply_tag_suggestions"},
+            )
+        )
         await db_session.commit()
 
         r = await client.get(
@@ -1419,7 +1419,9 @@ class TestReportPermissionDenials:
     ):
         """Test escalating report without REPORT_MANAGE permission fails."""
         user, password = await create_auth_user(db_session, username="noperm3")
-        await grant_permission(db_session, user.user_id, "review_start")  # Has review_start but not report_manage
+        await grant_permission(
+            db_session, user.user_id, "review_start"
+        )  # Has review_start but not report_manage
         token = await login_user(client, user.username, password)
 
         image = await create_test_image(db_session, user.user_id)
@@ -1450,7 +1452,9 @@ class TestReportPermissionDenials:
     ):
         """Test escalating report without REVIEW_START permission fails."""
         user, password = await create_auth_user(db_session, username="noperm4")
-        await grant_permission(db_session, user.user_id, "report_manage")  # Has report_manage but not review_start
+        await grant_permission(
+            db_session, user.user_id, "report_manage"
+        )  # Has report_manage but not review_start
         token = await login_user(client, user.username, password)
 
         image = await create_test_image(db_session, user.user_id)
@@ -1555,9 +1559,7 @@ class TestReportValidation:
         reason="API currently accepts any integer for new_status. "
         "Future: Add Literal type or validator to ReportActionRequest schema."
     )
-    async def test_action_with_invalid_status(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_action_with_invalid_status(self, client: AsyncClient, db_session: AsyncSession):
         """Test action with invalid image status fails.
 
         Note: Currently the API accepts any integer for new_status.
@@ -1608,7 +1610,11 @@ class TestReportWithTagSuggestions:
             f"/api/v1/images/{image.image_id}/report",
             json={
                 "category": 4,
-                "suggested_tag_ids_add": [tags[0].tag_id, 999999, tags[1].tag_id],  # 999999 is invalid
+                "suggested_tag_ids_add": [
+                    tags[0].tag_id,
+                    999999,
+                    tags[1].tag_id,
+                ],  # 999999 is invalid
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -1676,7 +1682,11 @@ class TestReportWithTagSuggestions:
             f"/api/v1/images/{image.image_id}/report",
             json={
                 "category": 4,
-                "suggested_tag_ids_add": [tags[0].tag_id, tags[0].tag_id, tags[1].tag_id],  # Duplicate
+                "suggested_tag_ids_add": [
+                    tags[0].tag_id,
+                    tags[0].tag_id,
+                    tags[1].tag_id,
+                ],  # Duplicate
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -1799,9 +1809,7 @@ class TestReportWithTagSuggestions:
 class TestAdminApplyTagSuggestions:
     """Tests for POST /api/v1/admin/reports/{report_id}/apply-tag-suggestions endpoint."""
 
-    async def test_apply_all_suggestions(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_apply_all_suggestions(self, client: AsyncClient, db_session: AsyncSession):
         """Test applying all tag suggestions to an image."""
         admin, password = await create_auth_user(db_session, username="applytest1", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
@@ -1892,9 +1900,7 @@ class TestAdminApplyTagSuggestions:
         assert ml_suggestion.status == "approved"
         assert ml_suggestion.reviewed_by_user_id == admin.user_id
 
-    async def test_apply_partial_suggestions(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_apply_partial_suggestions(self, client: AsyncClient, db_session: AsyncSession):
         """Test applying only some tag suggestions."""
         admin, password = await create_auth_user(db_session, username="applytest2", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
@@ -1986,9 +1992,7 @@ class TestAdminApplyTagSuggestions:
         assert suggestions[0].accepted is False
         assert suggestions[1].accepted is False
 
-    async def test_apply_with_admin_notes(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_apply_with_admin_notes(self, client: AsyncClient, db_session: AsyncSession):
         """Test applying suggestions with admin notes."""
         admin, password = await create_auth_user(db_session, username="applytest4", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
@@ -2144,9 +2148,7 @@ class TestAdminApplyTagSuggestions:
         all_tag_links = tag_links.scalars().all()
         assert len(all_tag_links) == 3  # 1 already present + 2 newly added
 
-    async def test_apply_removal_suggestions(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
+    async def test_apply_removal_suggestions(self, client: AsyncClient, db_session: AsyncSession):
         """Test applying removal suggestions removes tags from image."""
         admin, password = await create_auth_user(db_session, username="removeapply1", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
@@ -2473,3 +2475,111 @@ class TestAdminApplyTagSuggestions:
         assert tags[2].tag_id in added_tag_ids
         for h in additions:
             assert h.user_id == admin.user_id
+
+
+@pytest.mark.api
+class TestApplyTagSuggestionsSnapshotConflictRetry:
+    """apply_tag_suggestions INSERTs into tag_links/tag_history, whose FK columns
+    make InnoDB locking-read the parent tags/images/users rows, and the
+    usage_count trigger on tag_links keeps those parents moving. Under
+    innodb_snapshot_isolation a concurrent tag write aborts this one with
+    ER_CHECKREAD (errno 1020), so it must retry on a fresh snapshot.
+
+    The applied_tags/removed_tags accumulators must be rebuilt per attempt, or a
+    retry reports each tag once per attempt.
+    """
+
+    @pytest.mark.needs_commit
+    async def test_apply_retries_snapshot_conflict_and_succeeds(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A transient 1020 is retried; each tag is applied and reported once."""
+        admin, password = await create_auth_user(db_session, username="applyretry1", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=2)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestions = []
+        for tag in tags:
+            s = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tag.tag_id)
+            db_session.add(s)
+            suggestions.append(s)
+        await db_session.commit()
+        for s in suggestions:
+            await db_session.refresh(s)
+
+        # Captured before the request: the app under test shares this session,
+        # so the retry's real rollback expires the fixture instances.
+        report_id: int = report.report_id
+        image_id: int = image.image_id
+        suggestion_ids = [s.suggestion_id for s in suggestions]
+
+        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        with flush_patch:
+            response = await client.post(
+                f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",
+                json={"approved_suggestion_ids": suggestion_ids},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert response.status_code == 200, response.text
+        assert len(calls) >= 2  # failed attempt + successful retry
+
+        # Reported once per tag, not once per attempt.
+        assert len(response.json()["applied_tags"]) == 2
+
+        # ...and linked once per tag.
+        tag_links = await db_session.execute(select(TagLinks).where(TagLinks.image_id == image_id))
+        assert len(list(tag_links.scalars().all())) == 2
+
+        # The report transitioned exactly once.
+        await db_session.refresh(report)
+        assert report.status == ReportStatus.REVIEWED
+
+    @pytest.mark.needs_commit
+    async def test_apply_gives_up_after_bounded_retries(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A persistent 1020 propagates after a bounded number of attempts."""
+        admin, password = await create_auth_user(db_session, username="applyretry2", admin=True)
+        await grant_permission(db_session, admin.user_id, "report_manage")
+        image = await create_test_image(db_session, admin.user_id)
+        tags = await create_test_tags(db_session, count=1)
+        token = await login_user(client, admin.username, password)
+
+        report = ImageReports(
+            image_id=image.image_id,
+            user_id=admin.user_id,
+            category=4,
+            status=ReportStatus.PENDING,
+        )
+        db_session.add(report)
+        await db_session.flush()
+
+        suggestion = ImageReportTagSuggestions(report_id=report.report_id, tag_id=tags[0].tag_id)
+        db_session.add(suggestion)
+        await db_session.commit()
+        await db_session.refresh(suggestion)
+
+        report_id: int = report.report_id
+        suggestion_id: int = suggestion.suggestion_id
+
+        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
+        with flush_patch, pytest.raises(OperationalError):
+            await client.post(
+                f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",
+                json={"approved_suggestion_ids": [suggestion_id]},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert len(calls) == 3  # bounded: no infinite retry loop

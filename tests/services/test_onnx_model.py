@@ -19,7 +19,9 @@ class TestWDTaggerPreprocessing:
 
     def _make_model(self) -> WDTaggerModel:
         """Return an unloaded WDTaggerModel (no real files needed)."""
-        return WDTaggerModel(model_path="/nonexistent/model.onnx", tags_path="/nonexistent/tags.csv")
+        return WDTaggerModel(
+            model_path="/nonexistent/model.onnx", tags_path="/nonexistent/tags.csv"
+        )
 
     def test_output_shape(self, tmp_path: Path) -> None:
         """Output array must have NHWC shape (1, 448, 448, 3)."""

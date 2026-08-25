@@ -34,15 +34,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 
 
 async def seed_activity(db: AsyncSession, username: str, tag_title: str, favorites: int) -> None:
     user_row = (
-        await db.execute(text("SELECT user_id FROM users WHERE username = :username"), {"username": username})
+        await db.execute(
+            text("SELECT user_id FROM users WHERE username = :username"), {"username": username}
+        )
     ).first()
     if user_row is None:
         print(f"Error: no user found with username '{username}'")
@@ -87,22 +89,34 @@ async def seed_activity(db: AsyncSession, username: str, tag_title: str, favorit
     rating_result = None
     if rated_ids:
         rating_result = await db.execute(
-            text("INSERT IGNORE INTO image_ratings (user_id, image_id, rating) VALUES (:user_id, :image_id, 9)"),
+            text(
+                "INSERT IGNORE INTO image_ratings (user_id, image_id, rating) VALUES (:user_id, :image_id, 9)"
+            ),
             [{"user_id": user_id, "image_id": image_id} for image_id in rated_ids],
         )
 
     await db.commit()
 
+    # db.execute() is typed as returning the generic Result[Any], but a raw
+    # INSERT executed via text() always comes back as a CursorResult, which
+    # is what actually carries .rowcount.
+    assert isinstance(fav_result, CursorResult)
     fav_inserted = fav_result.rowcount or 0
     fav_skipped = len(image_ids) - fav_inserted
-    rating_inserted = rating_result.rowcount if rating_result is not None else 0
+    if rating_result is not None:
+        assert isinstance(rating_result, CursorResult)
+        rating_inserted = rating_result.rowcount
+    else:
+        rating_inserted = 0
     rating_skipped = len(rated_ids) - rating_inserted
 
     print(
         f"favorites: {fav_inserted} inserted, {fav_skipped} already present "
         f"(of {len(image_ids)} tagged '{tag_title}')"
     )
-    print(f"ratings: {rating_inserted} inserted, {rating_skipped} already present (of {len(rated_ids)} attempted)")
+    print(
+        f"ratings: {rating_inserted} inserted, {rating_skipped} already present (of {len(rated_ids)} attempted)"
+    )
 
 
 async def main() -> None:
@@ -113,7 +127,7 @@ async def main() -> None:
     args = parser.parse_args()
 
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as db:
         await seed_activity(db, args.username, args.tag, args.favorites)

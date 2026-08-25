@@ -91,9 +91,7 @@ class TestAddToIqdbJob:
             patch("builtins.open", create=True),
             patch("app.tasks.image_jobs.AsyncSessionLocal", test_session_factory),
         ):
-            result = await add_to_iqdb_job(
-                ctx, indexed_image.image_id, "/fake/path/thumb.webp"
-            )
+            result = await add_to_iqdb_job(ctx, indexed_image.image_id, "/fake/path/thumb.webp")
 
         assert result == {"success": True}
 
@@ -102,9 +100,7 @@ class TestAddToIqdbJob:
         image_id = indexed_image.image_id
         async with test_session_factory() as verify_session:
             refetched = (
-                await verify_session.execute(
-                    select(Images).where(Images.image_id == image_id)
-                )
+                await verify_session.execute(select(Images).where(Images.image_id == image_id))
             ).scalar_one()
         assert refetched.iqdb_hash == fake_hash
 
@@ -126,9 +122,7 @@ class TestAddToIqdbJob:
                 side_effect=RuntimeError("simulated db outage"),
             ),
         ):
-            result = await add_to_iqdb_job(
-                ctx, indexed_image.image_id, "/fake/path/thumb.webp"
-            )
+            result = await add_to_iqdb_job(ctx, indexed_image.image_id, "/fake/path/thumb.webp")
 
         assert result == {"success": True}
         assert any(

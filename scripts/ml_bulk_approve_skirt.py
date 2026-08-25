@@ -2,7 +2,7 @@
 """Bulk-approve pending skirt (159) ML suggestions on school-uniform (16) images.
 
 One-off for the 2026-07 seifuku→school-uniform reparent backfill
-(docs/plans/2026-07-26-school-uniform-flip-impl.md). Selection here, all
+(docs/plans/2026-Q3/2026-07-26-school-uniform-flip-impl.md). Selection here, all
 review side effects in the tested bulk_review_suggestions service.
 
 Usage:
@@ -27,7 +27,7 @@ SCOPE_TAG_ID = 16  # school uniform
 async def run(args: argparse.Namespace) -> None:
     async with get_async_session() as db:
         query = (
-            select(MlTagSuggestions.suggestion_id)
+            select(MlTagSuggestions.suggestion_id)  # type: ignore[call-overload]
             .join(TagLinks, TagLinks.image_id == MlTagSuggestions.image_id)
             .where(
                 MlTagSuggestions.tag_id == SKIRT_TAG_ID,

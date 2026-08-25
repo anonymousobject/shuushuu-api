@@ -229,9 +229,7 @@ class TestImageStatusHistoryOnStatusChange:
 class TestImageStatusHistoryOnReviewClose:
     """Tests that ImageStatusHistory is written when reviews are closed."""
 
-    async def test_review_close_creates_history_entry_keep(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_review_close_creates_history_entry_keep(self, db_session: AsyncSession) -> None:
         """Closing a review with KEEP outcome should create ImageStatusHistory entry."""
         from app.models.review_vote import ReviewVotes
 

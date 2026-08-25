@@ -24,9 +24,7 @@ async def test_user_groups_has_group_relationship(db_session: AsyncSession):
 
     # Query with eager loading
     result = await db_session.execute(
-        select(UserGroups)
-        .options(selectinload(UserGroups.group))
-        .where(UserGroups.user_id == 1)
+        select(UserGroups).options(selectinload(UserGroups.group)).where(UserGroups.user_id == 1)
     )
     ug = result.scalar_one()
 
@@ -52,9 +50,7 @@ async def test_users_has_groups_property(db_session: AsyncSession):
     # Query user with eager loading
     result = await db_session.execute(
         select(Users)
-        .options(
-            selectinload(Users.user_groups).selectinload(UserGroups.group)
-        )
+        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
         .where(Users.user_id == 1)
     )
     user = result.scalar_one()
@@ -70,9 +66,7 @@ async def test_users_groups_property_empty(db_session: AsyncSession):
     # User 1 exists from fixture but has no groups
     result = await db_session.execute(
         select(Users)
-        .options(
-            selectinload(Users.user_groups).selectinload(UserGroups.group)
-        )
+        .options(selectinload(Users.user_groups).selectinload(UserGroups.group))
         .where(Users.user_id == 1)
     )
     user = result.scalar_one()

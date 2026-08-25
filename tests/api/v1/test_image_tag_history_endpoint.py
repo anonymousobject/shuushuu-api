@@ -5,6 +5,8 @@ Tests that image tag history (tags added/removed to a specific image) can be ret
 with proper pagination, tag info (LinkedTag), and user info.
 """
 
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -205,9 +207,7 @@ class TestGetImageTagHistory:
         # Added later via add_tag_to_image: both a tag_link AND a tag_history 'a' exist.
         db_session.add(TagLinks(tag_id=tag.tag_id, image_id=image.image_id, user_id=user.user_id))
         db_session.add(
-            TagHistory(
-                image_id=image.image_id, tag_id=tag.tag_id, action="a", user_id=user.user_id
-            )
+            TagHistory(image_id=image.image_id, tag_id=tag.tag_id, action="a", user_id=user.user_id)
         )
         await db_session.commit()
 
@@ -273,9 +273,7 @@ class TestGetImageTagHistory:
         assert data["total"] == 2
         assert sorted(item["action"] for item in data["items"]) == ["added", "removed"]
 
-    async def test_includes_tag_info(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_includes_tag_info(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """History entries should include tag info (LinkedTag)."""
         # Create a user
         user = Users(
@@ -334,9 +332,7 @@ class TestGetImageTagHistory:
         assert item["tag"]["tag_id"] == tag.tag_id
         assert item["tag"]["title"] == "included tag info"
 
-    async def test_includes_user_info(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_includes_user_info(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """History entries should include user info."""
         # Create a user
         user = Users(
@@ -402,9 +398,7 @@ class TestGetImageTagHistory:
         response = await client.get("/api/v1/images/99999999/tag-history")
         assert response.status_code == 404
 
-    async def test_pagination_works(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_pagination_works(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """Should support pagination."""
         # Create a user
         user = Users(
@@ -640,9 +634,7 @@ class TestGetImageTagHistory:
         assert "avatar_in_r2" not in item_user
         assert item_user["avatar_url"] == "https://cdn.test/avatars/abc.png"
 
-    async def test_handles_null_user(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
+    async def test_handles_null_user(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """Should handle history entries with null user_id gracefully."""
         # Create a user for image ownership
         user = Users(
@@ -696,3 +688,99 @@ class TestGetImageTagHistory:
 
         # User should be null
         assert data["items"][0]["user"] is None
+
+    async def test_same_second_edits_keep_each_editor_together(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Within one second, an editor's events must not be split by another editor.
+
+        tag_links.date_linked defaults to CURRENT_TIMESTAMP, so every link one save
+        writes shares a wall-clock second. Breaking that tie on tag_id alone lets a
+        second editor's link sort between two of the first editor's, which reads as
+        the first editor having edited twice.
+        """
+        editor = Users(
+            username="samesecondeditor",
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email="samesecondeditor@example.com",
+            active=1,
+        )
+        other = Users(
+            username="samesecondother",
+            password="hashed",
+            password_type="bcrypt",
+            salt="",
+            email="samesecondother@example.com",
+            active=1,
+        )
+        db_session.add_all([editor, other])
+        await db_session.commit()
+        await db_session.refresh(editor)
+        await db_session.refresh(other)
+
+        image = Images(
+            filename="samesecond1",
+            ext="jpg",
+            md5_hash="samesecondmd5111111111111111111",
+            user_id=editor.user_id,
+            width=100,
+            height=100,
+            filesize=1000,
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        # tag_id is auto-increment, so creating them in this order puts the other
+        # editor's tag between the first editor's two under a tag_id tiebreak.
+        lower = Tags(title="same second lower", type=TagType.THEME)
+        middle = Tags(title="same second middle", type=TagType.THEME)
+        upper = Tags(title="same second upper", type=TagType.THEME)
+        db_session.add_all([lower, middle, upper])
+        await db_session.commit()
+        await db_session.refresh(lower)
+        await db_session.refresh(middle)
+        await db_session.refresh(upper)
+
+        linked_at = datetime(2013, 1, 26, 21, 11, 11, tzinfo=UTC)
+        db_session.add_all(
+            [
+                TagLinks(
+                    image_id=image.image_id,
+                    tag_id=lower.tag_id,
+                    user_id=editor.user_id,
+                    date_linked=linked_at,
+                ),
+                TagLinks(
+                    image_id=image.image_id,
+                    tag_id=middle.tag_id,
+                    user_id=other.user_id,
+                    date_linked=linked_at,
+                ),
+                TagLinks(
+                    image_id=image.image_id,
+                    tag_id=upper.tag_id,
+                    user_id=editor.user_id,
+                    date_linked=linked_at,
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/tag-history")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert len(data["items"]) == 3
+
+        # Collapse the response into runs of consecutive editors: an editor that
+        # appears in two runs is one whose single save was split apart.
+        editors = [item["user"]["user_id"] for item in data["items"]]
+        runs = [
+            user_id
+            for position, user_id in enumerate(editors)
+            if position == 0 or editors[position - 1] != user_id
+        ]
+        assert len(runs) == len(set(runs)), f"an editor was split across runs: {editors}"

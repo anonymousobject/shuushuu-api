@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus, settings
 from app.core.r2_constants import R2Location
-from app.models.image import Images, VariantStatus
+from app.models.image import Images
 from scripts.r2_sync import split_existing
 
 
@@ -39,9 +39,7 @@ class TestSplitExisting:
         ):
             yield
 
-    async def test_moves_protected_images_only(
-        self, db_session: AsyncSession, monkeypatch
-    ):
+    async def test_moves_protected_images_only(self, db_session: AsyncSession, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
 
         db_session.add(
@@ -88,9 +86,7 @@ class TestSplitExisting:
         assert "fullsize/2026-04-17-1.jpg" not in copied_keys
         assert "fullsize/2026-04-17-3.jpg" not in copied_keys
 
-    async def test_dry_run_does_not_copy(
-        self, db_session: AsyncSession, monkeypatch
-    ):
+    async def test_dry_run_does_not_copy(self, db_session: AsyncSession, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
 
         db_session.add(
@@ -112,9 +108,7 @@ class TestSplitExisting:
         mock_r2.copy_object.assert_not_awaited()
         mock_r2.delete_object.assert_not_awaited()
 
-    async def test_skips_missing_objects(
-        self, db_session: AsyncSession, monkeypatch
-    ):
+    async def test_skips_missing_objects(self, db_session: AsyncSession, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", True)
 
         db_session.add(

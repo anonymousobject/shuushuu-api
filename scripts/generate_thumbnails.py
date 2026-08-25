@@ -39,8 +39,8 @@ import multiprocessing
 import os
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 # Add parent directory to path so we can import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -116,7 +116,7 @@ def get_images_streaming(
     # Import here to avoid issues at module load time
     import asyncio
 
-    from sqlalchemy import select, func
+    from sqlalchemy import select
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.config import settings
@@ -144,7 +144,7 @@ def get_images_streaming(
                     while True:
                         result = await conn.execute(
                             select(Images.image_id, Images.filename, Images.ext)  # type: ignore[call-overload]
-                            .where(Images.image_id < last_id)  # type: ignore[arg-type,operator]
+                            .where(Images.image_id < last_id)  # type: ignore[operator]
                             .order_by(Images.image_id.desc())  # type: ignore[union-attr]
                             .limit(batch_size)
                         )
@@ -176,7 +176,7 @@ def get_image_count(all_images: bool = False, image_ids: list[int] | None = None
 
     import asyncio
 
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.config import settings
@@ -186,9 +186,7 @@ def get_image_count(all_images: bool = False, image_ids: list[int] | None = None
         engine = create_async_engine(settings.DATABASE_URL, echo=False)
         try:
             async with engine.connect() as conn:
-                result = await conn.execute(
-                    select(func.count()).select_from(Images)
-                )
+                result = await conn.execute(select(func.count()).select_from(Images))
                 return result.scalar() or 0
         finally:
             await engine.dispose()

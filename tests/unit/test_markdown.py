@@ -2,8 +2,6 @@
 Tests for safe Markdown parser
 """
 
-import pytest
-
 from app.utils.markdown import is_safe_url, parse_markdown, strip_markdown
 
 

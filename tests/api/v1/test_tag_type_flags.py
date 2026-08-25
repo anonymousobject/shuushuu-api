@@ -49,6 +49,7 @@ class TestTagTypeFlagsHelper:
         assert img.has_artist is True
 
         from sqlalchemy import delete
+
         await db_session.execute(
             delete(TagLinks).where(
                 TagLinks.image_id == img.image_id, TagLinks.tag_id == artist.tag_id
@@ -80,6 +81,7 @@ class TestTagTypeFlagsHelper:
         assert img.has_artist is True
 
         from sqlalchemy import delete
+
         await db_session.execute(
             delete(TagLinks).where(
                 TagLinks.image_id == img.image_id, TagLinks.tag_id == artist_a.tag_id

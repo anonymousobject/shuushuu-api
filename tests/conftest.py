@@ -26,8 +26,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.database import get_db
@@ -41,10 +41,14 @@ from app.main import app as main_app
 # Override via environment variables if your local setup differs
 
 DEFAULT_TEST_DB_USER = "shuushuu"
-DEFAULT_TEST_DB_PASSWORD = "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
+DEFAULT_TEST_DB_PASSWORD = (
+    "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
+)
 DEFAULT_TEST_DB_HOST = "localhost"
 DEFAULT_TEST_DB_PORT = "3306"
-DEFAULT_TEST_DB_NAME = "shuushuu_pytest"  # Separate from staging environment (shuushuu_test on the test host)
+DEFAULT_TEST_DB_NAME = (
+    "shuushuu_pytest"  # Separate from staging environment (shuushuu_test on the test host)
+)
 DEFAULT_ROOT_PASSWORD = "root_password"
 
 # Under pytest-xdist each worker process gets its own database (and Redis DB)
@@ -85,21 +89,45 @@ def pytest_configure(config):
         "needs_commit: marks tests that require real database commits (e.g., FULLTEXT search tests). "
         "These tests use truncate-based cleanup instead of transaction rollback.",
     )
+    config.addinivalue_line(
+        "markers",
+        "mariadb_only: marks tests of MariaDB-defined behavior (fulltext semantics, "
+        "migration-chain comparison, the affinity guard); skipped when the session "
+        "backend is Postgres. See docs/plans/2026-Q3/2026-08-20-tests-on-postgres-design.md.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "postgres_only: marks tests of Postgres-defined behavior (e.g. triggers firing "
+        "on FK-cascaded deletes, which InnoDB does not do); skipped when the session "
+        "backend is MariaDB.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip schema_sync tests unless --schema-sync is passed."""
-    if config.getoption("--schema-sync"):
-        # --schema-sync given: don't skip schema_sync tests
-        return
+    """Backend- and option-based skips."""
+    if IS_POSTGRES:
+        skip_mariadb = pytest.mark.skip(
+            reason="MariaDB-defined behavior (mariadb_only); session backend is Postgres"
+        )
+        for item in items:
+            if "mariadb_only" in item.keywords:
+                item.add_marker(skip_mariadb)
+    else:
+        skip_postgres = pytest.mark.skip(
+            reason="Postgres-defined behavior (postgres_only); session backend is MariaDB"
+        )
+        for item in items:
+            if "postgres_only" in item.keywords:
+                item.add_marker(skip_postgres)
 
-    skip_schema_sync = pytest.mark.skip(reason="need --schema-sync option to run")
-    for item in items:
-        if "schema_sync" in item.keywords:
-            item.add_marker(skip_schema_sync)
+    if not config.getoption("--schema-sync"):
+        skip_schema_sync = pytest.mark.skip(reason="need --schema-sync option to run")
+        for item in items:
+            if "schema_sync" in item.keywords:
+                item.add_marker(skip_schema_sync)
 
 
-def _get_test_database_url() -> tuple[str, str]:
+def _get_test_database_url() -> tuple[str, str | None]:
     """
     Get test database URLs with sensible defaults.
 
@@ -125,12 +153,22 @@ def _get_test_database_url() -> tuple[str, str]:
         db = os.getenv("TEST_DB_NAME", DEFAULT_TEST_DB_NAME)
         test_url = f"mysql+aiomysql://{user}:{password}@{host}:{port}/{db}?charset=utf8mb4"
 
-    # Allow sync URL to be derived from async URL if not explicitly set
-    test_url_sync = os.getenv("TEST_DATABASE_URL_SYNC", test_url.replace("+aiomysql", "+pymysql"))
+    test_url_sync: str | None
+    if make_url(test_url).get_backend_name() == "postgresql":
+        # Sync URLs exist only for the MariaDB path (root admin engine, sync
+        # alembic upgrade); the Postgres path does everything through async
+        # engines, and no sync Postgres driver is installed.
+        test_url_sync = None
+    else:
+        # Allow sync URL to be derived from async URL if not explicitly set
+        test_url_sync = os.getenv(
+            "TEST_DATABASE_URL_SYNC", test_url.replace("+aiomysql", "+pymysql")
+        )
 
     if _XDIST_WORKER:
         test_url = _with_worker_suffix(test_url)
-        test_url_sync = _with_worker_suffix(test_url_sync)
+        if test_url_sync is not None:
+            test_url_sync = _with_worker_suffix(test_url_sync)
 
     return test_url, test_url_sync
 
@@ -146,6 +184,10 @@ def _with_worker_suffix(url: str) -> str:
 # Get test database URLs (uses defaults if env vars not set)
 TEST_DATABASE_URL, TEST_DATABASE_URL_SYNC = _get_test_database_url()
 
+# The whole session runs against one backend, chosen by the URL scheme
+# (design: docs/plans/2026-Q3/2026-08-20-tests-on-postgres-design.md).
+IS_POSTGRES = make_url(TEST_DATABASE_URL).get_backend_name() == "postgresql"
+
 
 @pytest.fixture(scope="session")
 def anyio_backend():
@@ -158,8 +200,121 @@ def setup_test_database():
     """
     Reset the test database and ensure schema is at head before ALL tests.
 
-    This runs once per test session (autouse=True; per worker under xdist)
-    and ensures:
+    Runs once per test session (autouse=True; per worker under xdist) and
+    dispatches on the backend: MariaDB gets the migration-chain build below,
+    Postgres gets the create_all bootstrap (no PG migration chain exists yet —
+    see the tests-on-postgres design doc). Both end with the perms sync that
+    mirrors application startup.
+    """
+    if IS_POSTGRES:
+        _setup_postgres_test_database()
+    else:
+        _setup_mariadb_test_database()
+
+    # Mirror application startup: sync the Permission enum into the perms
+    # table. The seed migration uses UPDATE statements that assume a
+    # populated legacy DB and so leaves the test DB short several enum perms.
+    # (On Postgres the create_all schema starts with an empty perms table.)
+    import asyncio
+
+    from app.core.permission_sync import sync_permissions
+
+    async def _sync_perms() -> None:
+        async_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+        async with AsyncSession(async_engine) as session:
+            # sync_permissions() commits internally; no extra commit needed.
+            await sync_permissions(session)
+        await async_engine.dispose()
+
+    asyncio.run(_sync_perms())
+
+    yield
+
+
+def _setup_postgres_test_database() -> None:
+    """Create (if absent) and rebuild the per-worker Postgres test database.
+
+    All admin work runs as the test user, which is the compose container's
+    bootstrap superuser — none of the MariaDB root/grant machinery applies.
+    Schema comes from the POSTGRES Alembic chain (alembic_pg/), mirroring the
+    MariaDB path: reuse-and-truncate when already at the chain head, else
+    rebuild by running the chain — which is how broken PG migrations surface
+    in CI instead of being papered over by create_all.
+    """
+    import asyncio
+
+    from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
+
+    url = make_url(TEST_DATABASE_URL)
+    test_db_name = url.database
+
+    alembic_cfg = AlembicConfig()
+    alembic_cfg.set_main_option("script_location", "alembic_pg")
+    head_revision = ScriptDirectory.from_config(alembic_cfg).get_current_head()
+
+    async def _prepare() -> bool:
+        """Create/clean the database; return True when the chain must run."""
+        # CREATE DATABASE cannot run inside a transaction: AUTOCOMMIT engine.
+        admin_engine = create_async_engine(
+            url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+        )
+        async with admin_engine.connect() as conn:
+            exists = (
+                await conn.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                    {"name": test_db_name},
+                )
+            ).scalar()
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{test_db_name}"'))
+        await admin_engine.dispose()
+
+        schema_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+        try:
+            async with schema_engine.begin() as conn:
+                tables = [
+                    row[0]
+                    for row in await conn.execute(
+                        text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                    )
+                ]
+                current_revision = None
+                if "alembic_version" in tables:
+                    current_revision = (
+                        await conn.execute(text("SELECT version_num FROM alembic_version"))
+                    ).scalar()
+                if current_revision == head_revision:
+                    non_version = [t for t in tables if t != "alembic_version"]
+                    if non_version:
+                        joined = ", ".join(f'"{t}"' for t in non_version)
+                        await conn.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
+                    return False
+                await conn.execute(text("DROP SCHEMA public CASCADE"))
+                await conn.execute(text("CREATE SCHEMA public"))
+                return True
+        finally:
+            await schema_engine.dispose()
+
+    if asyncio.run(_prepare()):
+        # The async env.py runs its own event loop, so this must happen
+        # outside any asyncio.run of ours.
+        from alembic import command as alembic_command
+
+        prev_alembic_url = os.environ.get("ALEMBIC_DB_URL")
+        os.environ["ALEMBIC_DB_URL"] = TEST_DATABASE_URL
+        try:
+            alembic_command.upgrade(alembic_cfg, "head")
+        finally:
+            if prev_alembic_url is None:
+                del os.environ["ALEMBIC_DB_URL"]
+            else:
+                os.environ["ALEMBIC_DB_URL"] = prev_alembic_url
+
+
+def _setup_mariadb_test_database() -> None:
+    """
+    MariaDB path:
     1. Test database exists (created via root when available, else test user)
     2. Schema is at the latest Alembic head (truncate when already current,
        full drop + migrate otherwise)
@@ -168,9 +323,13 @@ def setup_test_database():
     """
     import os
 
+    assert TEST_DATABASE_URL_SYNC is not None  # always set on the MariaDB path
+
     # Get MySQL root password from environment or use default
     # First try MARIADB_ROOT_PASSWORD (from .env files), then fall back to MYSQL_ROOT_PASSWORD
-    root_password = os.getenv("MARIADB_ROOT_PASSWORD") or os.getenv("MYSQL_ROOT_PASSWORD", DEFAULT_ROOT_PASSWORD)
+    root_password = os.getenv("MARIADB_ROOT_PASSWORD") or os.getenv(
+        "MYSQL_ROOT_PASSWORD", DEFAULT_ROOT_PASSWORD
+    )
 
     # Get test user credentials (these can be overridden via environment)
     test_user = os.getenv("TEST_DB_USER", DEFAULT_TEST_DB_USER)
@@ -304,36 +463,6 @@ def setup_test_database():
             else:
                 os.environ["ALEMBIC_DB_URL"] = prev_alembic_url
 
-    # Mirror application startup: sync the Permission enum into the perms
-    # table. The seed migration uses UPDATE statements that assume a
-    # populated legacy DB and so leaves the test DB short several enum perms.
-    import asyncio
-
-    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-
-    from app.core.permission_sync import sync_permissions
-
-    async def _sync_perms() -> None:
-        async_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-        async with AsyncSession(async_engine) as session:
-            # sync_permissions() commits internally; no extra commit needed.
-            await sync_permissions(session)
-        await async_engine.dispose()
-
-    asyncio.run(_sync_perms())
-
-    yield
-
-    # Optional: Drop test database after all tests complete
-    # Commented out to allow inspection of test data after failures
-    # admin_engine = create_engine(
-    #     f"mysql+pymysql://root:{root_password}@localhost:3306/mysql",
-    #     isolation_level="AUTOCOMMIT",
-    # )
-    # with admin_engine.connect() as conn:
-    #     conn.execute(text(f"DROP DATABASE IF EXISTS {test_db_name}"))
-    # admin_engine.dispose()
-
 
 @pytest.fixture(scope="function")
 async def engine():
@@ -368,26 +497,40 @@ async def engine():
 
 async def _truncate_all_tables(engine) -> None:
     """Truncate all tables for tests that need real commits (e.g., FULLTEXT search)."""
-    async with engine.begin() as conn:
-        await conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+    if IS_POSTGRES:
+        # One statement, no FK-checks toggle: TRUNCATE accepts a table list and
+        # CASCADE covers the FK graph. RESTART IDENTITY matches MariaDB
+        # TRUNCATE's auto-increment reset. alembic_version survives, like the
+        # MariaDB branch below.
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            )
+            tables = [row[0] for row in result if row[0] != "alembic_version"]
+            if tables:
+                joined = ", ".join(f'"{t}"' for t in tables)
+                await conn.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
+    else:
+        async with engine.begin() as conn:
+            await conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
 
-        db_url = make_url(TEST_DATABASE_URL)
-        db_name = db_url.database
+            db_url = make_url(TEST_DATABASE_URL)
+            db_name = db_url.database
 
-        result = await conn.execute(
-            text(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = :db_name AND table_type = 'BASE TABLE'"
-            ),
-            {"db_name": db_name},
-        )
-        tables = [row[0] for row in result]
+            result = await conn.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = :db_name AND table_type = 'BASE TABLE'"
+                ),
+                {"db_name": db_name},
+            )
+            tables = [row[0] for row in result]
 
-        for table in tables:
-            if table != "alembic_version":
-                await conn.execute(text(f"TRUNCATE TABLE `{table}`"))
+            for table in tables:
+                if table != "alembic_version":
+                    await conn.execute(text(f"TRUNCATE TABLE `{table}`"))
 
-        await conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+            await conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
 
     # Re-seed perms so tests run after `needs_commit` cleanup still see
     # the enum-mirrored Perms rows that session setup populated.
@@ -426,9 +569,18 @@ async def _create_test_users(session: AsyncSession) -> None:
 
     await session.commit()
 
+    if IS_POSTGRES:
+        # Explicit-PK inserts don't advance Postgres sequences (MariaDB bumps
+        # AUTO_INCREMENT automatically), so without this the next id-less user
+        # insert gets nextval=1 and collides. setval survives the test's
+        # rollback — harmless, the sequence only ever moves forward.
+        await session.execute(
+            text("SELECT setval('users_user_id_seq', (SELECT MAX(user_id) FROM users))")
+        )
+
 
 @pytest.fixture(scope="function")
-async def db_session(engine, request) -> AsyncGenerator[AsyncSession, None]:
+async def db_session(engine, request) -> AsyncGenerator[AsyncSession]:
     """
     Create a new database session for each test.
 
@@ -583,7 +735,7 @@ def app(db_session: AsyncSession, mock_redis) -> FastAPI:
     This overrides the database dependency to use the test session.
     """
 
-    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+    async def override_get_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def override_get_redis():
@@ -601,7 +753,7 @@ def app(db_session: AsyncSession, mock_redis) -> FastAPI:
 def app_real_redis(db_session: AsyncSession, redis_client) -> FastAPI:
     """FastAPI app wired to the real Redis client (instead of mock_redis)."""
 
-    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+    async def override_get_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def override_get_redis():
@@ -616,7 +768,7 @@ def app_real_redis(db_session: AsyncSession, redis_client) -> FastAPI:
 
 
 @pytest.fixture(scope="function")
-async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+async def client(app: FastAPI) -> AsyncGenerator[AsyncClient]:
     """
     Create async HTTP client for testing API endpoints.
 
@@ -633,7 +785,7 @@ async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture(scope="function")
-async def client_real_redis(app_real_redis: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+async def client_real_redis(app_real_redis: FastAPI) -> AsyncGenerator[AsyncClient]:
     """Async HTTP client using app_real_redis (real Redis override)."""
     async with AsyncClient(
         transport=ASGITransport(app=app_real_redis),

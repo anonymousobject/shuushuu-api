@@ -33,3 +33,8 @@ class UrlResolveResponse(BaseModel):
     artist_tag_id: int | None = None
     artist_tag_title: str | None = None
     images: list[ResolvedImageOut]
+
+
+class ImportSiteResponse(BaseModel):
+    site: str
+    example_url: str

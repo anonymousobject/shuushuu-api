@@ -12,8 +12,7 @@ Usage: uv run python scripts/audit_alias_parent_violations.py
 import asyncio
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.models.tag import Tags
@@ -21,15 +20,13 @@ from app.models.tag import Tags
 
 async def audit() -> None:
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    async_session = sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False, future=True
-    )
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as db:
         # Violation 1: Tags whose parent is an alias
-        parent_alias = Tags.__table__.alias("parent")
+        parent_alias = Tags.__table__.alias("parent")  # type: ignore[attr-defined]
         result = await db.execute(
-            select(
+            select(  # type: ignore[call-overload]
                 Tags.tag_id,
                 Tags.title,
                 Tags.inheritedfrom_id,
@@ -53,12 +50,12 @@ async def audit() -> None:
             print("\n=== Violation 1: No tags with alias parents ===")
 
         # Violation 2: Tags that are aliases AND have children
-        child_alias = Tags.__table__.alias("child")
+        child_alias = Tags.__table__.alias("child")  # type: ignore[attr-defined]
         result = await db.execute(
-            select(Tags.tag_id, Tags.title, Tags.alias_of)
-            .where(Tags.alias_of.isnot(None))
+            select(Tags.tag_id, Tags.title, Tags.alias_of)  # type: ignore[call-overload]
+            .where(Tags.alias_of.isnot(None))  # type: ignore[union-attr]
             .where(
-                Tags.tag_id.in_(
+                Tags.tag_id.in_(  # type: ignore[union-attr]
                     select(child_alias.c.inheritedfrom_id).where(
                         child_alias.c.inheritedfrom_id.isnot(None)
                     )
@@ -73,7 +70,9 @@ async def audit() -> None:
             )
             for row in alias_with_children:
                 children_result = await db.execute(
-                    select(Tags.tag_id, Tags.title).where(Tags.inheritedfrom_id == row.tag_id)
+                    select(Tags.tag_id, Tags.title).where(  # type: ignore[call-overload]
+                        Tags.inheritedfrom_id == row.tag_id
+                    )
                 )
                 children = children_result.all()
                 child_list = ", ".join(f"'{t}' (id: {i})" for i, t in children)

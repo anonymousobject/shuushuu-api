@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies import CommentSortParams, PaginationParams
 from app.config import AdminActionType, ReportStatus
 from app.core.auth import get_current_user
-from app.core.database import get_db
+from app.core.database import get_db, is_postgres, statement_timeout
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Comments, Images, Users
@@ -30,6 +30,12 @@ from app.schemas.comment import (
 )
 from app.schemas.comment_report import CommentReportCreate, CommentReportResponse
 from app.schemas.common import UserSummary
+from app.services.comments import comment_user_eager_load
+from app.utils.comment_search import (
+    COMMENT_SEARCH_TIMEOUT_SECONDS,
+    apply_comment_text_search,
+    reject_unindexable_comment_search,
+)
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -49,8 +55,11 @@ async def list_comments(
     search_mode: Annotated[
         str | None,
         Query(
-            pattern="^(natural|boolean|like)$",
-            description="Search mode: natural (default), boolean fulltext, or LIKE",
+            pattern="^(all_words|natural|boolean|like)$",
+            description=(
+                "Search mode: all_words (default, every term required), "
+                "natural language fulltext (any term), boolean fulltext, or LIKE"
+            ),
         ),
     ] = None,
     # Date filtering
@@ -67,12 +76,18 @@ async def list_comments(
     - Sorting by date, post_id, or update_count
     - Filter by image, user, or text search
     - Date range filtering
-    - Multiple search modes (LIKE, natural fulltext, boolean fulltext)
+    - Multiple search modes (all_words, natural fulltext, boolean fulltext, LIKE)
 
     **Search Modes:**
-    - `natural` (default): MySQL fulltext natural language search (10-100x faster, relevance ranking)
-    - `boolean`: MySQL fulltext boolean search with operators
-    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`
+    - `all_words` (default): every term must appear. Index-backed where the
+      fulltext index can see the term, LIKE where it cannot (short words,
+      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
+      or whitespace-only `search_text` applies no filter at all; a non-blank
+      value with nothing searchable in it (e.g. `!!!`) matches zero comments.
+    - `natural`: MySQL fulltext natural language search — matches ANY term
+    - `boolean`: MySQL fulltext boolean search with raw operators
+    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`.
+      `%` and `_` in the query are escaped to literals, not treated as wildcards.
 
     **Boolean Mode Examples:**
     - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
@@ -83,14 +98,12 @@ async def list_comments(
     - `/comments?image_id=123` - All comments on image 123
     - `/comments?image_ids=123,456,789` - All comments on multiple images (efficient for N images)
     - `/comments?user_id=5` - All comments by user 5
-    - `/comments?search_text=awesome` - Fast fulltext search
+    - `/comments?search_text=happy birthday` - Comments containing BOTH words
     - `/comments?search_text=awesome&search_mode=like` - Simple search using LIKE
-    - `/comments?search_text=awesome&search_mode=natural` - Fast fulltext search, same as default
+    - `/comments?search_text=awesome&search_mode=natural` - Any-term match
     - `/comments?search_text=+great -bad&search_mode=boolean` - Boolean fulltext
     - `/comments?date_from=2024-01-01` - Comments from 2024 onwards
     """
-    from sqlalchemy import text as sql_text
-
     # Build base query - exclude deleted comments
     query = select(Comments).where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
 
@@ -108,22 +121,21 @@ async def list_comments(
     if user_id is not None:
         query = query.where(Comments.user_id == user_id)  # type: ignore[arg-type]
 
-    # Text search with mode selection
-    if search_text:
-        # Default to natural if no mode specified
-        effective_mode = search_mode or "natural"
-
-        if effective_mode == "boolean":
-            # Boolean fulltext: supports +word, -word, "phrase", word*
-            match_expr = sql_text("MATCH(post_text) AGAINST(:query IN BOOLEAN MODE)")
-            query = query.where(match_expr).params(query=search_text)
-        elif effective_mode == "natural":
-            # Natural language fulltext: ranks by relevance
-            match_expr = sql_text("MATCH(post_text) AGAINST(:query IN NATURAL LANGUAGE MODE)")
-            query = query.where(match_expr).params(query=search_text)
-        else:  # like
-            # Simple pattern matching (slowest but works everywhere)
-            query = query.where(Comments.post_text.like(f"%{search_text}%"))  # type: ignore
+    # Text search with mode selection. A blank/whitespace-only search_text means
+    # "not searching," not "search for nothing" -- `if search_text:` alone would
+    # still call apply_comment_text_search for e.g. "   ".
+    searching = bool(search_text and search_text.strip())
+    if searching:
+        reject_unindexable_comment_search(search_text, search_mode)  # type: ignore[arg-type]
+        query = apply_comment_text_search(
+            query,
+            search_text,  # type: ignore[arg-type]
+            search_mode,
+            use_fulltext=not is_postgres(db),
+        )
+    # Only the text-search path can degrade to an unindexed scan; None makes the
+    # bound a no-op so plain image_ids/user_id listings are untouched.
+    search_timeout = COMMENT_SEARCH_TIMEOUT_SECONDS if searching else None
 
     # Date filtering
     if date_from:
@@ -133,7 +145,8 @@ async def list_comments(
 
     # Count total results
     count_query = select(func.count()).select_from(query.subquery())
-    total_result = await db.execute(count_query)
+    async with statement_timeout(db, search_timeout):
+        total_result = await db.execute(count_query)
     total = total_result.scalar()
 
     # Apply sorting
@@ -148,14 +161,11 @@ async def list_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute query
-    result = await db.execute(query)
+    async with statement_timeout(db, search_timeout):
+        result = await db.execute(query)
     comments = result.scalars().all()
 
     return CommentListResponse(
@@ -176,11 +186,7 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     """
     result = await db.execute(
         select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
+        .options(comment_user_eager_load())
         .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
         .where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
     )
@@ -237,11 +243,7 @@ async def get_image_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute
     result = await db.execute(query)
@@ -299,11 +301,7 @@ async def get_user_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute
     result = await db.execute(query)
@@ -426,11 +424,7 @@ async def create_comment(
     # Re-fetch with eager loading for groups
     result = await db.execute(
         select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
+        .options(comment_user_eager_load())
         .where(Comments.post_id == comment.post_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
@@ -484,13 +478,7 @@ async def update_comment(
 
     # Re-fetch with eager loading for groups
     result = await db.execute(
-        select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
-        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+        select(Comments).options(comment_user_eager_load()).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
 
@@ -574,13 +562,7 @@ async def delete_comment(
 
     # Re-fetch with eager loading for groups
     result = await db.execute(
-        select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
-        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+        select(Comments).options(comment_user_eager_load()).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
 

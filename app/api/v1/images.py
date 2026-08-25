@@ -27,7 +27,6 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import and_, asc, delete, desc, func, or_, select
-from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -49,8 +48,8 @@ from app.config import (
     settings,
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
-from app.core.database import get_db
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.database import get_db, is_postgres, statement_timeout
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission, has_any_permission, has_permission
@@ -83,6 +82,7 @@ from app.schemas.audit import (
     ImageTagHistoryListResponse,
     ImageTagHistoryResponse,
 )
+from app.schemas.comment import CommentResponse
 from app.schemas.common import UserSummary
 from app.schemas.image import (
     TAG_TYPE_SORT_ORDER,
@@ -118,7 +118,8 @@ from app.schemas.user import (
     UserResponse,
     UserWithRatingResponse,
 )
-from app.services.feed_count_cache import get_feed_counts
+from app.services.comments import comments_for_images
+from app.services.feed_count_cache import get_feed_counts, get_filtered_count
 from app.services.image_processing import (
     create_thumbnail,
     get_image_dimensions,
@@ -133,9 +134,20 @@ from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import RatingStats, recalculate_image_ratings
 from app.services.recommendations import get_recommended_images
 from app.services.search import sync_tag_to_search
+from app.services.tag_context import stamp_context_sources
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from app.services.upload import check_upload_rate_limit, link_tags_to_image, save_uploaded_image
+from app.services.upload import (
+    check_upload_rate_limit,
+    finalize_uploaded_image,
+    link_tags_to_image,
+    stage_uploaded_image,
+)
 from app.tasks.queue import enqueue_job
+from app.utils.comment_search import (
+    COMMENT_SEARCH_TIMEOUT_SECONDS,
+    apply_comment_text_search,
+    reject_unindexable_comment_search,
+)
 
 logger = get_logger(__name__)
 
@@ -481,8 +493,11 @@ async def list_images(
     commentsearch_mode: Annotated[
         str | None,
         Query(
-            pattern="^(natural|boolean|like)$",
-            description="Search mode: natural (default), boolean fulltext, or LIKE",
+            pattern="^(all_words|natural|boolean|like)$",
+            description=(
+                "Search mode: all_words (default, every term required), "
+                "natural language fulltext (any term), boolean fulltext, or LIKE"
+            ),
         ),
     ] = None,
     hascomments: Annotated[
@@ -496,6 +511,13 @@ async def list_images(
             "ignored for other viewers."
         ),
     ] = None,
+    include_comments: Annotated[
+        bool,
+        Query(
+            description="Bundle every comment on the returned images into the "
+            "response, grouped by image id (comments map). Default false."
+        ),
+    ] = False,
     db: AsyncSession = Depends(get_db),
     current_user: Users | None = Depends(get_optional_current_user),
     redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
@@ -513,9 +535,15 @@ async def list_images(
     - Comment filtering (by commenter user ID, text search, or presence)
 
     **Comment Search Modes:**
-    - `natural` (default): MySQL fulltext natural language search (10-100x faster, relevance ranking)
-    - `boolean`: MySQL fulltext boolean search with operators
-    - `like`: Simple pattern matching, works anywhere
+    - `all_words` (default): every term must appear. Index-backed where the
+      fulltext index can see the term, LIKE where it cannot (short words,
+      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
+      or whitespace-only `commentsearch` applies no filter at all; a non-blank
+      value with nothing searchable in it (e.g. `!!!`) matches zero comments.
+    - `natural`: MySQL fulltext natural language search — matches ANY term
+    - `boolean`: MySQL fulltext boolean search with raw operators
+    - `like`: Simple pattern matching, works anywhere. `%` and `_` in the query
+      are escaped to literals, not treated as wildcards.
 
     **Boolean Mode Examples:**
     - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
@@ -529,15 +557,33 @@ async def list_images(
     - `/images?date_from=2024-01-01&sort_by=favorites` - Images from 2024, sorted by popularity
     - `/images?user_id=5&min_rating=4.0` - High-rated images by user 5
     - `/images?commenter=10` - Images commented on by user 10
-    - `/images?commentsearch=awesome` - Images with "awesome" in comments (natural fulltext)
-    - `/images?commentsearch=awesome&commentsearch_mode=like` - Simple search using LIKE
-    - `/images?commentsearch=+great -bad&commentsearch_mode=boolean` - Boolean fulltext
+    - `/images?commentsearch=happy birthday` - Comments containing BOTH words
+    - `/images?commentsearch="happy birthday"` - Comments containing the phrase
+    - `/images?commentsearch=happy -sad` - A single comment has "happy" and not "sad".
+      Every term is evaluated against a single comment row, not against the image's
+      comments collectively, so an image with a "happy" comment and a separate "sad"
+      comment still matches. This is what keeps the image-level filter in agreement
+      with the per-comment filter on /comments.
+    - `/images?commentsearch=awesome&commentsearch_mode=natural` - Any-term match
     - `/images?hascomments=true` - Images that have comments
     - `/images?hascomments=false` - Images with no comments
     - `/images?exclude_user_id=5,6` - Hide uploads by users 5 and 6
     - `/images?exclude_commenter=10` - Hide images user 10 commented on
     - `/images?exclude_favorited_by_user_id=7` - Hide images user 7 favorited
     """
+    # A blank/whitespace-only commentsearch means "not searching," not "search for
+    # nothing" -- normalize it to None up front so it reads as absent everywhere
+    # below: the Comments JOIN guard, the count's JOIN guard, and the _FeedFilters
+    # entry all key off `commentsearch is not None`.
+    if commentsearch is not None and not commentsearch.strip():
+        commentsearch = None
+    if commentsearch is not None:
+        reject_unindexable_comment_search(commentsearch, commentsearch_mode)
+    # Only the comment-text path can degrade to an unindexed scan, so only it
+    # carries the bound; every other filter here is index-backed. None elsewhere
+    # makes statement_timeout a no-op, leaving the fast paths untouched.
+    search_timeout = COMMENT_SEARCH_TIMEOUT_SECONDS if commentsearch is not None else None
+
     # Build base query
     query = select(Images)
 
@@ -561,7 +607,13 @@ async def list_images(
                 )
             )
         )
-    # Status filtering: explicit param overrides, otherwise use user's show_all_images setting
+    # Status filtering: explicit param overrides, otherwise use user's show_all_images
+    # setting. Visibility clauses are COLLECTED here, not applied: the count path below
+    # decomposes the default logged-in feed into a shared public term plus a per-viewer
+    # own-hidden term, which needs the content filters without the visibility WHERE.
+    # They are applied to `query` right after the last content filter.
+    visibility_clauses = []
+    decompose_count = False
     if image_status is not None:
         # Explicit status filter - always honor it (supports single or multiple values)
         query = query.where(Images.status.in_(image_status))  # type: ignore[attr-defined]
@@ -570,7 +622,7 @@ async def list_images(
             # explicitly — otherwise ?status=0/-2/-4 enumerates deactivated /
             # inappropriate / review-queue image metadata. Authenticated users retain
             # full explicit-status access (policy decision 2026-07-12).
-            query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
+            visibility_clauses.append(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
     else:
         # No explicit filter - apply default based on user's show_all_images setting
         # Anonymous users or users with show_all_images=0 see only public statuses
@@ -578,22 +630,23 @@ async def list_images(
         if not show_all:
             if current_user is not None:
                 # Logged in: show public statuses OR user's own images (any status)
-                query = query.where(
+                visibility_clauses.append(
                     or_(
                         Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
                         Images.user_id == current_user.user_id,  # type: ignore[arg-type]
                     )
                 )
+                decompose_count = current_user.user_id is not None
             else:
                 # Anonymous: only public statuses
-                query = query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
+                visibility_clauses.append(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
 
         # hide_reposts preference — applied in the no-explicit-status branch, outside the
         # show_all sub-block so it covers both show_all=0 and show_all=1. This is a global
         # exclusion (not ownership-aware), so the viewer's own reposts are dropped too.
         # An explicit ?status= takes the other branch and overrides this.
         if current_user is not None and current_user.hide_reposts == 1:
-            query = query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
+            visibility_clauses.append(Images.status != ImageStatus.REPOST)
 
     # Tag filtering
     tag_ids: list[int] = []
@@ -754,26 +807,22 @@ async def list_images(
     # Note: We use distinct() to avoid duplicate rows when an image has multiple comments
     # The distinct is applied to the subquery stage for efficiency
     if commenter is not None or commentsearch is not None:
-        # Join with Comments table for filtering when we need to filter by comment attributes
-        query = query.join(Comments, Images.image_id == Comments.image_id)  # type: ignore[arg-type]
+        # Join with Comments table for filtering when we need to filter by comment attributes.
+        # Soft-deleted comments are excluded here so this join agrees with /comments, which
+        # filters them everywhere. Without it an image can match on a comment the comment
+        # endpoint will never return, producing a result whose match is invisible.
+        query = query.join(Comments, Images.image_id == Comments.image_id).where(  # type: ignore[arg-type]
+            Comments.deleted == False  # type: ignore[arg-type]  # noqa: E712
+        )
         if commenter is not None:
             query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
         if commentsearch is not None:
-            # Text search with mode selection (default to natural language fulltext)
-            effective_mode = commentsearch_mode or "natural"
-
-            if effective_mode == "boolean":
-                # Boolean fulltext: supports +word, -word, "phrase", word*
-                match_expr = sql_text("MATCH(post_text) AGAINST(:query IN BOOLEAN MODE)")
-                query = query.where(match_expr).params(query=commentsearch)
-            elif effective_mode == "natural":
-                # Natural language fulltext: ranks by relevance (default, fastest)
-                match_expr = sql_text("MATCH(post_text) AGAINST(:query IN NATURAL LANGUAGE MODE)")
-                query = query.where(match_expr).params(query=commentsearch)
-            else:  # like
-                # Simple pattern matching (slowest but works everywhere)
-                search_pattern = f"%{commentsearch}%"
-                query = query.where(Comments.post_text.like(search_pattern))  # type: ignore[attr-defined]
+            query = apply_comment_text_search(
+                query,
+                commentsearch,
+                commentsearch_mode,
+                use_fulltext=not is_postgres(db),
+            )
     elif hascomments is True:
         # Use posts counter field (fast indexed lookup)
         query = query.where(Images.posts > 0)  # type: ignore[arg-type]
@@ -792,6 +841,9 @@ async def list_images(
                 select(Comments.image_id).where(  # type: ignore[call-overload]
                     Comments.user_id.in_(exclude_commenter_ids),  # type: ignore[attr-defined]
                     Comments.image_id.is_not(None),  # type: ignore[union-attr]
+                    # Deleted comments must not hide an image, for the same reason
+                    # they must not surface one: /comments never shows them.
+                    Comments.deleted == False,  # noqa: E712
                 )
             )
         )
@@ -814,6 +866,13 @@ async def list_images(
                 )
             )
         )
+
+    # Content filters end here. `content_query` (no visibility WHERE) feeds the
+    # decomposed count's shared public term; `query` gains the visibility clauses and
+    # serves the page fetch and every other count path.
+    content_query = query
+    for clause in visibility_clauses:
+        query = query.where(clause)
 
     # Count total results. For the *bare* default feed (no content filter — only the
     # implicit visibility filter), count(visible OR mine) is a full-table scan; use the
@@ -858,9 +917,39 @@ async def list_images(
                 Images.image_id.label("image_id")  # type: ignore[union-attr]
             ).distinct()
             count_query = select(func.count()).select_from(distinct_ids.subquery())
+            async with statement_timeout(db, search_timeout):
+                total = await get_filtered_count(db, count_query, redis_client)
+        elif decompose_count and current_user is not None:
+            # Default logged-in (show_all=0) feed. The visibility OR bakes the viewer's
+            # user_id into the count, which would give every user a private cache entry.
+            # Decompose instead (disjoint union):
+            #   count(F AND (public OR mine)) = count(F AND public) + count(F AND mine AND hidden)
+            # The public term is viewer-independent — one shared cache entry per filter
+            # combo (identical to the anonymous entry when hide_reposts is off). The
+            # own-hidden term is the viewer's own non-public uploads matching F: tiny,
+            # user_id-indexed, computed live. hide_reposts folds into the public term
+            # only — reposts are public, so the own-hidden term can never contain one.
+            public_query = content_query.where(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
+            if current_user.hide_reposts == 1:
+                public_query = public_query.where(Images.status != ImageStatus.REPOST)  # type: ignore[arg-type]
+            own_hidden_query = content_query.where(
+                Images.status.notin_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
+                Images.user_id == current_user.user_id,  # type: ignore[arg-type]
+            )
+            async with statement_timeout(db, search_timeout):
+                public_count = await get_filtered_count(
+                    db,
+                    select(func.count()).select_from(public_query.subquery()),
+                    redis_client,
+                )
+                own_hidden_count = (
+                    await db.execute(select(func.count()).select_from(own_hidden_query.subquery()))
+                ).scalar() or 0
+            total = public_count + own_hidden_count
         else:
             count_query = select(func.count()).select_from(query.subquery())
-        total = (await db.execute(count_query)).scalar() or 0
+            async with statement_timeout(db, search_timeout):
+                total = await get_filtered_count(db, count_query, redis_client)
 
     # Performance optimization: Two-stage query for fast filtering and sorting
     #
@@ -899,11 +988,22 @@ async def list_images(
     # Subquery: Apply all filters, sort, and limit to get matching image_ids
     # When comment filters are used with JOIN, apply distinct() to avoid duplicate rows
     # (one image can have multiple comments)
-    image_id_subquery = (
-        query.with_only_columns(Images.image_id.label("image_id"))  # type: ignore[union-attr]
-    )
     # Only need distinct when we JOIN with Comments (commenter or commentsearch filters)
-    if commenter is not None or commentsearch is not None:
+    needs_distinct = commenter is not None or commentsearch is not None
+
+    subquery_columns = [Images.image_id.label("image_id")]  # type: ignore[union-attr]
+    if needs_distinct and sort_column.key != "image_id":
+        # Postgres rejects an ORDER BY expression that is absent from a SELECT
+        # DISTINCT select list; MySQL permits it, which is why this only broke
+        # after the cutover. Adding the sort column cannot change which rows
+        # survive DISTINCT: it comes from Images, so it is constant per
+        # image_id and (image_id, sort_column) collapses exactly as image_id
+        # alone. Sorts whose get_column() already resolves to image_id
+        # (image_id, date_added) satisfy the rule and must not add a duplicate.
+        subquery_columns.append(sort_column)
+
+    image_id_subquery = query.with_only_columns(*subquery_columns)
+    if needs_distinct:
         image_id_subquery = image_id_subquery.distinct()
 
     imageset = (
@@ -928,7 +1028,8 @@ async def list_images(
     )
 
     # Execute query
-    result = await db.execute(final_query)
+    async with statement_timeout(db, search_timeout):
+        result = await db.execute(final_query)
     images = result.scalars().all()
 
     # Get favorite status for authenticated users (separate query for clean separation)
@@ -1004,11 +1105,21 @@ async def list_images(
             item.ml_suggestion_count = pending_counts.get(img.image_id, 0)  # type: ignore[arg-type]
         response_items.append(item)
 
+    await stamp_context_sources(db, response_items)
+
+    comments_map: dict[int, list[CommentResponse]] | None = None
+    if include_comments:
+        comments_map = await comments_for_images(
+            db,
+            [img.image_id for img in images],  # type: ignore[misc]
+        )
+
     return ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
         images=response_items,
+        comments=comments_map,
     )
 
 
@@ -1069,13 +1180,17 @@ async def get_recommended(
     db: AsyncSession = Depends(get_db),
 ) -> RecommendedImagesResponse:
     """
-    Personalized feed: images scored against the caller's taste profile.
+    Personalized feed: images scored against the caller's taste profile, plus
+    favorites joined in live.
 
     Live-scored per request from the nightly-refreshed user_tag_affinity table.
     Excludes images the user favorited, rated, or uploaded; applies the standard
-    status-visibility rules and the user's hide_reposts setting. Feed depth is
-    capped at TASTE_FEED_POOL scored images. `profile_ready=false` with an empty
-    list means the user has no profile yet (cold start) — not an error.
+    status-visibility rules and the user's hide_reposts setting. Favorites join
+    the feed live with a ~TASTE_FAV_SHARE page share, and matched images carry
+    `because_favorite` attribution. The feed order reshuffles daily — seeded
+    per user and UTC date, so it stays stable across pages within a day. Feed
+    depth is capped at TASTE_FEED_POOL images. `profile_ready=false` may now
+    accompany a favorites-only feed, not just an empty cold-start one.
     """
     rec = await get_recommended_images(
         db, current_user, page=pagination.page, per_page=pagination.per_page
@@ -1108,12 +1223,14 @@ async def get_recommended(
             continue
         item = RecommendedImageResponse.from_db_model(img, is_favorited=False)
         item.because_tags = rec.because.get(iid, [])
+        item.because_favorite = rec.because_favorite.get(iid)
         items.append(item)
+    await stamp_context_sources(db, items)
     return RecommendedImagesResponse(
         total=rec.total,
         page=pagination.page,
         per_page=pagination.per_page,
-        profile_ready=True,
+        profile_ready=rec.profile_ready,
         images=items,
     )
 
@@ -1218,7 +1335,7 @@ async def get_image(
             )
         )
     )
-    return ImageDetailedResponse.from_db_model(
+    response = ImageDetailedResponse.from_db_model(
         image,
         is_favorited=is_favorited,
         user_rating=user_rating,
@@ -1227,6 +1344,8 @@ async def get_image(
         has_open_report=image_id in open_report_ids,
         can_see_reason=can_see_reason,
     )
+    await stamp_context_sources(db, [response])
+    return response
 
 
 @router.delete("/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1510,7 +1629,9 @@ async def update_image(
     )
     image = result.scalar_one()
 
-    return ImageDetailedResponse.from_db_model(image)
+    response = ImageDetailedResponse.from_db_model(image)
+    await stamp_context_sources(db, [response])
+    return response
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)
@@ -1629,19 +1750,28 @@ async def get_image_tag_history(
     # Merge in memory and sort by date desc, then a deterministic tiebreak. The
     # row count loaded here is bounded by the image's own tag activity (its current
     # tag_links plus its tag_history rows), which is small in practice — the same
-    # load-all-then-sort approach the user-history endpoint uses. The tiebreak is
-    # (source, id): tag_id for link events vs tag_history_id for history events live
-    # in separate ordinal lanes (0/1) so identical timestamps still order the same
-    # way across requests (the two id spaces are unrelated and could collide).
-    # Both date columns default to current_timestamp; the aware sentinel keeps the
-    # sort total if one is ever null.
+    # load-all-then-sort approach the user-history endpoint uses.
+    #
+    # The tiebreak is (editor, source, id). Editor leads because both date columns
+    # default to current_timestamp, so one save's events all share a second: without
+    # it a second editor's event sorts between two of the first editor's purely on
+    # id, and one save reads as two. Then (source, id): tag_id for link events vs
+    # tag_history_id for history events live in separate ordinal lanes (0/1) so
+    # identical timestamps still order the same way across requests (the two id
+    # spaces are unrelated and could collide). The aware sentinel keeps the sort
+    # total if a date is ever null, and 0 stands in for an unknown editor.
     epoch = datetime(1, 1, 1, tzinfo=UTC)
-    events: list[tuple[datetime, int, int, ImageTagHistoryResponse]] = []
+
+    def editor_id(user: Users | None) -> int:
+        return user.user_id if user is not None and user.user_id is not None else 0
+
+    events: list[tuple[datetime, int, int, int, ImageTagHistoryResponse]] = []
 
     for link, tag, user in link_rows:
         events.append(
             (
                 link.date_linked or epoch,
+                editor_id(user),
                 0,  # source lane: link events
                 link.tag_id or 0,
                 ImageTagHistoryResponse(
@@ -1668,6 +1798,7 @@ async def get_image_tag_history(
         events.append(
             (
                 history.date or epoch,
+                editor_id(user),
                 1,  # source lane: history events
                 history.tag_history_id or 0,
                 ImageTagHistoryResponse(
@@ -1682,11 +1813,11 @@ async def get_image_tag_history(
             )
         )
 
-    events.sort(key=lambda e: (e[0], e[1], e[2]), reverse=True)
+    events.sort(key=lambda e: (e[0], e[1], e[2], e[3]), reverse=True)
 
     total = len(events)
     start = pagination.offset
-    items = [event[3] for event in events[start : start + pagination.per_page]]
+    items = [event[4] for event in events[start : start + pagination.per_page]]
 
     return ImageTagHistoryListResponse(
         total=total,
@@ -2360,6 +2491,10 @@ async def add_tag_to_image(
     Returns:
         Success message
     """
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.id
+
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
     image = image_result.scalar_one_or_none()
@@ -2368,58 +2503,70 @@ async def add_tag_to_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check ownership, admin, or permission
-    is_owner = image.user_id == current_user.id
+    is_owner = image.user_id == user_id
     is_admin = current_user.admin
-    has_edit_permission = await has_permission(
-        db, current_user.id, Permission.IMAGE_TAG_ADD, redis_client
-    )
+    has_edit_permission = await has_permission(db, user_id, Permission.IMAGE_TAG_ADD, redis_client)
 
     if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
 
-    # Verify tag exists and resolve aliases
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    tag = tag_result.scalar_one_or_none()
+    # The TagLinks/TagHistory INSERTs take locking reads on their FK parents
+    # (tags, images, users) and the usage_count trigger on tag_links keeps those
+    # parent rows moving, so under innodb_snapshot_isolation a concurrent tag
+    # write aborts this one with ER_CHECKREAD (1020) — reported against the
+    # child table. Retry on a fresh snapshot instead of surfacing a 500 (see
+    # app/core/db_retry.py). The unit re-fetches its rows.
+    async def _apply_tag_add() -> int:
+        # Verify tag exists and resolve aliases
+        tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
+        tag = tag_result.scalar_one_or_none()
 
-    if not tag:
-        raise HTTPException(status_code=404, detail="Tag not found")
+        if not tag:
+            raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Resolve alias tags to their actual tag (pass the already-fetched tag to avoid duplicate query)
-    _, resolved_tag_id = await resolve_tag_alias(db, tag_id, tag)
+        # Resolve alias tags to their actual tag (pass the already-fetched tag
+        # to avoid duplicate query)
+        _, resolved = await resolve_tag_alias(db, tag_id, tag)
 
-    # Check if tag link already exists (using resolved tag ID)
-    existing_link = await db.execute(
-        select(TagLinks).where(
-            TagLinks.image_id == image_id,  # type: ignore[arg-type]
-            TagLinks.tag_id == resolved_tag_id,  # type: ignore[arg-type]
+        # Check if tag link already exists (using resolved tag ID)
+        existing_link = await db.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,  # type: ignore[arg-type]
+                TagLinks.tag_id == resolved,  # type: ignore[arg-type]
+            )
         )
-    )
-    if existing_link.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Tag already linked to this image")
+        if existing_link.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Tag already linked to this image")
 
-    # Create tag link (usage_count is maintained by database trigger)
-    tag_link = TagLinks(
-        image_id=image_id,
-        tag_id=resolved_tag_id,
-        user_id=current_user.id,
-    )
-    db.add(tag_link)
+        # Create tag link (usage_count is maintained by database trigger)
+        tag_link = TagLinks(
+            image_id=image_id,
+            tag_id=resolved,
+            user_id=user_id,
+        )
+        db.add(tag_link)
 
-    # Record in tag history
-    history_entry = TagHistory(
-        image_id=image_id,
-        tag_id=resolved_tag_id,
-        action="a",
-        user_id=current_user.id,
-    )
-    db.add(history_entry)
+        # Record in tag history
+        history_entry = TagHistory(
+            image_id=image_id,
+            tag_id=resolved,
+            action="a",
+            user_id=user_id,
+        )
+        db.add(history_entry)
 
-    # Resolve any matching pending ML suggestion (applying the tag out of band
-    # is an implicit approval; keeps the review queue's pending counts honest).
-    await approve_pending_suggestions_for_links(db, [(image_id, resolved_tag_id)], current_user.id)
+        # Resolve any matching pending ML suggestion (applying the tag out of
+        # band is an implicit approval; keeps the review queue's pending counts
+        # honest).
+        await approve_pending_suggestions_for_links(db, [(image_id, resolved)], user_id)
 
-    await refresh_image_tag_type_flags(db, image_id)
-    await db.commit()
+        await refresh_image_tag_type_flags(db, image_id)
+        await db.commit()
+        return resolved
+
+    # Non-DB side effect: the search sync stays outside the retried unit so a
+    # retry never repeats it.
+    resolved_tag_id = await retry_on_transient_conflict(db, _apply_tag_add, what="image_tag_add")
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == resolved_tag_id))  # type: ignore[arg-type]
@@ -2446,6 +2593,10 @@ async def remove_tag_from_image(
     - The user has admin privileges
     - The user has the IMAGE_TAG_REMOVE permission
     """
+    # Capture as a primitive: a snapshot-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.id
+
     # Verify image exists
     image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
     image = image_result.scalar_one_or_none()
@@ -2454,45 +2605,55 @@ async def remove_tag_from_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     # Check ownership, admin, or permission
-    is_owner = image.user_id == current_user.id
+    is_owner = image.user_id == user_id
     is_admin = current_user.admin
     has_edit_permission = await has_permission(
-        db, current_user.id, Permission.IMAGE_TAG_REMOVE, redis_client
+        db, user_id, Permission.IMAGE_TAG_REMOVE, redis_client
     )
 
     if not is_owner and not is_admin and not has_edit_permission:
         raise HTTPException(403, "Not authorized to edit this image")
 
-    # Check if tag link exists
-    link_result = await db.execute(
-        select(TagLinks).where(
-            TagLinks.image_id == image_id,  # type: ignore[arg-type]
-            TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+    # Same snapshot-conflict exposure as the add path: the TagHistory INSERT
+    # locking-reads its FK parents and the DELETE's usage_count trigger keeps
+    # the parent `tags` row moving, so a concurrent tag write can abort this one
+    # with ER_CHECKREAD (1020). Retry on a fresh snapshot (see
+    # app/core/db_retry.py). The unit re-fetches its rows.
+    async def _apply_tag_remove() -> None:
+        # Check if tag link exists
+        link_result = await db.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image_id,  # type: ignore[arg-type]
+                TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+            )
         )
-    )
-    tag_link = link_result.scalar_one_or_none()
+        tag_link = link_result.scalar_one_or_none()
 
-    if not tag_link:
-        raise HTTPException(status_code=404, detail="Tag not linked to this image")
+        if not tag_link:
+            raise HTTPException(status_code=404, detail="Tag not linked to this image")
 
-    # Record in tag history (before deleting the link)
-    history_entry = TagHistory(
-        image_id=image_id,
-        tag_id=tag_id,
-        action="r",
-        user_id=current_user.id,
-    )
-    db.add(history_entry)
-
-    # Delete tag link (usage_count is maintained by database trigger)
-    await db.execute(
-        delete(TagLinks).where(
-            TagLinks.image_id == image_id,  # type: ignore[arg-type]
-            TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+        # Record in tag history (before deleting the link)
+        history_entry = TagHistory(
+            image_id=image_id,
+            tag_id=tag_id,
+            action="r",
+            user_id=user_id,
         )
-    )
-    await refresh_image_tag_type_flags(db, image_id)
-    await db.commit()
+        db.add(history_entry)
+
+        # Delete tag link (usage_count is maintained by database trigger)
+        await db.execute(
+            delete(TagLinks).where(
+                TagLinks.image_id == image_id,  # type: ignore[arg-type]
+                TagLinks.tag_id == tag_id,  # type: ignore[arg-type]
+            )
+        )
+        await refresh_image_tag_type_flags(db, image_id)
+        await db.commit()
+
+    # Non-DB side effect: the search sync stays outside the retried unit so a
+    # retry never repeats it.
+    await retry_on_transient_conflict(db, _apply_tag_remove, what="image_tag_remove")
 
     # Re-fetch tag to get updated usage_count (maintained by DB trigger)
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -2567,7 +2728,7 @@ async def rate_image(
         await db.commit()
         return message, stats
 
-    message, stats = await retry_on_snapshot_conflict(db, _apply_rating, what="rate_image")
+    message, stats = await retry_on_transient_conflict(db, _apply_rating, what="rate_image")
 
     return {
         "message": message,
@@ -2635,7 +2796,7 @@ async def favorite_image(
         await db.commit()
         return False, favorites_count
 
-    already_favorited, favorites_count = await retry_on_snapshot_conflict(
+    already_favorited, favorites_count = await retry_on_transient_conflict(
         db, _apply_favorite, what="favorite_image"
     )
 
@@ -2720,7 +2881,7 @@ async def unfavorite_image(
         await db.commit()
         return favorites_count
 
-    favorites_count = await retry_on_snapshot_conflict(
+    favorites_count = await retry_on_transient_conflict(
         db, _apply_unfavorite, what="unfavorite_image"
     )
 
@@ -2729,6 +2890,34 @@ async def unfavorite_image(
         "favorited": False,
         "favorites_count": favorites_count,
     }
+
+
+async def _discard_unfinished_upload(
+    db: AsyncSession, staged_path: FilePath | None, committed: bool
+) -> None:
+    """Undo an upload that failed before its row was committed.
+
+    Once the row is committed it owns the file, so a later failure (a job
+    enqueue, say) must leave both alone rather than delete a file the row
+    points at.
+    """
+    if committed:
+        return
+    await db.rollback()
+    if staged_path:
+        staged_path.unlink(missing_ok=True)
+
+
+async def _discard_finalized_upload(db: AsyncSession, image_id: int, staged_path: FilePath) -> None:
+    """Undo a committed upload whose file never reached its permanent name.
+
+    Deleting the row cascades its tag_links (fk_tag_links_image_id is ON DELETE
+    CASCADE) and reverses the same usage_count / image_posts triggers the insert
+    fired, so this leaves the counters where they started.
+    """
+    await db.execute(delete(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    await db.commit()
+    staged_path.unlink(missing_ok=True)
 
 
 @router.post(
@@ -2807,33 +2996,11 @@ async def upload_image(
     # touching an expired attribute on an async session raises.
     uploader_id: int = current_user.id
 
-    # Concurrent uploads write identical placeholder values into the same
-    # index positions, so this INSERT can hit a snapshot conflict (see
-    # app/core/db_retry.py). A rolled-back attempt just burns an auto-inc id.
-    async def _insert_temp_image() -> Images:
-        temp = Images(
-            filename="temp",  # Will be updated after save
-            ext="tmp",
-            original_filename=file.filename or "unknown",
-            md5_hash="",  # Will be calculated during save
-            filesize=0,
-            width=0,
-            height=0,
-            user_id=uploader_id,
-            ip=client_ip,  # Log IP address
-            status=1,
-            locked=0,
-        )
-        db.add(temp)
-        await db.flush()  # Get image_id
-        return temp
-
-    temp_image = await retry_on_snapshot_conflict(db, _insert_temp_image, what="upload_temp_image")
-    image_id: int = temp_image.image_id  # type: ignore[assignment]
-
-    logger.info("image_record_created", image_id=image_id)
-
-    file_path: FilePath | None = None  # Initialize to track if file was saved
+    # The file write and both duplicate checks run BEFORE any database write, so
+    # the transaction that follows never holds a snapshot across the disk write
+    # or the IQDB network call. That is what makes it short enough to retry.
+    staged_path: FilePath | None = None
+    committed = False
     try:
         # Validate source_url before touching storage: only http(s) URLs are
         # accepted (blocks javascript:/data: schemes and similar).
@@ -2845,34 +3012,27 @@ async def upload_image(
                 detail="source_url must start with http:// or https://",
             )
 
-        # Save image to storage (validates and calculates hash)
-        # If validation fails, this will raise HTTPException
-        file_path, ext, md5_hash = await save_uploaded_image(file, settings.STORAGE_PATH, image_id)
-        logger.info("image_saved", image_id=image_id, file_path=str(file_path), md5_hash=md5_hash)
+        # Stage the file (validates and calculates hash) under a temporary name.
+        # If validation fails, this will raise HTTPException.
+        staged_path, ext, md5_hash = await stage_uploaded_image(file, settings.STORAGE_PATH)
+        logger.info("image_staged", file_path=str(staged_path), md5_hash=md5_hash)
 
         # Check for duplicate image (MD5)
         existing_result = await db.execute(
-            select(Images).where(
-                Images.md5_hash == md5_hash,  # type: ignore[arg-type]
-                Images.image_id != image_id,  # type: ignore[arg-type]
-            )
+            select(Images).where(Images.md5_hash == md5_hash)  # type: ignore[arg-type]
         )
         existing_image = existing_result.scalar_one_or_none()
 
         if existing_image:
-            # Capture the id before rollback expires the instance.
             existing_image_id: int = existing_image.image_id  # type: ignore[assignment]
             logger.warning(
                 "duplicate_image_detected",
-                image_id=image_id,
                 duplicate_of=existing_image_id,
                 md5_hash=md5_hash,
             )
-            # Clean up the temp record and saved file before returning 409,
-            # mirroring the IQDB near-duplicate path below.
-            await db.rollback()
-            if file_path:
-                file_path.unlink(missing_ok=True)
+            # Nothing was written to the database yet — only the staged file
+            # needs cleaning up, mirroring the IQDB near-duplicate path below.
+            staged_path.unlink(missing_ok=True)
             return JSONResponse(
                 status_code=status.HTTP_409_CONFLICT,
                 content=ImageUploadDuplicateResponse(
@@ -2881,30 +3041,22 @@ async def upload_image(
                 ).model_dump(mode="json"),
             )
 
-        # Get image dimensions and update record
-        width, height = get_image_dimensions(file_path)
-        filesize = file_path.stat().st_size
+        # Get image dimensions
+        width, height = get_image_dimensions(staged_path)
+        filesize = staged_path.stat().st_size
 
         # Calculate total pixels (in megapixels)
         total_pixels = Decimal((width * height) / 1_000_000)
 
-        # Derive from the actually-saved fullsize path so DB.filename matches
-        # the on-disk name even when upload straddles a local-midnight boundary
-        # (datetime.now() recomputed here can land on the next day).
-        filename = file_path.stem  # e.g. "2026-05-18-1116164"
-
         # Check IQDB for near-duplicate images unless user confirmed
         if not confirm_similar:
             iqdb_results = await check_iqdb_similarity(
-                file_path, db, threshold=settings.IQDB_UPLOAD_THRESHOLD
+                staged_path, db, threshold=settings.IQDB_UPLOAD_THRESHOLD
             )
             if iqdb_results:
                 # Hydrate IQDB results with full image data
                 similar = await _hydrate_similar_images(iqdb_results, db)
-                # Clean up temp record and file before returning 409
-                await db.rollback()
-                if file_path and file_path.exists():
-                    file_path.unlink()
+                staged_path.unlink(missing_ok=True)
                 return JSONResponse(
                     status_code=status.HTTP_409_CONFLICT,
                     content=ImageUploadSimilarResponse(
@@ -2925,34 +3077,89 @@ async def upload_image(
             else VariantStatus.NONE
         )
 
-        # Update temporary record with actual data
-        temp_image.filename = filename
-        temp_image.ext = ext
-        temp_image.md5_hash = md5_hash
-        temp_image.filesize = filesize
-        temp_image.width = width
-        temp_image.height = height
-        temp_image.total_pixels = total_pixels
-        temp_image.medium = medium_status
-        temp_image.large = large_status
-        temp_image.caption = caption
-        temp_image.miscmeta = miscmeta
-        temp_image.source_url = source_url
-
-        # Link tags if provided
+        # Parse tag ids before opening the transaction: a malformed list is a
+        # 400, not something to discover mid-write.
+        tag_id_list: list[int] = []
         if tag_ids.strip():
             try:
                 tag_id_list = [int(tid.strip()) for tid in tag_ids.split(",") if tid.strip()]
-                await link_tags_to_image(image_id, tag_id_list, uploader_id, db)
             except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid tag IDs format. Must be comma-separated integers.",
                 ) from e
 
-        # Commit all changes
-        await db.commit()
-        await db.refresh(temp_image)
+        # One date_prefix for both the recorded filename and the on-disk name,
+        # so the two agree even when the upload straddles a local-midnight
+        # boundary (a recomputed datetime.now() can land on the next day).
+        date_prefix = datetime.now().strftime("%Y-%m-%d")
+
+        # Everything above is non-DB work. What remains is a short,
+        # self-contained transaction: INSERT the row, name it from the id it
+        # just minted, link tags, commit. Its tag_links/tag_history INSERTs take
+        # locking reads on FK parents that other taggers keep moving, so under
+        # innodb_snapshot_isolation it can abort with ER_CHECKREAD (1020) —
+        # retry it on a fresh snapshot (see app/core/db_retry.py). A rolled-back
+        # attempt just burns an auto-inc id.
+        async def _insert_image() -> Images:
+            image = Images(
+                filename="",  # set below, from the id this INSERT mints
+                ext=ext,
+                original_filename=file.filename or "unknown",
+                md5_hash=md5_hash,
+                filesize=filesize,
+                width=width,
+                height=height,
+                total_pixels=total_pixels,
+                medium=medium_status,
+                large=large_status,
+                caption=caption,
+                miscmeta=miscmeta,
+                source_url=source_url,
+                user_id=uploader_id,
+                ip=client_ip,  # Log IP address
+                status=1,
+                locked=0,
+            )
+            db.add(image)
+            await db.flush()  # Get image_id
+            image.filename = f"{date_prefix}-{image.image_id}"
+            if tag_id_list:
+                await link_tags_to_image(
+                    image.image_id,  # type: ignore[arg-type]
+                    tag_id_list,
+                    uploader_id,
+                    db,
+                )
+            await db.commit()
+            return image
+
+        new_image = await retry_on_transient_conflict(db, _insert_image, what="upload_image")
+        committed = True
+        await db.refresh(new_image)
+        image_id: int = new_image.image_id  # type: ignore[assignment]
+        filename = new_image.filename
+
+        # Give the staged file its permanent name now that the row exists.
+        try:
+            file_path = finalize_uploaded_image(
+                staged_path, settings.STORAGE_PATH, image_id, ext, date_prefix
+            )
+        except OSError:
+            # The row is committed, but its bytes never reached the name the row
+            # records — and the staging name is a uuid nothing can derive from
+            # the row, so leaving the pair in place strands both. Undo the row so
+            # the upload is still all-or-nothing, as it was when the rename
+            # happened before the commit.
+            logger.error(
+                "image_finalize_failed",
+                image_id=image_id,
+                staged_path=str(staged_path),
+                exc_info=True,
+            )
+            await _discard_finalized_upload(db, image_id, staged_path)
+            raise
+        logger.info("image_saved", image_id=image_id, file_path=str(file_path))
 
         logger.info(
             "image_upload_completed",
@@ -3037,51 +3244,46 @@ async def upload_image(
 
         # Build response
         image_response = ImageResponse(
-            image_id=temp_image.image_id or 0,  # image_id is guaranteed to exist after flush
-            filename=temp_image.filename,
-            ext=temp_image.ext,
-            original_filename=temp_image.original_filename,
-            md5_hash=temp_image.md5_hash,
-            filesize=temp_image.filesize,
-            width=temp_image.width,
-            height=temp_image.height,
-            caption=temp_image.caption,
-            miscmeta=temp_image.miscmeta,
-            source_url=temp_image.source_url,
-            rating=temp_image.rating,
-            user_id=temp_image.user_id,  # user_id is guaranteed from database
-            date_added=temp_image.date_added,
-            status=temp_image.status,
-            locked=temp_image.locked,
-            posts=temp_image.posts,
-            favorites=temp_image.favorites,
-            bayesian_rating=temp_image.bayesian_rating,
-            num_ratings=temp_image.num_ratings,
-            medium=temp_image.medium,
-            large=temp_image.large,
+            image_id=image_id,
+            filename=new_image.filename,
+            ext=new_image.ext,
+            original_filename=new_image.original_filename,
+            md5_hash=new_image.md5_hash,
+            filesize=new_image.filesize,
+            width=new_image.width,
+            height=new_image.height,
+            caption=new_image.caption,
+            miscmeta=new_image.miscmeta,
+            source_url=new_image.source_url,
+            rating=new_image.rating,
+            user_id=new_image.user_id,  # user_id is guaranteed from database
+            date_added=new_image.date_added,
+            status=new_image.status,
+            locked=new_image.locked,
+            posts=new_image.posts,
+            favorites=new_image.favorites,
+            bayesian_rating=new_image.bayesian_rating,
+            num_ratings=new_image.num_ratings,
+            medium=new_image.medium,
+            large=new_image.large,
         )
 
         return ImageUploadResponse(
             message="Image uploaded successfully",
-            image_id=temp_image.image_id or 0,  # image_id is guaranteed after flush
+            image_id=image_id,
             image=image_response,
         )
 
     except HTTPException as he:
-        # Clean up file and database record on validation error
         logger.warning(
             "image_upload_failed",
             image_id=image_id if "image_id" in locals() else None,
             error=he.detail,
             status_code=he.status_code,
         )
-        # Rollback database first, then delete file
-        await db.rollback()
-        if file_path and file_path.exists():
-            file_path.unlink()
+        await _discard_unfinished_upload(db, staged_path, committed)
         raise
     except Exception as e:
-        # Clean up file and database record on any error
         logger.error(
             "image_upload_error",
             image_id=image_id if "image_id" in locals() else None,
@@ -3089,10 +3291,7 @@ async def upload_image(
             error_type=type(e).__name__,
             exc_info=True,
         )
-        # Rollback database first, then delete file
-        await db.rollback()
-        if file_path and file_path.exists():
-            file_path.unlink()
+        await _discard_unfinished_upload(db, staged_path, committed)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to upload image",

@@ -13,6 +13,7 @@ _URL_RE = re.compile(r"^https?://urlimport-fixture\.local/post/(single|multi|web
 
 class FixtureResolver:
     site = "fixture"
+    example_url: str | None = None
 
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None

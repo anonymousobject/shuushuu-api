@@ -28,6 +28,21 @@ services:
       interval: 5s
       retries: 1
 
+  # Same treatment for the transition-target Postgres: prod's Postgres (like
+  # MariaDB) lives natively on the DB tier, reached via DATABASE_URL. Without
+  # this stub a prod `up -d` would start a real postgres container with
+  # whatever POSTGRES_* creds the prod .env holds.
+  postgres:
+    image: busybox:latest
+    entrypoint: ["sleep", "infinity"]
+    restart: "no"
+    volumes: !override []
+    ports: !override []
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      retries: 1
+
   adminer:
     profiles: [disabled]
 
@@ -78,12 +93,19 @@ services:
       - NODE_OPTIONS=--max-old-space-size=4096
     depends_on:
       - api
+    # The production image starts via a warm-before-listen entry
+    # (server.production.js in the frontend repo): the server renders the
+    # homepage through the real SSR path BEFORE binding :3000, so this check
+    # can only pass — and docker-rollout can only drain the old replica — once
+    # the container is genuinely warm. Until then connections are refused and
+    # nginx fails over to the old replica. start_period covers node start +
+    # the warmup render on a loaded host.
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 60s
     restart: unless-stopped
     networks:
       - default
@@ -110,9 +132,18 @@ services:
       # only runs in prod and its public URL is fixed. The .conf glob
       # in nginx.conf picks it up automatically.
       - ./docker/nginx/conf.d/wiki.conf:/etc/nginx/conf.d/wiki.conf:ro
+      # stub_status on :8081 for the Datadog nginx check. Same .conf glob
+      # picks it up. Published to 127.0.0.1 only — see ports below.
+      - ./docker/nginx/conf.d/stub-status.conf:/etc/nginx/conf.d/stub-status.conf:ro
       # LE certs land here via the certbot service. Read-only for nginx;
       # certbot has it RW.
       - ./docker/certbot/conf:/etc/letsencrypt:ro
+    ports:
+      # Appended to the base file's 80/443. Bound to loopback so the status
+      # endpoint is reachable by dd-agent on this host and by nothing off it;
+      # docker is the boundary rather than an nginx allow/deny on a bridge
+      # subnet that can change.
+      - "127.0.0.1:8081:8081"
     depends_on:
       - api
       - frontend
@@ -180,7 +211,12 @@ services:
     logging: *default-logging
 
   arq-worker:
-    container_name: shuushuu-arq-worker-prod
+    # No container_name: like api, docker-rollout scales this service to two
+    # replicas transiently during a deploy, so its name can't be fixed. The
+    # overlap is safe: arq claims jobs atomically and cron jobs enqueue with
+    # deterministic ids (name + scheduled time), so two live workers never
+    # double-run anything.
+    container_name: !reset null
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
     ports: []
     environment:
@@ -191,6 +227,18 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
+    # docker-rollout waits for this healthcheck on the new replica before
+    # draining the old one. `arq --check` reads a per-container health key that
+    # the worker refreshes every 15s (see WorkerSettings) — per-container so the
+    # old replica's heartbeat can't vouch for a broken new one. start_period
+    # covers Meilisearch config + ML model load (~5s observed; headroom for a
+    # loaded host).
+    healthcheck:
+      test: ["CMD", "uv", "run", "--no-project", "arq", "--check", "app.tasks.worker.WorkerSettings"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     # List form replaces base depends_on entirely (removes mariadb dependency)
     depends_on:
       - redis
@@ -242,9 +290,16 @@ services:
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
       - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
-    # No env_file — only GRAFANA_ADMIN_PASSWORD is needed, and it is already
+      # Resolved by the pushover contact point in
+      # provisioning/alerting/contact-points.yaml, which is git-tracked and so
+      # references $PUSHOVER_* rather than carrying the values. Rendered into
+      # .env by the ansible compose_project role from vault/monitoring.yml.
+      - PUSHOVER_API_TOKEN=${PUSHOVER_API_TOKEN}
+      - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY}
+    # No env_file — only the variables enumerated above are needed, and they are
     # substituted via ${VAR} in `environment:` (sourced from .env at compose level).
     # This avoids leaking unrelated DB/Redis/etc. credentials into the Grafana container.
+    # Adding an env_file to save enumerating two lines would quietly undo that.
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro

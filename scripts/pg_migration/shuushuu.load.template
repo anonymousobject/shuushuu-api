@@ -1,0 +1,43 @@
+-- pgloader command file for the MariaDB -> Postgres data migration.
+-- Rendered by scripts/pg_migration/migrate.py ({{SOURCE}}, {{TARGET}},
+-- {{SOURCE_DB}} substituted). Every setting below was earned the hard way
+-- during the 2026-08-20 dev migration — see docs/postgres-cutover-runbook.md:
+--   * data only: the schema comes from the alembic_pg chain, never pgloader
+--   * concurrency = 1: pgloader 3.6.x has a thread race at higher values
+--   * small prefetch/batch: heap exhaustion on wide rows (images, posts)
+--   * disable triggers: skip FK enforcement during load (superuser)
+--   * ALTER SCHEMA rename: pgloader maps the source DB name to a PG schema
+
+LOAD DATABASE
+     FROM {{SOURCE}}
+     INTO {{TARGET}}
+
+WITH data only, disable triggers,
+     workers = 4, concurrency = 1,
+     prefetch rows = 2000, batch rows = 5000, batch size = 16MB
+
+SET PostgreSQL PARAMETERS
+    maintenance_work_mem to '256MB',
+    synchronous_commit to 'off'
+
+CAST column banners.active to boolean drop typemod using tinyint-to-boolean,
+     column banners.in_r2 to boolean drop typemod using tinyint-to-boolean,
+     column banners.supports_dark to boolean drop typemod using tinyint-to-boolean,
+     column banners.supports_light to boolean drop typemod using tinyint-to-boolean,
+     column image_report_tag_suggestions.accepted to boolean drop typemod using tinyint-to-boolean,
+     column images.has_artist to boolean drop typemod using tinyint-to-boolean,
+     column images.has_character to boolean drop typemod using tinyint-to-boolean,
+     column images.has_source to boolean drop typemod using tinyint-to-boolean,
+     column images.has_theme to boolean drop typemod using tinyint-to-boolean,
+     column posts.deleted to boolean drop typemod using tinyint-to-boolean,
+     column refresh_tokens.revoked to boolean drop typemod using tinyint-to-boolean,
+     column users.avatar_in_r2 to boolean drop typemod using tinyint-to-boolean,
+     column users.dark_mode to boolean drop typemod using tinyint-to-boolean,
+     column users.email_verified to boolean drop typemod using tinyint-to-boolean,
+     type tinyint to smallint drop typemod,
+     type tinyint when unsigned to smallint drop typemod
+
+EXCLUDING TABLE NAMES MATCHING 'alembic_version', ~/^tw_/
+
+ALTER SCHEMA '{{SOURCE_DB}}' RENAME TO 'public'
+;

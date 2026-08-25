@@ -2,19 +2,24 @@
 
 import os
 import tempfile
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pymysql
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token
 from app.models.user import Users
 from app.schemas.image import SimilarImageResult
+from tests.transient_conflict import (
+    _db_error,
+    _flaky_flush,
+    _flaky_flush_nth,
+    _snapshot_conflict_error,
+)
 
 
 @pytest.fixture
@@ -78,22 +83,33 @@ def _make_similar_result(image_id: int, score: float) -> SimilarImageResult:
     )
 
 
-def _mock_save_uploaded_image(md5: str = "abc123unique"):
-    """Create an AsyncMock for save_uploaded_image that returns a fake path.
+@contextmanager
+def _mock_upload_storage(md5: str = "abc123unique"):
+    """Patch the upload route's two filesystem steps: stage, then finalize.
 
     Uses a per-xdist-worker temp path (not a single shared file) so parallel
     workers can't touch()/unlink() one another's file mid-request — the
     duplicate and IQDB 409 paths both unlink it, while the success path stats it.
+
+    finalize is a no-op: the staged path is already the final path here, so the
+    fake file survives for whatever the test asserts on afterwards.
     """
     worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
     fake_path = Path(tempfile.gettempdir()) / f"fake-upload-{worker}.jpg"
 
-    async def _save(file, storage_path, image_id):
+    async def _stage(file, storage_path):
         # Create the fake file so cleanup code (and stat()) don't error
         fake_path.touch()
         return fake_path, "jpg", md5
 
-    return patch("app.api.v1.images.save_uploaded_image", side_effect=_save)
+    def _finalize(staged_path, storage_path, image_id, ext, date_prefix):
+        return staged_path
+
+    with (
+        patch("app.api.v1.images.stage_uploaded_image", side_effect=_stage),
+        patch("app.api.v1.images.finalize_uploaded_image", side_effect=_finalize),
+    ):
+        yield
 
 
 class TestUploadIQDBDuplicateDetection:
@@ -110,7 +126,7 @@ class TestUploadIQDBDuplicateDetection:
         ]
 
         with (
-            _mock_save_uploaded_image(),
+            _mock_upload_storage(),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -147,7 +163,7 @@ class TestUploadIQDBDuplicateDetection:
         mock_iqdb = AsyncMock(return_value=[])
 
         with (
-            _mock_save_uploaded_image("abc123unique2"),
+            _mock_upload_storage("abc123unique2"),
             patch("app.api.v1.images.check_iqdb_similarity", mock_iqdb),
             patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
             patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
@@ -168,7 +184,7 @@ class TestUploadIQDBDuplicateDetection:
     ):
         """Upload succeeds normally when IQDB finds no near-duplicates."""
         with (
-            _mock_save_uploaded_image("abc123unique3"),
+            _mock_upload_storage("abc123unique3"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -193,7 +209,7 @@ class TestUploadIQDBDuplicateDetection:
     ):
         """Upload with miscmeta parameter stores it and returns it in the response."""
         with (
-            _mock_save_uploaded_image("abc123unique4"),
+            _mock_upload_storage("abc123unique4"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -218,7 +234,7 @@ class TestUploadIQDBDuplicateDetection:
     ):
         """Upload with source_url stores it and returns it in the response."""
         with (
-            _mock_save_uploaded_image("abc123unique5"),
+            _mock_upload_storage("abc123unique5"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -245,7 +261,7 @@ class TestUploadIQDBDuplicateDetection:
         self, upload_client: AsyncClient, verified_user: Users
     ):
         """Upload rejects a source_url that isn't http(s) with a 422."""
-        with _mock_save_uploaded_image():
+        with _mock_upload_storage():
             response = await upload_client.post(
                 "/api/v1/images/upload",
                 files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
@@ -260,7 +276,7 @@ class TestUploadIQDBDuplicateDetection:
     ):
         """Upload with whitespace-only source_url normalizes it to None."""
         with (
-            _mock_save_uploaded_image("abc123unique6"),
+            _mock_upload_storage("abc123unique6"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -295,7 +311,7 @@ class TestUploadMLTagSuggestions:
         enqueue_mock = AsyncMock()
 
         with (
-            _mock_save_uploaded_image("ml_enqueue_on"),
+            _mock_upload_storage("ml_enqueue_on"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -335,7 +351,7 @@ class TestUploadMLTagSuggestions:
         enqueue_mock = AsyncMock()
 
         with (
-            _mock_save_uploaded_image("ml_enqueue_off"),
+            _mock_upload_storage("ml_enqueue_off"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -375,7 +391,7 @@ class TestUploadMLTagSuggestions:
         enqueue_mock = AsyncMock(side_effect=_side_effect)
 
         with (
-            _mock_save_uploaded_image("ml_enqueue_fail"),
+            _mock_upload_storage("ml_enqueue_fail"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -417,7 +433,7 @@ class TestUploadMD5DuplicateDetection:
 
         # save_uploaded_image is mocked to yield the md5 of an image that already
         # exists in the DB (the test_image fixture), triggering the duplicate path.
-        with _mock_save_uploaded_image(existing_md5):
+        with _mock_upload_storage(existing_md5):
             response = await upload_client.post(
                 "/api/v1/images/upload",
                 files={"file": ("dup.jpg", _fake_image_bytes(), "image/jpeg")},
@@ -447,7 +463,7 @@ class TestUploadClientIPHandling:
         """
         ipv6 = "2600:6c63:ff0:6810:c042:21d5:bfed:9bae"
         with (
-            _mock_save_uploaded_image("ipv6upload01"),
+            _mock_upload_storage("ipv6upload01"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -485,36 +501,6 @@ async def test_images_source_url_roundtrip(db_session: AsyncSession):
     assert image.source_url == "https://www.pixiv.net/artworks/138823691"
 
 
-def _db_error(errno: int, message: str) -> OperationalError:
-    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
-    return OperationalError(
-        "INSERT INTO images ...", None, pymysql.err.OperationalError(errno, message)
-    )
-
-
-def _snapshot_conflict_error() -> OperationalError:
-    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD)."""
-    return _db_error(1020, "Record has changed since last read in table 'images'")
-
-
-def _flaky_flush(fail_times: int, error: OperationalError):
-    """Patch AsyncSession.flush to raise `error` for the first `fail_times`
-    calls, then delegate to the real flush. Only the route's explicit
-    `await db.flush()` goes through AsyncSession.flush (autoflush runs inside
-    the sync Session), so the first intercepted call is the temp-row INSERT.
-    Returns (patch_ctx, calls) where calls records each intercepted flush."""
-    real_flush = AsyncSession.flush
-    calls: list[int] = []
-
-    async def flush(self, *args, **kwargs):
-        calls.append(1)
-        if len(calls) <= fail_times:
-            raise error
-        await real_flush(self, *args, **kwargs)
-
-    return patch.object(AsyncSession, "flush", flush), calls
-
-
 class TestUploadSnapshotConflictRetry:
     """Concurrent uploads trip MariaDB ER_CHECKREAD (errno 1020) on the temp-row
     INSERT: with innodb_snapshot_isolation=ON, a locking insert that meets index
@@ -538,7 +524,7 @@ class TestUploadSnapshotConflictRetry:
         """
         flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
         with (
-            _mock_save_uploaded_image("snapshotretry1"),
+            _mock_upload_storage("snapshotretry1"),
             patch(
                 "app.api.v1.images.check_iqdb_similarity",
                 new_callable=AsyncMock,
@@ -562,36 +548,230 @@ class TestUploadSnapshotConflictRetry:
     async def test_upload_gives_up_after_bounded_retries(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """A persistent 1020 propagates after a bounded number of attempts."""
+        """A persistent 1020 gives up after a bounded number of attempts.
+
+        The exhausted error surfaces as the route's own 500 rather than a raw
+        OperationalError: the retried unit sits inside upload's try/except, so
+        the failure also rolls back and unlinks the staged file.
+        """
         flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error())
         with (
-            _mock_save_uploaded_image("snapshotretry2"),
+            _mock_upload_storage("snapshotretry2"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
             flush_patch,
-            pytest.raises(OperationalError),
         ):
-            await upload_client.post(
+            response = await upload_client.post(
                 "/api/v1/images/upload",
                 files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
                 data={"tag_ids": "", "caption": ""},
             )
 
+        assert response.status_code == 500
         assert len(calls) == 3  # bounded: no infinite retry loop
 
     @pytest.mark.asyncio
     async def test_upload_does_not_retry_other_db_errors(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """Non-1020 database errors propagate immediately with no retry."""
-        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        """Database errors outside the transient set fail immediately with no retry."""
+        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
         with (
-            _mock_save_uploaded_image("snapshotretry3"),
+            _mock_upload_storage("snapshotretry3"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
             flush_patch,
-            pytest.raises(OperationalError),
         ):
-            await upload_client.post(
+            response = await upload_client.post(
                 "/api/v1/images/upload",
                 files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
                 data={"tag_ids": "", "caption": ""},
             )
 
+        assert response.status_code == 500
         assert len(calls) == 1  # not retried
+
+
+@pytest.mark.api
+class TestUploadTagLinkSnapshotConflictRetry:
+    """The upload's tag-link write is exposed to ER_CHECKREAD too, and for
+    longer than the temp-row INSERT: tag_links/tag_history INSERTs take locking
+    reads on their FK parents, and the usage_count trigger on tag_links keeps
+    the parent `tags` row moving whenever anyone else tags that tag.
+
+    The conflict is aimed at the second explicit flush (the tag-link write)
+    rather than the first (which mints the image_id), so this fails on any
+    implementation that only retries the id-minting INSERT.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.needs_commit
+    async def test_upload_with_tags_retries_snapshot_conflict_and_succeeds(
+        self,
+        upload_client: AsyncClient,
+        verified_user: Users,
+        db_session: AsyncSession,
+    ):
+        """A transient 1020 on the tag-link write is retried and the upload succeeds."""
+        from sqlalchemy import select
+
+        from app.models.image import Images
+        from app.models.tag import Tags
+        from app.models.tag_link import TagLinks
+
+        tag = Tags(title="upload_snapshot_retry", type=1)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        tag_id: int = tag.tag_id
+
+        flush_patch, calls = _flaky_flush_nth(2, _snapshot_conflict_error("tag_history"))
+        with (
+            _mock_upload_storage("tagsnapshotretry1"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+            flush_patch,
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": str(tag_id), "caption": ""},
+            )
+
+        assert response.status_code == 201, response.text
+        assert len(calls) >= 3  # id flush, failed tag flush, then the retry
+
+        image_id = response.json()["image"]["image_id"]
+        assert image_id > 0
+
+        # The tag landed exactly once on the surviving image.
+        links = await db_session.execute(
+            select(TagLinks).where(TagLinks.image_id == image_id, TagLinks.tag_id == tag_id)
+        )
+        assert len(list(links.scalars().all())) == 1
+
+        # The abandoned attempt left no image row behind.
+        images = await db_session.execute(
+            select(Images).where(Images.md5_hash == "tagsnapshotretry1")
+        )
+        assert len(list(images.scalars().all())) == 1
+
+
+@pytest.mark.api
+class TestUploadRealStorageRoundTrip:
+    """The route with its filesystem steps UNMOCKED, against a real temp dir.
+
+    Every other upload test replaces stage/finalize, so this is the only cover
+    for the seam between them: that the name the row records is the name the
+    file ends up with, and that no staged file is left behind.
+    """
+
+    @pytest.mark.asyncio
+    async def test_upload_names_the_file_to_match_the_row(
+        self,
+        upload_client: AsyncClient,
+        verified_user: Users,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """The saved file is YYYY-MM-DD-{image_id}.jpg and the row agrees."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+        with (
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("real_round_trip.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 201, response.text
+        image = response.json()["image"]
+        image_id = image["image_id"]
+
+        # The row's filename embeds the id the INSERT minted...
+        assert image["filename"].endswith(f"-{image_id}")
+        assert image["ext"] == "jpg"
+        # ...and dimensions came from the real file, not a mock.
+        assert (image["width"], image["height"]) == (100, 100)
+
+        # ...and the file on disk carries exactly that name.
+        fullsize = tmp_path / "fullsize"
+        assert (fullsize / f"{image['filename']}.jpg").exists()
+
+        # Nothing was orphaned under a staging name.
+        assert list(fullsize.glob("staged_*")) == []
+
+    @pytest.mark.asyncio
+    async def test_finalize_failure_leaves_no_row_and_no_staged_file(
+        self,
+        upload_client: AsyncClient,
+        verified_user: Users,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """A rename failure undoes the committed row instead of stranding it.
+
+        The row is committed before the staged file is renamed, so a failing
+        rename would otherwise leave a row naming a file that was never created
+        plus a staged file under a uuid name nothing can derive from the row.
+        An upload must still be all-or-nothing.
+        """
+        from sqlalchemy import select
+
+        from app.config import settings
+        from app.models.image import Images
+
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+        with (
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+            patch(
+                "app.api.v1.images.finalize_uploaded_image",
+                side_effect=OSError("no space left on device"),
+            ),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("finalize_fail.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "caption": ""},
+            )
+
+        assert response.status_code == 500
+
+        # The committed row was undone.
+        rows = await db_session.execute(
+            select(Images).where(Images.original_filename == "finalize_fail.jpg")
+        )
+        assert list(rows.scalars().all()) == []
+
+        # And the staged bytes were not left behind under an unfindable name.
+        assert list((tmp_path / "fullsize").glob("staged_*")) == []

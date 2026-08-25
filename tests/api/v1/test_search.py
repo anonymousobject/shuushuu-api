@@ -143,9 +143,7 @@ class TestSearchEndpoint:
         mock_search_service: AsyncMock,
     ):
         """The exclude_aliases flag is forwarded to search_tags."""
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[], total=0
-        )
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
 
         response = await client_with_search.get(
             "/api/v1/search", params={"q": "test", "exclude_aliases": True}
@@ -196,13 +194,9 @@ class TestSearchEndpoint:
         mock_search_service: AsyncMock,
     ):
         """Empty Meilisearch results yield empty hits list."""
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[], total=0
-        )
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
 
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "nonexistent"}
-        )
+        response = await client_with_search.get("/api/v1/search", params={"q": "nonexistent"})
         assert response.status_code == 200
 
         data = response.json()
@@ -269,9 +263,7 @@ class TestSearchEndpoint:
         """If Meilisearch errors during search, endpoint returns 503."""
         mock_search_service.search_tags.side_effect = Exception("Connection refused")
 
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "test"}
-        )
+        response = await client_with_search.get("/api/v1/search", params={"q": "test"})
         assert response.status_code == 503
         assert "temporarily unavailable" in response.json()["detail"]
 
@@ -377,9 +369,7 @@ class TestSearchEndpoint:
             tag_ids=[99999, 99998], total=2
         )
 
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "ghost"}
-        )
+        response = await client_with_search.get("/api/v1/search", params={"q": "ghost"})
         assert response.status_code == 200
 
         data = response.json()

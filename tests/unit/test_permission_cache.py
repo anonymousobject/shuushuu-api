@@ -427,9 +427,7 @@ class TestPermissionCache:
         assert await has_any_permission(
             db_session, user.user_id, ["image_edit", "user_ban"], redis_client=None
         )
-        assert await has_any_permission(
-            db_session, user.user_id, ["image_edit", "user_ban"]
-        )
+        assert await has_any_permission(db_session, user.user_id, ["image_edit", "user_ban"])
 
     async def test_has_any_permission_negative_case(
         self,
@@ -571,9 +569,7 @@ class TestPermissionCache:
         assert await has_all_permissions(
             db_session, user.user_id, ["post_edit", "theme_edit"], redis_client=None
         )
-        assert await has_all_permissions(
-            db_session, user.user_id, ["post_edit", "theme_edit"]
-        )
+        assert await has_all_permissions(db_session, user.user_id, ["post_edit", "theme_edit"])
 
     async def test_has_all_permissions_negative_case(
         self,

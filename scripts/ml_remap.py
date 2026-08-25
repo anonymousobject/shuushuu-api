@@ -57,7 +57,7 @@ async def run(args: argparse.Namespace) -> None:
         else:
             # Fetch distinct image IDs for this model, ordered for resumable checkpointing.
             stmt = (
-                select(MlRawPredictions.image_id)
+                select(MlRawPredictions.image_id)  # type: ignore[call-overload]
                 .join(MlModels, MlModels.id == MlRawPredictions.model_id)
                 .where(MlModels.name == model_name)
                 .distinct()

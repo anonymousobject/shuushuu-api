@@ -403,6 +403,27 @@ class TestCreateUser:
         response = await client.post("/api/v1/users", json=user_data)
         assert response.status_code == 400
 
+    async def test_create_user_defaults_to_grid_view(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """New accounts start in grid view, which is what anonymous visitors see.
+
+        The legacy default was list (0), so signing up silently changed the
+        layout out from under a visitor.
+        """
+        user_data = {
+            "username": "gridbydefault",
+            "email": "gridbydefault@example.com",
+            "password": "SecurePassword123!",
+            "turnstile_token": "test-token",
+        }
+
+        response = await client.post("/api/v1/users", json=user_data)
+        assert response.status_code == 200
+
+        result = await db_session.execute(select(Users).where(Users.username == "gridbydefault"))
+        assert result.scalar_one().thumb_layout == 1
+
 
 @pytest.mark.api
 class TestGetCurrentUserProfile:

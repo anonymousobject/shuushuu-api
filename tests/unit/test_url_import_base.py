@@ -12,7 +12,12 @@ from app.services.url_import.base import (
     fetch_json,
     host_allowed,
 )
-from app.services.url_import.registry import get_resolver, supported_sites
+from app.services.url_import.registry import (
+    _RESOLVERS,
+    advertised_sites,
+    get_resolver,
+    supported_sites,
+)
 
 
 def _client(handler):
@@ -41,7 +46,9 @@ class TestFetchJson:
 
         async with _client(handler) as client:
             await fetch_json(
-                client, "https://example.test/api", site="example",
+                client,
+                "https://example.test/api",
+                site="example",
                 headers={"Referer": "https://example.test/"},
             )
         assert seen["referer"] == "https://example.test/"
@@ -103,3 +110,41 @@ def test_resolved_types_construct():
     post = ResolvedPost(site="example", canonical_url="https://example.test/1", images=[image])
     assert post.images[0].headers == {}
     assert post.title is None
+
+
+class TestAdvertisedSites:
+    """The registry describes itself: every advertised example must be a URL
+    that its own resolver actually accepts. This is what stops the examples
+    from rotting — a wrong example fails CI rather than misleading a user."""
+
+    def test_every_example_matches_its_own_resolver(self):
+        by_site = {r.site: r for r in _RESOLVERS}
+        for entry in advertised_sites():
+            resolver = by_site[entry.site]
+            assert resolver.match(entry.example_url), (
+                f"{entry.site} does not match its own example {entry.example_url}"
+            )
+
+    def test_no_example_is_claimed_by_another_resolver(self):
+        for entry in advertised_sites():
+            owner = get_resolver(entry.example_url)
+            assert owner is not None
+            assert owner.site == entry.site, f"{entry.site} example is claimed by {owner.site}"
+
+    def test_every_advertised_entry_has_a_nonempty_example(self):
+        entries = advertised_sites()
+        assert entries
+        for entry in entries:
+            assert entry.example_url.startswith("https://")
+
+    def test_fixture_is_registered_but_not_advertised(self):
+        # The dev-only fixture resolver exists so e2e can run without third
+        # parties; it must never appear in user-facing output.
+        assert any(r.site == "fixture" for r in _RESOLVERS)
+        assert "fixture" not in [entry.site for entry in advertised_sites()]
+
+    def test_every_live_resolver_is_advertised(self):
+        # example_url is load-bearing twice over: the popover AND the
+        # "Unsupported site. Supported: ..." message both derive from it.
+        unadvertised = {r.site for r in _RESOLVERS} - {e.site for e in advertised_sites()}
+        assert unadvertised == {"fixture"}

@@ -14,8 +14,14 @@ from app.models.user import Users
 
 
 async def _make_user(db, username, password="TestPassword123!"):
-    user = Users(username=username, password=get_password_hash(password),
-                 password_type="bcrypt", salt="", email=f"{username}@example.com", active=1)
+    user = Users(
+        username=username,
+        password=get_password_hash(password),
+        password_type="bcrypt",
+        salt="",
+        email=f"{username}@example.com",
+        active=1,
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -43,8 +49,16 @@ async def _login(client, username, password="TestPassword123!"):
 
 
 async def _image(db, owner, md5):
-    img = Images(filename="orf", ext="jpg", md5_hash=md5, user_id=owner.user_id,
-                 width=10, height=10, filesize=100, status=1)
+    img = Images(
+        filename="orf",
+        ext="jpg",
+        md5_hash=md5,
+        user_id=owner.user_id,
+        width=10,
+        height=10,
+        filesize=100,
+        status=1,
+    )
     db.add(img)
     await db.commit()
     await db.refresh(img)
@@ -59,8 +73,14 @@ class TestHasOpenReportFlag:
         owner = await _make_user(db_session, "orfowner")
         reported = await _image(db_session, owner, "a" * 32)
         clean = await _image(db_session, owner, "b" * 32)
-        db_session.add(ImageReports(image_id=reported.image_id, user_id=owner.user_id,
-                                    category=2, status=ReportStatus.PENDING))
+        db_session.add(
+            ImageReports(
+                image_id=reported.image_id,
+                user_id=owner.user_id,
+                category=2,
+                status=ReportStatus.PENDING,
+            )
+        )
         await db_session.commit()
 
         mod = await _make_user(db_session, "orfmod")
@@ -87,8 +107,14 @@ class TestHasOpenReportFlag:
     async def test_list_flag_for_mod(self, client: AsyncClient, db_session: AsyncSession):
         owner = await _make_user(db_session, "orflistowner")
         reported = await _image(db_session, owner, "c" * 32)
-        db_session.add(ImageReports(image_id=reported.image_id, user_id=owner.user_id,
-                                    category=2, status=ReportStatus.PENDING))
+        db_session.add(
+            ImageReports(
+                image_id=reported.image_id,
+                user_id=owner.user_id,
+                category=2,
+                status=ReportStatus.PENDING,
+            )
+        )
         await db_session.commit()
 
         mod = await _make_user(db_session, "orflistmod")
