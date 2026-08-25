@@ -930,68 +930,88 @@ async def forgot_password(
     Request a password reset email.
 
     Always returns 200 with a generic message to prevent email enumeration.
+
+    An email address can belong to several accounts: signups under the legacy
+    PHP site never enforced uniqueness, so prod still carries ~480 shared
+    addresses. Every active account on the address gets its own token and its
+    own email, and each email greets its account by username so the recipient
+    can tell them apart. Disabled accounts are skipped, as they always were.
     """
     generic_message = "If an account with that email exists, a password reset link has been sent."
 
-    # Look up user by email
+    # Look up every account on this email, not just one. Ordered so the same
+    # address always resolves its accounts in the same sequence.
     result = await db.execute(
-        select(Users).where(Users.email == request_data.email)  # type: ignore[arg-type]
+        select(Users)
+        .where(Users.email == request_data.email)  # type: ignore[arg-type]
+        .order_by(Users.user_id)  # type: ignore[arg-type]
     )
-    user = result.scalar_one_or_none()
+    accounts = result.scalars().all()
 
-    # Silently do nothing if user not found or inactive
-    if not user:
+    # Silently do nothing if no account matches
+    if not accounts:
         logger.info(
             "forgot_password_attempt",
             outcome="user_not_found",
             email=request_data.email,
         )
         return MessageResponse(message=generic_message)
-    if not user.active:
-        logger.info(
-            "forgot_password_attempt",
-            outcome="user_inactive",
-            user_id=user.user_id,
-        )
-        return MessageResponse(message=generic_message)
 
-    # Rate limit: 1 reset per 5 minutes
-    # Return generic 200 even when rate limited to prevent email enumeration
-    # (a 429 only for existing users would leak whether the email exists)
-    if user.password_reset_sent_at:
-        time_since_last = datetime.now(UTC) - user.password_reset_sent_at
-        if time_since_last < timedelta(minutes=5):
+    # Decide per account, then commit once. Each account carries its own token,
+    # so one account being disabled or rate limited never suppresses another's.
+    issued: list[tuple[Users, str]] = []
+    for account in accounts:
+        if not account.active:
             logger.info(
                 "forgot_password_attempt",
-                outcome="rate_limited",
-                user_id=user.user_id,
-                seconds_since_last=int(time_since_last.total_seconds()),
+                outcome="user_inactive",
+                user_id=account.user_id,
             )
-            return MessageResponse(message=generic_message)
+            continue
 
-    # Generate token
-    raw_token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        # Rate limit: 1 reset per 5 minutes, per account.
+        # Return generic 200 even when rate limited to prevent email enumeration
+        # (a 429 only for existing users would leak whether the email exists)
+        if account.password_reset_sent_at:
+            time_since_last = datetime.now(UTC) - account.password_reset_sent_at
+            if time_since_last < timedelta(minutes=5):
+                logger.info(
+                    "forgot_password_attempt",
+                    outcome="rate_limited",
+                    user_id=account.user_id,
+                    seconds_since_last=int(time_since_last.total_seconds()),
+                )
+                continue
 
-    # Store hashed token + timestamps
-    user.password_reset_token = token_hash
-    user.password_reset_sent_at = datetime.now(UTC)
-    user.password_reset_expires_at = datetime.now(UTC) + timedelta(hours=1)
+        # Generate token
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        # Store hashed token + timestamps
+        account.password_reset_token = token_hash
+        account.password_reset_sent_at = datetime.now(UTC)
+        account.password_reset_expires_at = datetime.now(UTC) + timedelta(hours=1)
+        issued.append((account, raw_token))
+
+    if not issued:
+        return MessageResponse(message=generic_message)
+
     await db.commit()
 
-    # Queue email. RedactedStr keeps the token usable but hides it from arq's
+    # Queue emails. RedactedStr keeps the token usable but hides it from arq's
     # repr-based job-arg log (which is INFO-level and ingested by Loki).
-    await enqueue_job(
-        "send_password_reset_email_job",
-        user_id=user.user_id,
-        token=RedactedStr(raw_token),
-    )
+    for account, raw_token in issued:
+        await enqueue_job(
+            "send_password_reset_email_job",
+            user_id=account.user_id,
+            token=RedactedStr(raw_token),
+        )
 
-    logger.info(
-        "forgot_password_attempt",
-        outcome="enqueued",
-        user_id=user.user_id,
-    )
+        logger.info(
+            "forgot_password_attempt",
+            outcome="enqueued",
+            user_id=account.user_id,
+        )
 
     return MessageResponse(message=generic_message)
 
@@ -1005,16 +1025,23 @@ async def reset_password(
     Reset password using email token from forgot-password flow.
 
     Validates token, updates password, and revokes all sessions.
+
+    The email can belong to several accounts (see forgot_password), so the
+    token is what picks which one is being reset. Only that account's password
+    and pending token are touched.
     """
-    # Look up user by email
+    # Look up every account on this email, not just one. Ordered so the same
+    # address always resolves its accounts in the same sequence.
     result = await db.execute(
-        select(Users).where(Users.email == request_data.email)  # type: ignore[arg-type]
+        select(Users)
+        .where(Users.email == request_data.email)  # type: ignore[arg-type]
+        .order_by(Users.user_id)  # type: ignore[arg-type]
     )
-    user = result.scalar_one_or_none()
+    accounts = result.scalars().all()
 
     # The client always sees the same generic 400 to avoid leaking which step failed;
     # server-side we log the specific outcome so reset failures aren't invisible.
-    if not user:
+    if not accounts:
         logger.info(
             "reset_password_attempt",
             outcome="user_not_found",
@@ -1024,24 +1051,40 @@ async def reset_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
         )
-    if not user.password_reset_token:
+
+    pending = [account for account in accounts if account.password_reset_token]
+    if not pending:
+        # The token is what identifies the account, and none of these have one
+        # pending, so log the whole candidate set rather than an arbitrary row.
         logger.info(
             "reset_password_attempt",
             outcome="no_reset_token",
-            user_id=user.user_id,
+            user_ids=[account.user_id for account in accounts],
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token",
         )
 
-    # Verify token matches (constant-time comparison to prevent timing side-channels)
+    # Select the account the token belongs to (constant-time comparison to
+    # prevent timing side-channels)
     token_hash = hashlib.sha256(request_data.token.encode()).hexdigest()
-    if not hmac.compare_digest(user.password_reset_token, token_hash):
+    user = next(
+        (
+            account
+            for account in pending
+            # narrowed by the `pending` filter above, but mypy can't see it
+            if hmac.compare_digest(account.password_reset_token or "", token_hash)
+        ),
+        None,
+    )
+    if user is None:
+        # Likewise: the token matched none of the accounts holding one, so no
+        # single user_id here would be the account the request meant.
         logger.info(
             "reset_password_attempt",
             outcome="token_mismatch",
-            user_id=user.user_id,
+            user_ids=[account.user_id for account in pending],
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
