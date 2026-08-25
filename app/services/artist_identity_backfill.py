@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.config import TagType
 from app.models.tag import Tags
@@ -118,15 +119,23 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
         .scalars()
         .all()
     )
-    canonical_ids = {alias.alias_of for alias in aliases if alias.alias_of is not None}
-    canonical_types: dict[int, int] = {}
-    if canonical_ids:
-        canonical_rows = await db.execute(
-            select(Tags.tag_id, Tags.type).where(  # type: ignore[call-overload]
-                Tags.tag_id.in_(canonical_ids)  # type: ignore[union-attr]
-            )
-        )
-        canonical_types = {r.tag_id: r.type for r in canonical_rows.all()}
+    # Look up each alias's canonical-tag type via a self-join rather than
+    # collecting every alias_of id into a Python set for an .in_() lookup:
+    # on the full dataset that's tens of thousands of distinct ids (a real
+    # dev-Postgres dry run hit 53,922), comfortably over asyncpg's
+    # 32767-bind-parameter cap for a single query -- a JOIN condition costs
+    # zero bind params, however many rows it matches. Safe to compute
+    # DB-side: a tag's type never changes during a backfill run, so unlike
+    # the owners/claimed-tags tracking above (which reflects identities
+    # established earlier in *this* run), this has no in-run-state
+    # dependency a DB-side query could miss.
+    canonical = aliased(Tags)
+    canonical_type_rows = await db.execute(
+        select(Tags.alias_of, canonical.type)  # type: ignore[call-overload]
+        .join(canonical, Tags.alias_of == canonical.tag_id)
+        .where(Tags.alias_of.is_not(None))  # type: ignore[union-attr]
+    )
+    canonical_types: dict[int, int] = {r.alias_of: r.type for r in canonical_type_rows.all()}
     for alias in aliases:
         if alias.title is None:
             continue

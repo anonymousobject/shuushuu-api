@@ -1,7 +1,7 @@
 """Integration tests for the artist-identity backfill."""
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
@@ -12,9 +12,7 @@ from app.services.artist_identity_backfill import run_backfill
 
 @pytest.mark.integration
 class TestBackfillExistingLinks:
-    async def test_parses_identity_onto_existing_pixiv_link(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_parses_identity_onto_existing_pixiv_link(self, db_session: AsyncSession) -> None:
         artist = Tags(title="TKennshou", type=TagType.ARTIST, usage_count=1)
         db_session.add(artist)
         await db_session.flush()
@@ -166,9 +164,7 @@ class TestBackfillFromAliases:
         ).first() is None
         assert report.links_created_from_aliases == 0
 
-    async def test_plain_non_pixiv_alias_titles_stay_silent(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_plain_non_pixiv_alias_titles_stay_silent(self, db_session: AsyncSession) -> None:
         """A regular alias title unrelated to pixiv shouldn't trip the loose
         probe and shouldn't appear in the anomaly report at all."""
         artist = Tags(title="SomeArtist", type=TagType.ARTIST, usage_count=1)
@@ -201,9 +197,7 @@ class TestBackfillFromAliases:
 
         report = await run_backfill(db_session, apply=True)
 
-        assert any(
-            "55555" in a and str(non_artist_canonical.tag_id) in a for a in report.anomalies
-        )
+        assert any("55555" in a and str(non_artist_canonical.tag_id) in a for a in report.anomalies)
         assert (
             await db_session.execute(
                 select(TagExternalLinks).where(
@@ -237,9 +231,7 @@ class TestBackfillFromDesc:
         assert report.links_created_from_desc == 1
         assert artist.desc == "profile: https://www.pixiv.net/member.php?id=555"
 
-    async def test_multiple_distinct_desc_ids_is_an_anomaly(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_multiple_distinct_desc_ids_is_an_anomaly(self, db_session: AsyncSession) -> None:
         artist = Tags(
             title="ConfusedArtist",
             type=TagType.ARTIST,
@@ -261,9 +253,7 @@ class TestBackfillFromDesc:
 
 @pytest.mark.integration
 class TestBackfillFromTitleSuffix:
-    async def test_title_suffix_creates_link_on_canonical(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_title_suffix_creates_link_on_canonical(self, db_session: AsyncSession) -> None:
         artist = Tags(title="Kuroneko (Pixiv 1000121)", type=TagType.ARTIST, usage_count=1)
         db_session.add(artist)
         await db_session.commit()
@@ -279,9 +269,7 @@ class TestBackfillFromTitleSuffix:
         assert (link.site, link.external_id) == ("pixiv", "1000121")
         assert report.links_created_from_titles == 1
 
-    async def test_title_id_owned_elsewhere_is_an_anomaly(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_title_id_owned_elsewhere_is_an_anomaly(self, db_session: AsyncSession) -> None:
         artist_a = Tags(title="ArtistA", type=TagType.ARTIST, usage_count=1)
         artist_b = Tags(title="ArtistB (Pixiv 222)", type=TagType.ARTIST, usage_count=1)
         db_session.add_all([artist_a, artist_b])
@@ -354,9 +342,7 @@ class TestBackfillFromBareDescText:
         assert report.links_created_from_desc == 1
         assert report.links_created_from_desc_text == 0
 
-    async def test_multiple_distinct_bare_ids_is_an_anomaly(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_multiple_distinct_bare_ids_is_an_anomaly(self, db_session: AsyncSession) -> None:
         artist = Tags(
             title="ConfusedArtist2",
             type=TagType.ARTIST,
@@ -376,9 +362,7 @@ class TestBackfillFromBareDescText:
         ).first() is None
         assert report.links_created_from_desc_text == 0
 
-    async def test_short_number_prose_is_ignored_silently(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_short_number_prose_is_ignored_silently(self, db_session: AsyncSession) -> None:
         """'pixiv 100 followers' shouldn't be mistaken for an id — the
         minimum-4-digit rule must skip it with no anomaly at all."""
         artist = Tags(
@@ -448,9 +432,7 @@ class TestArtistTagsWithoutIdentity:
         db_session.add_all([artist_with_link, artist_without_identity])
         await db_session.flush()
         db_session.add(
-            TagExternalLinks(
-                tag_id=artist_with_link.tag_id, url="https://www.pixiv.net/users/999"
-            )
+            TagExternalLinks(tag_id=artist_with_link.tag_id, url="https://www.pixiv.net/users/999")
         )
         # An alias of artist_with_link, itself typed ARTIST but with alias_of set. Its
         # title doesn't match the "Pixiv <id>" pattern, so it contributes no identity —
@@ -466,3 +448,64 @@ class TestArtistTagsWithoutIdentity:
         # Only artist_without_identity lacks identity; the alias tag isn't a canonical
         # artist tag (alias_of is set) so it isn't part of the counted population at all.
         assert report.artist_tags_without_identity == 1
+
+
+@pytest.mark.integration
+class TestBackfillAliasCanonicalTypeLookupAtScale:
+    """Source 2 (alias titles) looks up each alias's canonical tag's type to
+    confirm it's ARTIST before creating a link. On the full dataset there
+    are far more than 32,767 distinct canonical ids referenced by aliases
+    (a real dev-Postgres dry run hit 53,922) -- asyncpg's bind-parameter cap
+    for a single query. That lookup must not collect ids into a Python list
+    for an `.in_()` query."""
+
+    async def test_completes_past_the_asyncpg_32767_param_cap(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Comfortably over the 32,767 asyncpg bind-parameter cap once the
+        # one "real" artist pair below is added in.
+        filler_count = 33_000
+        base = 900_000_000
+
+        canonical_rows = [
+            {"tag_id": base + i, "title": f"Filler canonical {i}", "type": TagType.THEME}
+            for i in range(filler_count)
+        ]
+        # One genuine artist canonical mixed in among the filler, so this
+        # test proves the lookup still produces a correct result at scale,
+        # not merely that it survives.
+        artist_canonical_id = base + filler_count
+        canonical_rows.append(
+            {"tag_id": artist_canonical_id, "title": "RealArtist", "type": TagType.ARTIST}
+        )
+        await db_session.execute(insert(Tags), canonical_rows)
+
+        alias_rows = [
+            {
+                "tag_id": base + filler_count + 1 + i,
+                "title": f"Filler alias {i}",
+                "type": TagType.THEME,
+                "alias_of": base + i,
+            }
+            for i in range(filler_count)
+        ]
+        alias_rows.append(
+            {
+                "tag_id": base + 2 * filler_count + 1,
+                "title": "Pixiv 918273645",
+                "type": TagType.ARTIST,
+                "alias_of": artist_canonical_id,
+            }
+        )
+        await db_session.execute(insert(Tags), alias_rows)
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        assert report.links_created_from_aliases == 1
+        link = (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == artist_canonical_id)
+            )
+        ).scalar_one()
+        assert (link.site, link.external_id) == ("pixiv", "918273645")
