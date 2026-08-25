@@ -20,6 +20,12 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # ci_string columns (ADR-0008): identity lookups/dedupe are
+    # case-insensitive on both dialects. On MariaDB that's the connection's
+    # default utf8mb4_unicode_ci collation -- plain VARCHAR(n) is the correct
+    # DDL here, identical to what ci_string(n) itself emits on this dialect.
+    # The Postgres side (case-insensitivity via CITEXT) lives in the
+    # alembic_pg/ companion migration e20bac5f3ac3.
     op.add_column(
         "tag_external_links", sa.Column("site", sa.String(length=32), nullable=True)
     )

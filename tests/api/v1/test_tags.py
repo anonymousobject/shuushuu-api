@@ -5157,6 +5157,92 @@ class TestAddTagLink:
         # site column.
         assert "Pixiv ID 21412050" in response.json()["detail"]
 
+    async def test_duplicate_identity_case_variant_on_other_tag_is_409(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The duplicate-identity guard matches case-insensitively (ADR-0008:
+        `site`/`external_id` are ci_string -- citext on Postgres, the default
+        collation on MariaDB). Real pixiv ids are digit-only so this can't
+        happen through today's parser, but a future alphanumeric site's ids
+        could collide on case, and the guard is a DB comparison -- it must
+        hold regardless of what the parser produces. Only `parse_identity_url`
+        is stubbed (to hand back a case-variant identity for made-up URLs);
+        `resolve_identity`'s real DB query is exactly what's under test."""
+        from unittest.mock import patch
+
+        from app.services.artist_identity import ArtistIdentity
+
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindupcase",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindupcase@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create two tags
+        tag = Tags(title="case variant artist tag", desc="Test artist", type=TagType.ARTIST)
+        other_tag = Tags(title="case variant artist tag 2", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        db_session.add(other_tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        await db_session.refresh(other_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindupcase", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        first_url = "https://example.com/artist/AbC123"
+        second_url = "https://example.com/artist/abc123"
+        identities = {
+            first_url: ArtistIdentity(site="pixiv", external_id="AbC123"),
+            second_url: ArtistIdentity(site="pixiv", external_id="abc123"),
+        }
+
+        with patch("app.api.v1.tags.parse_identity_url", side_effect=identities.get):
+            # First tag claims the identity as originally cased.
+            first_response = await client.post(
+                f"/api/v1/tags/{tag.tag_id}/links",
+                json={"url": first_url},
+                headers=headers,
+            )
+            assert first_response.status_code == 201
+
+            # Second tag tries a lowercase variant of the same external_id.
+            response = await client.post(
+                f"/api/v1/tags/{other_tag.tag_id}/links",
+                json={"url": second_url},
+                headers=headers,
+            )
+        assert response.status_code == 409
+        assert tag.title in response.json()["detail"]
+
     async def test_second_url_form_for_same_tag_leaves_identity_null(
         self, client: AsyncClient, db_session: AsyncSession
     ):

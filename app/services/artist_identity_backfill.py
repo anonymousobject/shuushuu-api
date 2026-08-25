@@ -46,6 +46,19 @@ class BackfillReport:
     anomalies: list[str] = field(default_factory=list)
 
 
+def _identity_key(site: str, external_id: str) -> tuple[str, str]:
+    """Normalize a (site, external_id) pair the way the DB will compare it.
+
+    `site`/`external_id` are ci_string columns (ADR-0008): case-insensitive
+    at the DB level on both dialects. Plain Python dict/set lookups get no
+    such folding, so every in-memory owners-map key goes through here rather
+    than a bare tuple -- today this is a no-op (the parser only ever emits
+    the lowercase 'pixiv' constant and digit-only ids), but the invariant
+    belongs at construction, not at "no site has needed otherwise yet".
+    """
+    return (site.lower(), external_id.lower())
+
+
 async def _identity_owners(db: AsyncSession) -> dict[tuple[str, str], int]:
     """Map (site, external_id) -> owning tag_id for every populated link."""
     rows = await db.execute(
@@ -53,7 +66,7 @@ async def _identity_owners(db: AsyncSession) -> dict[tuple[str, str], int]:
             TagExternalLinks.tag_id, TagExternalLinks.site, TagExternalLinks.external_id
         ).where(TagExternalLinks.site.is_not(None))  # type: ignore[union-attr]
     )
-    return {(r.site, r.external_id): r.tag_id for r in rows.all()}
+    return {_identity_key(r.site, r.external_id): r.tag_id for r in rows.all()}
 
 
 async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
@@ -74,7 +87,7 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
         identity = parse_identity_url(link.url)
         if identity is None:
             continue
-        key = (identity.site, identity.external_id)
+        key = _identity_key(identity.site, identity.external_id)
         owner = owners.get(key)
         if owner is not None and owner != link.tag_id:
             report.anomalies.append(
@@ -132,7 +145,7 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
             )
             continue
         identity = ArtistIdentity(site=SITE_PIXIV, external_id=match.group(1))
-        key = (identity.site, identity.external_id)
+        key = _identity_key(identity.site, identity.external_id)
         owner = owners.get(key)
         if owner == alias.alias_of:
             continue  # canonical already has it
@@ -183,7 +196,7 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
             )
             continue
         identity = ArtistIdentity(site=SITE_PIXIV, external_id=ids.pop())
-        key = (identity.site, identity.external_id)
+        key = _identity_key(identity.site, identity.external_id)
         owner = owners.get(key)
         if owner is not None:
             report.anomalies.append(
@@ -214,7 +227,7 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
         if not match:
             continue
         identity = ArtistIdentity(site=SITE_PIXIV, external_id=match.group(1))
-        key = (identity.site, identity.external_id)
+        key = _identity_key(identity.site, identity.external_id)
         owner = owners.get(key)
         if owner is not None:
             report.anomalies.append(
@@ -251,7 +264,7 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
             )
             continue
         identity = ArtistIdentity(site=SITE_PIXIV, external_id=ids.pop())
-        key = (identity.site, identity.external_id)
+        key = _identity_key(identity.site, identity.external_id)
         owner = owners.get(key)
         if owner is not None:
             report.anomalies.append(
