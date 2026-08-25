@@ -9,7 +9,9 @@ These tests cover the /api/v1/auth endpoints including:
 - Suspension checks during login and refresh
 """
 
+import hashlib
 import logging
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -1489,3 +1491,251 @@ class TestResetPassword:
             .where(RefreshTokens.user_id == user.user_id)
         )
         assert count_result.scalar() == 0
+
+
+@pytest.mark.api
+class TestPasswordResetWithSharedEmail:
+    """Reset flows when several accounts share one email address.
+
+    Legacy PHP-era signups allowed duplicate emails (prod has 480 such
+    addresses across 1027 accounts), so both reset endpoints have to resolve
+    an ambiguous email instead of assuming a single row.
+    """
+
+    @staticmethod
+    def _account(username: str, email: str, active: int = 1) -> Users:
+        return Users(
+            username=username,
+            password=get_password_hash("OldPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email=email,
+            active=active,
+        )
+
+    async def test_forgot_password_issues_a_token_to_every_active_account(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Each active account on a shared email gets its own distinct token."""
+        first = self._account("sharedone", "shared@example.com")
+        second = self._account("sharedtwo", "shared@example.com")
+        db_session.add_all([first, second])
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "shared@example.com"},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(first)
+        await db_session.refresh(second)
+        assert first.password_reset_token is not None
+        assert second.password_reset_token is not None
+        assert first.password_reset_token != second.password_reset_token
+
+    async def test_forgot_password_skips_disabled_account_on_shared_email(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A disabled account never gets a reset link, even sharing an email with a live one.
+
+        Mirrors the prod case that surfaced this bug: one deliberately disabled
+        account and one active account on the same address.
+        """
+        disabled = self._account("olderaccount", "mixed@example.com", active=0)
+        live = self._account("currentaccount", "mixed@example.com", active=1)
+        db_session.add_all([disabled, live])
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "mixed@example.com"},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(disabled)
+        await db_session.refresh(live)
+        assert disabled.password_reset_token is None
+        assert live.password_reset_token is not None
+
+    async def test_forgot_password_all_accounts_disabled_sends_nothing(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """When every account on a shared email is disabled, no token is issued."""
+        first = self._account("deadone", "dead@example.com", active=0)
+        second = self._account("deadtwo", "dead@example.com", active=0)
+        db_session.add_all([first, second])
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "dead@example.com"},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(first)
+        await db_session.refresh(second)
+        assert first.password_reset_token is None
+        assert second.password_reset_token is None
+
+    async def test_forgot_password_rate_limits_each_account_independently(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """One account being rate limited must not suppress the other's reset link."""
+        recent = self._account("recentreset", "ratelimitshared@example.com")
+        recent.password_reset_token = "existing-token-hash"
+        recent.password_reset_sent_at = datetime.now(UTC) - timedelta(minutes=1)
+        untouched = self._account("noreset", "ratelimitshared@example.com")
+        db_session.add_all([recent, untouched])
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "ratelimitshared@example.com"},
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(recent)
+        await db_session.refresh(untouched)
+        assert recent.password_reset_token == "existing-token-hash"
+        assert untouched.password_reset_token is not None
+
+    async def test_forgot_password_enqueues_one_email_per_active_account(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """One reset email is queued per active account, each carrying its own token.
+
+        The queue call is recorded at the arq boundary; the assertions are on
+        what the endpoint hands off, not on queue behaviour.
+        """
+        enqueued: list[dict[str, object]] = []
+
+        async def record(function_name: str, **kwargs: object) -> str:
+            enqueued.append({"function_name": function_name, **kwargs})
+            return "job-id"
+
+        monkeypatch.setattr("app.api.v1.auth.enqueue_job", record)
+
+        first = self._account("queueone", "queue@example.com")
+        second = self._account("queuetwo", "queue@example.com")
+        disabled = self._account("queuedisabled", "queue@example.com", active=0)
+        db_session.add_all([first, second, disabled])
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "queue@example.com"},
+        )
+        assert response.status_code == 200
+
+        assert len(enqueued) == 2
+        assert {job["function_name"] for job in enqueued} == {"send_password_reset_email_job"}
+        assert {job["user_id"] for job in enqueued} == {first.user_id, second.user_id}
+
+        # Each queued token must hash to the token stored on that same account.
+        await db_session.refresh(first)
+        await db_session.refresh(second)
+        stored = {
+            first.user_id: first.password_reset_token,
+            second.user_id: second.password_reset_token,
+        }
+        for job in enqueued:
+            raw_token = str(job["token"])
+            assert hashlib.sha256(raw_token.encode()).hexdigest() == stored[job["user_id"]]
+
+    async def _shared_email_accounts_with_tokens(
+        self, db_session: AsyncSession
+    ) -> tuple[Users, Users, str]:
+        """Two active accounts on one email, each holding a live reset token.
+
+        Returns (target, bystander, target_raw_token).
+        """
+        target = self._account("targetaccount", "twotokens@example.com")
+        bystander = self._account("bystanderaccount", "twotokens@example.com")
+
+        target_raw = secrets.token_urlsafe(32)
+        bystander_raw = secrets.token_urlsafe(32)
+        for user, raw in ((target, target_raw), (bystander, bystander_raw)):
+            user.password_reset_token = hashlib.sha256(raw.encode()).hexdigest()
+            user.password_reset_sent_at = datetime.now(UTC)
+            user.password_reset_expires_at = datetime.now(UTC) + timedelta(hours=1)
+
+        db_session.add_all([target, bystander])
+        await db_session.commit()
+        await db_session.refresh(target)
+        await db_session.refresh(bystander)
+        return target, bystander, target_raw
+
+    async def test_reset_password_applies_to_the_token_owner(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The token decides which of the shared-email accounts is reset."""
+        target, bystander, target_raw = await self._shared_email_accounts_with_tokens(db_session)
+
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "twotokens@example.com",
+                "token": target_raw,
+                "new_password": "NewPassword456!",
+            },
+        )
+        assert response.status_code == 200
+
+        # The token owner can log in with the new password.
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "targetaccount", "password": "NewPassword456!"},
+        )
+        assert login.status_code == 200
+
+        # The other account is untouched: old password still works.
+        bystander_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "bystanderaccount", "password": "OldPassword123!"},
+        )
+        assert bystander_login.status_code == 200
+
+    async def test_reset_password_leaves_the_other_accounts_token_intact(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Resetting one account must not clear the other account's pending token."""
+        target, bystander, target_raw = await self._shared_email_accounts_with_tokens(db_session)
+        bystander_token = bystander.password_reset_token
+
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "twotokens@example.com",
+                "token": target_raw,
+                "new_password": "NewPassword456!",
+            },
+        )
+        assert response.status_code == 200
+
+        await db_session.refresh(target)
+        await db_session.refresh(bystander)
+        assert target.password_reset_token is None
+        assert bystander.password_reset_token == bystander_token
+
+    async def test_reset_password_rejects_token_from_a_different_email(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A valid token paired with someone else's email is refused."""
+        target, _bystander, target_raw = await self._shared_email_accounts_with_tokens(db_session)
+
+        response = await client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "someoneelse@example.com",
+                "token": target_raw,
+                "new_password": "NewPassword456!",
+            },
+        )
+        assert response.status_code == 400
+
+        await db_session.refresh(target)
+        assert target.password_reset_token is not None
