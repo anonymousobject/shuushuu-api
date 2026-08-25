@@ -939,9 +939,12 @@ async def forgot_password(
     """
     generic_message = "If an account with that email exists, a password reset link has been sent."
 
-    # Look up every account on this email, not just one
+    # Look up every account on this email, not just one. Ordered so the same
+    # address always resolves its accounts in the same sequence.
     result = await db.execute(
-        select(Users).where(Users.email == request_data.email)  # type: ignore[arg-type]
+        select(Users)
+        .where(Users.email == request_data.email)  # type: ignore[arg-type]
+        .order_by(Users.user_id)  # type: ignore[arg-type]
     )
     accounts = result.scalars().all()
 
@@ -1027,9 +1030,12 @@ async def reset_password(
     token is what picks which one is being reset. Only that account's password
     and pending token are touched.
     """
-    # Look up every account on this email, not just one
+    # Look up every account on this email, not just one. Ordered so the same
+    # address always resolves its accounts in the same sequence.
     result = await db.execute(
-        select(Users).where(Users.email == request_data.email)  # type: ignore[arg-type]
+        select(Users)
+        .where(Users.email == request_data.email)  # type: ignore[arg-type]
+        .order_by(Users.user_id)  # type: ignore[arg-type]
     )
     accounts = result.scalars().all()
 
@@ -1048,10 +1054,12 @@ async def reset_password(
 
     pending = [account for account in accounts if account.password_reset_token]
     if not pending:
+        # The token is what identifies the account, and none of these have one
+        # pending, so log the whole candidate set rather than an arbitrary row.
         logger.info(
             "reset_password_attempt",
             outcome="no_reset_token",
-            user_id=accounts[0].user_id,
+            user_ids=[account.user_id for account in accounts],
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1071,10 +1079,12 @@ async def reset_password(
         None,
     )
     if user is None:
+        # Likewise: the token matched none of the accounts holding one, so no
+        # single user_id here would be the account the request meant.
         logger.info(
             "reset_password_attempt",
             outcome="token_mismatch",
-            user_id=pending[0].user_id,
+            user_ids=[account.user_id for account in pending],
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
