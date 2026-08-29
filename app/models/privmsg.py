@@ -64,11 +64,11 @@ class Privmsgs(PrivmsgBase, table=True):
 
     __tablename__ = "privmsgs"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s below:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py). When in doubt, treat Alembic
+    # migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["from_user_id"],
@@ -93,8 +93,8 @@ class Privmsgs(PrivmsgBase, table=True):
     privmsg_id: int | None = Field(default=None, primary_key=True)
 
     # Override to add foreign keys
-    from_user_id: int = Field(foreign_key="users.user_id")
-    to_user_id: int = Field(foreign_key="users.user_id")
+    from_user_id: int
+    to_user_id: int
 
     # Message status
     viewed: int = Field(default=0)

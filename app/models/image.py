@@ -172,11 +172,11 @@ class Images(ImageBase, table=True):
     model_config = ConfigDict(validate_assignment=True)  # type: ignore
     __tablename__ = "images"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s below:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py). When in doubt, treat Alembic
+    # migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["replacement_id"],
@@ -220,7 +220,7 @@ class Images(ImageBase, table=True):
     image_id: int | None = Field(default=None, primary_key=True)
 
     # User reference (public)
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Public status/stats fields
     locked: int = Field(default=0)
@@ -249,7 +249,7 @@ class Images(ImageBase, table=True):
     large: int = Field(default=0)
 
     # Internal moderation fields
-    status_user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    status_user_id: int | None = Field(default=None)
     status_updated: datetime | None = Field(
         default=None, sa_column=Column(UtcDateTime, nullable=True)
     )
@@ -257,7 +257,7 @@ class Images(ImageBase, table=True):
 
     # Internal metadata
     total_pixels: Decimal | None = Field(default=None)
-    replacement_id: int | None = Field(default=None, foreign_key="images.image_id")
+    replacement_id: int | None = Field(default=None)
 
     # Deactivation detail (set when status == DEACTIVATED)
     reason_category: int | None = Field(default=None)

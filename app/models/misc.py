@@ -102,7 +102,7 @@ class UserBannerPreferences(UserBannerPreferencesBase, table=True):
         ),
     )
 
-    user_id: int = Field(primary_key=True, foreign_key="users.user_id")
+    user_id: int = Field(primary_key=True)
 
 
 class UserBannerPinsBase(SQLModel):
@@ -136,8 +136,8 @@ class UserBannerPins(UserBannerPinsBase, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.user_id")
-    banner_id: int = Field(foreign_key="banners.banner_id")
+    user_id: int
+    banner_id: int
 
 
 # ===== EvaTheme =====
@@ -302,7 +302,7 @@ class Quicklinks(QuicklinkBase, table=True):
     quicklink_id: int | None = Field(default=None, primary_key=True)
 
     # Override to add foreign key
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    user_id: int | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
