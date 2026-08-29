@@ -114,6 +114,15 @@ async def create_donation(
     ):
         raise HTTPException(status_code=403, detail="DONATIONS_CREATE permission required")
 
+    # fk_donations_user_id would refuse a dangling reference anyway, but as a
+    # 500; check up front so the caller gets a proper 404.
+    if body.user_id is not None:
+        user_exists = await db.scalar(
+            select(Users.user_id).where(Users.user_id == body.user_id)  # type: ignore[call-overload]
+        )
+        if user_exists is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
     donation = Donations(
         amount=body.amount,
         nick=body.nick,

@@ -209,7 +209,8 @@ class DonationBase(SQLModel):
     """
     Base model for Donations table.
 
-    This is a simple tracking table with no foreign key relationships.
+    This is a simple tracking table; user_id links the donor when known
+    and survives their deletion (ON DELETE SET NULL on the table model).
     Note: Original table has no primary key, but we need one for SQLModel.
     """
 
@@ -231,7 +232,17 @@ class Donations(DonationBase, table=True):
 
     __tablename__ = "donations"
 
-    __table_args__ = (Index("idx_date", "date"),)
+    __table_args__ = (
+        # Donations outlive the donor: deleting a user detaches, never deletes.
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+            name="fk_donations_user_id",
+        ),
+        Index("idx_date", "date"),
+    )
 
     # SQLModel requires a primary key, but original table has none
     # We'll make this auto-increment for new inserts
