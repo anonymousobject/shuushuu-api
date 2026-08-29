@@ -99,3 +99,68 @@ async def test_one_fk_constraint_per_column_set(db_session: AsyncSession) -> Non
             "one carrying ON DELETE — and drop the redundant constraint in an "
             "alembic_pg migration.\n\n" + "\n".join(duplicates)
         )
+
+
+# The FK coverage decided 2026-08-29 (users cleanup after PR #370): membership
+# and grant links die with the user/group/perm; donations outlive the donor.
+# user_tag_affinity stays FK-less BY DESIGN — its nightly staging-table swap
+# (CREATE TABLE ... LIKE, app/services/user_tag_affinity.py) does not copy FKs,
+# so one added here would silently vanish at the next rebuild.
+_EXPECTED_USER_REFERENCE_FKS = [
+    ("user_groups", "user_id", "users", "CASCADE"),
+    ("user_groups", "group_id", "groups", "CASCADE"),
+    ("user_perms", "user_id", "users", "CASCADE"),
+    ("user_perms", "perm_id", "perms", "CASCADE"),
+    ("donations", "user_id", "users", "SET NULL"),
+]
+
+
+@pytest.mark.integration
+@pytest.mark.postgres_only  # asserts on pg_constraint; Postgres is the system
+# of record for delete behavior post-cutover
+async def test_user_reference_fks_have_delete_rules(db_session: AsyncSession) -> None:
+    """
+    The historically FK-less user-reference columns must be constrained.
+
+    These tables predate FK discipline (the legacy PHP schema had none), so
+    user deletion either left orphans (user_perms, donations) or was vetoed
+    by an unnamed NO ACTION constraint (user_groups.group_id). Each expected
+    FK must exist, follow the fk_<table>_<column> naming convention, and
+    carry the agreed ON DELETE rule.
+    """
+    result = await db_session.execute(
+        text(
+            """
+            SELECT conrelid::regclass::text,
+                   (SELECT att.attname FROM pg_attribute att
+                     WHERE att.attrelid = conrelid AND att.attnum = conkey[1]),
+                   confrelid::regclass::text,
+                   conname,
+                   CASE confdeltype WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL'
+                        WHEN 'r' THEN 'RESTRICT' WHEN 'd' THEN 'SET DEFAULT'
+                        ELSE 'NO ACTION' END
+            FROM pg_constraint
+            WHERE contype = 'f' AND connamespace = 'public'::regnamespace
+              AND cardinality(conkey) = 1
+            """
+        )
+    )
+    actual = {(t, col): (ref, name, rule) for t, col, ref, name, rule in result}
+
+    problems: list[str] = []
+    for table, column, ref_table, on_delete in _EXPECTED_USER_REFERENCE_FKS:
+        found = actual.get((table, column))
+        if found is None:
+            problems.append(f"{table}.{column}: no FK (expected -> {ref_table} {on_delete})")
+            continue
+        ref, name, rule = found
+        if ref != ref_table or rule != on_delete:
+            problems.append(
+                f"{table}.{column}: {name} -> {ref} ON DELETE {rule} "
+                f"(expected -> {ref_table} {on_delete})"
+            )
+        elif name != f"fk_{table}_{column}":
+            problems.append(f"{table}.{column}: named {name}, expected fk_{table}_{column}")
+
+    if problems:
+        pytest.fail("User-reference FK constraints missing or wrong:\n" + "\n".join(problems))

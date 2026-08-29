@@ -143,7 +143,7 @@ class UserGroupBase(SQLModel):
     """
 
     user_id: int = Field(primary_key=True)
-    group_id: int = Field(primary_key=True, foreign_key="groups.group_id")
+    group_id: int = Field(primary_key=True)
 
 
 class UserGroups(UserGroupBase, table=True):
@@ -154,6 +154,27 @@ class UserGroups(UserGroupBase, table=True):
     """
 
     __tablename__ = "user_groups"
+
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s above:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py).
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_groups_user_id",
+        ),
+        ForeignKeyConstraint(
+            ["group_id"],
+            ["groups.group_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_groups_group_id",
+        ),
+    )
 
     # Relationship to Groups (requires explicit eager loading via selectinload/joinedload)
     group: Groups = Relationship(
@@ -188,7 +209,23 @@ class UserPerms(UserPermBase, table=True):
 
     __tablename__ = "user_perms"
 
-    # Note: No foreign key constraints in schema, but logically references users and perms
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["users.user_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_perms_user_id",
+        ),
+        ForeignKeyConstraint(
+            ["perm_id"],
+            ["perms.perm_id"],
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+            name="fk_user_perms_perm_id",
+        ),
+    )
+
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:
     # - Circular import issues
