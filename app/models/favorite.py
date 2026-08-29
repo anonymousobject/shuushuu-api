@@ -30,8 +30,8 @@ class FavoriteBase(SQLModel):
     """
 
     # Composite primary key (order matches schema: user_id, image_id)
-    user_id: int = Field(foreign_key="users.user_id", primary_key=True)
-    image_id: int = Field(foreign_key="images.image_id", primary_key=True)
+    user_id: int = Field(primary_key=True)
+    image_id: int = Field(primary_key=True)
 
     # Public timestamp
     fav_date: datetime = Field(

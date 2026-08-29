@@ -194,7 +194,7 @@ class Users(UserBase, table=True):
 
     # References
     forum_id: int | None = Field(default=None)
-    bookmark: int | None = Field(default=None, foreign_key="images.image_id")
+    bookmark: int | None = Field(default=None)
 
     # Relationship to UserGroups for eager loading groups
     user_groups: list[UserGroups] = Relationship(

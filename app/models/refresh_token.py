@@ -50,7 +50,7 @@ class RefreshTokens(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
 
     # User reference
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Token (hashed for security - never store plaintext!)
     token_hash: str = Field(max_length=255, unique=True, index=True)

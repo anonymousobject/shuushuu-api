@@ -32,8 +32,8 @@ class ImageRatingBase(SQLModel):
     """
 
     # Composite primary key
-    user_id: int = Field(foreign_key="users.user_id", primary_key=True)
-    image_id: int = Field(foreign_key="images.image_id", primary_key=True)
+    user_id: int = Field(primary_key=True)
+    image_id: int = Field(primary_key=True)
 
     # Rating value (0-10 or similar scale)
     rating: int = Field(default=0)

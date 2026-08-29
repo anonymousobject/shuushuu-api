@@ -220,7 +220,7 @@ class Images(ImageBase, table=True):
     image_id: int | None = Field(default=None, primary_key=True)
 
     # User reference (public)
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Public status/stats fields
     locked: int = Field(default=0)
@@ -249,7 +249,7 @@ class Images(ImageBase, table=True):
     large: int = Field(default=0)
 
     # Internal moderation fields
-    status_user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    status_user_id: int | None = Field(default=None)
     status_updated: datetime | None = Field(
         default=None, sa_column=Column(UtcDateTime, nullable=True)
     )
@@ -257,7 +257,7 @@ class Images(ImageBase, table=True):
 
     # Internal metadata
     total_pixels: Decimal | None = Field(default=None)
-    replacement_id: int | None = Field(default=None, foreign_key="images.image_id")
+    replacement_id: int | None = Field(default=None)
 
     # Deactivation detail (set when status == DEACTIVATED)
     reason_category: int | None = Field(default=None)

@@ -92,8 +92,8 @@ class GroupPermBase(SQLModel):
     Junction table linking groups to permissions with a permission value.
     """
 
-    group_id: int = Field(foreign_key="groups.group_id", primary_key=True)
-    perm_id: int = Field(foreign_key="perms.perm_id", primary_key=True)
+    group_id: int = Field(primary_key=True)
+    perm_id: int = Field(primary_key=True)
     permvalue: int | None = Field(default=None)
 
 

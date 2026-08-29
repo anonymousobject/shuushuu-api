@@ -94,8 +94,8 @@ class TagHistory(TagHistoryBase, table=True):
     tag_history_id: int | None = Field(default=None, primary_key=True)
 
     # Override to add foreign keys
-    image_id: int | None = Field(default=None, foreign_key="images.image_id")
-    tag_id: int | None = Field(default=None, foreign_key="tags.tag_id")
+    image_id: int | None = Field(default=None)
+    tag_id: int | None = Field(default=None)
 
     # Override to add server default
     date: datetime | None = Field(
@@ -104,7 +104,7 @@ class TagHistory(TagHistoryBase, table=True):
     )
 
     # Internal field
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    user_id: int | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

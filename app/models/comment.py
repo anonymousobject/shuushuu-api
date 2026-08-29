@@ -114,7 +114,7 @@ class Comments(CommentBase, table=True):
     post_id: int | None = Field(default=None, primary_key=True)
 
     # User reference (public)
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Public timestamp
     date: datetime = Field(
@@ -131,7 +131,7 @@ class Comments(CommentBase, table=True):
     last_updated: datetime | None = Field(
         default=None, sa_column=Column(UtcDateTime, nullable=True)
     )
-    last_updated_user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    last_updated_user_id: int | None = Field(default=None)
 
     # Relationships
     # Load user info for displaying comment author

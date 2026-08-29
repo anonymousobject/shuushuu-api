@@ -66,13 +66,13 @@ class UserSuspensions(SQLModel, table=True):
     suspension_id: int | None = Field(default=None, primary_key=True)
 
     # User being suspended/reactivated
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Action type
     action: str = Field(max_length=20)  # SuspensionAction.SUSPENDED or SuspensionAction.REACTIVATED
 
     # Who performed the action
-    actioned_by: int | None = Field(default=None, foreign_key="users.user_id")
+    actioned_by: int | None = Field(default=None)
 
     # When the action occurred
     actioned_at: datetime = Field(

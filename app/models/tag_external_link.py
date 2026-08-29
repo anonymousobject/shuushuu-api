@@ -67,7 +67,7 @@ class TagExternalLinks(TagExternalLinkBase, table=True):
     link_id: int | None = Field(default=None, primary_key=True)
 
     # Foreign key
-    tag_id: int = Field(foreign_key="tags.tag_id", index=True)
+    tag_id: int = Field(index=True)
 
     # Timestamp
     date_added: datetime = Field(

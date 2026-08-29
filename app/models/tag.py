@@ -124,11 +124,11 @@ class Tags(TagBase, table=True):
     usage_count: int = Field(default=0, ge=0)
 
     # Public relationship fields
-    alias_of: int | None = Field(default=None, foreign_key="tags.tag_id")
-    inheritedfrom_id: int | None = Field(default=None, foreign_key="tags.tag_id")
+    alias_of: int | None = Field(default=None)
+    inheritedfrom_id: int | None = Field(default=None)
 
     # Internal fields
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    user_id: int | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

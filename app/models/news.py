@@ -73,7 +73,7 @@ class News(NewsBase, table=True):
     news_id: int | None = Field(default=None, primary_key=True)
 
     # User reference (public or internal depending on use case)
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Override to add server default
     date: datetime | None = Field(

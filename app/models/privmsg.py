@@ -93,8 +93,8 @@ class Privmsgs(PrivmsgBase, table=True):
     privmsg_id: int | None = Field(default=None, primary_key=True)
 
     # Override to add foreign keys
-    from_user_id: int = Field(foreign_key="users.user_id")
-    to_user_id: int = Field(foreign_key="users.user_id")
+    from_user_id: int
+    to_user_id: int
 
     # Message status
     viewed: int = Field(default=0)

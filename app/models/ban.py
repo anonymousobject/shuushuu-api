@@ -98,7 +98,7 @@ class Bans(BanBase, table=True):
     ban_id: int | None = Field(default=None, primary_key=True)
 
     # Public reference - user being banned
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Override to add server default
     date: datetime | None = Field(
@@ -110,7 +110,7 @@ class Bans(BanBase, table=True):
     expires: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Internal fields
-    banned_by: int | None = Field(default=None, foreign_key="users.user_id")
+    banned_by: int | None = Field(default=None)
     ip: str | None = Field(default=None, max_length=15)
 
     # Note: Relationships (e.g., user, banned_by_user) are intentionally omitted.

@@ -36,8 +36,8 @@ class TagLinkBase(SQLModel):
     """
 
     # Junction table primary keys
-    tag_id: int = Field(foreign_key="tags.tag_id", primary_key=True)
-    image_id: int = Field(foreign_key="images.image_id", primary_key=True)
+    tag_id: int = Field(primary_key=True)
+    image_id: int = Field(primary_key=True)
 
 
 class TagLinks(TagLinkBase, table=True):
@@ -95,7 +95,7 @@ class TagLinks(TagLinkBase, table=True):
     )
 
     # Internal field
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    user_id: int | None = Field(default=None)
 
     # Relationship to tag
     tag: Tags = Relationship(
