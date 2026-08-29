@@ -19,6 +19,8 @@ os.environ.setdefault("BCRYPT_ROUNDS", "4")
 
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -671,6 +673,46 @@ async def mock_redis():
     mock.pipeline.return_value = pipeline_mock
 
     return mock
+
+
+class _StubArqPool:
+    """In-memory stand-in for the arq Redis pool.
+
+    Records (function_name, args, kwargs) so tests can assert on enqueued jobs
+    without patching enqueue_job in each route module.
+    """
+
+    def __init__(self) -> None:
+        self.jobs: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    async def enqueue_job(
+        self,
+        function_name: str,
+        *args: Any,
+        _job_id: str | None = None,
+        _defer_by: float | None = None,
+        **kwargs: Any,
+    ) -> SimpleNamespace:
+        self.jobs.append((function_name, args, kwargs))
+        return SimpleNamespace(job_id=_job_id or f"stub-job-{len(self.jobs)}")
+
+    async def close(self) -> None:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def stub_arq_pool(monkeypatch: pytest.MonkeyPatch) -> _StubArqPool:
+    """Replace the arq pool so no test can enqueue into a real queue.
+
+    Prod runs from this same checkout (env_file: .env), so ARQ_REDIS_URL points
+    at the production queue; on 2026-08-29 a pytest run enqueued jobs there and
+    the prod worker emailed real users. get_queue() returns the cached
+    app.tasks.queue._pool when set, so seeding it with a stub short-circuits
+    pool creation for every enqueue_job call site.
+    """
+    pool = _StubArqPool()
+    monkeypatch.setattr("app.tasks.queue._pool", pool)
+    return pool
 
 
 def _test_redis_db() -> int:
