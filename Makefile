@@ -199,7 +199,11 @@ prod-build-frontend: check-env-prod
 	$(COMPOSE_PROD) build --no-cache frontend
 
 # Apply database migrations as an explicit, gated step. Run this BEFORE
-# prod-deploy when a release includes a migration. Migrations must be
+# prod-deploy when a release includes a migration. The -c alembic.pg.ini is
+# load-bearing: a bare `alembic upgrade head` resolves via pyproject
+# [tool.alembic] to the legacy MariaDB chain (alembic/) and silently no-ops
+# against the retired MariaDB instead of prod Postgres (bit us 2026-08-29,
+# release of PR #370). Migrations must be
 # backward-compatible (expand/contract): during the rollout the old and new app
 # versions briefly run against the same DB at once, so a column the old code
 # still reads must not disappear yet. Defer destructive (contract) changes to a
@@ -209,7 +213,7 @@ prod-migrate: check-env-prod
 	# migration code even if prod-migrate is run on its own. The duplicate
 	# build is a cache-cheap no-op.
 	$(COMPOSE_PROD) build api
-	$(COMPOSE_PROD) run --rm --no-deps api uv run --no-project alembic upgrade head
+	$(COMPOSE_PROD) run --rm --no-deps api uv run --no-project alembic -c alembic.pg.ini upgrade head
 
 # Zero-downtime deploy: build the app image(s), then roll each service one at a
 # time. docker-rollout starts a new replica, waits for its healthcheck, then

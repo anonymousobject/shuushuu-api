@@ -39,6 +39,8 @@ RUN sha256sum uv.lock | awk '{print $1}' > /app/.uv-lock-hash
 # Copy only what's needed for runtime (explicit allowlist)
 COPY app/ ./app/
 COPY alembic/ ./alembic/
+COPY alembic_pg/ ./alembic_pg/
+COPY alembic.pg.ini ./
 COPY scripts/ ./scripts/
 
 # Install the project itself (cheap; deps are already in the venv).
