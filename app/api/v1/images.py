@@ -75,6 +75,8 @@ from app.models.image_status_history import ImageStatusHistory
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import UserGroups
 from app.schemas.audit import (
+    ImageRepostListResponse,
+    ImageRepostResponse,
     ImageReviewListResponse,
     ImageReviewPublicResponse,
     ImageStatusHistoryListResponse,
@@ -1944,6 +1946,70 @@ async def get_image_status_history(
         per_page=pagination.per_page,
         items=items,
     )
+
+
+@router.get("/{image_id}/reposts", response_model=ImageRepostListResponse)
+async def get_image_reposts(
+    image_id: Annotated[int, Path(description="Image ID")],
+    db: AsyncSession = Depends(get_db),
+) -> ImageRepostListResponse:
+    """
+    Get the images currently marked as reposts of this image.
+
+    Derived from the live `replacement_id` pointer on the images row, not from
+    image_status_history, which never recorded replacement_id. The status filter
+    is required: restoring a repost historically left replacement_id set, so
+    hundreds of non-repost rows still point at an original.
+
+    Public: REPOST is a publicly visible status, and the repost's own page
+    already links to the original. Unpaginated — a handful of reposts per image.
+    """
+    # Verify image exists
+    image_result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
+    if not image_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Eager load user groups for UserSummary; outer join because status_user_id
+    # is NULL on legacy rows.
+    query = (
+        select(Images, Users)
+        .outerjoin(Users, Images.status_user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(
+            Images.replacement_id == image_id,  # type: ignore[arg-type]
+            Images.status == ImageStatus.REPOST,  # type: ignore[arg-type]
+        )
+        .order_by(
+            desc(Images.status_updated),  # type: ignore[arg-type]
+            desc(Images.image_id),  # type: ignore[arg-type]
+        )
+    )
+
+    rows = (await db.execute(query)).all()
+
+    items = [
+        ImageRepostResponse(
+            image_id=repost.image_id,
+            user=(
+                UserSummary(
+                    user_id=user.user_id,
+                    username=user.username,
+                    avatar=user.avatar,
+                    avatar_in_r2=user.avatar_in_r2,
+                    user_title=user.user_title,
+                    groups=user.groups,
+                )
+                if user
+                else None
+            ),
+            marked_at=repost.status_updated,
+        )
+        for repost, user in rows
+    ]
+
+    return ImageRepostListResponse(total=len(items), items=items)
 
 
 def get_review_outcome_label(outcome: int) -> str:

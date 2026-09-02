@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from app.schemas.base import UTCDatetime
+from app.schemas.base import UTCDatetime, UTCDatetimeOptional
 from app.schemas.common import UserSummary
 from app.schemas.tag import LinkedTag
 
@@ -194,6 +194,28 @@ class ImageStatusHistoryListResponse(BaseModel):
     page: int
     per_page: int
     items: list[ImageStatusHistoryResponse]
+
+
+# =============================================================================
+# Image Reposts
+# =============================================================================
+
+
+class ImageRepostResponse(BaseModel):
+    """An image currently marked as a repost of some other image."""
+
+    image_id: int
+    user: UserSummary | None = None
+    marked_at: UTCDatetimeOptional = None
+
+    model_config = {"from_attributes": True}
+
+
+class ImageRepostListResponse(BaseModel):
+    """List of images marked as reposts of one original."""
+
+    total: int
+    items: list[ImageRepostResponse]
 
 
 # =============================================================================
