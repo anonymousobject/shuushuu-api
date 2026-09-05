@@ -3,18 +3,6 @@
 # Certificates are issued via DNS-01 (Cloudflare API), so no /.well-known
 # webroot path is needed on port 80 — port 80 is HTTPS-redirect only.
 #
-# Scraper signatures that hit the site in hourly waves (2026-09-05): frozen,
-# long-obsolete Chrome versions (132/133 were current in early 2025; 99/101/107
-# in 2022) that no auto-updating browser still reports. During a wave they were
-# ~70% of page loads, and each page fans out to ~9 api calls from SSR, which is
-# what pinned the single-core api at 100%. Blocking here keeps them off the
-# frontend and api; the requests still reach this box. Edit the list here; the
-# check itself is the `if ($block_stale_ua)` in the 443 server block below.
-map $http_user_agent $block_stale_ua {
-    default 0;
-    "~Chrome/(99|101|107|132|133)\.0\." 1;
-}
-
 # HTTP server - redirect everything to HTTPS
 server {
     listen 80;
@@ -95,17 +83,24 @@ server {
 
     client_max_body_size 100M;
 
-    # See the $block_stale_ua map at the top of this file.
-    if ($block_stale_ua) {
-        return 403;
-    }
-
-    # Dead legacy URLs: phpBB (/forums/*) and the PHP-era /index.php. The
-    # frontend has no routes for them and 404s only after running the full
-    # layout load (3 api calls, 2 Redis connections per hit), and bots hammer
-    # them at thousands per minute. 410 tells crawlers the content is gone.
+    # Dead legacy URLs. phpBB lived at /forums/; the frontend has no route
+    # for it and 404s only after running the full layout load (3 api calls,
+    # 2 Redis connections per hit), and bots hammer it at thousands per
+    # minute. 410 tells crawlers the content is gone.
     location ^~ /forums/ { return 410; }
-    location ^~ /index.php { return 410; }
+
+    # MediaWiki URL forms from when the wiki lived at the apex:
+    # /index.php/<Title> and /index.php?title=<Title>&... still get thousands
+    # of hits per wave (mostly Special:RecentChanges). wiki.e-shuushuu.net
+    # serves both forms, so send them there with the query string intact.
+    # Anything else at /index.php is the dead PHP-era site.
+    location ~ "^/index\.php/(.+)$" { return 301 https://wiki.e-shuushuu.net/index.php/$1$is_args$args; }
+    location = /index.php {
+        if ($arg_title) {
+            return 301 https://wiki.e-shuushuu.net/index.php$is_args$args;
+        }
+        return 410;
+    }
 
     # API proxy to FastAPI backend
     location /api/ {
