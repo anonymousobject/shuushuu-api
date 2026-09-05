@@ -3,12 +3,58 @@
 import io
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import TagType
 from app.core.security import create_access_token
+from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 from app.models.user import Users
 
 FIXTURE_SINGLE = "https://urlimport-fixture.local/post/single"
 FIXTURE_MULTI = "https://urlimport-fixture.local/post/multi"
+
+
+def _pixiv_client_factory(illust_id: str, user_id: str):
+    """MockTransport client factory returning a minimal single-page pixiv artwork.
+
+    Mirrors tests/unit/test_url_import_pixiv.py's stubbed ajax response shape.
+    """
+    import httpx
+
+    def handler(request):
+        if request.url.path == f"/ajax/illust/{illust_id}":
+            return httpx.Response(
+                200,
+                json={
+                    "error": False,
+                    "body": {
+                        "title": "Sample artwork",
+                        "userName": "Some Artist",
+                        "userId": user_id,
+                        "pageCount": 1,
+                        "xRestrict": 0,
+                        "illustType": 0,
+                        "width": 100,
+                        "height": 100,
+                        "urls": {
+                            "small": (
+                                f"https://i.pximg.net/c/540x540_70/img-master/img/x/"
+                                f"{illust_id}_p0_master1200.jpg"
+                            ),
+                            "original": (
+                                f"https://i.pximg.net/img-original/img/x/{illust_id}_p0.png"
+                            ),
+                        },
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    def make(timeout):
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
+
+    return make
 
 
 @pytest.fixture
@@ -83,6 +129,168 @@ class TestResolveUrl:
         token = response.json()["images"][0]["token"]
         ref = verify_token(token)
         assert "/api/v1/images/url-import-fixture/" in ref.url
+
+    async def test_resolve_returns_known_artist_tag(self, resolve_client, db_session: AsyncSession):
+        """When the pixiv artist_id maps to a tag, the response names it."""
+        from unittest.mock import patch
+
+        artist = Tags(title="TKennshou", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        with patch(
+            "app.api.v1.url_import._make_http_client",
+            _pixiv_client_factory("199999999", "21412050"),
+        ):
+            response = await resolve_client.post(
+                "/api/v1/images/resolve-url",
+                json={"url": "https://www.pixiv.net/artworks/199999999"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["artist_id"] == "21412050"
+        assert body["artist_tag_id"] == artist.tag_id
+        assert body["artist_tag_title"] == "TKennshou"
+
+    async def test_resolve_unknown_artist_id_returns_null_tag(self, resolve_client):
+        """Unknown pixiv ID → artist_id present, tag fields null (no false match)."""
+        from unittest.mock import patch
+
+        with patch(
+            "app.api.v1.url_import._make_http_client",
+            _pixiv_client_factory("199999999", "21412050"),
+        ):
+            response = await resolve_client.post(
+                "/api/v1/images/resolve-url",
+                json={"url": "https://www.pixiv.net/artworks/199999999"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["artist_id"] == "21412050"
+        assert body["artist_tag_id"] is None
+        assert body["artist_tag_title"] is None
+
+    @pytest.mark.needs_commit
+    async def test_resolve_artist_tag_lookup_failure_degrades_gracefully(self, resolve_client):
+        """A DB failure in the artist-tag lookup must not fail an import whose
+        resolver step already succeeded -- it degrades to null tag fields.
+
+        needs_commit: the endpoint's except block calls db.rollback() for
+        real (see the fix commit); under this fixture's default SAVEPOINT
+        isolation that triggers a benign but noisy
+        'transaction already deassociated from connection' SAWarning
+        (same rationale as test_resolve_artist_tag_db_error_rolls_back).
+        """
+        from unittest.mock import AsyncMock, patch
+
+        with (
+            patch(
+                "app.api.v1.url_import._make_http_client",
+                _pixiv_client_factory("199999999", "21412050"),
+            ),
+            patch(
+                "app.api.v1.url_import.resolve_identity",
+                AsyncMock(side_effect=RuntimeError("db unavailable")),
+            ),
+        ):
+            response = await resolve_client.post(
+                "/api/v1/images/resolve-url",
+                json={"url": "https://www.pixiv.net/artworks/199999999"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["artist_id"] == "21412050"
+        assert body["artist_tag_id"] is None
+        assert body["artist_tag_title"] is None
+
+    @pytest.mark.needs_commit
+    async def test_resolve_artist_tag_db_error_rolls_back(
+        self, resolve_client, db_session: AsyncSession
+    ):
+        """A DB-level failure in the real identity-lookup statement must
+        trigger a real session rollback, not just be swallowed -- a caught
+        DBAPI/SQLAlchemy exception leaves the session's implicit transaction
+        needing a rollback; skipping it would poison db_session for
+        whatever runs next on it (get_db's post-yield commit in production).
+
+        needs_commit: real transaction semantics (not this fixture's default
+        SAVEPOINT-per-test isolation) so the rollback below exercises genuine
+        commit/rollback behavior instead of interacting with the SAVEPOINT
+        auto-restart listener -- same rationale as
+        test_store_predictions_swallows_duplicate_race in
+        tests/services/test_ml_suggestion_pipeline.py, the established
+        precedent for testing a caught-exception-then-rollback path.
+
+        Unlike test_resolve_artist_tag_lookup_failure_degrades_gracefully
+        (which mocks resolve_identity wholesale and never touches the real
+        session), this fails the actual db.execute() call resolve_identity
+        makes -- on db_session itself, the same object get_db is overridden
+        to hand the endpoint (see conftest's override_get_db) -- and spies
+        on db.rollback (wrapping the real implementation, so it still runs)
+        to prove the mitigation code path actually executes rather than
+        just asserting a response shape that would look identical either
+        way under this test harness's non-committing override_get_db.
+
+        Note: only the identity-lookup statement (the one joining
+        tag_external_links) is failed. A blanket execute() failure would
+        also break the VerifiedUser dependency's own db.execute() lookup
+        (app/core/auth.py), which runs earlier in the same request and
+        isn't what this test is about.
+        """
+        from unittest.mock import patch
+
+        from sqlalchemy.exc import OperationalError
+
+        artist = Tags(title="TKennshou", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        db_error = OperationalError("SELECT ...", {}, Exception("connection lost"))
+        real_execute = db_session.execute
+
+        async def selectively_failing_execute(statement, *args, **kwargs):
+            if "tag_external_links" in str(statement).lower():
+                raise db_error
+            return await real_execute(statement, *args, **kwargs)
+
+        with (
+            patch(
+                "app.api.v1.url_import._make_http_client",
+                _pixiv_client_factory("199999999", "21412050"),
+            ),
+            patch.object(db_session, "execute", side_effect=selectively_failing_execute),
+            patch.object(db_session, "rollback", wraps=db_session.rollback) as rollback_spy,
+        ):
+            response = await resolve_client.post(
+                "/api/v1/images/resolve-url",
+                json={"url": "https://www.pixiv.net/artworks/199999999"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["artist_id"] == "21412050"
+        assert body["artist_tag_id"] is None
+        assert body["artist_tag_title"] is None
+        rollback_spy.assert_awaited_once()
 
 
 class TestFetchExternal:

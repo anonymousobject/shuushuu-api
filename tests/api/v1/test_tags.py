@@ -4969,6 +4969,364 @@ class TestAddTagLink:
         )
         assert response.status_code == 403
 
+    async def test_pixiv_link_populates_identity(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Adding a pixiv profile URL parses site/external_id onto the link."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminidentity",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminidentity@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="identity artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminidentity", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Add a pixiv profile link
+        link_data = {"url": "https://www.pixiv.net/users/21412050"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["site"] == "pixiv"
+        assert body["external_id"] == "21412050"
+
+    async def test_non_identity_link_leaves_identity_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A URL no parser recognizes stores NULL site/external_id."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminnoident",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminnoident@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="non identity tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminnoident", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Add a non-identity link
+        link_data = {"url": "https://example.com/gallery"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["site"] is None
+        assert body["external_id"] is None
+
+    async def test_duplicate_identity_on_other_tag_is_409(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The same pixiv ID cannot be claimed by a second artist tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindupident",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindupident@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create two tags
+        tag = Tags(title="first artist tag", desc="Test artist", type=TagType.ARTIST)
+        other_tag = Tags(title="second artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        db_session.add(other_tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        await db_session.refresh(other_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindupident", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # First tag claims the ID
+        first_response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/users/21412050"},
+            headers=headers,
+        )
+        assert first_response.status_code == 201
+
+        # Second tag tries the same ID via a different URL form
+        response = await client.post(
+            f"/api/v1/tags/{other_tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/member.php?id=21412050"},
+            headers=headers,
+        )
+        assert response.status_code == 409
+        assert "21412050" in response.json()["detail"]
+        assert tag.title in response.json()["detail"]
+        # Pinned in the site's display case -- consistent with search's
+        # matched_identity labels ("Pixiv 21412267"), not the raw lowercase
+        # site column.
+        assert "Pixiv ID 21412050" in response.json()["detail"]
+
+    async def test_duplicate_identity_case_variant_on_other_tag_is_409(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The duplicate-identity guard matches case-insensitively (ADR-0008:
+        `site`/`external_id` are ci_string -- citext on Postgres, the default
+        collation on MariaDB). Real pixiv ids are digit-only so this can't
+        happen through today's parser, but a future alphanumeric site's ids
+        could collide on case, and the guard is a DB comparison -- it must
+        hold regardless of what the parser produces. Only `parse_identity_url`
+        is stubbed (to hand back a case-variant identity for made-up URLs);
+        `resolve_identity`'s real DB query is exactly what's under test."""
+        from unittest.mock import patch
+
+        from app.services.artist_identity import ArtistIdentity
+
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindupcase",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindupcase@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create two tags
+        tag = Tags(title="case variant artist tag", desc="Test artist", type=TagType.ARTIST)
+        other_tag = Tags(title="case variant artist tag 2", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        db_session.add(other_tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        await db_session.refresh(other_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindupcase", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        first_url = "https://example.com/artist/AbC123"
+        second_url = "https://example.com/artist/abc123"
+        identities = {
+            first_url: ArtistIdentity(site="pixiv", external_id="AbC123"),
+            second_url: ArtistIdentity(site="pixiv", external_id="abc123"),
+        }
+
+        with patch("app.api.v1.tags.parse_identity_url", side_effect=identities.get):
+            # First tag claims the identity as originally cased.
+            first_response = await client.post(
+                f"/api/v1/tags/{tag.tag_id}/links",
+                json={"url": first_url},
+                headers=headers,
+            )
+            assert first_response.status_code == 201
+
+            # Second tag tries a lowercase variant of the same external_id.
+            response = await client.post(
+                f"/api/v1/tags/{other_tag.tag_id}/links",
+                json={"url": second_url},
+                headers=headers,
+            )
+        assert response.status_code == 409
+        assert tag.title in response.json()["detail"]
+
+    async def test_second_url_form_for_same_tag_leaves_identity_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A second URL form of an identity the SAME tag already owns (e.g. the
+        legacy member.php form alongside the modern /users/ form) is stored as a
+        plain archival link with NULL site/external_id. Mods deliberately keep
+        both forms on one tag for archive reasons, and a future UNIQUE(site,
+        external_id) index requires identity to live on only one link row per
+        tag. The first link's identity must be untouched."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminaltform",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaltform@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="alt form artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaltform", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # First link claims the identity
+        first_response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/users/21412050"},
+            headers=headers,
+        )
+        assert first_response.status_code == 201
+        first_body = first_response.json()
+        assert first_body["site"] == "pixiv"
+        assert first_body["external_id"] == "21412050"
+
+        # Second URL form of the SAME identity, on the SAME tag
+        second_response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/member.php?id=21412050"},
+            headers=headers,
+        )
+        assert second_response.status_code == 201
+        second_body = second_response.json()
+        assert second_body["site"] is None
+        assert second_body["external_id"] is None
+
+        # The first link's identity is unchanged
+        first_link_result = await db_session.execute(
+            select(TagExternalLinks).where(
+                TagExternalLinks.link_id == first_body["link_id"]  # type: ignore[arg-type]
+            )
+        )
+        first_link = first_link_result.scalar_one()
+        assert first_link.site == "pixiv"
+        assert first_link.external_id == "21412050"
+
 
 @pytest.mark.api
 class TestDeleteTagLink:

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.search import get_search_service
 from app.config import TagType
 from app.models.tag import Tags
+from app.models.tag_external_link import TagExternalLinks
 from app.services.search import TagSearchResult
 
 
@@ -375,3 +376,511 @@ class TestSearchEndpoint:
         # Total comes from Meilisearch, but hits only include DB-verified tags
         assert data["total"] == 2
         assert data["hits"] == []
+
+    async def test_exact_identity_query_prepends_artist_hit(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A bare pixiv ID returns the owning artist first, flagged with matched_identity."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Meilisearch has nothing for the bare-ID query — the exact layer is the
+        # only source of this hit.
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert hits[0]["tag_id"] == artist.tag_id
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
+        # The exact hit wasn't already counted by Meilisearch, so total gains one.
+        assert data["total"] == 1
+
+    async def test_exact_hit_not_duplicated_when_meili_also_returns_it(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """If the fuzzy layer already found the artist, it appears once, flagged."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[artist.tag_id], total=1
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert [h["tag_id"] for h in hits].count(artist.tag_id) == 1
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
+        # The hit was already in the Meilisearch results, so total is unchanged.
+        assert data["total"] == 1
+
+    async def test_text_query_has_no_matched_identity(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A regular text query never sets matched_identity on its hits."""
+        tag = Tags(title="Sakura", type=TagType.CHARACTER)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[tag.tag_id], total=1
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "sakura"})
+        assert response.status_code == 200
+        assert all(h["matched_identity"] is None for h in response.json()["hits"])
+
+    async def test_exact_hit_insertion_respects_limit(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """Prepending a new exact hit to an already-full page doesn't exceed limit."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        other = Tags(title="Other Tag", type=TagType.THEME)
+        db_session.add_all([artist, other])
+        await db_session.commit()
+        await db_session.refresh(artist)
+        await db_session.refresh(other)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Meilisearch already fills the requested page with an unrelated tag.
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[other.tag_id], total=1
+        )
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "limit": 1}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert len(hits) == 1
+        assert hits[0]["tag_id"] == artist.tag_id
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
+
+    async def test_identity_query_on_later_page_does_not_inject_exact_hit(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A page-2+ request for an identity query isn't prepended with the
+        exact hit — only the first page is boosted, so the tag never
+        duplicates itself as a user paginates."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        other = Tags(title="Other Tag", type=TagType.THEME)
+        db_session.add_all([artist, other])
+        await db_session.commit()
+        await db_session.refresh(artist)
+        await db_session.refresh(other)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Every page (including the offset=0 reference check) returns the
+        # same unrelated tag — the artist is nowhere in Meilisearch's results.
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[other.tag_id], total=1
+        )
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "offset": 20, "limit": 1}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert [h["tag_id"] for h in hits] == [other.tag_id]
+        assert all(h["matched_identity"] is None for h in hits)
+
+    async def test_identity_query_total_consistent_across_pages(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """The same identity query reports the same total on page 1 and
+        page 2, even though the exact hit is only ever injected on page 1.
+
+        Meilisearch genuinely ranks the artist on page 1 (so it's *not* a
+        new hit — total shouldn't be bumped) but page 2's own slice
+        naturally doesn't contain it, since it's a different set of tags
+        entirely. A page-local-only "already found" check would wrongly
+        treat page 2 as a fresh discovery and inflate its total.
+        """
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        page2_tag = Tags(title="Page Two Tag", type=TagType.THEME)
+        db_session.add_all([artist, page2_tag])
+        await db_session.commit()
+        for tag in (artist, page2_tag):
+            await db_session.refresh(tag)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # Meilisearch itself ranks the artist first (page 1); page 2 is a
+        # different, unrelated tag entirely — same overall total (5) on
+        # both calls, as real pagination of a stable query would look.
+        def fake_search_tags(_q, *, limit, offset, type_filter, exclude_aliases, sort):
+            tag_ids = [artist.tag_id] if offset == 0 else [page2_tag.tag_id]
+            return TagSearchResult(tag_ids=tag_ids, total=5)
+
+        mock_search_service.search_tags.side_effect = fake_search_tags
+
+        page1_response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "offset": 0, "limit": 1}
+        )
+        page2_response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "offset": 1, "limit": 1}
+        )
+        assert page1_response.status_code == 200
+        assert page2_response.status_code == 200
+
+        page1_total = page1_response.json()["total"]
+        page2_total = page2_response.json()["total"]
+        # The artist was genuinely part of Meilisearch's own result set
+        # (ranked on page 1), so it's never counted as "new" on either page:
+        # both totals equal Meilisearch's own total, unmodified.
+        assert page1_total == 5
+        assert page2_total == page1_total
+
+        # The second lookup made an extra reference call (page 1, offset=0)
+        # to answer "already found by Meilisearch" consistently.
+        assert mock_search_service.search_tags.call_count == 3
+
+    async def test_exact_identity_query_respects_mismatched_type_filter(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """An identity query filtered to a type the owning tag isn't never
+        surfaces the exact-identity hit — it's not reachable through that
+        type's filter, so injecting it would leak a result across types."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "type": TagType.THEME}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["hits"] == []
+        assert data["total"] == 0
+
+    async def test_exact_identity_query_present_with_matching_type_filter(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """The same identity query, filtered to the owning tag's own type,
+        still surfaces the exact-identity hit."""
+        artist = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(artist)
+        await db_session.commit()
+        await db_session.refresh(artist)
+
+        link = TagExternalLinks(
+            tag_id=artist.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "type": TagType.ARTIST}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["hits"][0]["tag_id"] == artist.tag_id
+        assert data["hits"][0]["matched_identity"] == "Pixiv 21412050"
+        assert data["total"] == 1
+
+    async def test_exact_identity_query_respects_exclude_aliases(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """exclude_aliases=true must suppress an exact-identity hit that
+        resolves to an alias tag, the same as it suppresses alias tags from
+        the fuzzy layer."""
+        canonical = Tags(title="Some Artist", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        link = TagExternalLinks(
+            tag_id=alias.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "exclude_aliases": True}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["hits"] == []
+        assert data["total"] == 0
+
+    async def test_identity_query_drops_alias_row_when_meili_returns_both(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A legacy alias tag of the matched canonical is redundant with the
+        flagged canonical hit and must not also appear as its own row."""
+        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        link = TagExternalLinks(
+            tag_id=canonical.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[alias.tag_id, canonical.tag_id], total=2
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert [h["tag_id"] for h in hits] == [canonical.tag_id]
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
+        # Meilisearch's raw total (2) minus the dropped alias row.
+        assert data["total"] == 1
+
+    async def test_identity_query_drops_alias_row_when_meili_returns_alias_only(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """If Meilisearch only surfaced the alias (not the canonical), the
+        exact layer still prepends the canonical and drops the alias row."""
+        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        link = TagExternalLinks(
+            tag_id=canonical.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[alias.tag_id], total=1
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        assert [h["tag_id"] for h in hits] == [canonical.tag_id]
+        assert hits[0]["matched_identity"] == "Pixiv 21412050"
+        # Meilisearch total (1) minus the dropped alias, plus the newly
+        # counted canonical: 1 - 1 + 1 == 1.
+        assert data["total"] == 1
+
+    async def test_text_query_leaves_alias_rows_untouched(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """A non-identity text query never triggers alias dedup — aliases of
+        an unrelated tag are ordinary, independent search results."""
+        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        mock_search_service.search_tags.return_value = TagSearchResult(
+            tag_ids=[alias.tag_id, canonical.tag_id], total=2
+        )
+
+        response = await client_with_search.get("/api/v1/search", params={"q": "tsunekichi"})
+        assert response.status_code == 200
+
+        data = response.json()
+        assert {h["tag_id"] for h in data["hits"]} == {alias.tag_id, canonical.tag_id}
+        assert data["total"] == 2
+        assert all(h["matched_identity"] is None for h in data["hits"])
+
+    async def test_identity_query_drops_alias_row_on_later_page(
+        self,
+        client_with_search: AsyncClient,
+        db_session: AsyncSession,
+        mock_search_service: AsyncMock,
+    ):
+        """An alias row of the matched canonical is dropped even on a
+        page > 0 request, even though the canonical itself is only ever
+        injected/flagged on the first page."""
+        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
+        other = Tags(title="Other Tag", type=TagType.THEME)
+        db_session.add_all([canonical, other])
+        await db_session.commit()
+        await db_session.refresh(canonical)
+        await db_session.refresh(other)
+
+        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        link = TagExternalLinks(
+            tag_id=canonical.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+        db_session.add(link)
+        await db_session.commit()
+
+        # The requested (later) page has the alias plus an unrelated tag; the
+        # first-page reference lookup (offset=0, used to decide whether the
+        # canonical itself is "new") finds neither the canonical nor the
+        # alias — the canonical is genuinely outside Meilisearch's match set.
+        def fake_search_tags(_q, *, limit, offset, type_filter, exclude_aliases, sort):
+            if offset == 0:
+                return TagSearchResult(tag_ids=[other.tag_id], total=5)
+            return TagSearchResult(tag_ids=[alias.tag_id, other.tag_id], total=5)
+
+        mock_search_service.search_tags.side_effect = fake_search_tags
+
+        response = await client_with_search.get(
+            "/api/v1/search", params={"q": "21412050", "offset": 20, "limit": 2}
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        hits = data["hits"]
+        # The alias is dropped; the canonical is never injected into a later
+        # page; the unrelated tag is untouched.
+        assert [h["tag_id"] for h in hits] == [other.tag_id]
+        assert all(h["matched_identity"] is None for h in hits)
+        # Meilisearch's total (5) minus the dropped alias, plus the
+        # canonical counted as new (not found on the first-page reference
+        # lookup): 5 - 1 + 1 == 5.
+        assert data["total"] == 5
