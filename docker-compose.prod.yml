@@ -189,7 +189,12 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # 4 workers: the host has 8 cores and one uvicorn process saturates a
+    # single core under scraper waves (2026-09-05). --limit-concurrency caps
+    # in-flight requests per worker so a saturated worker answers 503 in
+    # milliseconds instead of queueing thousands of connections into 30 s
+    # pool timeouts and nginx 504s.
+    command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --limit-concurrency 64
     # No host port publish: two replicas can't bind the same host port during a
     # rollout, and nginx reaches the api over the compose network (api:8000), so
     # the publish was debug-only. Use `docker compose exec api …` for host access.
@@ -199,6 +204,11 @@ services:
       - REDIS_URL=${REDIS_URL}
       - ARQ_REDIS_URL=${ARQ_REDIS_URL}
       - IQDB_HOST=iqdb
+      # Per-worker asyncpg pool. 4 workers x (8 + 4) = 48 connections, which
+      # with arq-worker's pool stays under Postgres max_connections=100.
+      # Peak active backends observed under load was 4.
+      - DB_POOL_SIZE=8
+      - DB_MAX_OVERFLOW=4
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
