@@ -7,7 +7,7 @@ source of truth for permissions. On startup, it:
 - Warns about orphan permissions in DB but not in enum
 """
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -15,6 +15,9 @@ from app.core.permissions import Permission
 from app.models.permissions import Perms
 
 logger = get_logger(__name__)
+
+# Any fixed value; it only has to agree between the processes that run the sync.
+_SYNC_LOCK_KEY = 0x5045524D  # "PERM"
 
 
 async def sync_permissions(db: AsyncSession) -> None:
@@ -29,6 +32,13 @@ async def sync_permissions(db: AsyncSession) -> None:
         db: Database session
     """
     enum_titles = {p.value for p in Permission}
+
+    # uvicorn runs this once per worker at startup, concurrently. perms.title
+    # has no unique constraint, so two workers that both read before either
+    # commits would both insert the same row. A transaction-scoped advisory
+    # lock serializes them; the commit below releases it.
+    if db.get_bind().dialect.name == "postgresql":
+        await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _SYNC_LOCK_KEY})
 
     # Get all existing permissions from DB
     result = await db.execute(select(Perms))
