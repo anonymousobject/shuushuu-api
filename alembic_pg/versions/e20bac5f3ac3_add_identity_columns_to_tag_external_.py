@@ -1,7 +1,7 @@
 """add identity columns to tag_external_links
 
 Revision ID: e20bac5f3ac3
-Revises: 0001_pg_baseline
+Revises: 0003_add_user_reference_fks
 Create Date: 2026-08-24 21:35:44.526681
 
 """
@@ -15,7 +15,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "e20bac5f3ac3"
-down_revision: str | Sequence[str] | None = "0001_pg_baseline"
+down_revision: str | Sequence[str] | None = "0003_add_user_reference_fks"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -28,7 +28,7 @@ def upgrade() -> None:
     # length caps below are CHECK constraints instead (same pattern as
     # users.username / users.email / tags.title in the frozen baseline and
     # app/core/pg_schema.py's _LENGTH_CHECKS). The citext extension is already
-    # created by 0001_pg_baseline, which this migration is chained onto.
+    # created by 0001_pg_baseline, an ancestor of this migration.
     op.add_column("tag_external_links", sa.Column("site", CITEXT(), nullable=True))
     op.add_column("tag_external_links", sa.Column("external_id", CITEXT(), nullable=True))
     op.create_index(

@@ -1,7 +1,7 @@
 """add identity columns to tag_external_links
 
 Revision ID: 02d6232532d4
-Revises: 6dda18b955d8
+Revises: 28e56662b975
 Create Date: 2026-08-01 18:15:26.573269
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '02d6232532d4'
-down_revision: str | Sequence[str] | None = '10eef13f525a'
+down_revision: str | Sequence[str] | None = '28e56662b975'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
