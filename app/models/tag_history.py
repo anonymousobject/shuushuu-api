@@ -56,11 +56,11 @@ class TagHistory(TagHistoryBase, table=True):
 
     __tablename__ = "tag_history"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s below:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py). When in doubt, treat Alembic
+    # migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["image_id"],
@@ -94,8 +94,8 @@ class TagHistory(TagHistoryBase, table=True):
     tag_history_id: int | None = Field(default=None, primary_key=True)
 
     # Override to add foreign keys
-    image_id: int | None = Field(default=None, foreign_key="images.image_id")
-    tag_id: int | None = Field(default=None, foreign_key="tags.tag_id")
+    image_id: int | None = Field(default=None)
+    tag_id: int | None = Field(default=None)
 
     # Override to add server default
     date: datetime | None = Field(
@@ -104,7 +104,7 @@ class TagHistory(TagHistoryBase, table=True):
     )
 
     # Internal field
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    user_id: int | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

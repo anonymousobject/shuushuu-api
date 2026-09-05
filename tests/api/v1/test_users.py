@@ -727,6 +727,54 @@ class TestUpdateUserProfile:
         assert response.status_code == 200
         # response.json()["email"] not asserted: email may not be returned in the response
 
+    async def test_update_email_taken_by_several_accounts_conflicts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Switching to an email two other accounts already share returns 409, not a 500.
+
+        Legacy PHP-era signups allowed duplicate emails, so the uniqueness
+        check has to cope with the target address matching more than one row.
+        """
+        holders = [
+            Users(
+                username=f"emailholder{index}",
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email="contested@example.com",
+                active=1,
+            )
+            for index in range(2)
+        ]
+        mover = Users(
+            username="emailmover",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="mover@example.com",
+            active=1,
+        )
+        db_session.add_all([*holders, mover])
+        await db_session.commit()
+        await db_session.refresh(mover)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "emailmover", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/users/{mover.user_id}",
+            json={"email": "contested@example.com"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 409
+        assert "email" in response.json()["detail"].lower()
+
+        await db_session.refresh(mover)
+        assert mover.email == "mover@example.com"
+
     async def test_self_password_change_via_patch_rejected(
         self, client: AsyncClient, db_session: AsyncSession
     ):

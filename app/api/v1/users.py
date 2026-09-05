@@ -767,11 +767,15 @@ async def _update_user_profile(
         # Handle email validation
         if "email" in update_data:
             email = update_data["email"]
-            # Check if email is already taken by another user
+            # Check if email is already taken by another user. Legacy PHP-era
+            # signups allowed duplicates, so the address may match several rows
+            # — one is enough to reject the change.
             existing_email = await db.execute(
-                select(Users).where(Users.email == email, Users.user_id != user_id)  # type: ignore[arg-type]
+                select(Users)
+                .where(Users.email == email, Users.user_id != user_id)  # type: ignore[arg-type]
+                .limit(1)
             )
-            if existing_email.scalar_one_or_none():
+            if existing_email.scalars().first():
                 raise HTTPException(status_code=409, detail="Email already in use")
 
         # Update user fields

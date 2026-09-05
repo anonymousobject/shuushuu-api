@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import Permission
@@ -105,14 +106,16 @@ class TestListDonations:
         data = response.json()
         assert data["donations"][0]["username"] == "testuser"
 
-    async def test_username_null_when_no_user(self, client: AsyncClient, db_session: AsyncSession):
-        """Username is null when user_id has no matching user."""
-        db_session.add(Donations(amount=10, user_id=0, nick="Anonymous"))
-        await db_session.commit()
+    async def test_dangling_user_id_is_impossible(self, db_session: AsyncSession):
+        """A donation can no longer reference a nonexistent user.
 
-        response = await client.get("/api/v1/donations")
-        data = response.json()
-        assert data["donations"][0]["username"] is None
+        The legacy PHP data used user_id=0 as an anonymous sentinel;
+        fk_donations_user_id forbids dangling references, so anonymous
+        donations carry user_id NULL instead (next test).
+        """
+        db_session.add(Donations(amount=10, user_id=0, nick="Anonymous"))
+        with pytest.raises(IntegrityError):
+            await db_session.commit()
 
     async def test_username_null_when_no_user_id(
         self, client: AsyncClient, db_session: AsyncSession
@@ -282,17 +285,31 @@ class TestCreateDonation:
         self, client: AsyncClient, user_with_donations_create: tuple[Users, str]
     ):
         """Creates donation with all fields."""
-        _, token = user_with_donations_create
+        user, token = user_with_donations_create
         response = await client.post(
             "/api/v1/donations",
-            json={"amount": 50, "nick": "Generous", "user_id": 123},
+            json={"amount": 50, "nick": "Generous", "user_id": user.user_id},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 201
         data = response.json()
         assert data["amount"] == 50
         assert data["nick"] == "Generous"
-        assert data["user_id"] == 123
+        assert data["user_id"] == user.user_id
+
+    async def test_create_nonexistent_user_returns_404(
+        self, client: AsyncClient, user_with_donations_create: tuple[Users, str]
+    ):
+        """A user_id with no matching user is rejected up front —
+        fk_donations_user_id would refuse it anyway, but as a 500."""
+        _, token = user_with_donations_create
+        response = await client.post(
+            "/api/v1/donations",
+            json={"amount": 50, "user_id": 999999999},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "User not found"
 
     async def test_create_naive_date_returns_422(
         self, client: AsyncClient, user_with_donations_create: tuple[Users, str]

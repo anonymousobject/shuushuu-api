@@ -33,11 +33,11 @@ class UserSuspensions(SQLModel, table=True):
 
     __tablename__ = "user_suspensions"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s below:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py). When in doubt, treat Alembic
+    # migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["user_id"],
@@ -66,13 +66,13 @@ class UserSuspensions(SQLModel, table=True):
     suspension_id: int | None = Field(default=None, primary_key=True)
 
     # User being suspended/reactivated
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Action type
     action: str = Field(max_length=20)  # SuspensionAction.SUSPENDED or SuspensionAction.REACTIVATED
 
     # Who performed the action
-    actioned_by: int | None = Field(default=None, foreign_key="users.user_id")
+    actioned_by: int | None = Field(default=None)
 
     # When the action occurred
     actioned_at: datetime = Field(

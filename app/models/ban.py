@@ -70,11 +70,11 @@ class Bans(BanBase, table=True):
 
     __tablename__ = "bans"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s below:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py). When in doubt, treat Alembic
+    # migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["banned_by"],
@@ -98,7 +98,7 @@ class Bans(BanBase, table=True):
     ban_id: int | None = Field(default=None, primary_key=True)
 
     # Public reference - user being banned
-    user_id: int = Field(foreign_key="users.user_id")
+    user_id: int
 
     # Override to add server default
     date: datetime | None = Field(
@@ -110,7 +110,7 @@ class Bans(BanBase, table=True):
     expires: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
     # Internal fields
-    banned_by: int | None = Field(default=None, foreign_key="users.user_id")
+    banned_by: int | None = Field(default=None)
     ip: str | None = Field(default=None, max_length=15)
 
     # Note: Relationships (e.g., user, banned_by_user) are intentionally omitted.
