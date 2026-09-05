@@ -180,6 +180,15 @@ services:
     # !reset drops the base service's container_name from the merged config.
     container_name: !reset null
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
+    # Docker's default soft nofile limit is 1024 (containerd LimitNOFILESoft).
+    # The single uvicorn process exhausted it under scraper bursts on 2026-09-05
+    # (OSError: [Errno 24] Too many open files → nginx 502s for every request,
+    # including healthchecks and image serving). Raise the ceiling so descriptor
+    # exhaustion can't be the first thing to fail under load.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000
     # No host port publish: two replicas can't bind the same host port during a
     # rollout, and nginx reaches the api over the compose network (api:8000), so
@@ -218,6 +227,12 @@ services:
     # double-run anything.
     container_name: !reset null
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
+    # Same 1024 default as api; the worker opens per-job DB/Redis/httpx
+    # connections, so give it the same headroom.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports: []
     environment:
       - DATABASE_URL=${DATABASE_URL}
