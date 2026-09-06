@@ -93,3 +93,46 @@ class TestSyncPermissions:
         count_after_second = len(result.scalars().all())
 
         assert count_after_first == count_after_second
+
+    async def test_concurrent_syncs_insert_each_missing_permission_once(
+        self, engine, monkeypatch: pytest.MonkeyPatch
+    ):
+        """uvicorn runs one sync per worker at startup, concurrently. Two workers
+        that both read before either commits must not both insert the same
+        permission (perms.title has no unique constraint)."""
+        import asyncio
+        from enum import StrEnum
+
+        from sqlalchemy import delete, func
+
+        from app.core import permission_sync
+        from app.core.permission_sync import sync_permissions
+
+        if engine.dialect.name != "postgresql":
+            pytest.skip("cross-process serialization is Postgres-only")
+
+        race_title = "race_test_permission"
+        # Every real member plus one nothing has seeded, so both syncs see
+        # exactly one permission as missing and nothing as orphaned.
+        fake = StrEnum(
+            "FakePermission",
+            {**{m.name: m.value for m in Permission}, "RACE_TEST": race_title},
+        )
+        fake.description = property(lambda self: "Exists only for this test")  # type: ignore[attr-defined]
+        monkeypatch.setattr(permission_sync, "Permission", fake)
+
+        async def run_sync() -> None:
+            async with AsyncSession(engine) as session:
+                await sync_permissions(session)
+
+        try:
+            await asyncio.gather(run_sync(), run_sync())
+            async with AsyncSession(engine) as session:
+                count = await session.scalar(
+                    select(func.count()).select_from(Perms).where(Perms.title == race_title)
+                )
+            assert count == 1
+        finally:
+            async with AsyncSession(engine) as session:
+                await session.execute(delete(Perms).where(Perms.title == race_title))
+                await session.commit()
