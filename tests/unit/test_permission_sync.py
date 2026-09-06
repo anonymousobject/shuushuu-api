@@ -136,4 +136,3 @@ class TestSyncPermissions:
             async with AsyncSession(engine) as session:
                 await session.execute(delete(Perms).where(Perms.title == race_title))
                 await session.commit()
-
