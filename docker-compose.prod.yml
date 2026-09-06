@@ -204,8 +204,10 @@ services:
       - REDIS_URL=${REDIS_URL}
       - ARQ_REDIS_URL=${ARQ_REDIS_URL}
       - IQDB_HOST=iqdb
-      # Per-worker asyncpg pool. 4 workers x (8 + 4) = 48 connections, which
-      # with arq-worker's pool stays under Postgres max_connections=100.
+      # Per-worker asyncpg pool. 4 workers x (8 + 4) = 48 connections per
+      # container. docker-rollout runs two api replicas during a deploy, so the
+      # worst case is 96 here plus arq-worker's default 30, which fits under
+      # Postgres max_connections=200 (raised from 100 on 2026-09-06 for this).
       # Peak active backends observed under load was 4.
       - DB_POOL_SIZE=8
       - DB_MAX_OVERFLOW=4
