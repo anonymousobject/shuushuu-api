@@ -78,6 +78,7 @@ from app.services.character_source_counts import get_shared_image_counts
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
+from app.utils.like_escape import escape_like_pattern
 
 SUGGESTION_STATS_MIN_THRESHOLD = 5
 
@@ -215,11 +216,6 @@ FULLTEXT_WORD_DELIMITERS = frozenset(" \n\t;:!?.'\"`()[]{}|&/\\,-=~")
 
 # Pre-computed translation table for efficient delimiter replacement (used by str.translate)
 _DELIMITER_TRANS_TABLE = str.maketrans(dict.fromkeys(FULLTEXT_WORD_DELIMITERS, " "))
-
-
-def _escape_like_pattern(value: str) -> str:
-    """Escape special LIKE pattern characters (% and _) in a search value."""
-    return value.replace("%", r"\%").replace("_", r"\_")
 
 
 def _sanitize_fulltext_term(term: str) -> str:
@@ -696,7 +692,7 @@ async def list_tags(
         if len(search) < 3:
             # Short query: prefix match with LIKE (e.g., "sa" -> "sakura")
             # Escape LIKE special characters to prevent unintended wildcard matching
-            escaped_search = _escape_like_pattern(search)
+            escaped_search = escape_like_pattern(search)
             prefix_pattern = f"{escaped_search}%"
             query = query.where(
                 Tags.title.like(prefix_pattern)  # type: ignore[union-attr]
@@ -710,7 +706,7 @@ async def list_tags(
             # the LIKE branch (built on portable lower() comparisons).
             for word in search.split():
                 query = query.where(
-                    Tags.title.ilike(f"%{_escape_like_pattern(word)}%")  # type: ignore[union-attr]
+                    Tags.title.ilike(f"%{escape_like_pattern(word)}%")  # type: ignore[union-attr]
                 )
         else:
             # Long query: word-order independent full-text search with wildcard expansion
@@ -760,7 +756,7 @@ async def list_tags(
                 # All terms were stopwords or too short - fall back to LIKE prefix search
                 # This handles edge cases like searching for "The" or "A" or "The A"
                 # Escape LIKE special characters to prevent unintended wildcard matching
-                escaped_search = _escape_like_pattern(search)
+                escaped_search = escape_like_pattern(search)
                 query = query.where(Tags.title.like(f"{escaped_search}%"))  # type: ignore[union-attr]
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]

@@ -278,6 +278,127 @@ class TestListUsers:
         assert "Ran" in usernames
         assert usernames[0] == "Ran"
 
+    async def test_list_users_search_literal_underscore_no_wildcard(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A literal `_` in the search term must not match arbitrary characters."""
+        test_users = [
+            ("under_score", "underscore@example.com"),
+            ("underXscore", "underxscore@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "under_score"})
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert usernames == ["under_score"]
+
+    async def test_list_users_search_literal_percent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A literal `%` in the search term must match only usernames containing it."""
+        test_users = [
+            ("100%", "hundredpercent@example.com"),
+            ("100", "hundred@example.com"),
+            ("100abc", "hundredabc@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "100%"})
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert usernames == ["100%"]
+
+    async def test_list_users_search_bare_percent_no_match_all(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A bare `%` must not act as a wildcard matching every user."""
+        test_users = [
+            ("percentuser1", "percentuser1@example.com"),
+            ("percentuser2", "percentuser2@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "%"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["users"] == []
+
+    async def test_list_users_search_relevance_ordering_with_escaped_term(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Relevance ordering (exact match first, prefix next) must still work
+        when the search term contains characters that need LIKE-escaping."""
+        exact = Users(
+            username="a_b",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="exact_ab@example.com",
+            active=1,
+        )
+        prefix = Users(
+            username="a_bcdef",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="prefix_ab@example.com",
+            active=1,
+        )
+        # Would have matched under the old unescaped interpretation of "_" as
+        # a single-character wildcard, but must not match now that it's literal.
+        wildcard_decoy = Users(
+            username="aXbdecoy",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="decoy_ab@example.com",
+            active=1,
+        )
+        db_session.add_all([exact, prefix, wildcard_decoy])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "a_b"})
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert usernames[0] == "a_b"
+        assert "a_bcdef" in usernames
+        assert "aXbdecoy" not in usernames
+
     async def test_list_users_search_empty_returns_all(
         self, client: AsyncClient, db_session: AsyncSession
     ):
