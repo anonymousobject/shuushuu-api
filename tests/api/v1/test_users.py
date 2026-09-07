@@ -399,6 +399,46 @@ class TestListUsers:
         assert "a_bcdef" in usernames
         assert "aXbdecoy" not in usernames
 
+    async def test_list_users_search_backslash_escaped(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A literal backslash in the search term must be escaped first, so it
+        cannot desync from the % and _ escapes or from the wildcards this
+        endpoint appends around the term."""
+        backslash_user = Users(
+            username="back\\slash",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="backslash@example.com",
+            active=1,
+        )
+        # Without the actual backslash character, would only match if the
+        # database silently dropped the raw backslash instead of escaping it.
+        decoy = Users(
+            username="backslash",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="backslashdecoy@example.com",
+            active=1,
+        )
+        db_session.add_all([backslash_user, decoy])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "back\\slash"})
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert usernames == ["back\\slash"]
+
+        # A trailing backslash must not desync from the wildcard this endpoint
+        # appends after the term and must not degrade into matching everyone.
+        trailing_response = await client.get("/api/v1/users", params={"search": "abc\\"})
+        assert trailing_response.status_code == 200
+        trailing_data = trailing_response.json()
+        assert trailing_data["users"] == []
+
     async def test_list_users_search_empty_returns_all(
         self, client: AsyncClient, db_session: AsyncSession
     ):
