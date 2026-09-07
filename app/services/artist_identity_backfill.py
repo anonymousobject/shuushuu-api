@@ -73,7 +73,9 @@ async def _identity_owners(db: AsyncSession) -> dict[tuple[str, str], int]:
 async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
     report = BackfillReport()
 
-    # --- Source 1: parse existing link URLs in place ---
+    # --- Source 1: parse existing link URLs in place (canonical tags only --
+    # identity lives on the canonical, never an alias; a link parked on an
+    # alias tag is reported as an anomaly instead of being populated) ---
     links = (
         (
             await db.execute(
@@ -83,10 +85,22 @@ async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
         .scalars()
         .all()
     )
+    alias_canonical_rows = await db.execute(
+        select(Tags.tag_id, Tags.alias_of).where(  # type: ignore[call-overload]
+            Tags.alias_of.is_not(None)  # type: ignore[union-attr]
+        )
+    )
+    alias_canonical: dict[int, int] = {r.tag_id: r.alias_of for r in alias_canonical_rows.all()}
     owners = await _identity_owners(db)
     for link in links:
         identity = parse_identity_url(link.url)
         if identity is None:
+            continue
+        if link.tag_id in alias_canonical:
+            report.anomalies.append(
+                f"link {link.link_id} (tag {link.tag_id}): tag is an alias of "
+                f"{alias_canonical[link.tag_id]}; identity belongs on the canonical"
+            )
             continue
         key = _identity_key(identity.site, identity.external_id)
         owner = owners.get(key)

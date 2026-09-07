@@ -32,6 +32,48 @@ class TestBackfillExistingLinks:
         assert report.links_parsed == 1
         assert report.artist_tags_without_identity == 0
 
+    async def test_alias_tag_link_is_skipped_as_an_anomaly(self, db_session: AsyncSession) -> None:
+        """Identity lives on the canonical tag only -- a pixiv link parked on
+        an alias must not be populated, even though Source 1 otherwise
+        parses any link with site IS NULL regardless of the owning tag."""
+        canonical = Tags(title="SomeArtist", type=TagType.ARTIST, usage_count=1)
+        db_session.add(canonical)
+        await db_session.flush()
+        alias = Tags(title="Alias Artist", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        db_session.add(alias)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(tag_id=alias.tag_id, url="https://www.pixiv.net/users/21412050")
+        )
+        # A non-alias tag's pixiv link in the same run must still be parsed --
+        # the skip is scoped to alias tags, not a global regression.
+        other_artist = Tags(title="OtherArtist", type=TagType.ARTIST, usage_count=1)
+        db_session.add(other_artist)
+        await db_session.flush()
+        db_session.add(
+            TagExternalLinks(tag_id=other_artist.tag_id, url="https://www.pixiv.net/users/999")
+        )
+        await db_session.commit()
+
+        report = await run_backfill(db_session, apply=True)
+
+        alias_link = (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == alias.tag_id)
+            )
+        ).scalar_one()
+        assert (alias_link.site, alias_link.external_id) == (None, None)
+        # Only the non-alias tag's link is parsed; the alias's is skipped.
+        assert report.links_parsed == 1
+        assert any(f"tag is an alias of {canonical.tag_id}" in a for a in report.anomalies)
+
+        other_link = (
+            await db_session.execute(
+                select(TagExternalLinks).where(TagExternalLinks.tag_id == other_artist.tag_id)
+            )
+        ).scalar_one()
+        assert (other_link.site, other_link.external_id) == ("pixiv", "999")
+
     async def test_same_tag_duplicate_link_is_an_anomaly_not_a_second_row(
         self, db_session: AsyncSession
     ) -> None:
