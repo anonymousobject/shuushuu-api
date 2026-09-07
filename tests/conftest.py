@@ -738,6 +738,19 @@ def _test_redis_db() -> int:
 
 
 @pytest.fixture
+def test_redis_url() -> str:
+    """Redis DSN for the same host/port/db as the `redis_client` fixture.
+
+    For tests that need a URL string (e.g. app.core.redis.create_redis_pool)
+    rather than a ready-made client.
+    """
+    host = os.getenv("TEST_REDIS_HOST", "localhost")
+    port = int(os.getenv("TEST_REDIS_PORT", "6379"))
+    db = _test_redis_db()
+    return f"redis://{host}:{port}/{db}"
+
+
+@pytest.fixture
 async def redis_client():
     """Real Redis client for tests that require Redis functionality.
 
