@@ -20,7 +20,6 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | Plan | State | Notes |
 | --- | --- | --- |
 | [forum API](2026-Q3/2026-07-06-forum-api-impl.md) | not implemented | No forum router, models, or schemas exist. Spec lives on the frontend repo's unmerged `feat/forum` branch. |
-| [external artist identity](2026-Q3/2026-08-01-external-artist-identity-impl.md) | not implemented | No `artist_identity` service, backfill, or routes exist. |
 <!-- exceptions:end -->
 
 
