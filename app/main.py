@@ -38,19 +38,21 @@ _REDACTED_PARAMS = {"token", "code", "access_token", "refresh_token", "password"
 def _log_level_for(status_code: int, elapsed_ms: float) -> str:
     """Pick the access-log level for a completed request.
 
-    Nginx already logs every request (with the real client IP), so the API's
-    per-request log only needs to carry the high-signal lines: server errors,
-    client faults (kept so anonymous 401s can be clustered by source), and slow
-    requests. Routine fast 2xx traffic — the bulk of the volume — drops to DEBUG,
-    which production suppresses.
+    Nginx already logs every request (with the real client IP), but only the
+    API can tie duration and outcome to the same request_id used across
+    services — so every request logs `request_complete`, not just the
+    high-signal ones. Routine fast 2xx/3xx traffic — the bulk of the volume —
+    logs at INFO. Server errors, client faults (kept so anonymous 401s can be
+    clustered by source), and slow requests are promoted above that baseline
+    so they still stand out.
     """
     if status_code >= 500:
         return "error"
     if status_code >= 400:
         return "warning"
     if elapsed_ms >= settings.SLOW_REQUEST_LOG_MS:
-        return "info"
-    return "debug"
+        return "warning"
+    return "info"
 
 
 def _redact_query(query_string: str) -> str:
@@ -84,9 +86,37 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Add request ID to request state for access in endpoints
         request.state.request_id = request_id
 
+        path = str(request.url.path) + (
+            "?" + _redact_query(str(request.url.query)) if request.url.query else ""
+        )
+        # client_host + user_agent let anonymous 401s be clustered by source
+        # (one user fat-fingering vs. credential stuffing). request.client is
+        # None when the ASGI server reports no client (e.g. some test harnesses).
+        client_host = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+
         try:
             start = time.monotonic()
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception:
+                # call_next never returned, so this is the only chance to log
+                # request_complete for this request — without it, a 500 from an
+                # unhandled exception is invisible to every "API errors" query
+                # (see the 2026-09-05 outage). Re-raise so FastAPI/Starlette's
+                # ServerErrorMiddleware still sends the client a 500.
+                elapsed_ms = round((time.monotonic() - start) * 1000, 1)
+                logger.error(
+                    "request_complete",
+                    method=request.method,
+                    path=path,
+                    status_code=500,
+                    elapsed_ms=elapsed_ms,
+                    client_host=client_host,
+                    user_agent=user_agent,
+                    exc_info=True,
+                )
+                raise
             elapsed_ms = round((time.monotonic() - start) * 1000, 1)
             # Add request ID to response headers for debugging
             response.headers["X-Request-ID"] = request_id
@@ -94,15 +124,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             log(
                 "request_complete",
                 method=request.method,
-                path=str(request.url.path)
-                + ("?" + _redact_query(str(request.url.query)) if request.url.query else ""),
+                path=path,
                 status_code=response.status_code,
                 elapsed_ms=elapsed_ms,
-                # client_host + user_agent let anonymous 401s be clustered by source
-                # (one user fat-fingering vs. credential stuffing). request.client is
-                # None when the ASGI server reports no client (e.g. some test harnesses).
-                client_host=request.client.host if request.client else None,
-                user_agent=request.headers.get("user-agent"),
+                client_host=client_host,
+                user_agent=user_agent,
             )
             return response
         finally:
