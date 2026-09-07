@@ -5327,6 +5327,153 @@ class TestAddTagLink:
         assert first_link.site == "pixiv"
         assert first_link.external_id == "21412050"
 
+    async def test_add_identity_link_to_alias_tag_is_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Identity must live on the canonical tag -- an alias tag can't claim
+        a pixiv ID even though it's a normal (non-canonical) artist tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminaliasident",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaliasident@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create canonical artist tag and an alias pointing at it
+        canonical = Tags(title="canonical artist", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(
+            title="alias artist",
+            desc="Test artist alias",
+            type=TagType.ARTIST,
+            alias_of=canonical.tag_id,
+        )
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaliasident", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Try to add a pixiv profile link to the ALIAS tag
+        response = await client.post(
+            f"/api/v1/tags/{alias.tag_id}/links",
+            json={"url": "https://www.pixiv.net/users/21412050"},
+            headers=headers,
+        )
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert canonical.title in detail
+        assert "canonical tag" in detail
+
+        # No link row was created for the alias
+        links_result = await db_session.execute(
+            select(TagExternalLinks).where(
+                TagExternalLinks.tag_id == alias.tag_id  # type: ignore[arg-type]
+            )
+        )
+        assert links_result.scalars().all() == []
+
+    async def test_add_non_identity_link_to_alias_tag_still_works(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A URL that doesn't parse as an identity keeps working on an alias
+        tag -- the guard only blocks identity-bearing URLs."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminaliasnonident",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaliasnonident@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create canonical artist tag and an alias pointing at it
+        canonical = Tags(title="canonical artist two", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(
+            title="alias artist two",
+            desc="Test artist alias",
+            type=TagType.ARTIST,
+            alias_of=canonical.tag_id,
+        )
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaliasnonident", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Add a non-identity link to the ALIAS tag
+        response = await client.post(
+            f"/api/v1/tags/{alias.tag_id}/links",
+            json={"url": "https://example.com/some-page"},
+            headers=headers,
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["url"] == "https://example.com/some-page"
+        assert body["site"] is None
+        assert body["external_id"] is None
+
 
 @pytest.mark.api
 class TestDeleteTagLink:

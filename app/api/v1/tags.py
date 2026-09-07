@@ -2254,6 +2254,8 @@ async def add_tag_link(
     Requires TAG_UPDATE permission.
     Returns 404 if tag doesn't exist.
     Returns 409 if URL already exists for this tag.
+    Returns 409 if the URL parses to an identity and the tag is an alias --
+    identity must live on the canonical tag.
     """
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -2266,6 +2268,23 @@ async def add_tag_link(
     # links keep NULL position and fall to the end via the default ordering.
     new_link = TagExternalLinks(tag_id=tag_id, url=link_data.url)
     identity = parse_identity_url(link_data.url)
+    if identity is not None and tag.alias_of is not None:
+        canonical_result = await db.execute(
+            select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
+        )
+        canonical = canonical_result.scalar_one_or_none()
+        canonical_name = (
+            f"'{canonical.title}' (id {canonical.tag_id})"
+            if canonical is not None
+            else f"id {tag.alias_of}"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{tag.title}' is an alias of {canonical_name}; add the "
+                f"{site_display_name(identity.site)} link to the canonical tag instead"
+            ),
+        )
     if identity is not None:
         claimed_by = await resolve_identity(db, identity)
         if claimed_by is not None and claimed_by.tag_id != tag_id:
