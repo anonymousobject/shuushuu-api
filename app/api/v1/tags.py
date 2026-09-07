@@ -73,6 +73,7 @@ from app.schemas.tag import (
     TagWithStats,
 )
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
+from app.services.artist_identity import parse_identity_url, resolve_identity, site_display_name
 from app.services.character_source_counts import get_shared_image_counts
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
@@ -2253,6 +2254,8 @@ async def add_tag_link(
     Requires TAG_UPDATE permission.
     Returns 404 if tag doesn't exist.
     Returns 409 if URL already exists for this tag.
+    Returns 409 if the URL parses to an identity and the tag is an alias --
+    identity must live on the canonical tag.
     """
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -2264,6 +2267,44 @@ async def add_tag_link(
     # below the current minimum, so it sits above any existing wiki links too); other
     # links keep NULL position and fall to the end via the default ordering.
     new_link = TagExternalLinks(tag_id=tag_id, url=link_data.url)
+    identity = parse_identity_url(link_data.url)
+    if identity is not None and tag.alias_of is not None:
+        canonical_result = await db.execute(
+            select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
+        )
+        canonical = canonical_result.scalar_one_or_none()
+        canonical_name = (
+            f"'{canonical.title}' (id {canonical.tag_id})"
+            if canonical is not None
+            else f"id {tag.alias_of}"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{tag.title}' is an alias of {canonical_name}; add the "
+                f"{site_display_name(identity.site)} link to the canonical tag instead"
+            ),
+        )
+    if identity is not None:
+        claimed_by = await resolve_identity(db, identity)
+        if claimed_by is not None and claimed_by.tag_id != tag_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{site_display_name(identity.site)} ID {identity.external_id} "
+                    f"already belongs to tag '{claimed_by.title}' (id {claimed_by.tag_id})"
+                ),
+            )
+        # Only populate site/external_id when this tag doesn't already own the
+        # identity. Mods deliberately keep multiple URL forms of the same
+        # account on one tag (x.com + twitter.com; legacy member.php + modern
+        # /users/) for archive reasons -- a future UNIQUE(site, external_id)
+        # index requires identity to live on only one link row per tag, so an
+        # alternate form for an identity this tag already owns is stored as a
+        # plain archival URL instead.
+        if claimed_by is None:
+            new_link.site = identity.site
+            new_link.external_id = identity.external_id
     if _is_shuu_wiki_url(link_data.url):
         min_pos = (
             await db.execute(

@@ -222,6 +222,8 @@ class TagExternalLinkResponse(BaseModel):
     dead_at: UTCDatetimeOptional = None
     archive_url: str | None = None
     position: int | None = None
+    site: str | None = None
+    external_id: str | None = None
 
     model_config = {"from_attributes": True}
 

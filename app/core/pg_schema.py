@@ -22,6 +22,10 @@ _LENGTH_CHECKS = (
     "ALTER TABLE users ADD CONSTRAINT ck_users_username_len CHECK (char_length(username) <= 30)",
     "ALTER TABLE users ADD CONSTRAINT ck_users_email_len CHECK (char_length(email) <= 120)",
     "ALTER TABLE tags ADD CONSTRAINT ck_tags_title_len CHECK (char_length(title) <= 255)",
+    "ALTER TABLE tag_external_links ADD CONSTRAINT ck_tag_external_links_site_len "
+    "CHECK (char_length(site) <= 32)",
+    "ALTER TABLE tag_external_links ADD CONSTRAINT ck_tag_external_links_external_id_len "
+    "CHECK (char_length(external_id) <= 128)",
 )
 
 
