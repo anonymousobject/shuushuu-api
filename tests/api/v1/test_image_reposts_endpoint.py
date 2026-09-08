@@ -94,6 +94,7 @@ class TestGetImageReposts:
         owner = await _make_user(db_session, "repostsowner")
         marker = await _make_user(db_session, "repostsmarker")
         original = await _make_image(db_session, owner, "repostsorig")
+        marked_at = datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC)
         repost = await _make_image(
             db_session,
             owner,
@@ -101,7 +102,7 @@ class TestGetImageReposts:
             status=ImageStatus.REPOST,
             replacement_id=original.image_id,
             status_user_id=marker.user_id,
-            status_updated=datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC),
+            status_updated=marked_at,
         )
 
         response = await client.get(f"/api/v1/images/{original.image_id}/reposts")
@@ -116,7 +117,7 @@ class TestGetImageReposts:
         assert item["user"] is not None
         assert item["user"]["user_id"] == marker.user_id
         assert item["user"]["username"] == "repostsmarker"
-        assert item["marked_at"] is not None
+        assert item["marked_at"] == marked_at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # The repost itself has nothing pointing at it.
         response = await client.get(f"/api/v1/images/{repost.image_id}/reposts")
@@ -175,18 +176,14 @@ class TestGetImageReposts:
     async def test_ordered_newest_marked_first(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """Reposts are ordered by marking time, most recent first."""
+        """Reposts are ordered by marking time, most recent first.
+
+        The newer-marked repost is inserted FIRST, so it gets the LOWER image_id.
+        The `image_id DESC` tiebreak alone would then return them in the wrong
+        order, so this only passes if `status_updated DESC` is actually applied.
+        """
         owner = await _make_user(db_session, "repostsorder")
         original = await _make_image(db_session, owner, "repostsorderorig")
-        older = await _make_image(
-            db_session,
-            owner,
-            "repostsorderold",
-            status=ImageStatus.REPOST,
-            replacement_id=original.image_id,
-            status_user_id=owner.user_id,
-            status_updated=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
-        )
         newer = await _make_image(
             db_session,
             owner,
@@ -196,6 +193,16 @@ class TestGetImageReposts:
             status_user_id=owner.user_id,
             status_updated=datetime(2026, 6, 7, 8, 9, 10, tzinfo=UTC),
         )
+        older = await _make_image(
+            db_session,
+            owner,
+            "repostsorderold",
+            status=ImageStatus.REPOST,
+            replacement_id=original.image_id,
+            status_user_id=owner.user_id,
+            status_updated=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+        )
+        assert newer.image_id < older.image_id  # autoincrement opposes marking order
 
         response = await client.get(f"/api/v1/images/{original.image_id}/reposts")
         assert response.status_code == 200
@@ -203,6 +210,67 @@ class TestGetImageReposts:
         data = response.json()
         assert data["total"] == 2
         assert [item["image_id"] for item in data["items"]] == [newer.image_id, older.image_id]
+
+    async def test_null_marked_at_sorts_last_on_both_dialects(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A repost with no status_updated sorts below a dated one on every backend.
+
+        MariaDB puts NULLs last on a DESC sort; Postgres puts them first by
+        default. The NULL repost is inserted SECOND, so it holds the HIGHER
+        image_id: the `image_id DESC` tiebreak alone would float it to the top,
+        so this fails on Postgres unless NULLs are explicitly ordered last.
+        """
+        owner = await _make_user(db_session, "repostsnullsort")
+        original = await _make_image(db_session, owner, "repostsnullsortorig")
+        dated = await _make_image(
+            db_session,
+            owner,
+            "repostsnullsortdated",
+            status=ImageStatus.REPOST,
+            replacement_id=original.image_id,
+            status_user_id=owner.user_id,
+            status_updated=datetime(2026, 6, 7, 8, 9, 10, tzinfo=UTC),
+        )
+        undated = await _make_image(
+            db_session,
+            owner,
+            "repostsnullsortundated",
+            status=ImageStatus.REPOST,
+            replacement_id=original.image_id,
+            status_user_id=owner.user_id,
+            status_updated=None,
+        )
+        assert dated.image_id < undated.image_id  # tiebreak alone would invert this
+
+        response = await client.get(f"/api/v1/images/{original.image_id}/reposts")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["total"] == 2
+        assert [item["image_id"] for item in data["items"]] == [dated.image_id, undated.image_id]
+        assert data["items"][1]["marked_at"] is None
+
+    async def test_excludes_self_referencing_repost(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A REPOST row pointing at itself is not a repost of itself.
+
+        Prod holds a couple of these, left over from before the service rejected
+        a self-repost. They must not show up on their own page.
+        """
+        owner = await _make_user(db_session, "repostsself")
+        image = await _make_image(db_session, owner, "repostsselfimg")
+        image.status = ImageStatus.REPOST
+        image.replacement_id = image.image_id
+        image.status_user_id = owner.user_id
+        image.status_updated = datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC)
+        db_session.add(image)
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/images/{image.image_id}/reposts")
+        assert response.status_code == 200
+        assert response.json()["total"] == 0
 
     async def test_handles_null_status_user(
         self, client: AsyncClient, db_session: AsyncSession

@@ -1969,6 +1969,14 @@ async def get_image_reposts(
     if not image_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Image not found")
 
+    # Nullable sort column: MariaDB places NULLs last on a DESC sort, Postgres
+    # places them first. A legacy repost with no status_updated belongs at the
+    # bottom on both. MariaDB has no NULLS LAST syntax, so this is Postgres-only
+    # by construction (same pattern as the user list in app/api/v1/users.py).
+    status_updated_desc: Any = desc(Images.status_updated)  # type: ignore[arg-type]
+    if is_postgres(db):
+        status_updated_desc = status_updated_desc.nullslast()
+
     # Eager load user groups for UserSummary; outer join because status_user_id
     # is NULL on legacy rows.
     query = (
@@ -1980,9 +1988,12 @@ async def get_image_reposts(
         .where(
             Images.replacement_id == image_id,  # type: ignore[arg-type]
             Images.status == ImageStatus.REPOST,  # type: ignore[arg-type]
+            # Prod holds a couple of rows that point at themselves, from before
+            # the service rejected a self-repost. An image is not its own repost.
+            Images.image_id != image_id,  # type: ignore[arg-type]
         )
         .order_by(
-            desc(Images.status_updated),  # type: ignore[arg-type]
+            status_updated_desc,
             desc(Images.image_id),  # type: ignore[arg-type]
         )
     )
