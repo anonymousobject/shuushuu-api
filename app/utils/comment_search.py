@@ -28,6 +28,7 @@ from sqlalchemy import Select, false
 from sqlalchemy import text as sql_text
 
 from app.models import Comments
+from app.utils.like_escape import escape_like_pattern
 
 # Must match innodb_ft_min_token_size on the server. Anything shorter is
 # absent from the index, so `+ab` matches nothing at all.
@@ -151,8 +152,7 @@ def like_pattern(term: str) -> str:
     Without this a search for `100%` degrades into "match anything". Backslash
     is escaped first so it cannot double-escape the wildcards added after it.
     """
-    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
+    return f"%{escape_like_pattern(term)}%"
 
 
 def _is_indexable(token: str) -> bool:
