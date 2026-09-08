@@ -23,6 +23,7 @@ from app.core.logging import (
     set_request_context,
 )
 from app.core.permission_sync import sync_permissions
+from app.core.redis import create_redis_pool
 from app.core.security import verify_access_token
 from app.services.ml_runtime import warm_load_if_enabled
 from app.tasks.queue import close_queue
@@ -146,6 +147,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         version="2.0.0",
     )
 
+    # Shared Redis connection pool: one per process, reused by every
+    # get_redis() dependency resolution instead of opening a fresh TCP
+    # connection per request (#381).
+    app.state.redis_pool = create_redis_pool()
+
     # Sync permissions: ensure database matches Permission enum
     async with AsyncSessionLocal() as db:
         await sync_permissions(db)
@@ -187,6 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if meilisearch_client:
         await meilisearch_client.aclose()
     await close_queue()  # Close arq pool
+    await app.state.redis_pool.disconnect()
 
 
 # Create FastAPI application

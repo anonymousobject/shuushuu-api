@@ -96,6 +96,7 @@ from app.services.tag_context import stamp_context_sources
 from app.services.turnstile import verify_turnstile_token
 from app.services.user import build_user_private_response
 from app.tasks.queue import enqueue_job
+from app.utils.like_escape import escape_like_pattern
 
 logger = get_logger(__name__)
 
@@ -121,8 +122,10 @@ async def list_users(
 
     # Apply search filter
     if search:
-        # Case-insensitive match - include substring matches
-        query = query.where(func.lower(Users.username).like(f"%{search.lower()}%"))
+        # Case-insensitive match - include substring matches. Escape LIKE
+        # metacharacters so % and _ in the search term are treated literally.
+        escaped_search = escape_like_pattern(search.lower())
+        query = query.where(func.lower(Users.username).like(f"%{escaped_search}%"))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -158,13 +161,14 @@ async def list_users(
     # Apply sorting. If a search is present, order by relevance first
     if search:
         s_lower = search.lower()
+        escaped_s_lower = escape_like_pattern(s_lower)
         relevance = case(
             (
                 func.lower(Users.username) == s_lower,
                 0,
             ),
             (
-                func.lower(Users.username).like(f"{s_lower}%"),
+                func.lower(Users.username).like(f"{escaped_s_lower}%"),
                 1,
             ),
             else_=2,

@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
     CACHE_TTL: int = 300  # 5 minutes
+    # Cap on the shared per-process redis.asyncio.ConnectionPool (created once
+    # in the app lifespan, see app/core/redis.py). 64 matches --limit-concurrency
+    # in docker-compose.prod.yml: a fully loaded worker can't ask Redis for more
+    # connections than uvicorn will let it run requests concurrently. Beyond the
+    # cap, redis-py raises a clear ConnectionError("Too many connections")
+    # instead of letting a burst open unbounded sockets (see #381).
+    REDIS_MAX_CONNECTIONS: int = Field(default=64, ge=1)
 
     # Meilisearch
     MEILISEARCH_URL: str = Field(default="http://localhost:7700")
