@@ -77,6 +77,13 @@ ssh shuu-prod-logs
 
 Use the **Explore** tab in Grafana, datasource `Loki`.
 
+`request_complete` is now emitted for every request, not just failures: INFO
+for routine 2xx/3xx traffic, WARNING for slow requests and 4xx, ERROR for
+5xx. An unhandled exception in a route also logs `request_complete` at ERROR
+(with a traceback) before the 500 is sent to the client, so `{service="api",
+level=~"error|critical"}` below now catches API-side outages too, not just
+responses the app itself turned into a 5xx.
+
 ### Last hour of API errors
 
 ```logql

@@ -283,9 +283,9 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
-    # Requests slower than this (ms) are logged at INFO even when they succeed;
-    # faster successful requests drop to DEBUG so routine traffic doesn't flood
-    # the aggregated logs. See RequestLoggingMiddleware in app/main.py.
+    # Requests slower than this (ms) are logged at WARNING even when they
+    # succeed, so they stand out from the INFO baseline every other request
+    # logs at. See _log_level_for in app/main.py.
     SLOW_REQUEST_LOG_MS: float = 1000.0
 
     # Review System
