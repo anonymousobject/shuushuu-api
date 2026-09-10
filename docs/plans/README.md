@@ -27,7 +27,7 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 
 | Date | Effort | Docs |
 | --- | --- | --- |
-| 2026-09-10 | MariaDB retirement — design | [design](2026-Q3/2026-09-10-mariadb-retirement-design.md) |
+| 2026-09-10 | MariaDB retirement — design | [design](2026-Q3/2026-09-10-mariadb-retirement-design.md) · [impl](2026-Q3/2026-09-10-mariadb-retirement-impl.md) |
 | 2026-08-21 | Postgres cutover runbook — plan | [impl](2026-Q3/2026-08-21-pg-cutover-runbook-impl.md) |
 | 2026-08-21 | Postgres counter triggers — design | [design](2026-Q3/2026-08-21-pg-counter-triggers-design.md) |
 | 2026-08-21 | Prod-shaped Postgres compose topology — plan | [impl](2026-Q3/2026-08-21-pg-compose-topology-impl.md) |
@@ -112,4 +112,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-69 efforts, 101 documents.
+69 efforts, 102 documents.
