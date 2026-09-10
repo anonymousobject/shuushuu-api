@@ -60,6 +60,18 @@ TEST_ACCOUNTS: list[dict[str, Any]] = [
         "admin": 0,
         "group": "Taggers",
     },
+    # A plain user (no admin, no group) the frontend's Playwright suite reserves
+    # for one spec file that seeds favourite tags and flips the grid/list
+    # preference, both persisted per account, so it needs an account no other
+    # spec logs in as. See VIEW_PREFERENCE_ACCOUNTS in
+    # <shuushuu-frontend-repo>/test-credentials.ts.
+    {
+        "username": "testfixture",
+        "password": "shuutestfixture",
+        "email": "testfixture@shuushuu.com",
+        "admin": 0,
+        "group": None,
+    },
 ]
 
 

@@ -16,8 +16,8 @@ from scripts.create_test_users import TEST_ACCOUNTS, create_test_users
 
 # The test database is seeded with user_id=1 "testuser" (tests/conftest.py);
 # usernames are case-insensitive, so the script must treat "testUser" as
-# already present and create only the other three.
-EXPECTED_CREATED = ["testadmin", "testmod", "testtagger"]
+# already present and create only the other four.
+EXPECTED_CREATED = ["testadmin", "testmod", "testtagger", "testfixture"]
 
 
 async def _seed_groups(db: AsyncSession) -> dict[str, int]:
@@ -64,6 +64,7 @@ async def test_assigns_group_membership(db_session: AsyncSession):
     assert await _group_titles(db_session, "testadmin") == {"Admins"}
     assert await _group_titles(db_session, "testmod") == {"Mods"}
     assert await _group_titles(db_session, "testtagger") == {"Taggers"}
+    assert await _group_titles(db_session, "testfixture") == set()
     assert await _group_titles(db_session, "testUser") == set()
 
 
