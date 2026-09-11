@@ -13,9 +13,7 @@ from app.models.user import Users
 from app.models.user_tag_affinity import UserTagAffinity
 from app.services.user_tag_affinity import _LOCK_PREFIX, refresh_user_tag_affinity
 
-# mariadb_only: refresh_user_tag_affinity raises NotImplementedError off-MariaDB
-# by design (GET_LOCK, ENGINE=InnoDB helper tables).
-pytestmark = [pytest.mark.integration, pytest.mark.needs_commit, pytest.mark.mariadb_only]
+pytestmark = [pytest.mark.integration, pytest.mark.needs_commit, pytest.mark.postgres_only]
 
 
 async def test_table_roundtrip(db_session):
@@ -321,50 +319,44 @@ async def test_rerun_is_idempotent(db_session):
 
 
 async def test_lock_skip_returns_sentinel(db_session, engine):
-    # A second connection (from the shared per-test `engine`) holds the lock
-    # -> refresh skips with -1. MySQL named locks are connection-scoped, so a
-    # fresh connection() checkout from the same engine is a distinct session.
+    # A second connection holds the advisory lock in an open transaction ->
+    # refresh skips with -1. Advisory locks are per-session, so a fresh
+    # connection() checkout from the shared per-test `engine` is a distinct
+    # holder.
     from sqlalchemy import text as sqla_text
 
-    db_name = (await db_session.execute(sqla_text("SELECT DATABASE()"))).scalar()
+    db_name = (await db_session.execute(sqla_text("SELECT current_database()"))).scalar()
     lock_name = f"{_LOCK_PREFIX}:{db_name}"
     async with engine.connect() as other:
-        got = (await other.execute(sqla_text("SELECT GET_LOCK(:n, 0)"), {"n": lock_name})).scalar()
-        assert got == 1
+        got = (
+            await other.execute(
+                sqla_text("SELECT pg_try_advisory_xact_lock(hashtext(:n))"), {"n": lock_name}
+            )
+        ).scalar()
+        assert got is True
         n = await refresh_user_tag_affinity(db_session, **REFRESH_KW)
         assert n == -1
-        await other.execute(sqla_text("SELECT RELEASE_LOCK(:n)"), {"n": lock_name})
+        await other.rollback()
 
 
 async def test_lock_released_after_mid_run_failure(db_session, engine):
     # Forces a real (not mocked) mid-run failure: a second connection holds
-    # an open, uncommitted `FOR UPDATE` on a real `_taste_vl` table, so the
-    # service's own first statement after acquiring the advisory lock -- its
-    # defensive `DROP TABLE IF EXISTS _taste_vl` -- blocks on a metadata lock
-    # and genuinely errors once lock_wait_timeout is exceeded. This verifies
-    # the failure propagates (isn't silently swallowed) AND that the
-    # advisory lock isn't leaked: a second refresh on the SAME session, once
-    # the blocker releases, must succeed rather than returning the
-    # locked-out sentinel (-1), which is what would happen if RELEASE_LOCK
-    # in the `finally` failed on a still-poisoned session and got swallowed.
+    # user_tag_affinity in ACCESS EXCLUSIVE mode inside an open transaction,
+    # so the service's DELETE blocks and, with lock_timeout set on the service
+    # session, genuinely errors. This verifies the failure propagates (isn't
+    # silently swallowed) AND that the advisory lock isn't leaked: a second
+    # refresh on the SAME session, once the blocker releases, must succeed
+    # rather than returning the locked-out sentinel (-1). The SET rides in the
+    # aborted transaction, so the rollback in the service's finally clears it.
     from sqlalchemy import text as sqla_text
-    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.exc import DBAPIError
 
     async with engine.connect() as blocker:
-        await blocker.execute(sqla_text("DROP TABLE IF EXISTS _taste_vl"))
-        await blocker.execute(sqla_text("CREATE TABLE _taste_vl (id INT) ENGINE=InnoDB"))
-        await blocker.commit()
-        await blocker.execute(sqla_text("INSERT INTO _taste_vl VALUES (1)"))
-        await blocker.commit()
-        await blocker.execute(sqla_text("SELECT * FROM _taste_vl FOR UPDATE"))  # open txn
-
-        await db_session.execute(sqla_text("SET SESSION lock_wait_timeout = 1"))
-        with pytest.raises(OperationalError, match="Lock wait timeout exceeded"):
+        await blocker.execute(sqla_text("LOCK TABLE user_tag_affinity IN ACCESS EXCLUSIVE MODE"))
+        await db_session.execute(sqla_text("SET lock_timeout = '1s'"))
+        with pytest.raises(DBAPIError, match="lock timeout"):
             await refresh_user_tag_affinity(db_session, **REFRESH_KW)
-
-        await blocker.rollback()  # release the metadata lock
-        await blocker.execute(sqla_text("DROP TABLE IF EXISTS _taste_vl"))
-        await blocker.commit()
+        await blocker.rollback()  # release the table lock
 
     n = await refresh_user_tag_affinity(db_session, **REFRESH_KW)
     assert n >= 0  # lock was released after the failure, not leaked

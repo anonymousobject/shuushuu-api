@@ -13,7 +13,7 @@ async def test_disabled_returns_without_opening_a_session(monkeypatch):
     """TASTE_REFRESH_ENABLED=False short-circuits before get_async_session().
 
     No DB fixture is used here on purpose: settings.DATABASE_URL points at
-    the docker-compose-internal `mariadb` host, unreachable from the test
+    the docker-compose-internal `postgres` host, unreachable from the test
     runner, so if the guard didn't fire before that call this test would
     fail with a real connection error rather than passing accidentally.
     """

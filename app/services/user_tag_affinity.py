@@ -5,15 +5,13 @@ with minimum support, stores positive-pool counts (favorites ∪ uploads,
 deduped), rating stats, a popularity-normalized lift, a per-user-mean-centered
 rating delta, and the blended affinity used by /images/recommended.
 
-Mirrors app/services/tag_cooccurrence.py on the unmerged co-occurrence branch:
-materialized regular helper tables (MariaDB cannot self-join a TEMPORARY table),
-a database-scoped advisory lock, and an atomic staging-table swap. The main
-aggregation is batched by user-id ranges — the unbatched join is ~75M
-intermediate rows (5.7M favorites × ~13 tags/image), the exact shape that
-OOM-crashed MariaDB during the co-occurrence build. Issues DDL with implicit
-commits and manages its own transaction. The swapped-in table intentionally has
-NO foreign keys (CREATE TABLE ... LIKE does not copy them); acceptable for a
-read-only analytics table and avoids FK-check overhead on bulk load.
+One transaction: temp helper tables, the batched aggregation into the live
+table after clearing it, and the commit. Readers keep seeing the previous rows
+until the commit. The main aggregation is batched by user-id ranges — the
+unbatched join is ~75M intermediate rows (5.7M favorites × ~13 tags/image).
+A transaction-scoped advisory lock serializes the nightly cron and a manual
+run; it and the temp tables vanish with the transaction, so a mid-run failure
+leaves nothing behind.
 """
 
 from sqlalchemy import bindparam, text
@@ -25,29 +23,28 @@ from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 logger = get_logger(__name__)
 
 _PUBLIC = list(PUBLIC_IMAGE_STATUSES)
-_HELPERS = ("_taste_vl", "_taste_vi", "_taste_vc", "_taste_elig", "_taste_pool", "_taste_users")
 # Advisory-lock names are server-global; scope to the current database so
 # pytest-xdist per-worker DBs get independent locks while production's single
-# DB still serializes cron + manual runs (same reasoning as tag_cooccurrence).
+# DB still serializes cron + manual runs.
 _LOCK_PREFIX = "user_tag_affinity_refresh"
 
 # Each axis contributes only when it has enough support on its own; NULL-safe
 # via COALESCE. lift > 0 is guaranteed inside its CASE (pool_cnt >= min_support
 # implies a positive numerator).
 _BATCH_INSERT = """
-INSERT INTO user_tag_affinity_new
+INSERT INTO user_tag_affinity
     (user_id, tag_id, pool_cnt, fav_count, upload_count, rated_count,
      rating_avg, lift, rating_delta, affinity)
 SELECT
     agg.user_id, agg.tag_id, agg.pool_cnt, agg.fav_count, agg.upload_count, agg.rated_count,
-    agg.rating_sum / NULLIF(agg.rated_count, 0) AS rating_avg,
+    agg.rating_sum::float / NULLIF(agg.rated_count, 0) AS rating_avg,
     CASE WHEN agg.pool_cnt > 0 AND u.pool_size > 0
-         THEN (agg.pool_cnt / u.pool_size) / ((vc.vc + :k) / :n) END AS lift,
-    agg.rating_sum / NULLIF(agg.rated_count, 0) - u.user_mean AS rating_delta,
+         THEN (agg.pool_cnt::float / u.pool_size) / ((vc.vc + :k)::float / :n) END AS lift,
+    agg.rating_sum::float / NULLIF(agg.rated_count, 0) - u.user_mean AS rating_delta,
     COALESCE(CASE WHEN agg.pool_cnt >= :min_support
-                  THEN LN((agg.pool_cnt / u.pool_size) / ((vc.vc + :k) / :n)) END, 0)
+                  THEN LN((agg.pool_cnt::float / u.pool_size) / ((vc.vc + :k)::float / :n)) END, 0)
     + :beta * COALESCE(CASE WHEN agg.rated_count >= :min_support
-                            THEN agg.rating_sum / agg.rated_count - u.user_mean END, 0)
+                            THEN agg.rating_sum::float / agg.rated_count - u.user_mean END, 0)
       AS affinity
 FROM (
     SELECT y.user_id, y.tag_id,
@@ -92,31 +89,28 @@ async def refresh_user_tag_affinity(
 ) -> int:
     """Rebuild the user_tag_affinity table; return the number of rows written.
 
-    Serialized by a connection-scoped MySQL named lock so the nightly cron and a
+    Serialized by a transaction-scoped advisory lock so the nightly cron and a
     manual run cannot collide. Returns the sentinel ``-1`` (callers should treat
     ``< 0`` as "skipped") without touching any tables if another refresh already
     holds the lock.
     """
-    if db.get_bind().dialect.name != "mysql":
-        raise NotImplementedError(
-            "refresh_user_tag_affinity is MariaDB-only (GET_LOCK, ENGINE=InnoDB "
-            "helper tables); see docs/plans/2026-Q3/2026-08-20-postgres-poc-impl.md"
-        )
-    db_name = (await db.execute(text("SELECT DATABASE()"))).scalar()
+    # Advisory-lock keys are server-global; scope to the current database so
+    # pytest-xdist per-worker DBs get independent locks while production's
+    # single DB still serializes cron + manual runs.
+    db_name = (await db.execute(text("SELECT current_database()"))).scalar()
     lock_name = f"{_LOCK_PREFIX}:{db_name}"
-    locked = (await db.execute(text("SELECT GET_LOCK(:n, 0)"), {"n": lock_name})).scalar()
+    locked = (
+        await db.execute(text("SELECT pg_try_advisory_xact_lock(hashtext(:n))"), {"n": lock_name})
+    ).scalar()
     if not locked:
         logger.info("user_tag_affinity_refresh_skipped_locked")
         return -1
     try:
-        for t in _HELPERS:
-            await _exec(db, f"DROP TABLE IF EXISTS {t}")
-
         # 1. canonical, visible links
         await _exec(
             db,
             """
-            CREATE TABLE _taste_vl ENGINE=InnoDB AS
+            CREATE TEMP TABLE _taste_vl ON COMMIT DROP AS
             SELECT DISTINCT tl.image_id, COALESCE(t.alias_of, t.tag_id) AS tag_id
             FROM tag_links tl
             JOIN images i ON i.image_id = tl.image_id
@@ -125,28 +119,34 @@ async def refresh_user_tag_affinity(
             """,
             {"public_statuses": _PUBLIC},
         )
-        await _exec(
-            db, "ALTER TABLE _taste_vl ADD PRIMARY KEY (image_id, tag_id), ADD KEY k_tag (tag_id)"
-        )
+        await _exec(db, "ALTER TABLE _taste_vl ADD PRIMARY KEY (image_id, tag_id)")
+        await _exec(db, "CREATE INDEX ON _taste_vl (tag_id)")
+        # Temp tables carry no statistics: autovacuum can't see another
+        # session's temp tables, and CREATE TABLE AS collects none either.
+        # Without ANALYZE, the planner full-scans _taste_vl twice per batch.
+        await _exec(db, "ANALYZE _taste_vl")
 
         # 2. visible tagged images, per-canonical-tag counts, and N
         await _exec(
-            db, "CREATE TABLE _taste_vi ENGINE=InnoDB AS SELECT DISTINCT image_id FROM _taste_vl"
+            db,
+            "CREATE TEMP TABLE _taste_vi ON COMMIT DROP AS SELECT DISTINCT image_id FROM _taste_vl",
         )
         await _exec(db, "ALTER TABLE _taste_vi ADD PRIMARY KEY (image_id)")
+        await _exec(db, "ANALYZE _taste_vi")
         await _exec(
             db,
-            "CREATE TABLE _taste_vc ENGINE=InnoDB AS "
+            "CREATE TEMP TABLE _taste_vc ON COMMIT DROP AS "
             "SELECT tag_id, COUNT(*) AS vc FROM _taste_vl GROUP BY tag_id",
         )
         await _exec(db, "ALTER TABLE _taste_vc ADD PRIMARY KEY (tag_id)")
+        await _exec(db, "ANALYZE _taste_vc")
         n = (await db.execute(text("SELECT COUNT(*) FROM _taste_vi"))).scalar() or 0
 
         # 3. eligible users (raw event counts)
         await _exec(
             db,
             """
-            CREATE TABLE _taste_elig ENGINE=InnoDB AS
+            CREATE TEMP TABLE _taste_elig ON COMMIT DROP AS
             SELECT user_id FROM (
                 SELECT user_id FROM favorites
                 UNION ALL SELECT user_id FROM image_ratings
@@ -156,12 +156,13 @@ async def refresh_user_tag_affinity(
             {"min_events": min_events},
         )
         await _exec(db, "ALTER TABLE _taste_elig ADD PRIMARY KEY (user_id)")
+        await _exec(db, "ANALYZE _taste_elig")
 
         # 4. deduped positive pool (favorites ∪ uploads), visible only
         await _exec(
             db,
             """
-            CREATE TABLE _taste_pool ENGINE=InnoDB AS
+            CREATE TEMP TABLE _taste_pool ON COMMIT DROP AS
             SELECT x.user_id, x.image_id, MAX(x.is_fav) AS is_fav, MAX(x.is_upl) AS is_upl
             FROM (
                 SELECT f.user_id, f.image_id, 1 AS is_fav, 0 AS is_upl
@@ -174,25 +175,28 @@ async def refresh_user_tag_affinity(
             """,
         )
         await _exec(db, "ALTER TABLE _taste_pool ADD PRIMARY KEY (user_id, image_id)")
+        await _exec(db, "ANALYZE _taste_pool")
 
         # 5. per-user scalars (pool size, mean rating over visible images)
         await _exec(
             db,
             """
-            CREATE TABLE _taste_users ENGINE=InnoDB AS
+            CREATE TEMP TABLE _taste_users ON COMMIT DROP AS
             SELECT e.user_id,
                 (SELECT COUNT(*) FROM _taste_pool p WHERE p.user_id = e.user_id) AS pool_size,
-                (SELECT AVG(r.rating) FROM image_ratings r
+                (SELECT AVG(r.rating)::float FROM image_ratings r
                   JOIN _taste_vi vi ON vi.image_id = r.image_id
                   WHERE r.user_id = e.user_id) AS user_mean
             FROM _taste_elig e
             """,
         )
         await _exec(db, "ALTER TABLE _taste_users ADD PRIMARY KEY (user_id)")
+        await _exec(db, "ANALYZE _taste_users")
 
-        # 6. staging table (LIKE copies PK + lookup index + defaults)
-        await _exec(db, "DROP TABLE IF EXISTS user_tag_affinity_new")
-        await _exec(db, "CREATE TABLE user_tag_affinity_new LIKE user_tag_affinity")
+        # 6. clear the live table inside the transaction: readers keep the old
+        #    rows until commit, and the schema (PK, lookup index, defaults)
+        #    stays exactly what the migration chain created.
+        await _exec(db, "DELETE FROM user_tag_affinity")
 
         # 7. batched aggregation: contiguous user-id ranges over the sorted
         #    eligible ids, so BETWEEN lo AND hi covers exactly one chunk.
@@ -217,36 +221,15 @@ async def refresh_user_tag_affinity(
                 },
             )
 
-        n_rows = (
-            await db.execute(text("SELECT COUNT(*) FROM user_tag_affinity_new"))
-        ).scalar() or 0
-
-        # 8. atomic swap, then clean up
-        await _exec(db, "DROP TABLE IF EXISTS user_tag_affinity_old")
-        await _exec(
-            db,
-            "RENAME TABLE user_tag_affinity TO user_tag_affinity_old, "
-            "user_tag_affinity_new TO user_tag_affinity",
-        )
-        await _exec(db, "DROP TABLE user_tag_affinity_old")
-        for t in _HELPERS:
-            await _exec(db, f"DROP TABLE IF EXISTS {t}")
+        n_rows = (await db.execute(text("SELECT COUNT(*) FROM user_tag_affinity"))).scalar() or 0
         await db.commit()
         return n_rows
     finally:
-        # A mid-run failure can leave the session's transaction in a state
-        # that makes RELEASE_LOCK itself raise (e.g. PendingRollbackError) --
-        # swallowed below, that would return a still-locked connection to the
-        # pool and wedge every later refresh at -1 until the pool recycles it.
-        # A healthy post-commit session tolerates rollback() fine, so this is
-        # a no-op on the success path.
+        # A mid-run failure leaves the transaction aborted; rolling it back
+        # releases the advisory lock and drops the temp tables so the same
+        # session can run again. A healthy post-commit session tolerates
+        # rollback() fine, so this is a no-op on the success path.
         try:
             await db.rollback()
         except Exception:
-            pass
-        # Connection-scoped lock survives the DDL implicit-commits on this session.
-        try:
-            await db.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": lock_name})
-        except Exception:
-            # lock auto-releases on connection close; never mask the real exception
             pass

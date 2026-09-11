@@ -46,11 +46,7 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 def is_postgres(db: AsyncSession) -> bool:
-    """Whether this session is bound to Postgres — the dialect-branch switch.
-
-    (The MariaDB-only guard in user_tag_affinity deliberately tests
-    `!= "mysql"` instead: it must also refuse any third dialect.)
-    """
+    """Whether this session is bound to Postgres — the dialect-branch switch."""
     return db.get_bind().dialect.name == "postgresql"
 
 
