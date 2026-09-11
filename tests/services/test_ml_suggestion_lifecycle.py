@@ -277,7 +277,7 @@ class TestMigrateRepostData:
     async def test_tags_already_on_the_original_are_not_counted_as_moved(
         self, db_session: AsyncSession
     ):
-        """A tag on both images is deduped by INSERT IGNORE, so it moved nothing."""
+        """A tag on both images is deduped by ON CONFLICT DO NOTHING, so it moved nothing."""
         from app.models.tag_link import TagLinks
         from app.services.repost import migrate_repost_data
 
