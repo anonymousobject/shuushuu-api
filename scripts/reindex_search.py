@@ -1,4 +1,4 @@
-"""Bulk reindex all tags from MySQL to Meilisearch.
+"""Bulk reindex all tags from Postgres to Meilisearch.
 
 Usage:
     uv run python scripts/reindex_search.py
@@ -26,7 +26,7 @@ from app.services.search import SearchService, configure_tags_index
 
 
 async def reindex_tags(batch_size: int = 1000) -> None:
-    """Reindex all tags from MySQL to Meilisearch."""
+    """Reindex all tags from Postgres to Meilisearch."""
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
     client = AsyncClient(
         url=settings.MEILISEARCH_URL,

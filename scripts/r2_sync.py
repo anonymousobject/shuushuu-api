@@ -1168,9 +1168,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
     try:
         return await _run(args)
     finally:
-        # Close pooled DB connections while the event loop is still running;
-        # otherwise aiomysql's Connection.__del__ fires during interpreter
-        # shutdown and tries to schedule work on a closed loop.
+        # Dispose the engine so pooled connections close before interpreter
+        # shutdown, while the event loop is still running.
         await engine.dispose()
 
 

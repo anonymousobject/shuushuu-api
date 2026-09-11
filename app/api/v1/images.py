@@ -2580,10 +2580,12 @@ async def add_tag_to_image(
 
     # The TagLinks/TagHistory INSERTs take locking reads on their FK parents
     # (tags, images, users) and the usage_count trigger on tag_links keeps those
-    # parent rows moving, so under innodb_snapshot_isolation a concurrent tag
-    # write aborts this one with ER_CHECKREAD (1020) — reported against the
-    # child table. Retry on a fresh snapshot instead of surfacing a 500 (see
-    # app/core/db_retry.py). The unit re-fetches its rows.
+    # parent rows moving. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where a concurrent tag write now aborts this one with a deadlock
+    # (SQLSTATE 40P01) — reported against the child table. Retry on a fresh
+    # snapshot instead of surfacing a 500 (see app/core/db_retry.py). The unit
+    # re-fetches its rows.
     async def _apply_tag_add() -> int:
         # Verify tag exists and resolve aliases
         tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -2756,9 +2758,11 @@ async def rate_image(
     user_id: int = current_user.id
 
     # The rating INSERT/UPDATE and the image stats UPDATE are read-modify-write
-    # on shared rows, so under innodb_snapshot_isolation a concurrent commit can
-    # abort them with ER_CHECKREAD (1020). Retry on a fresh snapshot instead of
-    # surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its rows.
+    # on shared rows. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where a concurrent commit now aborts them with a deadlock (SQLSTATE
+    # 40P01). Retry on a fresh snapshot instead of surfacing a 500 (see
+    # app/core/db_retry.py). The unit re-fetches its rows.
     async def _apply_rating() -> tuple[str, RatingStats]:
         # Verify image exists
         image = await db.get(Images, image_id)
@@ -2829,10 +2833,12 @@ async def favorite_image(
     user_id: int = current_user.id
 
     # Incrementing image.favorites and current_user.favorites is read-modify-write
-    # on shared rows, so under innodb_snapshot_isolation a concurrent commit (a
-    # double-click is enough) can abort the UPDATE with ER_CHECKREAD (1020). Retry
-    # on a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
-    # The unit re-fetches its rows and re-checks idempotency so a retry re-decides.
+    # on shared rows. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where a concurrent commit (a double-click is enough) now aborts the
+    # UPDATE with a deadlock (SQLSTATE 40P01). Retry on a fresh snapshot
+    # instead of surfacing a 500 (see app/core/db_retry.py). The unit
+    # re-fetches its rows and re-checks idempotency so a retry re-decides.
     async def _apply_favorite() -> tuple[bool, int]:
         # Verify image exists
         image = await db.get(Images, image_id)
@@ -2909,8 +2915,10 @@ async def unfavorite_image(
     user_id: int = current_user.id
 
     # Decrementing image.favorites and current_user.favorites is read-modify-write
-    # on shared rows, so under innodb_snapshot_isolation a concurrent commit can
-    # abort the UPDATE with ER_CHECKREAD (1020). Retry on a fresh snapshot instead
+    # on shared rows. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where a concurrent commit now aborts the UPDATE with a deadlock
+    # (SQLSTATE 40P01). Retry on a fresh snapshot instead
     # of surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its rows.
     async def _apply_unfavorite() -> int:
         # Verify image exists
@@ -3165,10 +3173,12 @@ async def upload_image(
         # Everything above is non-DB work. What remains is a short,
         # self-contained transaction: INSERT the row, name it from the id it
         # just minted, link tags, commit. Its tag_links/tag_history INSERTs take
-        # locking reads on FK parents that other taggers keep moving, so under
-        # innodb_snapshot_isolation it can abort with ER_CHECKREAD (1020) —
-        # retry it on a fresh snapshot (see app/core/db_retry.py). A rolled-back
-        # attempt just burns an auto-inc id.
+        # locking reads on FK parents that other taggers keep moving. This
+        # opted into the retry after a MariaDB snapshot conflict (ER_CHECKREAD)
+        # before the Postgres cutover; kept per ADR-0004, where it can now
+        # abort with a deadlock (SQLSTATE 40P01) — retry it on a fresh
+        # snapshot (see app/core/db_retry.py). A rolled-back attempt just
+        # burns an auto-inc id.
         async def _insert_image() -> Images:
             image = Images(
                 filename="",  # set below, from the id this INSERT mints

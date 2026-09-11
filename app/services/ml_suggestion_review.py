@@ -253,10 +253,12 @@ async def review_ml_tag_suggestions(
     suggestion_ids = [item.suggestion_id for item in request.suggestions]
 
     # A concurrent ml_remap run (or another reviewer) can rewrite these same
-    # suggestion rows between our fetch and our commit, tripping MariaDB
-    # ER_CHECKREAD (1020) under innodb_snapshot_isolation (see
-    # app/core/db_retry.py). Retry the whole fetch-through-commit unit on a
-    # fresh snapshot. Re-running _apply() after a rollback is idempotent-safe
+    # suggestion rows between our fetch and our commit. This opted into the
+    # retry after a MariaDB snapshot conflict (ER_CHECKREAD) before the
+    # Postgres cutover; kept per ADR-0004, where the transient error is now a
+    # deadlock (SQLSTATE 40P01) (see app/core/db_retry.py). Retry the whole
+    # fetch-through-commit unit on a fresh snapshot. Re-running _apply() after
+    # a rollback is idempotent-safe
     # by construction: the fresh fetch re-reads current suggestion statuses,
     # so changes already committed by the other writer are visible under the
     # new snapshot (no double-apply), and a suggestion the other writer

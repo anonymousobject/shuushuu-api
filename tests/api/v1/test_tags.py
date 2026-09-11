@@ -71,9 +71,10 @@ class TestListTags:
     async def test_search_tags_with_periods(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags containing periods like 'C.C.'.
 
-        MySQL fulltext treats periods as word delimiters, so "C.C." becomes tokens
-        "C" and "C" which are both below the minimum token size. The search should
-        fall back to LIKE prefix matching for such terms.
+        Postgres matches this with a case-insensitive substring match per word,
+        so "C.C." matches by that literal substring. Under MariaDB fulltext,
+        "C.C." became tokens "C" and "C", both below the minimum token size,
+        which is why this case exists.
         """
         # Create tags with periods in the name
         tag1 = Tags(title="C.C.", desc="Code Geass character", type=TagType.CHARACTER)
@@ -96,9 +97,10 @@ class TestListTags:
     async def test_search_tags_with_hyphens(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags containing hyphens like 'Deep-Blue Series'.
 
-        MySQL fulltext treats hyphens as word delimiters, so "Deep-Blue" becomes
-        tokens "Deep" and "Blue". The search must tokenize the query the same way
-        so that "deep-blue" matches.
+        Postgres matches this with a case-insensitive substring match per word,
+        so the query must split on the same boundaries as the title for
+        "deep-blue" to match. Under MariaDB fulltext, "Deep-Blue" became tokens
+        "Deep" and "Blue", which is why this case exists.
         """
         tag1 = Tags(title="Deep-Blue Series", desc="A series", type=TagType.THEME)
         tag2 = Tags(title="Unrelated Tag", desc="Other", type=TagType.THEME)
@@ -986,8 +988,10 @@ class TestFuzzyTagSearch:
     ):
         """Test that full-text search requires whole words (not partial word matches).
 
-        Note: MariaDB/MySQL FULLTEXT has minimum word length (usually 3-4 chars) and
-        only matches complete words, not arbitrary substrings.
+        Postgres matches via a case-insensitive substring match per word, so
+        there is no minimum word length. Under MariaDB, FULLTEXT had a minimum
+        word length (usually 3-4 chars) and only matched complete words, not
+        arbitrary substrings, which is why this case exists.
         """
         # Create test tags with full words
         tag1 = Tags(title="school uniform", type=TagType.THEME)
@@ -1079,11 +1083,10 @@ class TestFuzzyTagSearch:
     async def test_search_with_stopwords(self, client: AsyncClient, db_session: AsyncSession):
         """Test that search works correctly when query contains stopwords like 'The'.
 
-        This addresses a bug where searching for "The Forgotten" would fail because
-        "the" is a MySQL/MariaDB fulltext stopword. When combined with the `+` required
-        operator, the entire query would fail.
-
-        The fix filters out stopwords and short terms before building the fulltext query.
+        Postgres's case-insensitive substring match has no stopword concept, so
+        "The Forgotten" matches directly on both words. Under MariaDB fulltext,
+        "the" was a stopword, and combined with the `+` required operator the
+        entire query would fail, which is why this case exists.
         """
         # Create tags with "The" in the title
         tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
@@ -1108,11 +1111,12 @@ class TestFuzzyTagSearch:
     async def test_search_with_short_terms(self, client: AsyncClient, db_session: AsyncSession):
         """Test that search works when query contains very short terms (< 3 chars).
 
-        MySQL/MariaDB fulltext has a minimum token size (default 3). Terms shorter
-        than this are ignored in fulltext search, which can cause issues when combined
-        with the `+` required operator.
-
-        Example: Searching "The F" would fail because "F" is below min token size.
+        Postgres's case-insensitive substring match has no per-word minimum
+        length, so short terms like "F" still match directly. Under MariaDB
+        fulltext, a minimum token size (default 3) meant short terms were
+        ignored, and combined with the `+` required operator this could fail
+        the whole query -- e.g. "The F" would return zero rows because "F" was
+        below the minimum token size -- which is why this case exists.
         """
         # Create tags
         tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
@@ -1161,8 +1165,10 @@ class TestFuzzyTagSearch:
     ):
         """Test that fulltext boolean operators are stripped from search terms.
 
-        MySQL fulltext BOOLEAN MODE uses characters like +, -, *, ~, ", (), <, >, @
-        as operators. Without sanitization, searching for "C++" would create
+        Postgres's substring match treats all characters literally, including
+        operator punctuation, so no boolean sanitization is needed. Under
+        MariaDB fulltext BOOLEAN MODE, characters like +, -, *, ~, ", (), <, >,
+        @ were operators, and without sanitization, searching for "C++" would create
         "+C++*" which interprets the extra + as operators.
         """
         # Create tags with special characters
@@ -1215,9 +1221,11 @@ class TestFuzzyTagSearch:
     ):
         """Test that searching for terms containing underscores works correctly.
 
-        MySQL/MariaDB InnoDB FULLTEXT treats underscore as a word character (not a
-        delimiter), so 'yano_0o0' is indexed as a single token. Our Python-side
-        tokenizer must match this behavior to produce valid FULLTEXT queries.
+        Postgres's substring match escapes underscore for LIKE (it would
+        otherwise match any single character as a wildcard), so 'yano_0o0'
+        matches literally. Under MariaDB InnoDB FULLTEXT, underscore was a
+        word character, not a delimiter, so 'yano_0o0' was indexed as a single
+        token, which is why this case exists.
         """
         tag = Tags(title="Yano (yano_0o0)", type=TagType.CHARACTER)
         db_session.add(tag)

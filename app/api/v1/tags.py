@@ -130,8 +130,8 @@ async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalL
 
     Custom-positioned links come first (by `position`); the rest fall back to the
     default — shuu-wiki links first, then by `date_added`. `position IS NULL` sorts
-    last (MySQL puts NULLs first in ASC, so order by the null-ness flag to push the
-    un-positioned links after the positioned ones).
+    last (order by the null-ness flag so NULLs sort last regardless of the
+    backend's default).
     """
     result = await db.execute(
         select(TagExternalLinks)
@@ -1179,7 +1179,7 @@ async def get_tag_history(
             # Relationships pointed AT this tag. The alias_set/parent_set row
             # lives on the other tag, so without these a canonical tag never
             # learns that something was aliased to it. All four columns carry
-            # MariaDB's auto-created FK indexes.
+            # the FK indexes.
             | (TagAuditLog.old_alias_of == tag_id)
             | (TagAuditLog.new_alias_of == tag_id)
             | (TagAuditLog.old_parent_id == tag_id)
@@ -1383,10 +1383,10 @@ def _tag_usage_history_union(tag_id: int, offset: int, per_page: int) -> Any:
     spaces that could otherwise collide.
 
     Each branch pushes its own ORDER BY + LIMIT (offset + per_page) *before*
-    the union — required, not an optimization. MariaDB materializes a UNION
-    ALL as a derived table, so an outer-only ORDER BY filesorts the full
-    merged set (728k rows for the hottest tag) regardless of indexes. With the
-    pushdown, each branch reads its top rows in index order off
+    the union. This shape was chosen when MariaDB materialized the union
+    before filtering, so an outer-only ORDER BY filesorted the full merged
+    set (728k rows for the hottest tag) regardless of indexes; it is kept as
+    is. With the pushdown, each branch reads its top rows in index order off
     idx_tag_links_tag_date / idx_tag_history_tag_date. This is lossless: the
     global top (offset + per_page) rows are necessarily contained in each
     branch's own top (offset + per_page) rows.
@@ -1437,8 +1437,9 @@ async def _tag_usage_history_total(db: AsyncSession, tag_id: int) -> int:
     """Total usage-history events for a tag: sum of two plain COUNTs.
 
     Deliberately not COUNT(*) over the union subquery — measured ~10x slower
-    (815ms vs 80ms on the hottest tag) because MariaDB materializes the union
-    into a temp table before it can count it.
+    (815ms vs 80ms on the hottest tag). This shape was chosen when MariaDB
+    materialized the union into a temp table before it could count it; it is
+    kept as is.
     """
     link_total = (
         await db.execute(

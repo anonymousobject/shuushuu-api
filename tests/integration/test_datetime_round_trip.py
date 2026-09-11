@@ -1,7 +1,7 @@
-"""Integration tests: UtcDateTime round-trips through real MariaDB.
+"""Integration tests: UtcDateTime round-trips through real Postgres.
 
 Verifies the TypeDecorator wires correctly into the SQLAlchemy machinery and
-behaves correctly against the actual aiomysql driver, not just in unit-level
+behaves correctly against the actual asyncpg driver, not just in unit-level
 isolation. A throwaway table is created/dropped inside the test so we don't
 depend on any production model adopting UtcDateTime yet (that happens in
 later chunks).
@@ -49,7 +49,7 @@ async def temp_dt_table(engine: AsyncEngine):
 
 @pytest.mark.integration
 class TestUtcDateTimeRoundTrip:
-    """End-to-end round-trip through the aiomysql driver."""
+    """End-to-end round-trip through the asyncpg driver."""
 
     async def test_utc_aware_round_trips(self, engine: AsyncEngine, temp_dt_table: Table):
         """A UTC-aware datetime survives write+read with tz preserved."""

@@ -1180,11 +1180,13 @@ async def add_favorite_tag(
         tag_usage = tag.usage_count
 
         # The cap count, max(position) read, and INSERT below are a single
-        # unit that can hit ER_CHECKREAD (1020) under innodb_snapshot_isolation
-        # when it races another write on the same rows (e.g. a double-submit
-        # re-adding/reordering this tag-type). Retry on a fresh snapshot
-        # instead of surfacing a 500 (see app/core/db_retry.py; ADR-0004).
-        # The unit re-fetches its rows.
+        # unit that races another write on the same rows (e.g. a double-submit
+        # re-adding/reordering this tag-type). This opted into the retry after
+        # a MariaDB snapshot conflict (ER_CHECKREAD) before the Postgres
+        # cutover; kept per ADR-0004, where the transient error is now a
+        # deadlock (SQLSTATE 40P01). Retry on a fresh snapshot instead of
+        # surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its
+        # rows.
         #
         # That retry does not close every race: two concurrent POSTs for
         # DIFFERENT tag_ids insert into different rows, so neither locks the
@@ -1346,10 +1348,11 @@ async def reorder_favorite_tags(
     # Same shape as user_profile_update's confirmed 1020 site: a
     # read-then-UPDATE-many-then-commit unit on rows this user exclusively
     # owns. A double-submit (or a reorder racing an add/remove touching the
-    # same rows) can abort the position UPDATEs under
-    # innodb_snapshot_isolation. Retry on a fresh snapshot instead of
-    # surfacing a 500 (see app/core/db_retry.py; ADR-0004). The unit
-    # re-fetches its rows.
+    # same rows) opted into the retry after a MariaDB snapshot conflict
+    # (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004, where
+    # the transient error is now a deadlock (SQLSTATE 40P01). Retry on a
+    # fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows.
     async def _apply() -> None:
         rows: Sequence[UserFavoriteLinks] | Sequence[UserFavoriteTags]
         if body.category == "characters":

@@ -397,7 +397,6 @@ if __name__ == "__main__":
     import sys
     import warnings
 
-    # Suppress aiomysql cleanup warnings (harmless)
     warnings.filterwarnings("ignore", message=".*Event loop is closed.*")
 
     parser = argparse.ArgumentParser(

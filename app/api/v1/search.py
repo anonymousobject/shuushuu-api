@@ -110,7 +110,7 @@ async def search(
             detail="Search service is temporarily unavailable",
         ) from None
 
-    # Fetch full tag records from MySQL, preserving Meilisearch order.
+    # Fetch full tag records from Postgres, preserving Meilisearch order.
     # Outerjoin a self-aliased Tags so alias hits include the parent's title
     # as alias_of_name — same pattern as list_tags in app/api/v1/tags.py.
     hits: list[TagSearchHit] = []

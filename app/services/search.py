@@ -95,7 +95,7 @@ async def sync_tag_to_search(
 ) -> None:
     """Sync a tag to Meilisearch. Best-effort -- never raises.
 
-    Awaits the Meilisearch call but runs after the MySQL commit, so the
+    Awaits the Meilisearch call but runs after the database commit, so the
     write path has already succeeded. Typically completes in <10ms.
 
     Args:
@@ -126,7 +126,7 @@ async def sync_tags_to_search(
 ) -> None:
     """Sync multiple tags to Meilisearch in a single call. Best-effort -- never raises.
 
-    Awaits the Meilisearch call but runs after the MySQL commit, so the
+    Awaits the Meilisearch call but runs after the database commit, so the
     write path has already succeeded.
 
     Args:
@@ -151,7 +151,7 @@ async def sync_tags_to_search(
 async def sync_tag_delete_to_search(tag_id: int, *, service: SearchService | None = None) -> None:
     """Remove a tag from Meilisearch. Best-effort -- never raises.
 
-    Awaits the Meilisearch call but runs after the MySQL commit, so the
+    Awaits the Meilisearch call but runs after the database commit, so the
     write path has already succeeded. Typically completes in <10ms.
 
     Args:

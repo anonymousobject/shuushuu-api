@@ -93,11 +93,11 @@ def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
     per page, so paginating could silently duplicate or drop a link.
 
     Each branch pushes its own ORDER BY + LIMIT (offset + per_page) *before*
-    the union — required, not an optimization, same rationale as
-    _tag_usage_history_union in app.api.v1.tags: MariaDB materializes UNION
-    ALL as a derived table, so an outer-only ORDER BY would filesort the
-    full merged set (1.13M rows for the hottest user) regardless of indexes.
-    This is lossless: the global top (offset + per_page) rows are
+    the union, same rationale as _tag_usage_history_union in app.api.v1.tags:
+    this shape was chosen when MariaDB materialized UNION ALL as a derived
+    table, so an outer-only ORDER BY would have filesorted the full merged
+    set (1.13M rows for the hottest user) regardless of indexes; it is kept
+    as is. This is lossless: the global top (offset + per_page) rows are
     necessarily contained in each branch's own top (offset + per_page) rows.
     The kind-3 branch's own ORDER BY carries the same tag_id tie-break as
     the outer query (its prio/kind are constant within the branch, so
@@ -190,8 +190,8 @@ async def _user_history_total(db: AsyncSession, user_id: int) -> int:
 
     Deliberately not COUNT(*) over the union subquery — same tradeoff as
     _tag_usage_history_total in app.api.v1.tags (measured ~1.37s vs 98ms for
-    the hottest user, since MariaDB materializes the union before it can
-    count it).
+    the hottest user). This shape was chosen when MariaDB materialized the
+    union before it could count it; it is kept as is.
     """
     audit_total = (
         await db.execute(

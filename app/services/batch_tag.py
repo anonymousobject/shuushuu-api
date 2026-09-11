@@ -36,9 +36,11 @@ async def batch_add_tags(
 
     # The TagLinks/TagHistory INSERTs take locking reads on their FK parents
     # (tags, images, users) and the usage_count trigger on tag_links keeps those
-    # parent rows moving, so under innodb_snapshot_isolation a concurrent tag
-    # write aborts this batch with ER_CHECKREAD (1020). Retry the whole
-    # fetch-through-commit unit on a fresh snapshot (see app/core/db_retry.py).
+    # parent rows moving. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where a concurrent tag write now aborts this batch with a deadlock
+    # (SQLSTATE 40P01). Retry the whole fetch-through-commit unit on a fresh
+    # snapshot (see app/core/db_retry.py).
     # The accumulators are built inside the unit: reusing lists from a failed
     # attempt would report every pair once per attempt.
     async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:

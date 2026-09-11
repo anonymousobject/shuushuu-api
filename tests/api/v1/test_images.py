@@ -2543,8 +2543,8 @@ class TestOwnerStatusChangeSyncsMlSuggestions:
 class TestTagUsageCount:
     """Tests for automatic tag usage_count updates via database triggers.
 
-    Both backends: the MariaDB migration chain and the Postgres bootstrap
-    (app/core/pg_triggers.py) each install the triggers under test.
+    The Postgres bootstrap (app/core/pg_triggers.py) installs the triggers
+    under test.
     """
 
     async def test_tag_usage_count_increments_on_add(
@@ -3218,8 +3218,9 @@ class TestCommentFilters:
     ):
         """CJK must never be refused: LIKE is the only path it has.
 
-        MariaDB has no ngram parser, so a short Japanese term is unindexable by
-        definition. Refusing it would break Japanese comment search outright.
+        A short Japanese term is served by the ILIKE substring match, not a
+        minimum-length index lookup. Refusing it would break Japanese comment
+        search outright.
         """
         from app.models import Comments
 
@@ -3381,7 +3382,11 @@ class TestCommentFilters:
     async def test_commentsearch_stopword_does_not_zero_results(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
-        """`the` is an InnoDB stopword; `+the +cat` returns 0 rows."""
+        """On Postgres, `the` is not a stopword: `commentsearch=the cat` matches
+        every comment containing both terms. Under MariaDB fulltext, `the` was
+        an InnoDB stopword excluded by the `+the +cat` boolean-mode query,
+        which is why this case exists.
+        """
         from app.models import Comments
 
         user = Users(

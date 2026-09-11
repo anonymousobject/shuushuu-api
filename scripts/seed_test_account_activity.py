@@ -75,10 +75,11 @@ async def seed_activity(db: AsyncSession, username: str, tag_title: str, favorit
         sys.exit(1)
 
     # NOTE: favorites has an AFTER INSERT trigger that updates the images
-    # table. MariaDB forbids updating a table that a statement is also
-    # selecting from (ERROR 1442), so `INSERT INTO favorites ... SELECT
-    # ... FROM images` fails. We must select the image ids first (above)
-    # and then insert them as plain VALUES.
+    # table. This was written this way because MariaDB forbade updating a
+    # table that a statement also selected from (ERROR 1442), so
+    # `INSERT INTO favorites ... SELECT ... FROM images` would have failed.
+    # We select the image ids first (above) and then insert them as plain
+    # VALUES.
     fav_result = await db.execute(
         text("INSERT IGNORE INTO favorites (user_id, image_id) VALUES (:user_id, :image_id)"),
         [{"user_id": user_id, "image_id": image_id} for image_id in image_ids],
