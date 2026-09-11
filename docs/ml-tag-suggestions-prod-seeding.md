@@ -52,7 +52,7 @@ later).
 - [ ] Confirm the results file is reachable from prod:
       `ls -lh /sakura/shuushuu/ml-backfill/results.jsonl` (≈2.8 GB, ~1.05M lines).
       If prod doesn't mount `/sakura`, copy it to local durable storage and adjust
-      paths. *(Alternative to re-ingesting the JSONL: `mysqldump` dev's
+      paths. *(Alternative to re-ingesting the JSONL: `pg_dump` dev's
       `ml_raw_predictions` + `ml_external_tags` + `ml_models` and load into prod —
       image_ids align since dev is a prod restore. Then skip §4 and go to §5.)*
 - [ ] Provision the model's `selected_tags.csv` on the **app host** — `ml_raw_ingest`

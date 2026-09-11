@@ -186,16 +186,6 @@ written under a different name (typically the midnight-boundary drift
 fixed in PR #218). Compare the logged `path` to the actual file with
 `ls /shuushuu/images/<variant>/*<image_id>*` on the api container.
 
-### DB connection-pool ping errors (sqlalchemy ↔ pymysql version drift)
-
-```logql
-{service="api"} |~ "ping\\(\\) missing|AsyncAdapt_aiomysql_connection.ping"
-```
-
-Catches the pymysql 1.2 / sqlalchemy aiomysql adapter incompatibility
-seen during the 5/19 incident. Any hit here means a transitive dep
-drifted past what `uv.lock` pins; rebuild from a clean lock.
-
 ### nginx upstream connection refused (stale DNS after recreate)
 
 ```logql

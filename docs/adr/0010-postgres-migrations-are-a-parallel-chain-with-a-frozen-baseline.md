@@ -58,3 +58,15 @@ compares a models-built schema against its chain, so a missing half goes red.
   so a broken PG migration fails CI the same way a broken MariaDB one does.
 - At cutover: delete `alembic/` and its config, rename `alembic_pg/` into
   place, and the pair rule dissolves.
+
+## Status (2026-09)
+
+The parallel-chain period ended with the MariaDB retirement (ADR-0014).
+`alembic_pg/` was moved to `alembic/`, the MariaDB chain and `alembic.pg.ini`
+were deleted, and the pair rule dissolved. The frozen baseline, the
+`!alembic/versions/*.sql` gitignore rule, and the never-regenerate rule stay
+in force. `scripts/gen_pg_baseline.py` was deleted with the bootstrap shims it
+depended on; it is in git history at the baseline commit if the generation
+method is ever needed again. A comment inside migration `e20bac5f3ac3` still
+names the deleted `_LENGTH_CHECKS`; migrations are never edited after merge,
+so it stays.

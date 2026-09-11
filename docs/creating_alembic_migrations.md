@@ -16,7 +16,7 @@ Your Alembic setup:
 - **Config location:** `pyproject.toml` ([tool.alembic] section)
 - **Script location:** `alembic/` directory
 - **Versions directory:** `alembic/versions/`
-- **Database URL:** Set dynamically in `alembic/env.py` from `settings.DATABASE_URL_SYNC`
+- **Database URL:** Set dynamically in `alembic/env.py` from `settings.DATABASE_URL`
 
 ## Step-by-Step: Creating a Migration
 
@@ -67,18 +67,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add FULLTEXT index to posts.post_text for faster comment searching."""
-    # Use raw SQL for MySQL-specific FULLTEXT index
-    op.execute(
-        "CREATE FULLTEXT INDEX idx_post_text_fulltext ON posts(post_text)"
-    )
+    """Add an index on posts.date."""
+    op.execute("CREATE INDEX idx_posts_date ON posts (date)")
 
 
 def downgrade() -> None:
-    """Remove FULLTEXT index from posts.post_text."""
-    op.execute(
-        "DROP INDEX idx_post_text_fulltext ON posts"
-    )
+    """Remove the index on posts.date."""
+    op.execute("DROP INDEX idx_posts_date")
 ```
 
 **Key points:**
@@ -115,11 +110,11 @@ INFO  [alembic.runtime.migration] Running upgrade 8d66158eb568 -> abc123def456, 
 Check that the index was created:
 
 ```bash
-# Connect to MySQL
-mysql -u your_user -p your_database
+# Connect to Postgres (dev stack)
+docker compose exec postgres psql -U shuushuu -d shuushuu
 
 # Verify the index
-SHOW INDEX FROM posts WHERE Key_name = 'idx_post_text_fulltext';
+\di idx_posts_date
 ```
 
 ## Common Migration Tasks
@@ -362,13 +357,13 @@ cat alembic/versions/abc123def456_add_fulltext_index_to_posts_post_text.py
 alembic upgrade head
 
 # 5. Verify the index was created
-mysql -u user -p database -e "SHOW INDEX FROM posts WHERE Key_name = 'idx_post_text_fulltext'"
+docker compose exec postgres psql -U shuushuu -d shuushuu -c '\di idx_posts_date'
 
 # 6. Test rollback
 alembic downgrade -1
 
 # 7. Verify index was removed
-mysql -u user -p database -e "SHOW INDEX FROM posts WHERE Key_name = 'idx_post_text_fulltext'"
+docker compose exec postgres psql -U shuushuu -d shuushuu -c '\di idx_posts_date'
 
 # 8. Re-apply for final verification
 alembic upgrade head

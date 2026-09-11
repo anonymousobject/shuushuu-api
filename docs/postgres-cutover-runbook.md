@@ -1,5 +1,9 @@
 # Postgres cutover runbook
 
+> **Completed.** Prod cut over on 2026-08-22 (PR #358); MariaDB was retired
+> from the codebase in September 2026 (ADR-0014). Kept as a record; the
+> scripts it names were deleted and live in git history.
+
 Migrating production from MariaDB to Postgres. Every step here was executed
 at prod scale against the dev restore on 2026-08-20/21, and end-to-end from
 kyouko into the prod target on 2026-08-21 (52.3M rows); the sharp edges are
