@@ -502,12 +502,10 @@ async def test_images_source_url_roundtrip(db_session: AsyncSession):
 
 
 class TestUploadSnapshotConflictRetry:
-    """Concurrent uploads trip MariaDB ER_CHECKREAD (errno 1020) on the temp-row
-    INSERT: with innodb_snapshot_isolation=ON, a locking insert that meets index
-    entries committed after this transaction's snapshot aborts instead of
-    proceeding, and every in-flight upload writes identical placeholder values
-    into the same index positions. The upload route must retry on a fresh
-    snapshot instead of surfacing a 500."""
+    """Concurrent uploads trip a Postgres deadlock (SQLSTATE 40P01) on the temp-row
+    INSERT: two transactions take row locks in opposite orders and Postgres aborts one
+    to break the cycle. The upload route must retry on a fresh transaction instead
+    of surfacing a 500."""
 
     @pytest.mark.asyncio
     @pytest.mark.needs_commit
@@ -548,10 +546,10 @@ class TestUploadSnapshotConflictRetry:
     async def test_upload_gives_up_after_bounded_retries(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """A persistent 1020 gives up after a bounded number of attempts.
+        """A persistent Postgres deadlock (SQLSTATE 40P01) gives up after a bounded number of attempts.
 
         The exhausted error surfaces as the route's own 500 rather than a raw
-        OperationalError: the retried unit sits inside upload's try/except, so
+        DBAPIError: the retried unit sits inside upload's try/except, so
         the failure also rolls back and unlinks the staged file.
         """
         flush_patch, calls = _flaky_flush(100, _deadlock_error())
@@ -604,14 +602,11 @@ class TestUploadSnapshotConflictRetry:
 
 @pytest.mark.api
 class TestUploadTagLinkSnapshotConflictRetry:
-    """The upload's tag-link write is exposed to ER_CHECKREAD too, and for
-    longer than the temp-row INSERT: tag_links/tag_history INSERTs take locking
-    reads on their FK parents, and the usage_count trigger on tag_links keeps
-    the parent `tags` row moving whenever anyone else tags that tag.
-
-    The conflict is aimed at the second explicit flush (the tag-link write)
-    rather than the first (which mints the image_id), so this fails on any
-    implementation that only retries the id-minting INSERT.
+    """The upload's tag-link write is exposed to a Postgres deadlock (SQLSTATE 40P01) too:
+    tag_links/tag_history INSERTs take locking writes that can conflict with concurrent
+    updates from other users tagging the same tags. The conflict is aimed at the second
+    explicit flush (the tag-link write) rather than the first (which mints the image_id),
+    so this fails on any implementation that only retries the id-minting INSERT.
     """
 
     @pytest.mark.asyncio
@@ -622,7 +617,7 @@ class TestUploadTagLinkSnapshotConflictRetry:
         verified_user: Users,
         db_session: AsyncSession,
     ):
-        """A transient 1020 on the tag-link write is retried and the upload succeeds."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the tag-link write is retried and the upload succeeds."""
         from sqlalchemy import select
 
         from app.models.image import Images

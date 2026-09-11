@@ -717,9 +717,9 @@ class TestBatchAddApprovesMlSuggestions:
 class TestBatchTagSnapshotConflictRetry:
     """The batch paths INSERT into tag_links/tag_history, whose FK columns make
     InnoDB locking-read the parent tags/images/users rows — and the usage_count
-    triggers on tag_links keep those parents moving. Under
-    innodb_snapshot_isolation a concurrent tag write aborts the batch with
-    ER_CHECKREAD (errno 1020), so it must retry on a fresh snapshot.
+    triggers on tag_links keep those parents moving. Concurrent tag writes
+    can trigger a Postgres deadlock (SQLSTATE 40P01), so the batch must
+    retry on a fresh transaction.
 
     The added/removed accumulators must be rebuilt per attempt: a retry that
     reuses lists from the failed attempt would report every pair twice.
@@ -732,7 +732,7 @@ class TestBatchTagSnapshotConflictRetry:
     async def test_batch_add_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 is retried; each pair is added and reported once."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) is retried; each pair is added and reported once."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
         images = await _create_test_images(db_session, user, 2)
@@ -769,7 +769,7 @@ class TestBatchTagSnapshotConflictRetry:
     async def test_batch_remove_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 is retried; each pair is removed and reported once."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) is retried; each pair is removed and reported once."""
         user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
         token = create_access_token(user.id)
         images = await _create_test_images(db_session, user, 2)
@@ -808,7 +808,7 @@ class TestBatchTagSnapshotConflictRetry:
     async def test_batch_add_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A persistent 1020 propagates after a bounded number of attempts."""
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
         images = await _create_test_images(db_session, user, 1)

@@ -268,7 +268,7 @@ class TestAddFavorite:
     async def test_add_tag_retries_on_transient_conflict_and_lands_once(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """ADR-0004: a transient snapshot conflict at commit is retried, not
+        """ADR-0004: a transient Postgres deadlock (SQLSTATE 40P01) at commit is retried, not
         surfaced as a 500 — and the retried unit re-derives its INSERT rather
         than replaying a stale one, so exactly one row lands.
 
@@ -421,8 +421,8 @@ class TestReorder:
     async def test_reorder_retries_on_transient_conflict(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """Same ADR-0004 coverage as user_profile_update's confirmed 1020
-        site: a transient conflict on the position UPDATEs is retried, and
+        """Same ADR-0004 coverage as a confirmed Postgres deadlock (SQLSTATE 40P01)
+        scenario: a transient conflict on the position UPDATEs is retried, and
         the retried unit re-fetches its rows rather than reusing stale ones.
 
         needs_commit: same reason as the add-favorite retry tests — the

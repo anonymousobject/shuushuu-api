@@ -2481,9 +2481,9 @@ class TestAdminApplyTagSuggestions:
 class TestApplyTagSuggestionsSnapshotConflictRetry:
     """apply_tag_suggestions INSERTs into tag_links/tag_history, whose FK columns
     make InnoDB locking-read the parent tags/images/users rows, and the
-    usage_count trigger on tag_links keeps those parents moving. Under
-    innodb_snapshot_isolation a concurrent tag write aborts this one with
-    ER_CHECKREAD (errno 1020), so it must retry on a fresh snapshot.
+    usage_count trigger on tag_links keeps those parents moving. Concurrent
+    tag writes can trigger a Postgres deadlock (SQLSTATE 40P01), so it must
+    retry on a fresh transaction.
 
     The applied_tags/removed_tags accumulators must be rebuilt per attempt, or a
     retry reports each tag once per attempt.
@@ -2493,7 +2493,7 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
     async def test_apply_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 is retried; each tag is applied and reported once."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) is retried; each tag is applied and reported once."""
         admin, password = await create_auth_user(db_session, username="applyretry1", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
         image = await create_test_image(db_session, admin.user_id)
@@ -2550,7 +2550,7 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
     async def test_apply_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A persistent 1020 propagates after a bounded number of attempts."""
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         admin, password = await create_auth_user(db_session, username="applyretry2", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
         image = await create_test_image(db_session, admin.user_id)

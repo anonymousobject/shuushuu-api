@@ -4574,11 +4574,11 @@ class TestRateImage:
 @pytest.mark.api
 class TestFavoriteRatingSnapshotConflictRetry:
     """favorite/unfavorite/rate do read-modify-write UPDATEs on shared
-    images/users rows, so under innodb_snapshot_isolation a concurrent commit
-    can abort them with ER_CHECKREAD (errno 1020) — a double-click is enough.
-    Each write path must retry on a fresh snapshot instead of surfacing a 500.
+    images/users rows, so concurrent updates can trigger a Postgres deadlock
+    (SQLSTATE 40P01) — a double-click is enough. Each write path must retry
+    on a fresh transaction instead of surfacing a 500.
 
-    These exercise the real retry helper (app/core/db_retry.py); the 1020 is
+    These exercise the real retry helper (app/core/db_retry.py); the deadlock is
     injected into the wrapped unit's explicit flush, mirroring the upload path's
     TestUploadSnapshotConflictRetry."""
 
@@ -4590,10 +4590,10 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the favorite counter write is retried and succeeds.
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the favorite counter write is retried and succeeds.
 
-        needs_commit: the retry performs a real session rollback to obtain a
-        fresh snapshot; under the default SAVEPOINT isolation that rollback
+        needs_commit: the retry performs a real transaction rollback to obtain a
+        fresh transaction; under the default SAVEPOINT isolation that rollback
         would unwind the fixture's committed image/user rows too, which can't
         happen in production where they are durably committed.
         """
@@ -4628,7 +4628,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the unfavorite counter write is retried and succeeds."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the unfavorite counter write is retried and succeeds."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
@@ -4668,7 +4668,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the rating write is retried and the rating succeeds."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the rating write is retried and the rating succeeds."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
@@ -4693,7 +4693,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         db_session: AsyncSession,
         sample_image_data: dict,
     ):
-        """A persistent 1020 propagates after a bounded number of attempts.
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts.
 
         needs_commit: each retry rolls back for a fresh snapshot, so the image
         must be durably committed to survive re-fetch across attempts (as in
@@ -4716,7 +4716,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         db_session: AsyncSession,
         sample_image_data: dict,
     ):
-        """Non-1020 database errors propagate immediately with no retry."""
+        """Non-deadlock database errors propagate immediately with no retry."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
@@ -4736,11 +4736,11 @@ class TestTagWriteSnapshotConflictRetry:
     """Adding or removing a tag INSERTs into tag_history, whose tag_id/image_id/
     user_id are FK columns — so InnoDB takes a locking read on each parent row.
     The usage_count triggers on tag_links keep the parent `tags` row moving, and
-    the image_posts trigger does the same to `users`, so under
-    innodb_snapshot_isolation a concurrent tag write aborts this one with
-    ER_CHECKREAD (errno 1020). Two users tagging at the same moment is enough.
+    the image_posts trigger does the same to `users`, so concurrent tag writes
+    can trigger a Postgres deadlock (SQLSTATE 40P01). Two users tagging at the
+    same moment is enough.
 
-    Both paths must retry on a fresh snapshot instead of surfacing a 500.
+    Both paths must retry on a fresh transaction instead of surfacing a 500.
 
     Each test captures image_id/tag_id as ints before calling the endpoint: the
     app under test shares this session (conftest overrides get_db with
@@ -4756,7 +4756,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A transient 1020 during the tag add is retried and the tag lands once.
+        """A transient Postgres deadlock (SQLSTATE 40P01) during the tag add is retried and the tag lands once.
 
         needs_commit: the retry performs a real session rollback to obtain a
         fresh snapshot; under the default SAVEPOINT isolation that rollback
@@ -4812,7 +4812,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A transient 1020 during the tag removal is retried and the link goes."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) during the tag removal is retried and the link goes."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4863,7 +4863,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A persistent 1020 propagates after a bounded number of attempts."""
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4892,7 +4892,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """Non-1020 database errors propagate immediately with no retry."""
+        """Non-deadlock database errors propagate immediately with no retry."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
