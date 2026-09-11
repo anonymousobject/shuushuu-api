@@ -4,7 +4,7 @@
 # Ensure bash is used for all commands (required for read -p in clean target)
 SHELL := /bin/bash
 
-.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend pytest pytest-db-up pytest-db-down prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy clean check-env-test check-env-prod
+.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend pytest prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy clean check-env-test check-env-prod
 
 # Capture extra arguments for logs commands (e.g., `make dev-logs api`)
 ARGS = $(filter-out $@,$(MAKECMDGOALS))
@@ -28,11 +28,8 @@ help:
 	@echo "  test-ps      Show running containers"
 	@echo "  test-build-frontend     Rebuild frontend image"
 	@echo ""
-	@echo "Python test suite (isolated DB on :3316):"
-	@echo "  pytest       Run the pytest suite against an isolated MariaDB"
-	@echo "               (workers: PYTEST_WORKERS in .env, default auto)"
-	@echo "  pytest-db-up   Start the isolated pytest MariaDB"
-	@echo "  pytest-db-down Stop the isolated pytest MariaDB"
+	@echo "Python test suite (dev-stack Postgres, one DB per xdist worker):"
+	@echo "  pytest       Run the pytest suite (workers: PYTEST_WORKERS in .env, default auto)"
 	@echo ""
 	@echo "Production (HTTPS on e-shuushuu.net):"
 	@echo "  prod         Start production environment (foreground)"
@@ -129,20 +126,6 @@ test-ps:
 test-build-frontend: check-env-test
 	$(COMPOSE_TEST) build --no-cache frontend
 
-# pytest targets — run the Python unit/integration suite against an isolated,
-# right-sized MariaDB (docker-compose.pytest.yml) instead of the shared,
-# memory-saturated dev container. See that file's header for the OOM root cause
-# this avoids. This is the supported way to run the suite locally.
-# Host port for the isolated DB. Defaults to 3316; a host where that is taken
-# (a second instance alongside another stack) sets PYTEST_DB_PORT in .env.
-# Compose reads .env by itself, make does not, so pull the same value through
-# here — and hand it back to compose explicitly so a value coming from the
-# environment or the command line reaches both halves.
-PYTEST_DB_PORT ?= $(shell sed -n 's/^PYTEST_DB_PORT=[[:space:]]*//p' .env 2>/dev/null | tail -1)
-ifeq ($(strip $(PYTEST_DB_PORT)),)
-PYTEST_DB_PORT := 3316
-endif
-COMPOSE_PYTEST = PYTEST_DB_PORT=$(PYTEST_DB_PORT) docker compose -f docker-compose.pytest.yml
 # xdist worker count, same .env-or-default mechanism. 'auto' takes every core,
 # which is right on a machine doing nothing else; a host also running a dev
 # stack (or two) wants a cap, since each worker carries its own DB connections
@@ -152,29 +135,15 @@ PYTEST_WORKERS ?= $(shell sed -n 's/^PYTEST_WORKERS=[[:space:]]*//p' .env 2>/dev
 ifeq ($(strip $(PYTEST_WORKERS)),)
 PYTEST_WORKERS := auto
 endif
-# Pin the suite at the isolated DB regardless of what else .env holds.
-# DATABASE_URL is what the app engine builds from at import; the TEST_DB_*
-# components are what conftest builds the test engine AND the root admin engine
-# (which creates the per-worker databases) from -- the root path reads
-# TEST_DB_HOST/TEST_DB_PORT, not TEST_DATABASE_URL, so set the components.
-PYTEST_DB_ENV = \
-	DATABASE_URL="mysql+aiomysql://shuushuu:shuushuu_password@127.0.0.1:$(PYTEST_DB_PORT)/shuushuu_pytest?charset=utf8mb4" \
-	DATABASE_URL_SYNC="mysql+pymysql://shuushuu:shuushuu_password@127.0.0.1:$(PYTEST_DB_PORT)/shuushuu_pytest?charset=utf8mb4" \
-	TEST_DB_HOST=127.0.0.1 \
-	TEST_DB_PORT=$(PYTEST_DB_PORT) \
-	TEST_DB_USER=shuushuu \
-	TEST_DB_PASSWORD=shuushuu_password \
-	TEST_DB_NAME=shuushuu_pytest \
-	MARIADB_ROOT_PASSWORD=root_password
 
-pytest-db-up:
-	$(COMPOSE_PYTEST) up -d --wait
-
-pytest-db-down:
-	$(COMPOSE_PYTEST) down
-
-pytest: pytest-db-up
-	$(PYTEST_DB_ENV) uv run pytest -n $(PYTEST_WORKERS) --dist loadgroup $(ARGS)
+# Python test suite against the dev-stack Postgres (docker compose up -d
+# postgres). run-tests.sh loads .env and pins DATABASE_URL and
+# TEST_DATABASE_URL at the shuushuu_pytest database, so nothing reaching the
+# app-level engine can touch the dev database; each xdist worker gets its own
+# shuushuu_pytest_<worker> database. Keep PYTEST_WORKERS below the core count
+# on a host that also serves the dev stack.
+pytest:
+	./run-tests.sh -n $(PYTEST_WORKERS) --dist loadgroup $(ARGS)
 
 # Production targets
 prod: check-env-prod
@@ -199,11 +168,7 @@ prod-build-frontend: check-env-prod
 	$(COMPOSE_PROD) build --no-cache frontend
 
 # Apply database migrations as an explicit, gated step. Run this BEFORE
-# prod-deploy when a release includes a migration. The -c alembic.pg.ini is
-# load-bearing: a bare `alembic upgrade head` resolves via pyproject
-# [tool.alembic] to the legacy MariaDB chain (alembic/) and silently no-ops
-# against the retired MariaDB instead of prod Postgres (bit us 2026-08-29,
-# release of PR #370). Migrations must be
+# prod-deploy when a release includes a migration. Migrations must be
 # backward-compatible (expand/contract): during the rollout the old and new app
 # versions briefly run against the same DB at once, so a column the old code
 # still reads must not disappear yet. Defer destructive (contract) changes to a
@@ -213,7 +178,7 @@ prod-migrate: check-env-prod
 	# migration code even if prod-migrate is run on its own. The duplicate
 	# build is a cache-cheap no-op.
 	$(COMPOSE_PROD) build api
-	$(COMPOSE_PROD) run --rm --no-deps api uv run --no-project alembic -c alembic.pg.ini upgrade head
+	$(COMPOSE_PROD) run --rm --no-deps api uv run --no-project alembic upgrade head
 
 # Zero-downtime deploy: build the app image(s), then roll each service one at a
 # time. docker-rollout starts a new replica, waits for its healthcheck, then

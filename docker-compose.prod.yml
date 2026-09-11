@@ -1,6 +1,6 @@
 # Production override — containerised nginx + certbot as TLS edge
 # Docker provides: api, arq-worker, frontend, nginx, certbot, mediawiki, meilisearch, iqdb, loki, grafana, alloy, docker-socket-proxy
-# DB tier (native, out-of-stack): mariadb + redis reached over private network; containers are busybox stubs
+# DB tier (native, out-of-stack): postgres + redis reached over private network; containers are busybox stubs
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # Config comes from the host's .env (one env per host; see .env.example)
 
@@ -14,23 +14,8 @@ services:
   # Disable local services not needed in production
   # Use entrypoint override instead of profiles to keep services "defined"
   # (profiles makes them undefined, breaking depends_on merge from base)
-  mariadb:
-    image: busybox:latest
-    entrypoint: ["sleep", "infinity"]
-    restart: "no"
-    # Drop the base service's 3306 host publish — production MariaDB
-    # lives natively on a separate DB tier reached over a private
-    # network. The stub exists purely to keep depends_on chains
-    # merging cleanly.
-    ports: !override []
-    healthcheck:
-      test: ["CMD", "true"]
-      interval: 5s
-      retries: 1
-
-  # Same treatment for the transition-target Postgres: prod's Postgres (like
-  # MariaDB) lives natively on the DB tier, reached via DATABASE_URL. Without
-  # this stub a prod `up -d` would start a real postgres container with
+  # Prod's Postgres lives natively on the DB tier, reached via DATABASE_URL.
+  # Without this stub a prod `up -d` would start a real postgres container with
   # whatever POSTGRES_* creds the prod .env holds.
   postgres:
     image: busybox:latest
@@ -50,14 +35,14 @@ services:
     profiles: [disabled]
 
   # In production, Redis runs as a native service on the DB tier rather
-  # than as a container on the app host. Stub the service the same way
-  # mariadb is stubbed so depends_on chains keep merging cleanly without
+  # than as a container on the app host. Stub the service so
+  # depends_on chains keep merging cleanly without
   # actually running a redis container.
   redis:
     image: busybox:latest
     entrypoint: ["sleep", "infinity"]
     restart: "no"
-    # Same as mariadb — Redis is native on the DB tier. Stub keeps
+    # Redis is native on the DB tier. Stub keeps
     # depends_on merging; no need to publish 6379 on the host.
     ports: !override []
     healthcheck:
@@ -65,7 +50,7 @@ services:
       interval: 5s
       retries: 1
 
-  # Meilisearch runs as an actual container in prod (unlike redis/mariadb),
+  # Meilisearch runs as an actual container in prod (unlike redis/postgres),
   # but only api/arq-worker should reach it over the compose default
   # network. Drop the base service's 7700 host publish so it isn't
   # accessible from outside the container network.
@@ -223,7 +208,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    # List form replaces base depends_on entirely (removes mariadb dependency)
+    # List form adds redis; the base's postgres/meilisearch entries still merge
+    # in, which is why the postgres stub carries a passing healthcheck.
     depends_on:
       - redis
     restart: always
@@ -266,7 +252,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    # List form replaces base depends_on entirely (removes mariadb dependency)
+    # List form adds redis; the base's postgres/meilisearch entries still merge
+    # in, which is why the postgres stub carries a passing healthcheck.
     depends_on:
       - redis
     restart: always
@@ -483,9 +470,6 @@ services:
 
 volumes:
   # Override generic volume names with prod-specific names for data isolation
-  mariadb_data:
-    name: mariadb_data_prod
-    driver: local
   redis_data:
     name: redis_data_prod
     driver: local

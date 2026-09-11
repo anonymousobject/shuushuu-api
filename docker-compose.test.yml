@@ -1,8 +1,5 @@
 # Test override - HTTPS with Let's Encrypt
 services:
-  mariadb:
-    container_name: shuushuu-mariadb-test
-
   redis:
     container_name: shuushuu-redis-test
 
@@ -99,9 +96,6 @@ services:
 
 volumes:
   # Override generic volume names with test-specific names for data isolation
-  mariadb_data:
-    name: mariadb_data_test
-    driver: local
   redis_data:
     name: redis_data_test
     driver: local

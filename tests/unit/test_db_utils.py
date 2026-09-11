@@ -196,8 +196,6 @@ class TestRunAlembicUpgrade:
             "run",
             "--no-project",
             "alembic",
-            "-c",
-            "alembic.pg.ini",
             "upgrade",
             "head",
         ]

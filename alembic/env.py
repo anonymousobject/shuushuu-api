@@ -1,61 +1,47 @@
+"""Alembic environment. Runs on the async asyncpg driver (this repo installs
+no sync Postgres driver), so migrations execute through run_sync. See
+ADR-0010 for the frozen baseline.
+"""
+
+import asyncio
 import logging
 import os
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
 
+# app.main pulls in every model module (the models package __init__ misses
+# some), populating SQLModel.metadata for autogenerate.
+import app.main  # noqa: F401, E402
 from alembic import context
 from app.config import settings
 
-# Import all models to populate SQLModel.metadata for autogenerate
-from app.models import *  # noqa: F403, F401
-
-# this is the Alembic Config object, which provides
-# access to the values within pyproject.toml [tool.alembic]
 config = context.config
 
 # URL precedence (highest to lowest):
 #   1. -x dbUrl=...     CLI override
-#   2. $ALEMBIC_DB_URL  programmatic override (used by tests/conftest.py
-#                       to point alembic at the test DB without touching
-#                       app.config or relying on alembic's internal
-#                       cmd_opts.x attribute)
-#   3. settings.DATABASE_URL_SYNC  the application's configured DB
+#   2. $ALEMBIC_DB_URL  programmatic override (tests/conftest.py)
+#   3. settings.DATABASE_URL  the application's configured DB (async URL —
+#      this chain runs on asyncpg, so the async URL is the right one)
 db_url = (
     context.get_x_argument(as_dictionary=True).get("dbUrl")
     or os.getenv("ALEMBIC_DB_URL")
-    or settings.DATABASE_URL_SYNC
+    or settings.DATABASE_URL
 )
 config.set_main_option("sqlalchemy.url", db_url)
 
-# Set up basic logging (config is now in pyproject.toml)
 logging.basicConfig(
     format="%(levelname)-5.5s [%(name)s] %(message)s",
     level=logging.INFO,
 )
 
-# Use SQLModel metadata (not the deprecated generated.py Base)
-# This is the source of truth for all table definitions
 target_metadata = SQLModel.metadata
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
+    """Run migrations in 'offline' mode (SQL script output)."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -68,27 +54,28 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
+def _run_migrations(connection: Connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
+    with context.begin_transaction():
+        context.run_migrations()
 
-    """
-    connectable = engine_from_config(
+
+async def run_migrations_online() -> None:
+    """Run migrations against a live database via the async engine."""
+    connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+    async with connectable.connect() as connection:
+        await connection.run_sync(_run_migrations)
 
-        with context.begin_transaction():
-            context.run_migrations()
+    await connectable.dispose()
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online()
+    asyncio.run(run_migrations_online())

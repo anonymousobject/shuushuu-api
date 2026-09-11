@@ -1,56 +1,11 @@
-# Docker Compose - MariaDB + Redis Version
+# Docker Compose - Postgres + Redis
 # Credentials are loaded from .env file - see .env.example for reference
 
 services:
-  # MariaDB Database
-  mariadb:
-    # Pin to prod's version (dedicated DB server runs MariaDB 11.8). Bump
-    # MARIADB_IMAGE in .env to move dev+test+pytest together; do not use a
-    # floating major tag (:11/:12) here — silent drift will bite prod.
-    image: ${MARIADB_IMAGE:-mariadb:11.8}
-    container_name: shuushuu-mariadb
-    environment:
-      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root_password}
-      MARIADB_DATABASE: ${MARIADB_DATABASE:-shuushuu}
-      MARIADB_USER: ${MARIADB_USER:-shuushuu}
-      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-dev_password}
-      # MARIADB_AUTO_UPGRADE: "1"
-    # innodb_buffer_pool_size=2G keeps the ~1GB images table cached so the / feed's
-    # pagination COUNT (a full scan of ~99% visible rows) runs from RAM, not disk.
-    # The deploy mem limit below is raised to fit the 2G pool + per-connection overhead.
-    command: >
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-      --max_connections=400
-      --innodb_buffer_pool_size=2G
-      --innodb_write_io_threads=8
-      --innodb_read_io_threads=8
-    ports:
-      - "3306:3306"
-    volumes:
-      - mariadb_data:/var/lib/mysql
-      # - ./docker/mariadb-init:/docker-entrypoint-initdb.d:ro  # Optional init scripts (read-only)
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 3G # must exceed innodb_buffer_pool_size (2G) + overhead
-        reservations:
-          cpus: '2'
-          memory: 1G
-
-  # Postgres — the transition target (ADR-0010, docs/postgres-cutover-runbook.md).
-  # Runs alongside mariadb for the dual window; api/arq pick their database via
-  # COMPOSE_DATABASE_URL below. In prod the DB tier is native/out-of-stack
+  # Postgres (ADR-0010). In prod the DB tier is native/out-of-stack
   # (docker-compose.prod.yml stubs it), so this service is dev-only in practice.
   postgres:
-    # Pin like mariadb above: bump POSTGRES_IMAGE in .env deliberately; a
+    # Pin the image: bump POSTGRES_IMAGE in .env deliberately; a
     # floating major tag drifts dev away from whatever prod's DB tier runs.
     image: ${POSTGRES_IMAGE:-postgres:18.6}
     container_name: shuushuu-postgres
@@ -58,14 +13,14 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-shuushuu}
       POSTGRES_USER: ${POSTGRES_USER:-shuushuu}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pg_dev_password}
-    # Mirrors the mariadb tuning rationale: keep the hot images table and the
+    # Keep the hot images table and the
     # feed COUNT working set in RAM.
     command: >
       -c shared_buffers=${POSTGRES_SHARED_BUFFERS:-2GB}
       -c effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}
       -c max_connections=200
     ports:
-      # Published like mariadb's 3306: dev is reached from other machines on
+      # Published: dev is reached from other machines on
       # the local network. Prod never runs this service (stubbed with
       # ports overridden empty in docker-compose.prod.yml).
       - "5432:5432"
@@ -138,10 +93,8 @@ services:
     env_file: .env
     environment:
       # Container-specific overrides (hostnames differ from host machine)
-      # COMPOSE_DATABASE_URL selects the database for the dual window (see
-      # docs/postgres-cutover-runbook.md): unset -> mariadb; set it to
-      # postgresql+asyncpg://user:pass@postgres:5432/db to run on Postgres.
-      - DATABASE_URL=${COMPOSE_DATABASE_URL:-mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4}
+      # Container-side hostname: .env's DATABASE_URL is written for the host.
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-shuushuu}:${POSTGRES_PASSWORD:-pg_dev_password}@postgres:5432/${POSTGRES_DB:-shuushuu}
       - REDIS_URL=redis://redis:6379/0
       - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
@@ -153,8 +106,6 @@ services:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
       - ./alembic:/app/alembic
-      - ./alembic_pg:/app/alembic_pg
-      - ./alembic.pg.ini:/app/alembic.pg.ini:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
@@ -164,7 +115,7 @@ services:
       # remap on 2026-07-24). Scripts must write run artifacts elsewhere (/tmp).
       - ./scripts:/app/scripts:ro
     depends_on:
-      mariadb:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -230,10 +181,8 @@ services:
     env_file: .env
     environment:
       # Container-specific overrides (hostnames differ from host machine)
-      # COMPOSE_DATABASE_URL selects the database for the dual window (see
-      # docs/postgres-cutover-runbook.md): unset -> mariadb; set it to
-      # postgresql+asyncpg://user:pass@postgres:5432/db to run on Postgres.
-      - DATABASE_URL=${COMPOSE_DATABASE_URL:-mysql+aiomysql://${MARIADB_USER:-shuushuu}:${MARIADB_PASSWORD:-shuushuu_password}@mariadb:3306/${MARIADB_DATABASE:-shuushuu}?charset=utf8mb4}
+      # Container-side hostname: .env's DATABASE_URL is written for the host.
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-shuushuu}:${POSTGRES_PASSWORD:-pg_dev_password}@postgres:5432/${POSTGRES_DB:-shuushuu}
       - REDIS_URL=redis://redis:6379/0
       - ARQ_REDIS_URL=redis://redis:6379/1
       - IQDB_HOST=iqdb
@@ -245,8 +194,6 @@ services:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
       - ./alembic:/app/alembic
-      - ./alembic_pg:/app/alembic_pg
-      - ./alembic.pg.ini:/app/alembic.pg.ini:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
@@ -258,7 +205,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      mariadb:
+      postgres:
         condition: service_healthy
       meilisearch:
         condition: service_healthy
@@ -312,10 +259,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - ADMINER_DEFAULT_SERVER=mariadb
+      - ADMINER_DEFAULT_SERVER=postgres
       - ADMINER_DESIGN=nette  # Nice theme
     depends_on:
-      - mariadb
+      - postgres
     restart: unless-stopped
 
   # Redis Commander (Redis management UI - optional)
@@ -331,8 +278,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  mariadb_data:
-    driver: local
   postgres_data:
     driver: local
   redis_data:

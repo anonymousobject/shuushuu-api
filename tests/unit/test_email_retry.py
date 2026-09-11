@@ -263,8 +263,7 @@ class TestSmtpConfigValidation:
 
         with pytest.raises(ValidationError) as exc_info:
             Settings(
-                DATABASE_URL="mysql+aiomysql://user:pass@localhost/db",
-                DATABASE_URL_SYNC="mysql+pymysql://user:pass@localhost/db",
+                DATABASE_URL="postgresql+asyncpg://user:pass@localhost/db",
                 SECRET_KEY="test-secret-key-min-32-characters-long",
                 SMTP_TLS=True,
                 SMTP_STARTTLS=True,
@@ -278,8 +277,7 @@ class TestSmtpConfigValidation:
         from app.config import Settings
 
         settings = Settings(
-            DATABASE_URL="mysql+aiomysql://user:pass@localhost/db",
-            DATABASE_URL_SYNC="mysql+pymysql://user:pass@localhost/db",
+            DATABASE_URL="postgresql+asyncpg://user:pass@localhost/db",
             SECRET_KEY="test-secret-key-min-32-characters-long",
             SMTP_TLS=True,
             SMTP_STARTTLS=False,
@@ -292,8 +290,7 @@ class TestSmtpConfigValidation:
         from app.config import Settings
 
         settings = Settings(
-            DATABASE_URL="mysql+aiomysql://user:pass@localhost/db",
-            DATABASE_URL_SYNC="mysql+pymysql://user:pass@localhost/db",
+            DATABASE_URL="postgresql+asyncpg://user:pass@localhost/db",
             SECRET_KEY="test-secret-key-min-32-characters-long",
             SMTP_TLS=False,
             SMTP_STARTTLS=True,
@@ -306,8 +303,7 @@ class TestSmtpConfigValidation:
         from app.config import Settings
 
         settings = Settings(
-            DATABASE_URL="mysql+aiomysql://user:pass@localhost/db",
-            DATABASE_URL_SYNC="mysql+pymysql://user:pass@localhost/db",
+            DATABASE_URL="postgresql+asyncpg://user:pass@localhost/db",
             SECRET_KEY="test-secret-key-min-32-characters-long",
             SMTP_TLS=False,
             SMTP_STARTTLS=False,
