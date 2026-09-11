@@ -16,11 +16,10 @@ Runs on every push and pull request to `main` and `dev` branches.
    - Ruff formatting (`ruff format --check`)
    - mypy type checking (continue-on-error: true)
 
-2. **Tests** - Full test suite with MySQL database
-   - Matrix strategy (Python 3.14)
-   - MariaDB 12 service container
-   - pytest with verbose output
-   - Test results artifacts
+2. **Tests** - Full test suite against Postgres
+   - Postgres 18 service container (tmpfs data dir)
+   - pytest with xdist, one database per worker
+   - Schema-sync check (models vs the alembic chain)
 
 3. **Security Scan** - Vulnerability scanning
    - pip-audit package check
@@ -38,14 +37,11 @@ The test job sets all required environment variables:
 
 ```yaml
 env:
-  # Required application settings
   SECRET_KEY: test-secret-key-for-ci-only-not-for-production-use-min-32-chars
-  DATABASE_URL: mysql+aiomysql://shuushuu:shuushuu_ci_password@127.0.0.1:3306/shuushuu_test?charset=utf8mb4
-  DATABASE_URL_SYNC: mysql+pymysql://shuushuu:shuushuu_ci_password@127.0.0.1:3306/shuushuu_test?charset=utf8mb4
-  # Test database URLs (used by conftest.py)
-  TEST_DATABASE_URL: mysql+aiomysql://shuushuu:shuushuu_ci_password@127.0.0.1:3306/shuushuu_test?charset=utf8mb4
-  TEST_DATABASE_URL_SYNC: mysql+pymysql://shuushuu:shuushuu_ci_password@127.0.0.1:3306/shuushuu_test?charset=utf8mb4
-  # Optional settings with defaults
+  # Same URL for app-level and test engines so nothing reaching
+  # AsyncSessionLocal picks the wrong backend.
+  DATABASE_URL: postgresql+asyncpg://shuushuu:shuushuu_ci_password@127.0.0.1:5432/shuushuu_test
+  TEST_DATABASE_URL: postgresql+asyncpg://shuushuu:shuushuu_ci_password@127.0.0.1:5432/shuushuu_test
   ENVIRONMENT: development
   DEBUG: "True"
   REDIS_URL: redis://localhost:6379/0
@@ -53,24 +49,24 @@ env:
 
 ### Database Service
 
-Tests run against a real MariaDB database using GitHub Actions service containers:
+Tests run against a real Postgres database using GitHub Actions service containers:
 
 ```yaml
 services:
-  mysql:
-    image: mariadb:11.8
+  postgres:
+    image: postgres:18
     env:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: shuushuu_test
-      MYSQL_USER: shuushuu
-      MYSQL_PASSWORD: shuushuu_ci_password
+      POSTGRES_USER: shuushuu
+      POSTGRES_PASSWORD: shuushuu_ci_password
+      POSTGRES_DB: shuushuu_test
     ports:
-      - 3306:3306
+      - 5432:5432
     options: >-
-      --health-cmd="healthcheck.sh --connect --innodb_initialized"
+      --health-cmd="pg_isready -U shuushuu -d shuushuu_test"
       --health-interval=10s
       --health-timeout=5s
       --health-retries=5
+      --tmpfs /var/lib/postgresql:rw
 ```
 
 ### UV Package Manager
@@ -108,15 +104,7 @@ This ensures consistent linting behavior across:
 
 ### Matrix Strategy
 
-The CI workflow supports testing against multiple Python versions:
-
-```yaml
-strategy:
-  matrix:
-    python-version: ['3.12']
-    # Add more versions if needed:
-    # python-version: ['3.11', '3.12', '3.13']
-```
+The test job runs on Python 3.14 only; there is no matrix.
 
 ## Local Testing
 
@@ -150,9 +138,6 @@ act pull_request
 # Run specific job
 act -j lint
 act -j test
-
-# Use custom Docker image (for MySQL support)
-act -j test -P ubuntu-latest=catthehacker/ubuntu:full-latest
 ```
 
 ## Workflow Status Badges
@@ -170,16 +155,14 @@ Add these badges to your `README.md`:
 This means required environment variables are missing:
 - `SECRET_KEY`
 - `DATABASE_URL`
-- `DATABASE_URL_SYNC`
 
 **Solution:** Ensure the workflow file has all required env vars set in the "Run tests" step.
 
 ### Tests fail with database connection errors
 
-1. Check MySQL service health in workflow logs
-2. Verify `TEST_DATABASE_URL` environment variable is set correctly
-3. Ensure health check is passing before tests run
-4. Check the "Wait for MySQL to be ready" step
+1. Check the Postgres service health in workflow logs
+2. Verify `TEST_DATABASE_URL` is set correctly
+3. Ensure the health check passes before tests run
 
 ### Ruff checking excluded directories
 
@@ -221,7 +204,7 @@ Recommended settings for `main` and `dev` branches:
 2. Configure:
    - ✅ Require status checks to pass before merging
    - ✅ Require branches to be up to date before merging
-   - Select status checks: `Lint & Format Check`, `Tests (Python 3.12)`, `Security Scan`
+   - Select status checks: `Lint & Format Check`, `Tests`, `Security Scan`
    - ✅ Require conversation resolution before merging
    - ✅ Do not allow bypassing the above settings
 
