@@ -4574,8 +4574,9 @@ class TestRateImage:
 @pytest.mark.api
 class TestFavoriteRatingSnapshotConflictRetry:
     """favorite/unfavorite/rate do read-modify-write UPDATEs on shared
-    images/users rows, so concurrent updates can trigger a Postgres deadlock
-    (SQLSTATE 40P01) — a double-click is enough. Each write path must retry
+    images/users rows, so concurrent updates triggered a MariaDB snapshot
+    conflict (ER_CHECKREAD) — a double-click was enough. On Postgres these
+    sites keep their retry per ADR-0004, so each write path must still retry
     on a fresh transaction instead of surfacing a 500.
 
     These exercise the real retry helper (app/core/db_retry.py); the deadlock is
@@ -4734,7 +4735,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
 @pytest.mark.api
 class TestTagWriteSnapshotConflictRetry:
     """Adding or removing a tag INSERTs into tag_history, whose tag_id/image_id/
-    user_id are FK columns — so InnoDB takes a locking read on each parent row.
+    user_id are FK columns — so Postgres takes a locking read on each parent row.
     The usage_count triggers on tag_links keep the parent `tags` row moving, and
     the image_posts trigger does the same to `users`, so concurrent tag writes
     can trigger a Postgres deadlock (SQLSTATE 40P01). Two users tagging at the

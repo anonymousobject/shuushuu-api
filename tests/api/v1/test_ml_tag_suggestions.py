@@ -1614,10 +1614,12 @@ class TestReviewMlTagSuggestions:
 @pytest.mark.api
 class TestReviewMlTagSuggestionsSnapshotConflictRetry:
     """A background ml_remap run rewriting ml_tag_suggestions rows while a
-    reviewer approves on the same image can hit a Postgres deadlock
-    (SQLSTATE 40P01) — reproduced on dev 2026-07-23. The review apply must
-    retry on a fresh transaction instead of surfacing a 500 (see
-    app/core/db_retry.py and app/services/ml_suggestion_review.py)."""
+    reviewer approves on the same image hit a MariaDB snapshot conflict
+    (ER_CHECKREAD) — observed on dev 2026-07-23, before the Postgres cutover.
+    The review apply must retry on a fresh transaction instead of surfacing a
+    500 (see app/core/db_retry.py and app/services/ml_suggestion_review.py);
+    this test injects the fabricated Postgres deadlock (SQLSTATE 40P01) error
+    to prove the retry contract still holds at this site."""
 
     @pytest.mark.needs_commit
     async def test_review_approve_retries_snapshot_conflict_and_succeeds(

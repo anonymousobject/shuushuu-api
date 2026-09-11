@@ -502,10 +502,10 @@ async def test_images_source_url_roundtrip(db_session: AsyncSession):
 
 
 class TestUploadSnapshotConflictRetry:
-    """Concurrent uploads trip a Postgres deadlock (SQLSTATE 40P01) on the temp-row
-    INSERT: two transactions take row locks in opposite orders and Postgres aborts one
-    to break the cycle. The upload route must retry on a fresh transaction instead
-    of surfacing a 500."""
+    """Concurrent uploads hit a MariaDB snapshot conflict (ER_CHECKREAD) on the
+    temp-row INSERT before the Postgres cutover. On Postgres this site keeps its
+    retry per ADR-0004; the test injects the fabricated Postgres deadlock
+    (SQLSTATE 40P01) error to prove the retry contract still holds here."""
 
     @pytest.mark.asyncio
     @pytest.mark.needs_commit

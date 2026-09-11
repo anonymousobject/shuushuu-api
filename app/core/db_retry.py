@@ -6,9 +6,9 @@ fresh one:
 **40P01 (deadlock_detected)** — two transactions take locks on the same rows or
 index entries in opposite orders and Postgres breaks the cycle by aborting one.
 Retrying is not a workaround here, it *is* the contract: Postgres expects the
-victim to replay. Confirmed site: flagging a repost (whose migration updates
-``ml_tag_suggestions`` across the original's tags) while the ML pipeline
-inserts suggestions for a neighbouring image.
+victim to replay. Site opted in after a MariaDB deadlock (#335): flagging a
+repost (whose migration updates ``ml_tag_suggestions`` across the original's
+tags) while the ML pipeline inserts suggestions for a neighbouring image.
 
 **40001 (serialization_failure)** — a write would break the transaction's
 snapshot under REPEATABLE READ or SERIALIZABLE. The app runs at the READ

@@ -2480,7 +2480,7 @@ class TestAdminApplyTagSuggestions:
 @pytest.mark.api
 class TestApplyTagSuggestionsSnapshotConflictRetry:
     """apply_tag_suggestions INSERTs into tag_links/tag_history, whose FK columns
-    make InnoDB locking-read the parent tags/images/users rows, and the
+    make Postgres locking-read the parent tags/images/users rows, and the
     usage_count trigger on tag_links keeps those parents moving. Concurrent
     tag writes can trigger a Postgres deadlock (SQLSTATE 40P01), so it must
     retry on a fresh transaction.

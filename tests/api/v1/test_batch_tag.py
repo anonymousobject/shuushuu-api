@@ -716,7 +716,7 @@ class TestBatchAddApprovesMlSuggestions:
 @pytest.mark.api
 class TestBatchTagSnapshotConflictRetry:
     """The batch paths INSERT into tag_links/tag_history, whose FK columns make
-    InnoDB locking-read the parent tags/images/users rows — and the usage_count
+    Postgres locking-read the parent tags/images/users rows — and the usage_count
     triggers on tag_links keep those parents moving. Concurrent tag writes
     can trigger a Postgres deadlock (SQLSTATE 40P01), so the batch must
     retry on a fresh transaction.

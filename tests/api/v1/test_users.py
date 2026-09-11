@@ -3593,10 +3593,13 @@ class TestHideRepostsSetting:
 
 
 class TestUserUpdateSnapshotConflictRetry:
-    """Concurrent PATCHes of one users row can hit a Postgres deadlock
-    (SQLSTATE 40P01). The update must retry on a fresh transaction instead
-    of surfacing a 500. (Observed in practice when the frontend's settings
-    auto-save fires several PATCHes back-to-back.)"""
+    """Concurrent PATCHes of one users row hit a MariaDB snapshot conflict
+    (ER_CHECKREAD), observed in practice when the frontend's settings
+    auto-save fires several PATCHes back-to-back. On Postgres, two PATCHes
+    of one row serialize on the row lock rather than deadlocking, but this
+    site keeps its retry per ADR-0004; the test injects the fabricated
+    Postgres deadlock (SQLSTATE 40P01) error to prove the retry contract
+    still holds here."""
 
     async def _make_user_and_token(self, db_session: AsyncSession) -> tuple[Users, str]:
         user = Users(

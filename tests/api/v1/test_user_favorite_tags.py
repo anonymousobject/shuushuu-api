@@ -421,9 +421,10 @@ class TestReorder:
     async def test_reorder_retries_on_transient_conflict(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """Same ADR-0004 coverage as a confirmed Postgres deadlock (SQLSTATE 40P01)
-        scenario: a transient conflict on the position UPDATEs is retried, and
-        the retried unit re-fetches its rows rather than reusing stale ones.
+        """Same ADR-0004 coverage as the other retry tests in this module: the
+        test injects the fabricated Postgres deadlock (SQLSTATE 40P01) error
+        so a transient conflict on the position UPDATEs is retried, and the
+        retried unit re-fetches its rows rather than reusing stale ones.
 
         needs_commit: same reason as the add-favorite retry tests — the
         seeded favorites must be durably committed to survive the internal
