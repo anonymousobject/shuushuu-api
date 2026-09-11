@@ -25,7 +25,7 @@ fi
 PG_TEST_URL="postgresql+asyncpg://${POSTGRES_USER:-shuushuu}:${POSTGRES_PASSWORD:-pg_dev_password}@localhost:5432/shuushuu_pytest"
 export TEST_DATABASE_URL="${TEST_DATABASE_URL:-$PG_TEST_URL}"
 export DATABASE_URL="$TEST_DATABASE_URL"
-echo "Running against Postgres ($TEST_DATABASE_URL)"
+echo "Running against Postgres ($(printf '%s' "$TEST_DATABASE_URL" | sed 's#://[^@]*@#://…@#'))"
 
 # Run pytest with all arguments passed through; default to the parallel
 # sweet spot (see tests/README.md) when none are given

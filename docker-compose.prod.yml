@@ -208,7 +208,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    # List form replaces base depends_on entirely (removes postgres dependency)
+    # List form adds redis; the base's postgres/meilisearch entries still merge
+    # in, which is why the postgres stub carries a passing healthcheck.
     depends_on:
       - redis
     restart: always
@@ -251,7 +252,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    # List form replaces base depends_on entirely (removes postgres dependency)
+    # List form adds redis; the base's postgres/meilisearch entries still merge
+    # in, which is why the postgres stub carries a passing healthcheck.
     depends_on:
       - redis
     restart: always

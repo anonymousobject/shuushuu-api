@@ -159,9 +159,8 @@ def setup_test_database():
     _setup_postgres_test_database()
 
     # Mirror application startup: sync the Permission enum into the perms
-    # table. The seed migration uses UPDATE statements that assume a
-    # populated legacy DB and so leaves the test DB short several enum perms.
-    # (On Postgres the create_all schema starts with an empty perms table.)
+    # table. The chain creates an empty perms table; the sync fills it with
+    # the enum's rows, as application startup does.
     import asyncio
 
     from app.core.permission_sync import sync_permissions
