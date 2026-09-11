@@ -22,7 +22,8 @@ from app.services.tag_search import SearchGates, gates_for
         ("neko", SearchGates(prefix_only=False, fuzzy=False, secondary=True)),
         ("sakura", SearchGates(prefix_only=False, fuzzy=True, secondary=True)),
         ("sakrua kinomto", SearchGates(prefix_only=False, fuzzy=True, secondary=True)),
-        ("yano_0o0", SearchGates(prefix_only=False, fuzzy=False, secondary=True)),
+        # Five letters (the o inside 0o0 counts), so the fuzzy branch runs.
+        ("yano_0o0", SearchGates(prefix_only=False, fuzzy=True, secondary=True)),
         ("21412050", SearchGates(prefix_only=False, fuzzy=False, secondary=True)),
     ],
 )

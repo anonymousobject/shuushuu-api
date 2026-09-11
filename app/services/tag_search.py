@@ -56,10 +56,6 @@ def _letter_count(token: str) -> int:
 def gates_for(query: str, tokens: list[str]) -> SearchGates:
     """Decide the branches for `query` (already stripped) and its whitespace tokens."""
     prefix_only = len(query) < 3 or _ALNUM_RUN.search(query) is None
-    fuzzy = (
-        not prefix_only
-        and any(_letter_count(token) >= MIN_FUZZY_LETTERS for token in tokens)
-        and not any("_" in token for token in tokens)
-    )
+    fuzzy = not prefix_only and any(_letter_count(token) >= MIN_FUZZY_LETTERS for token in tokens)
     secondary = not prefix_only and all(len(token) >= MIN_SECONDARY_TOKEN_CHARS for token in tokens)
     return SearchGates(prefix_only=prefix_only, fuzzy=fuzzy, secondary=secondary)
