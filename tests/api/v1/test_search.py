@@ -223,6 +223,25 @@ class TestExactIdentityLayer:
         assert first["total"] == second["total"]
         assert all(hit["matched_identity"] is None for hit in second["hits"])
 
+    async def test_identity_query_drops_alias_row_on_later_page(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # Ranking for "21412050": the prefix-titled theme first, then the alias row
+        # (title contains the id), then the owner (matched only through its URL).
+        # With limit=1 the alias row is page 2's only hit and must be dropped there too.
+        owner, aliases = await _seed_identity_owner(db_session, alias_titles=("Pixiv 21412050",))
+        await _seed(
+            db_session, Tags(title="21412050 fan club", type=TagType.THEME, usage_count=999)
+        )
+        response = await client.get(
+            "/api/v1/search", params={"q": "21412050", "limit": 1, "offset": 1}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert all(hit["tag_id"] != aliases[0].tag_id for hit in data["hits"])
+        assert all(hit["alias_of"] != owner.tag_id for hit in data["hits"])
+        assert all(hit["matched_identity"] is None for hit in data["hits"])
+
     async def test_mismatched_type_filter_suppresses_injection(
         self, client: AsyncClient, db_session: AsyncSession
     ):
