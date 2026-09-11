@@ -1,5 +1,5 @@
 """
-Application Configuration - MariaDB Version
+Application Configuration
 Uses Pydantic Settings for environment-based configuration
 """
 
@@ -14,7 +14,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore",  # Ignore extra env vars like MARIADB_* used by docker-compose
+        extra="ignore",  # Ignore extra env vars like POSTGRES_* used by docker-compose
     )
 
     # Application
@@ -43,10 +43,8 @@ class Settings(BaseSettings):
     )
     ALLOWED_HOSTS: str | list[str] = Field(default=["*"])
 
-    # MariaDB Database - UPDATED!
-    DATABASE_URL: str = "YOU MUST SET A VALID MARIADB DATABASE URL"
-    # Sync URL for Alembic migrations
-    DATABASE_URL_SYNC: str = "YOU MUST SET A VALID MARIADB SYNC DATABASE URL"
+    # Database (Postgres, asyncpg)
+    DATABASE_URL: str = "YOU MUST SET A VALID DATABASE URL"
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_ECHO: bool = False

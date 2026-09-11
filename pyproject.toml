@@ -12,10 +12,8 @@ authors = [
 dependencies = [
     # Core Framework
     "fastapi[standard]>=0.115.0,<=0.136.1", # cap lift: 0.122 capped starlette<0.51, pinning us to vulnerable starlette 0.50.0 (PYSEC-2026-161, fix in 1.0.1). 0.133+ supports starlette 1.0.0+; 0.136.1 is current latest.
-    # Database (MySQL)
+    # Database (Postgres)
     "sqlalchemy[asyncio]>=2.0.0",
-    "aiomysql>=0.2.0",
-    "pymysql>=1.1.0,<1.2", # <1.2: pymysql 1.2.0 changed Connection.ping() signature in a way sqlalchemy's aiomysql adapter doesn't handle, causing intermittent ASGI errors when the pool revalidates a stale connection.
     "alembic>=1.13.0",
     # Cache
     "redis>=5.0.0",
@@ -199,7 +197,6 @@ explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = [
-    "aiomysql.*",
     "arq.*",
     "PIL.*",
 ]
