@@ -9,7 +9,7 @@ Tests cover:
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
@@ -31,7 +31,7 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
-from tests.transient_conflict import _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _deadlock_error, _flaky_flush
 
 
 async def create_auth_user(
@@ -2480,10 +2480,10 @@ class TestAdminApplyTagSuggestions:
 @pytest.mark.api
 class TestApplyTagSuggestionsSnapshotConflictRetry:
     """apply_tag_suggestions INSERTs into tag_links/tag_history, whose FK columns
-    make InnoDB locking-read the parent tags/images/users rows, and the
-    usage_count trigger on tag_links keeps those parents moving. Under
-    innodb_snapshot_isolation a concurrent tag write aborts this one with
-    ER_CHECKREAD (errno 1020), so it must retry on a fresh snapshot.
+    make Postgres locking-read the parent tags/images/users rows, and the
+    usage_count trigger on tag_links keeps those parents moving. Concurrent
+    tag writes can trigger a Postgres deadlock (SQLSTATE 40P01), so it must
+    retry on a fresh transaction.
 
     The applied_tags/removed_tags accumulators must be rebuilt per attempt, or a
     retry reports each tag once per attempt.
@@ -2493,7 +2493,7 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
     async def test_apply_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 is retried; each tag is applied and reported once."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) is retried; each tag is applied and reported once."""
         admin, password = await create_auth_user(db_session, username="applyretry1", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
         image = await create_test_image(db_session, admin.user_id)
@@ -2524,7 +2524,7 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
         image_id: int = image.image_id
         suggestion_ids = [s.suggestion_id for s in suggestions]
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await client.post(
                 f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",
@@ -2550,7 +2550,7 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
     async def test_apply_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A persistent 1020 propagates after a bounded number of attempts."""
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         admin, password = await create_auth_user(db_session, username="applyretry2", admin=True)
         await grant_permission(db_session, admin.user_id, "report_manage")
         image = await create_test_image(db_session, admin.user_id)
@@ -2574,8 +2574,8 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
         report_id: int = report.report_id
         suggestion_id: int = suggestion.suggestion_id
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
+        with flush_patch, pytest.raises(DBAPIError):
             await client.post(
                 f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",
                 json={"approved_suggestion_ids": [suggestion_id]},

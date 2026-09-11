@@ -1614,16 +1614,18 @@ class TestReviewMlTagSuggestions:
 @pytest.mark.api
 class TestReviewMlTagSuggestionsSnapshotConflictRetry:
     """A background ml_remap run rewriting ml_tag_suggestions rows while a
-    reviewer approves on the same image trips MariaDB ER_CHECKREAD (errno
-    1020) under innodb_snapshot_isolation — reproduced on dev 2026-07-23. The
-    review apply must retry on a fresh snapshot instead of surfacing a 500
-    (see app/core/db_retry.py and app/services/ml_suggestion_review.py)."""
+    reviewer approves on the same image hit a MariaDB snapshot conflict
+    (ER_CHECKREAD) — observed on dev 2026-07-23, before the Postgres cutover.
+    The review apply must retry on a fresh transaction instead of surfacing a
+    500 (see app/core/db_retry.py and app/services/ml_suggestion_review.py);
+    this test injects the fabricated Postgres deadlock (SQLSTATE 40P01) error
+    to prove the retry contract still holds at this site."""
 
     @pytest.mark.needs_commit
     async def test_review_approve_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 on the review commit is retried and the approval succeeds.
+        """A transient Postgres deadlock (40P01) on the review commit is retried and the approval succeeds.
 
         needs_commit: the retry performs a real session rollback for a fresh
         snapshot; under the default SAVEPOINT isolation that rollback would
@@ -1632,8 +1634,7 @@ class TestReviewMlTagSuggestionsSnapshotConflictRetry:
         """
         from unittest.mock import patch
 
-        import pymysql
-        from sqlalchemy.exc import OperationalError
+        from tests.transient_conflict import _deadlock_error
 
         user = Users(
             username="snapshotreview",
@@ -1686,14 +1687,7 @@ class TestReviewMlTagSuggestionsSnapshotConflictRetry:
         async def flaky_commit(self, *args, **kwargs):
             calls.append(1)
             if len(calls) == 1:
-                raise OperationalError(
-                    "UPDATE ml_tag_suggestions ...",
-                    None,
-                    pymysql.err.OperationalError(
-                        1020,
-                        "Record has changed since last read in table 'ml_tag_suggestions'",
-                    ),
-                )
+                raise _deadlock_error()
             await real_commit(self, *args, **kwargs)
 
         access_token = create_access_token(user_id=user.user_id)

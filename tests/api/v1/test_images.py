@@ -13,7 +13,7 @@ from decimal import Decimal
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
@@ -22,7 +22,7 @@ from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import Groups, UserGroups
 from app.models.tag_history import TagHistory
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from tests.transient_conflict import _db_error, _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _db_error, _deadlock_error, _flaky_flush
 
 
 @pytest.mark.api
@@ -4574,11 +4574,12 @@ class TestRateImage:
 @pytest.mark.api
 class TestFavoriteRatingSnapshotConflictRetry:
     """favorite/unfavorite/rate do read-modify-write UPDATEs on shared
-    images/users rows, so under innodb_snapshot_isolation a concurrent commit
-    can abort them with ER_CHECKREAD (errno 1020) — a double-click is enough.
-    Each write path must retry on a fresh snapshot instead of surfacing a 500.
+    images/users rows, so concurrent updates triggered a MariaDB snapshot
+    conflict (ER_CHECKREAD) — a double-click was enough. On Postgres these
+    sites keep their retry per ADR-0004, so each write path must still retry
+    on a fresh transaction instead of surfacing a 500.
 
-    These exercise the real retry helper (app/core/db_retry.py); the 1020 is
+    These exercise the real retry helper (app/core/db_retry.py); the deadlock is
     injected into the wrapped unit's explicit flush, mirroring the upload path's
     TestUploadSnapshotConflictRetry."""
 
@@ -4590,10 +4591,10 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the favorite counter write is retried and succeeds.
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the favorite counter write is retried and succeeds.
 
-        needs_commit: the retry performs a real session rollback to obtain a
-        fresh snapshot; under the default SAVEPOINT isolation that rollback
+        needs_commit: the retry performs a real transaction rollback to obtain a
+        fresh transaction; under the default SAVEPOINT isolation that rollback
         would unwind the fixture's committed image/user rows too, which can't
         happen in production where they are durably committed.
         """
@@ -4603,7 +4604,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.refresh(image)
         initial_favorites = image.favorites
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
@@ -4628,7 +4629,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the unfavorite counter write is retried and succeeds."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the unfavorite counter write is retried and succeeds."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
@@ -4641,7 +4642,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.refresh(image)
         favorites_before = image.favorites
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.delete(
                 f"/api/v1/images/{image.image_id}/favorite"
@@ -4668,13 +4669,13 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the rating write is retried and the rating succeeds."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the rating write is retried and the rating succeeds."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(
                 f"/api/v1/images/{image.image_id}/rating?rating=8"
@@ -4693,7 +4694,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         db_session: AsyncSession,
         sample_image_data: dict,
     ):
-        """A persistent 1020 propagates after a bounded number of attempts.
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts.
 
         needs_commit: each retry rolls back for a fresh snapshot, so the image
         must be durably committed to survive re-fetch across attempts (as in
@@ -4704,8 +4705,8 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error())
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
         assert len(calls) == 3  # bounded: no infinite retry loop
@@ -4716,14 +4717,16 @@ class TestFavoriteRatingSnapshotConflictRetry:
         db_session: AsyncSession,
         sample_image_data: dict,
     ):
-        """Non-1020 database errors propagate immediately with no retry."""
+        """Non-deadlock database errors propagate immediately with no retry."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(
+            100, _db_error("23505", "duplicate key value violates unique constraint")
+        )
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
         assert len(calls) == 1  # not retried
@@ -4732,13 +4735,13 @@ class TestFavoriteRatingSnapshotConflictRetry:
 @pytest.mark.api
 class TestTagWriteSnapshotConflictRetry:
     """Adding or removing a tag INSERTs into tag_history, whose tag_id/image_id/
-    user_id are FK columns — so InnoDB takes a locking read on each parent row.
+    user_id are FK columns — so Postgres takes a locking read on each parent row.
     The usage_count triggers on tag_links keep the parent `tags` row moving, and
-    the image_posts trigger does the same to `users`, so under
-    innodb_snapshot_isolation a concurrent tag write aborts this one with
-    ER_CHECKREAD (errno 1020). Two users tagging at the same moment is enough.
+    the image_posts trigger does the same to `users`, so concurrent tag writes
+    can trigger a Postgres deadlock (SQLSTATE 40P01). Two users tagging at the
+    same moment is enough.
 
-    Both paths must retry on a fresh snapshot instead of surfacing a 500.
+    Both paths must retry on a fresh transaction instead of surfacing a 500.
 
     Each test captures image_id/tag_id as ints before calling the endpoint: the
     app under test shares this session (conftest overrides get_db with
@@ -4754,7 +4757,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A transient 1020 during the tag add is retried and the tag lands once.
+        """A transient Postgres deadlock (SQLSTATE 40P01) during the tag add is retried and the tag lands once.
 
         needs_commit: the retry performs a real session rollback to obtain a
         fresh snapshot; under the default SAVEPOINT isolation that rollback
@@ -4776,7 +4779,7 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
@@ -4810,7 +4813,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A transient 1020 during the tag removal is retried and the link goes."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) during the tag removal is retried and the link goes."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4829,7 +4832,7 @@ class TestTagWriteSnapshotConflictRetry:
         db_session.add(TagLinks(image_id=image_id, tag_id=tag_id, user_id=sample_user.user_id))
         await db_session.commit()
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.delete(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
@@ -4861,7 +4864,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A persistent 1020 propagates after a bounded number of attempts."""
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4877,8 +4880,8 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert len(calls) == 3  # bounded: no infinite retry loop
@@ -4890,7 +4893,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """Non-1020 database errors propagate immediately with no retry."""
+        """Non-deadlock database errors propagate immediately with no retry."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4906,8 +4909,10 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(
+            100, _db_error("23505", "duplicate key value violates unique constraint")
+        )
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert len(calls) == 1  # not retried

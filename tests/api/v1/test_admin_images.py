@@ -342,7 +342,7 @@ class TestImageStatusChange:
         """A deadlock (#335) is retried, not surfaced as a 500.
 
         The repost migration and the ML pipeline lock ml_tag_suggestions rows
-        and index gaps in opposite orders, so InnoDB rolls one of them back.
+        and index gaps in opposite orders, so Postgres rolls one of them back.
         The retry replays the whole unit on a fresh transaction; because the
         first attempt persisted nothing, the migration must land exactly once —
         no double-counted tags, no duplicated audit row.

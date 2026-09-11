@@ -1,32 +1,29 @@
-"""Retry helper for transient MariaDB write conflicts. See ADR-0004.
+"""Retry helper for transient Postgres write conflicts. See ADR-0004.
 
 Two different errors, one remedy — end the transaction and replay the unit on a
 fresh one:
 
-**1020 (ER_CHECKREAD)** — with ``innodb_snapshot_isolation=ON`` (MariaDB 11.8),
-a locking statement that meets row/index versions committed *after* the
-transaction's snapshot aborts instead of returning stale data. The snapshot is
-pinned by the request's first read — the auth query — so the conflict window
-spans nearly the whole request, and any two requests writing the same rows (or
-inserting into the same index positions) concurrently can collide. Confirmed
-sites: the upload temp-row INSERT into ``images``; concurrent ``PATCH
-/users/me`` UPDATEs of one ``users`` row; ``ml_raw_predictions`` ingest racing
-the suggestion pipeline.
+**40P01 (deadlock_detected)** — two transactions take locks on the same rows or
+index entries in opposite orders and Postgres breaks the cycle by aborting one.
+Retrying is not a workaround here, it *is* the contract: Postgres expects the
+victim to replay. Site opted in after a MariaDB deadlock (#335): flagging a
+repost (whose migration updates ``ml_tag_suggestions`` across the original's
+tags) while the ML pipeline inserts suggestions for a neighbouring image.
 
-**1213 (ER_LOCK_DEADLOCK)** — two transactions take locks on the same rows or
-index gaps in opposite orders and InnoDB breaks the cycle by rolling one back.
-Retrying is not a workaround here, it *is* the contract: MariaDB expects the
-victim to replay. Confirmed site: flagging a repost (whose migration updates
-``ml_tag_suggestions`` across the original's tags) while the ML pipeline
-inserts suggestions for a neighbouring image.
+**40001 (serialization_failure)** — a write would break the transaction's
+snapshot under REPEATABLE READ or SERIALIZABLE. The app runs at the READ
+COMMITTED default, so this is rare, but Postgres documents the same remedy
+for it, so it takes the same path.
 
-Both leave the transaction dead, so both need the same rollback-and-replay.
-1205 (ER_LOCK_WAIT_TIMEOUT) is deliberately NOT included: it fires only after
-``innodb_lock_wait_timeout`` seconds, so replaying it multiplies an already
-pathological request latency rather than resolving a momentary collision.
+Both leave the transaction aborted, so both need the same rollback-and-replay.
+55P03 (lock_not_available, raised when ``lock_timeout`` elapses) is
+deliberately NOT included: it fires only after the timeout, so replaying it
+multiplies an already pathological request latency rather than resolving a
+momentary collision.
 
 A savepoint is NOT sufficient for either — rolling back to a savepoint keeps
-the transaction (and its snapshot) alive, so the conflict would recur.
+the transaction (and its snapshot) alive, and Postgres refuses further
+statements in an aborted transaction anyway.
 
 Usage — wrap a *self-contained transactional unit* and retry it:
 
@@ -51,35 +48,36 @@ Rules for the callable:
 
 This is deliberately opt-in per write path rather than request-replay
 middleware: replaying a whole request would re-run its non-DB side effects.
+
+The SQLSTATE lives on ``exc.orig.sqlstate``: SQLAlchemy's asyncpg adapter
+copies it there when it translates the driver error, and wraps the result as
+a plain ``DBAPIError`` (not ``OperationalError``), so that is what is caught.
 """
 
 from collections.abc import Awaitable, Callable
 
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-SNAPSHOT_CONFLICT_ERRNO = 1020
-DEADLOCK_ERRNO = 1213
-TRANSIENT_CONFLICT_ERRNOS = frozenset({SNAPSHOT_CONFLICT_ERRNO, DEADLOCK_ERRNO})
+DEADLOCK_SQLSTATE = "40P01"
+SERIALIZATION_FAILURE_SQLSTATE = "40001"
+TRANSIENT_CONFLICT_SQLSTATES = frozenset({DEADLOCK_SQLSTATE, SERIALIZATION_FAILURE_SQLSTATE})
 TRANSIENT_CONFLICT_ATTEMPTS = 3
 
 
-def _conflict_errno(exc: OperationalError) -> int | None:
-    """The MariaDB errno `exc` carries, or None when it carries none."""
-    args = getattr(exc.orig, "args", None)
-    if not args:
-        return None
-    errno = args[0]
-    return errno if isinstance(errno, int) else None
+def _conflict_sqlstate(exc: DBAPIError) -> str | None:
+    """The SQLSTATE `exc` carries, or None when the driver error has none."""
+    sqlstate = getattr(exc.orig, "sqlstate", None)
+    return sqlstate if isinstance(sqlstate, str) else None
 
 
-def is_transient_conflict(exc: OperationalError) -> bool:
+def is_transient_conflict(exc: DBAPIError) -> bool:
     """True when `exc` is a conflict a fresh transaction can resolve."""
-    return _conflict_errno(exc) in TRANSIENT_CONFLICT_ERRNOS
+    return _conflict_sqlstate(exc) in TRANSIENT_CONFLICT_SQLSTATES
 
 
 async def retry_on_transient_conflict[T](
@@ -98,7 +96,7 @@ async def retry_on_transient_conflict[T](
     for attempt in range(1, attempts + 1):
         try:
             return await fn()
-        except OperationalError as e:
+        except DBAPIError as e:
             if not is_transient_conflict(e) or attempt == attempts:
                 raise
             await db.rollback()
@@ -106,6 +104,6 @@ async def retry_on_transient_conflict[T](
                 "transient_conflict_retry",
                 what=what,
                 attempt=attempt,
-                errno=_conflict_errno(e),
+                sqlstate=_conflict_sqlstate(e),
             )
     raise AssertionError("unreachable")  # pragma: no cover

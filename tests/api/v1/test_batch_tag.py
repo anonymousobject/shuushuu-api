@@ -3,7 +3,7 @@
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
@@ -15,7 +15,7 @@ from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from tests.transient_conflict import _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _deadlock_error, _flaky_flush
 
 
 async def _create_user_with_tag_permission(
@@ -716,10 +716,10 @@ class TestBatchAddApprovesMlSuggestions:
 @pytest.mark.api
 class TestBatchTagSnapshotConflictRetry:
     """The batch paths INSERT into tag_links/tag_history, whose FK columns make
-    InnoDB locking-read the parent tags/images/users rows — and the usage_count
-    triggers on tag_links keep those parents moving. Under
-    innodb_snapshot_isolation a concurrent tag write aborts the batch with
-    ER_CHECKREAD (errno 1020), so it must retry on a fresh snapshot.
+    Postgres locking-read the parent tags/images/users rows — and the usage_count
+    triggers on tag_links keep those parents moving. Concurrent tag writes
+    can trigger a Postgres deadlock (SQLSTATE 40P01), so the batch must
+    retry on a fresh transaction.
 
     The added/removed accumulators must be rebuilt per attempt: a retry that
     reuses lists from the failed attempt would report every pair twice.
@@ -732,7 +732,7 @@ class TestBatchTagSnapshotConflictRetry:
     async def test_batch_add_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 is retried; each pair is added and reported once."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) is retried; each pair is added and reported once."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
         images = await _create_test_images(db_session, user, 2)
@@ -741,7 +741,7 @@ class TestBatchTagSnapshotConflictRetry:
         image_ids = [img.image_id for img in images]
         tag_id: int = tags[0].tag_id
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await client.post(
                 "/api/v1/tags/batch",
@@ -769,7 +769,7 @@ class TestBatchTagSnapshotConflictRetry:
     async def test_batch_remove_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 is retried; each pair is removed and reported once."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) is retried; each pair is removed and reported once."""
         user = await _create_user_with_tag_permission(db_session, ["image_tag_remove"])
         token = create_access_token(user.id)
         images = await _create_test_images(db_session, user, 2)
@@ -782,7 +782,7 @@ class TestBatchTagSnapshotConflictRetry:
             db_session.add(TagLinks(image_id=image_id, tag_id=tag_id, user_id=user.user_id))
         await db_session.commit()
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await client.post(
                 "/api/v1/tags/batch",
@@ -808,7 +808,7 @@ class TestBatchTagSnapshotConflictRetry:
     async def test_batch_add_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A persistent 1020 propagates after a bounded number of attempts."""
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         user = await _create_user_with_tag_permission(db_session)
         token = create_access_token(user.id)
         images = await _create_test_images(db_session, user, 1)
@@ -817,8 +817,8 @@ class TestBatchTagSnapshotConflictRetry:
         image_ids = [img.image_id for img in images]
         tag_id: int = tags[0].tag_id
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
+        with flush_patch, pytest.raises(DBAPIError):
             await client.post(
                 "/api/v1/tags/batch",
                 json={"action": "add", "tag_ids": [tag_id], "image_ids": image_ids},

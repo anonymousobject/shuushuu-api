@@ -14,7 +14,7 @@ from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.models.user_favorite import UserFavoriteLinks, UserFavoriteTags
-from tests.transient_conflict import _flaky_commit, _snapshot_conflict_error
+from tests.transient_conflict import _deadlock_error, _flaky_commit
 
 CHAR_A = 9801  # linked to SRC_A and SRC_B (two combos)
 SRC_A = 9803
@@ -268,7 +268,7 @@ class TestAddFavorite:
     async def test_add_tag_retries_on_transient_conflict_and_lands_once(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """ADR-0004: a transient snapshot conflict at commit is retried, not
+        """ADR-0004: a transient Postgres deadlock (SQLSTATE 40P01) at commit is retried, not
         surfaced as a 500 — and the retried unit re-derives its INSERT rather
         than replaying a stale one, so exactly one row lands.
 
@@ -279,7 +279,7 @@ class TestAddFavorite:
         ids = await _seed(db_session)
         headers = await _login(client)
 
-        commit_patch, calls = _flaky_commit(1, _snapshot_conflict_error("user_favorite_tags"))
+        commit_patch, calls = _flaky_commit(1, _deadlock_error())
         with commit_patch:
             response = await client.post(
                 "/api/v1/users/me/favorite-tags", json={"tag_id": SRC_A}, headers=headers
@@ -308,7 +308,7 @@ class TestAddFavorite:
         ids = await _seed(db_session)
         headers = await _login(client)
 
-        commit_patch, calls = _flaky_commit(1, _snapshot_conflict_error("user_favorite_links"))
+        commit_patch, calls = _flaky_commit(1, _deadlock_error())
         with commit_patch:
             response = await client.post(
                 "/api/v1/users/me/favorite-tags",
@@ -421,9 +421,10 @@ class TestReorder:
     async def test_reorder_retries_on_transient_conflict(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """Same ADR-0004 coverage as user_profile_update's confirmed 1020
-        site: a transient conflict on the position UPDATEs is retried, and
-        the retried unit re-fetches its rows rather than reusing stale ones.
+        """Same ADR-0004 coverage as the other retry tests in this module: the
+        test injects the fabricated Postgres deadlock (SQLSTATE 40P01) error
+        so a transient conflict on the position UPDATEs is retried, and the
+        retried unit re-fetches its rows rather than reusing stale ones.
 
         needs_commit: same reason as the add-favorite retry tests — the
         seeded favorites must be durably committed to survive the internal
@@ -433,7 +434,7 @@ class TestReorder:
         await _favorite_all(db_session, ids)
         headers = await _login(client)
 
-        commit_patch, calls = _flaky_commit(1, _snapshot_conflict_error("user_favorite_links"))
+        commit_patch, calls = _flaky_commit(1, _deadlock_error())
         with commit_patch:
             response = await client.put(
                 "/api/v1/users/me/favorite-tags/order",

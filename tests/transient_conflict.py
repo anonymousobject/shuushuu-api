@@ -1,12 +1,11 @@
-"""Helpers for testing the MariaDB transient-conflict retry (app/core/db_retry.py).
+"""Helpers for testing the Postgres transient-conflict retry (app/core/db_retry.py).
 
 Two errors get the same rollback-and-replay treatment:
 
-- ER_CHECKREAD (1020), raised under ``innodb_snapshot_isolation=ON`` when a
-  locking statement meets a row version committed after this transaction's
-  snapshot rather than reading the stale version.
-- ER_LOCK_DEADLOCK (1213), raised when InnoDB breaks a lock cycle by rolling
-  one of the transactions back.
+- 40P01 deadlock_detected: two transactions took row locks in opposite orders
+  and Postgres aborted one to break the cycle.
+- 40001 serialization_failure: a write would break the transaction's snapshot
+  (REPEATABLE READ / SERIALIZABLE; rare under the READ COMMITTED default).
 
 Write paths wrap their transactional unit in ``retry_on_transient_conflict`` so
 either one is retried on a fresh transaction instead of surfacing a 500.
@@ -18,35 +17,35 @@ requests.
 
 from unittest.mock import patch
 
-import pymysql
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.dialects.postgresql.asyncpg import AsyncAdapt_asyncpg_dbapi
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _db_error(errno: int, message: str) -> OperationalError:
-    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
-    return OperationalError("UPDATE ...", None, pymysql.err.OperationalError(errno, message))
+def _db_error(sqlstate: str, message: str) -> DBAPIError:
+    """Build the error SQLAlchemy raises for a Postgres error with `sqlstate`.
 
-
-def _snapshot_conflict_error(table: str = "images") -> OperationalError:
-    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD).
-
-    `table` is the table the conflict is reported against. For the tag write
-    paths that is `tag_history`: its INSERT takes a locking read on each FK
-    parent (tags/images/users), and ER_CHECKREAD names the child table's
-    handler, not the parent row that actually moved.
+    The asyncpg adapter translates asyncpg's PostgresError into its own dbapi
+    Error, copying the SQLSTATE onto .sqlstate/.pgcode, and SQLAlchemy wraps
+    that as a plain DBAPIError (not OperationalError) — which is what the
+    helper must catch.
     """
-    return _db_error(1020, f"Record has changed since last read in table '{table}'")
+    orig = AsyncAdapt_asyncpg_dbapi.Error(message)
+    orig.sqlstate = orig.pgcode = sqlstate
+    return DBAPIError("UPDATE ...", None, orig)
 
 
-def _deadlock_error() -> OperationalError:
-    """The error MariaDB raises when it picks this transaction as the deadlock
-    victim (ER_LOCK_DEADLOCK). Carries no table name — InnoDB reports the cycle,
-    not a single row."""
-    return _db_error(1213, "Deadlock found when trying to get lock; try restarting transaction")
+def _deadlock_error() -> DBAPIError:
+    """The error Postgres raises for the transaction it aborts to break a lock cycle."""
+    return _db_error("40P01", "deadlock detected")
 
 
-def _flaky_commit(fail_times: int, error: OperationalError):
+def _serialization_error() -> DBAPIError:
+    """The error Postgres raises when a write would break the transaction's snapshot."""
+    return _db_error("40001", "could not serialize access due to concurrent update")
+
+
+def _flaky_commit(fail_times: int, error: DBAPIError):
     """Patch AsyncSession.commit to raise `error` for the first `fail_times`
     calls, then delegate to the real commit.
 
@@ -67,7 +66,7 @@ def _flaky_commit(fail_times: int, error: OperationalError):
     return patch.object(AsyncSession, "commit", commit), calls
 
 
-def _flaky_flush(fail_times: int, error: OperationalError):
+def _flaky_flush(fail_times: int, error: DBAPIError):
     """Patch AsyncSession.flush to raise `error` for the first `fail_times`
     calls, then delegate to the real flush. Only a route's explicit
     ``await db.flush()`` goes through AsyncSession.flush (autoflush runs inside
@@ -85,7 +84,7 @@ def _flaky_flush(fail_times: int, error: OperationalError):
     return patch.object(AsyncSession, "flush", flush), calls
 
 
-def _flaky_flush_nth(n: int, error: OperationalError):
+def _flaky_flush_nth(n: int, error: DBAPIError):
     """Like `_flaky_flush`, but fails only the `n`th explicit flush (1-indexed).
 
     Use this to aim the conflict at a specific write within a route that
