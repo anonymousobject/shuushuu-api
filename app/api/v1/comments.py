@@ -58,7 +58,8 @@ async def list_comments(
             pattern="^(all_words|natural|boolean|like)$",
             description=(
                 "Search mode: all_words (default, every term required), "
-                "natural language fulltext (any term), boolean fulltext, or LIKE"
+                "like (whole string as one substring); natural and boolean "
+                "are accepted and behave as all_words"
             ),
         ),
     ] = None,
@@ -98,8 +99,9 @@ async def list_comments(
     - `/comments?user_id=5` - All comments by user 5
     - `/comments?search_text=happy birthday` - Comments containing BOTH words
     - `/comments?search_text=awesome&search_mode=like` - Simple search using LIKE
-    - `/comments?search_text=awesome&search_mode=natural` - Any-term match
-    - `/comments?search_text=+great -bad&search_mode=boolean` - Boolean fulltext
+    - `/comments?search_text=awesome&search_mode=natural` - behaves as all_words
+    - `/comments?search_text=+great -bad&search_mode=boolean` - behaves as
+      all_words; `+` is ignored, `-bad` still excludes
     - `/comments?date_from=2024-01-01` - Comments from 2024 onwards
     """
     # Build base query - exclude deleted comments

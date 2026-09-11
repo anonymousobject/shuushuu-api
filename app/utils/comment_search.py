@@ -93,9 +93,8 @@ def like_pattern(term: str) -> str:
 def parse_comment_search(raw: str) -> CommentSearchQuery:
     """Split a user's search string into positive and negated substring terms.
 
-    A quoted phrase stays one term (punctuation and repeated spaces inside it
-    are not significant: it is re-joined from its words); a bare term
-    contributes one entry per word.
+    A quoted phrase stays one term (the text between the quotes is matched
+    literally); a bare term contributes one entry per word.
     """
     parsed = CommentSearchQuery()
 
@@ -107,7 +106,7 @@ def parse_comment_search(raw: str) -> CommentSearchQuery:
 
         target = parsed.not_like_terms if negated else parsed.like_terms
         if term.startswith('"') and term.endswith('"') and len(term) >= 2:
-            phrase = " ".join(_WORD_RE.findall(term[1:-1]))
+            phrase = term[1:-1].strip()
             if phrase:
                 target.append(phrase)
             continue

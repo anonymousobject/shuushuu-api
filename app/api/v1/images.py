@@ -490,7 +490,7 @@ async def list_images(
         Query(description="Comma-separated user IDs; exclude images any of them commented on"),
     ] = None,
     commentsearch: Annotated[
-        str | None, Query(description="Full-text search in comment text")
+        str | None, Query(description="Substring search in comment text")
     ] = None,
     commentsearch_mode: Annotated[
         str | None,
@@ -498,7 +498,8 @@ async def list_images(
             pattern="^(all_words|natural|boolean|like)$",
             description=(
                 "Search mode: all_words (default, every term required), "
-                "natural language fulltext (any term), boolean fulltext, or LIKE"
+                "like (whole string as one substring); natural and boolean "
+                "are accepted and behave as all_words"
             ),
         ),
     ] = None,
@@ -564,7 +565,7 @@ async def list_images(
       comments collectively, so an image with a "happy" comment and a separate "sad"
       comment still matches. This is what keeps the image-level filter in agreement
       with the per-comment filter on /comments.
-    - `/images?commentsearch=awesome&commentsearch_mode=natural` - Any-term match
+    - `/images?commentsearch=awesome&commentsearch_mode=natural` - behaves as all_words
     - `/images?hascomments=true` - Images that have comments
     - `/images?hascomments=false` - Images with no comments
     - `/images?exclude_user_id=5,6` - Hide uploads by users 5 and 6

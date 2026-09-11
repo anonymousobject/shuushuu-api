@@ -39,6 +39,11 @@ class TestParseCommentSearch:
         parsed = parse_comment_search('"happy birthday"')
         assert parsed.like_terms == ["happy birthday"]
 
+    def test_quoted_phrase_keeps_its_punctuation(self):
+        # A phrase is matched literally: "C.C." must not become "C C".
+        assert parse_comment_search('"C.C."').like_terms == ["C.C."]
+        assert parse_comment_search('"K-ON!" yui').like_terms == ["K-ON!", "yui"]
+
     def test_phrase_and_bare_word_combine(self):
         parsed = parse_comment_search('"happy birthday" yui')
         assert parsed.like_terms == ["happy birthday", "yui"]
@@ -191,8 +196,7 @@ class TestIsTooShortToIndex:
         assert not parse_comment_search("").is_too_short_to_index
 
     def test_threshold_follows_min_token_size(self):
-        # Tuning innodb_ft_min_token_size must not leave this guard refusing
-        # terms the index can now see.
+        # Lowering MIN_TOKEN_SIZE automatically narrows this guard.
         from app.utils.comment_search import MIN_TOKEN_SIZE
 
         just_short = "a" * (MIN_TOKEN_SIZE - 1)
