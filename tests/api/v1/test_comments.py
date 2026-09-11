@@ -152,7 +152,7 @@ class TestListComments:
         assert data["total"] == 1
         assert "awesome" in data["comments"][0]["post_text"].lower()
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_search_text_defaults_to_all_words(
         self, client: AsyncClient, db_session: AsyncSession
     ):

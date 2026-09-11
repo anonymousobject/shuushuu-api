@@ -2582,10 +2582,9 @@ async def add_tag_to_image(
     # (tags, images, users) and the usage_count trigger on tag_links keeps those
     # parent rows moving. This opted into the retry after a MariaDB snapshot
     # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
-    # where a concurrent tag write now aborts this one with a deadlock
-    # (SQLSTATE 40P01) — reported against the child table. Retry on a fresh
-    # snapshot instead of surfacing a 500 (see app/core/db_retry.py). The unit
-    # re-fetches its rows.
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry on a
+    # fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows.
     async def _apply_tag_add() -> int:
         # Verify tag exists and resolve aliases
         tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -2760,9 +2759,9 @@ async def rate_image(
     # The rating INSERT/UPDATE and the image stats UPDATE are read-modify-write
     # on shared rows. This opted into the retry after a MariaDB snapshot
     # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
-    # where a concurrent commit now aborts them with a deadlock (SQLSTATE
-    # 40P01). Retry on a fresh snapshot instead of surfacing a 500 (see
-    # app/core/db_retry.py). The unit re-fetches its rows.
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry on
+    # a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows.
     async def _apply_rating() -> tuple[str, RatingStats]:
         # Verify image exists
         image = await db.get(Images, image_id)
@@ -2835,10 +2834,10 @@ async def favorite_image(
     # Incrementing image.favorites and current_user.favorites is read-modify-write
     # on shared rows. This opted into the retry after a MariaDB snapshot
     # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
-    # where a concurrent commit (a double-click is enough) now aborts the
-    # UPDATE with a deadlock (SQLSTATE 40P01). Retry on a fresh snapshot
-    # instead of surfacing a 500 (see app/core/db_retry.py). The unit
-    # re-fetches its rows and re-checks idempotency so a retry re-decides.
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry on
+    # a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows and re-checks idempotency so a retry
+    # re-decides.
     async def _apply_favorite() -> tuple[bool, int]:
         # Verify image exists
         image = await db.get(Images, image_id)
@@ -2917,9 +2916,9 @@ async def unfavorite_image(
     # Decrementing image.favorites and current_user.favorites is read-modify-write
     # on shared rows. This opted into the retry after a MariaDB snapshot
     # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
-    # where a concurrent commit now aborts the UPDATE with a deadlock
-    # (SQLSTATE 40P01). Retry on a fresh snapshot instead
-    # of surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its rows.
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry on
+    # a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows.
     async def _apply_unfavorite() -> int:
         # Verify image exists
         image = await db.get(Images, image_id)

@@ -51,7 +51,7 @@ class TestListTags:
         assert data["total"] >= 5
         assert "tags" in data
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_search_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags by name."""
         # Create tags with different names
@@ -97,10 +97,10 @@ class TestListTags:
     async def test_search_tags_with_hyphens(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags containing hyphens like 'Deep-Blue Series'.
 
-        Postgres matches this with a case-insensitive substring match per word,
-        so the query must split on the same boundaries as the title for
-        "deep-blue" to match. Under MariaDB fulltext, "Deep-Blue" became tokens
-        "Deep" and "Blue", which is why this case exists.
+        Postgres matches this with a case-insensitive substring match per word;
+        search.split() splits on whitespace only, so "deep-blue" stays one
+        ILIKE '%deep-blue%' substring. Under MariaDB fulltext, "Deep-Blue"
+        became tokens "Deep" and "Blue", which is why this case exists.
         """
         tag1 = Tags(title="Deep-Blue Series", desc="A series", type=TagType.THEME)
         tag2 = Tags(title="Unrelated Tag", desc="Other", type=TagType.THEME)
@@ -634,7 +634,7 @@ class TestTagListSorting:
         response = await client.get("/api/v1/tags?sort_by=usage_count&sort_order=asc")
         assert response.status_code == 200
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_explicit_sort_by_overrides_search_relevance(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -657,7 +657,7 @@ class TestTagListSorting:
         assert matching[0]["title"] == "match partial"
         assert matching[1]["title"] == "match"
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_search_without_sort_by_uses_relevance(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -829,7 +829,7 @@ class TestAliasOfName:
                 assert tag["alias_of_name"] == "sakura kinomoto"
                 assert tag["is_alias"] is True
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_alias_of_name_with_search(self, client: AsyncClient, db_session: AsyncSession):
         """Test that alias_of_name works correctly with full-text search."""
         # Create original tag
@@ -908,13 +908,13 @@ class TestAliasOfName:
 
 
 @pytest.mark.api
-@pytest.mark.needs_commit  # FULLTEXT search requires committed data
+@pytest.mark.needs_commit  # needs_commit: search runs against committed rows
 class TestFuzzyTagSearch:
     """Tests for fuzzy/full-text search on tags.
 
     Tests the hybrid search strategy:
     - Short queries (< 3 chars): LIKE prefix matching
-    - Long queries (>= 3 chars): FULLTEXT word-order independent matching
+    - Long queries (>= 3 chars): ILIKE per-word AND matching, word-order independent
 
     This solves the Japanese character name problem:
     Searching "sakura kinomoto" should find "kinomoto sakura".
@@ -966,7 +966,7 @@ class TestFuzzyTagSearch:
         await db_session.commit()
 
         # Search for "sakura kinomoto" (3+ chars, multiple words)
-        # Uses FULLTEXT with +sakura* +kinomoto* (AND logic - both words required)
+        # Uses ILIKE '%sakura%' AND ILIKE '%kinomoto%' (both words required)
         # So it matches tags with BOTH "sakura" AND "kinomoto", regardless of order
         # But NOT "sakura mitsuki" since it lacks "kinomoto"
         response = await client.get("/api/v1/tags?search=sakura%20kinomoto")
@@ -989,7 +989,7 @@ class TestFuzzyTagSearch:
         """Test that full-text search requires whole words (not partial word matches).
 
         Postgres matches via a case-insensitive substring match per word, so
-        there is no minimum word length. Under MariaDB, FULLTEXT had a minimum
+        there is no minimum word length. Under MariaDB, fulltext had a minimum
         word length (usually 3-4 chars) and only matched complete words, not
         arbitrary substrings, which is why this case exists.
         """
@@ -1004,11 +1004,10 @@ class TestFuzzyTagSearch:
         response = await client.get("/api/v1/tags?search=school")
         assert response.status_code == 200
         data = response.json()
-        # FULLTEXT matches complete words, so "school" should find:
-        # - "school uniform" (contains word "school")
-        # - "schoolgirl" (contains word "schoolgirl", not "school")
-        # - "scholar" (may or may not match depending on word stemming)
-        # In BOOLEAN mode, it's more strict - just ensure we get some results
+        # ILIKE '%school%' matches "school" as a substring, so "school" should find:
+        # - "school uniform" (contains the substring "school")
+        # - "schoolgirl" (also contains the substring "school")
+        # - "scholar" does not match (no "school" substring)
         assert data["total"] >= 1  # At least "school uniform"
         titles = {tag["title"] for tag in data["tags"]}
         assert "school uniform" in titles
@@ -1029,8 +1028,9 @@ class TestFuzzyTagSearch:
         assert response.status_code == 200
         data = response.json()
 
-        # FULLTEXT should find "cat ears" (exact word "cat")
-        # May or may not find "category" depending on word stemming in BOOLEAN mode
+        # ILIKE '%cat%' finds "cat ears" (contains the substring "cat")
+        # It also matches "category tags" (contains the substring "cat"),
+        # since ILIKE has no word-boundary concept
         assert data["total"] >= 1
         assert data["tags"][0]["title"] == "cat ears"  # Exact match should be first
 
@@ -1104,9 +1104,8 @@ class TestFuzzyTagSearch:
         assert data["total"] >= 1, "Search for 'The Forgotten' should return results"
         titles = {tag["title"] for tag in data["tags"]}
         assert "The Forgotten Field" in titles, "Should find 'The Forgotten Field'"
-        # Should NOT include "Forgotten Dreams" (lacks "The" if we're being strict about matching)
-        # Actually after fix, we filter out "The" as a stopword, so "Forgotten" is what's searched
-        # This means "Forgotten Dreams" might also be returned - that's acceptable
+        # Should NOT include "Forgotten Dreams": ILIKE per-word AND requires both
+        # "The" and "Forgotten" as substrings, and "Forgotten Dreams" lacks "The"
 
     async def test_search_with_short_terms(self, client: AsyncClient, db_session: AsyncSession):
         """Test that search works when query contains very short terms (< 3 chars).
@@ -1163,7 +1162,7 @@ class TestFuzzyTagSearch:
     async def test_search_with_fulltext_special_characters(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that fulltext boolean operators are stripped from search terms.
+        """Test that fulltext boolean operator characters are matched literally.
 
         Postgres's substring match treats all characters literally, including
         operator punctuation, so no boolean sanitization is needed. Under
@@ -1177,14 +1176,14 @@ class TestFuzzyTagSearch:
         db_session.add_all([tag1, tag2])
         await db_session.commit()
 
-        # Search for "C++" - the ++ should be stripped, searching for just "C"
-        # which is too short (< 3 chars), so it falls back to LIKE
+        # Search for "C++" - no stripping happens; the whole token "C++" is one
+        # ILIKE '%C++%' substring match
         response = await client.get("/api/v1/tags?search=C%2B%2B")  # URL encoded C++
         assert response.status_code == 200
         data = response.json()
 
         # Should not crash and should return some results
-        # After stripping ++, "C" is too short, falls back to LIKE "C++%"
+        # ILIKE '%C++%' matches "C++ Programming"
         assert data["total"] >= 1
 
     async def test_hybrid_search_with_filters(self, client: AsyncClient, db_session: AsyncSession):
@@ -1223,7 +1222,7 @@ class TestFuzzyTagSearch:
 
         Postgres's substring match escapes underscore for LIKE (it would
         otherwise match any single character as a wildcard), so 'yano_0o0'
-        matches literally. Under MariaDB InnoDB FULLTEXT, underscore was a
+        matches literally. Under MariaDB InnoDB fulltext, underscore was a
         word character, not a delimiter, so 'yano_0o0' was indexed as a single
         token, which is why this case exists.
         """

@@ -38,9 +38,9 @@ async def batch_add_tags(
     # (tags, images, users) and the usage_count trigger on tag_links keeps those
     # parent rows moving. This opted into the retry after a MariaDB snapshot
     # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
-    # where a concurrent tag write now aborts this batch with a deadlock
-    # (SQLSTATE 40P01). Retry the whole fetch-through-commit unit on a fresh
-    # snapshot (see app/core/db_retry.py).
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry the
+    # whole fetch-through-commit unit on a fresh snapshot (see
+    # app/core/db_retry.py).
     # The accumulators are built inside the unit: reusing lists from a failed
     # attempt would report every pair once per attempt.
     async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:

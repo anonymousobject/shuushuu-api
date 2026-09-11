@@ -35,7 +35,7 @@ class UserBase(SQLModel):
     """
 
     # Basic information
-    # CITEXT (ADR-0008): login and uniqueness are case-insensitive on both dialects
+    # CITEXT (ADR-0008): login and uniqueness are case-insensitive
     username: str = Field(max_length=30, sa_type=CITEXT)
 
     # Public profile

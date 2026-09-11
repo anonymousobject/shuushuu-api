@@ -33,7 +33,7 @@ class TagBase(SQLModel):
     """
 
     # Basic information
-    # CITEXT (ADR-0008): title matching/dedupe is case-insensitive on both dialects
+    # CITEXT (ADR-0008): title matching/dedupe is case-insensitive
     title: str | None = Field(default=None, max_length=255, sa_type=CITEXT)
     desc: str | None = Field(default=None, max_length=200)
     type: int = Field(

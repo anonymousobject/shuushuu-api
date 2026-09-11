@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from sqlalchemy import text as sql_text
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 
@@ -16,13 +15,8 @@ from app.config import settings
 # Create declarative base for models
 Base = declarative_base()
 
-# Ensure all connections use UTC timezone for consistent datetime handling;
-# each driver spells the session setting differently.
-_connect_args: dict[str, Any] = (
-    {"server_settings": {"timezone": "UTC"}}
-    if make_url(settings.DATABASE_URL).get_backend_name() == "postgresql"
-    else {"init_command": "SET time_zone = '+00:00'"}
-)
+# Ensure all connections use UTC timezone for consistent datetime handling.
+_connect_args: dict[str, Any] = {"server_settings": {"timezone": "UTC"}}
 
 # Create async engine
 engine = create_async_engine(

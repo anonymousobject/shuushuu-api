@@ -1190,7 +1190,7 @@ async def add_favorite_tag(
         #
         # That retry does not close every race: two concurrent POSTs for
         # DIFFERENT tag_ids insert into different rows, so neither locks the
-        # other and no 1020 fires — both can still pass this cap check before
+        # other and no conflict fires — both can still pass this cap check before
         # either commits. That residual race is accepted: same-user only,
         # overshoot bounded to one per in-flight request, and positions
         # self-heal on the next reorder (which rewrites 0..n-1).
@@ -1345,7 +1345,7 @@ async def reorder_favorite_tags(
     # transaction, which expires ORM instances (including current_user).
     user_id: int = current_user.user_id
 
-    # Same shape as user_profile_update's confirmed 1020 site: a
+    # Same shape as user_profile_update's confirmed snapshot-conflict site: a
     # read-then-UPDATE-many-then-commit unit on rows this user exclusively
     # owns. A double-submit (or a reorder racing an add/remove touching the
     # same rows) opted into the retry after a MariaDB snapshot conflict

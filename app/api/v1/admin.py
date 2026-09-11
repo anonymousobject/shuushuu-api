@@ -1532,9 +1532,9 @@ async def apply_tag_suggestions(
     # (tags, images, users) and the usage_count triggers on tag_links keep those
     # parent rows moving. This opted into the retry after a MariaDB snapshot
     # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
-    # where a concurrent tag write now aborts this one with a deadlock
-    # (SQLSTATE 40P01). Retry the whole fetch-through-commit unit on a fresh
-    # snapshot (see app/core/db_retry.py).
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry the
+    # whole fetch-through-commit unit on a fresh snapshot (see
+    # app/core/db_retry.py).
     # Every row is re-fetched inside the unit — the rollback between attempts
     # expires the report and suggestion instances this mutates — and the
     # accumulators are rebuilt so a retry cannot report a tag once per attempt.

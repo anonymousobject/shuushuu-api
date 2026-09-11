@@ -429,7 +429,7 @@ async def get_tag_suggestion_stats(
     acceptance_rate_col = case(
         # cast to Numeric: the float literal makes the expression double
         # precision, and Postgres has no round(double precision, int) —
-        # two-arg round needs numeric. MariaDB reads it as DECIMAL(10,4),
+        # two-arg round needs numeric. MariaDB read it as DECIMAL(10,4),
         # same rounding either way.
         (
             decided_col > 0,

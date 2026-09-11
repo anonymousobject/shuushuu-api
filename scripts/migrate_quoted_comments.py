@@ -397,6 +397,7 @@ if __name__ == "__main__":
     import sys
     import warnings
 
+    # The script never disposes its engine, so pooled connections finalize after the loop closes; the warning is noise.
     warnings.filterwarnings("ignore", message=".*Event loop is closed.*")
 
     parser = argparse.ArgumentParser(

@@ -289,7 +289,7 @@ async def engine():
 
 
 async def _truncate_all_tables(engine) -> None:
-    """Truncate all tables for tests that need real commits (e.g., FULLTEXT search)."""
+    """Truncate all tables for tests that need real commits (e.g., search through the API)."""
     # One statement, no FK-checks toggle: TRUNCATE accepts a table list and
     # CASCADE covers the FK graph. alembic_version survives.
     async with engine.begin() as conn:
@@ -358,26 +358,27 @@ async def db_session(engine, request) -> AsyncGenerator[AsyncSession]:
        - Uses SAVEPOINT for commits (data never actually committed)
        - Rolls back entire transaction after test (instant cleanup)
        - ~4x faster than truncation
-       - NOTE: FULLTEXT search won't work (requires committed data)
+       - NOTE: tests that need committed rows (e.g. search through the API)
+         won't see their data
 
     2. @pytest.mark.needs_commit: Real commit + truncate isolation
        - Uses real database commits
        - Truncates all tables after test (slower but necessary)
-       - Required for FULLTEXT search tests
+       - Required for tests that need committed rows (e.g. search through the API)
 
     Usage:
         @pytest.mark.needs_commit
-        async def test_fulltext_search(db_session):
-            # This test needs real commits for FULLTEXT to work
+        async def test_search(db_session):
+            # This test needs real commits for its rows to be visible
             ...
     """
     from sqlalchemy import event
 
-    # Check if test needs real commits (e.g., for FULLTEXT search)
+    # Check if test needs real commits (e.g., search through the API)
     needs_commit = request.node.get_closest_marker("needs_commit") is not None
 
     if needs_commit:
-        # Mode 2: Real commits + truncate cleanup (for FULLTEXT search tests)
+        # Mode 2: Real commits + truncate cleanup (for tests that need committed rows)
         async_session_maker = async_sessionmaker(
             engine,
             class_=AsyncSession,

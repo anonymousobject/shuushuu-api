@@ -90,7 +90,7 @@ class TagExternalLinks(TagExternalLinkBase, table=True):
     # (site, external_id) is added by a later migration, after backfill
     # conflicts are hand-resolved (see the design doc).
     # CITEXT (ADR-0008): identity lookups and the future uniqueness guard are
-    # case-insensitive on both dialects.
+    # case-insensitive.
     site: str | None = Field(default=None, max_length=32, sa_type=CITEXT)
     external_id: str | None = Field(default=None, max_length=128, sa_type=CITEXT)
 
