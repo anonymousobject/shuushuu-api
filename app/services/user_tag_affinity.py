@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 _PUBLIC = list(PUBLIC_IMAGE_STATUSES)
 # Advisory-lock names are server-global; scope to the current database so
 # pytest-xdist per-worker DBs get independent locks while production's single
-# DB still serializes cron + manual runs (same reasoning as tag_cooccurrence).
+# DB still serializes cron + manual runs.
 _LOCK_PREFIX = "user_tag_affinity_refresh"
 
 # Each axis contributes only when it has enough support on its own; NULL-safe
@@ -121,6 +121,10 @@ async def refresh_user_tag_affinity(
         )
         await _exec(db, "ALTER TABLE _taste_vl ADD PRIMARY KEY (image_id, tag_id)")
         await _exec(db, "CREATE INDEX ON _taste_vl (tag_id)")
+        # Temp tables carry no statistics: autovacuum can't see another
+        # session's temp tables, and CREATE TABLE AS collects none either.
+        # Without ANALYZE, the planner full-scans _taste_vl twice per batch.
+        await _exec(db, "ANALYZE _taste_vl")
 
         # 2. visible tagged images, per-canonical-tag counts, and N
         await _exec(
@@ -128,12 +132,14 @@ async def refresh_user_tag_affinity(
             "CREATE TEMP TABLE _taste_vi ON COMMIT DROP AS SELECT DISTINCT image_id FROM _taste_vl",
         )
         await _exec(db, "ALTER TABLE _taste_vi ADD PRIMARY KEY (image_id)")
+        await _exec(db, "ANALYZE _taste_vi")
         await _exec(
             db,
             "CREATE TEMP TABLE _taste_vc ON COMMIT DROP AS "
             "SELECT tag_id, COUNT(*) AS vc FROM _taste_vl GROUP BY tag_id",
         )
         await _exec(db, "ALTER TABLE _taste_vc ADD PRIMARY KEY (tag_id)")
+        await _exec(db, "ANALYZE _taste_vc")
         n = (await db.execute(text("SELECT COUNT(*) FROM _taste_vi"))).scalar() or 0
 
         # 3. eligible users (raw event counts)
@@ -150,6 +156,7 @@ async def refresh_user_tag_affinity(
             {"min_events": min_events},
         )
         await _exec(db, "ALTER TABLE _taste_elig ADD PRIMARY KEY (user_id)")
+        await _exec(db, "ANALYZE _taste_elig")
 
         # 4. deduped positive pool (favorites ∪ uploads), visible only
         await _exec(
@@ -168,6 +175,7 @@ async def refresh_user_tag_affinity(
             """,
         )
         await _exec(db, "ALTER TABLE _taste_pool ADD PRIMARY KEY (user_id, image_id)")
+        await _exec(db, "ANALYZE _taste_pool")
 
         # 5. per-user scalars (pool size, mean rating over visible images)
         await _exec(
@@ -183,6 +191,7 @@ async def refresh_user_tag_affinity(
             """,
         )
         await _exec(db, "ALTER TABLE _taste_users ADD PRIMARY KEY (user_id)")
+        await _exec(db, "ANALYZE _taste_users")
 
         # 6. clear the live table inside the transaction: readers keep the old
         #    rows until commit, and the schema (PK, lookup index, defaults)

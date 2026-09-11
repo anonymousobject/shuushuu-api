@@ -12,8 +12,9 @@ async def refresh_user_tag_affinity_job(ctx: dict[str, Any]) -> None:
     Nightly refresh of the user_tag_affinity table (05:00 UTC).
 
     Skips silently if another refresh is already running (advisory lock not
-    acquired). ~30+ minutes on dev-scale data (5.7M favorites), batched to
-    keep MariaDB memory bounded.
+    acquired). Batched by user-id range: the unbatched join across favorites,
+    ratings, and uploads is tens of millions of intermediate rows. Duration on
+    prod-scale data is recorded in the PR that ported this job to Postgres.
     """
     from app.config import settings
     from app.core.database import get_async_session
