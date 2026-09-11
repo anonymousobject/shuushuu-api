@@ -225,10 +225,11 @@ class TestSearchCorpus:
         assert "sakura" in found
 
     async def test_empty_query_lists_all_by_effective_usage(self, db_session: AsyncSession):
-        await seed_corpus(db_session)
+        by_title = await seed_corpus(db_session)
         result = await search_tags(db_session, "", limit=2)
         assert result.total >= len(CORPUS)
         assert len(result.tag_ids) == 2
+        assert titles_for(by_title, result) == ["long hair", "short hair"]
 
     async def test_expanding_long_query_does_not_error(self, db_session: AsyncSession):
         # 128 sharp-s characters fold to 256 characters; levenshtein caps at 255.
