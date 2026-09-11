@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.db_retry import retry_on_transient_conflict
 
 # needs_commit: users 1-3 are really committed, so both sessions see them.
-pytestmark = [pytest.mark.integration, pytest.mark.needs_commit, pytest.mark.postgres_only]
+pytestmark = [pytest.mark.integration, pytest.mark.needs_commit]
 
 
 async def test_deadlock_victim_replays_and_succeeds(db_session, engine):

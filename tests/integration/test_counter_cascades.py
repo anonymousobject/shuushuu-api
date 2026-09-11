@@ -3,9 +3,9 @@
 The selling point of the trigger port (app/core/pg_triggers.py, PR #353):
 deleting an image cascades away its tag_links/favorites/posts rows, and on
 Postgres the counter triggers fire for those cascaded deletes. InnoDB does
-not fire triggers on cascades, so on MariaDB these counters silently drift on
-every image deletion — which is why this test is postgres_only: it asserts
-the *correct* behavior, which only Postgres exhibits.
+not fire triggers on cascades, so on MariaDB these counters silently drifted
+on every image deletion; this test asserts the *correct* behavior, which
+only Postgres exhibits.
 """
 
 from datetime import UTC, datetime
@@ -18,7 +18,7 @@ from app.models import Comments, Images, Tags, Users
 from app.models.favorite import Favorites
 from app.models.tag_link import TagLinks
 
-pytestmark = [pytest.mark.integration, pytest.mark.postgres_only]
+pytestmark = [pytest.mark.integration]
 
 
 async def _counters(db: AsyncSession, user_id: int, tag_id: int) -> dict[str, int]:

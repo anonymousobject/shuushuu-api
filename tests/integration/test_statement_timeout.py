@@ -1,35 +1,30 @@
 """Statement-timeout circuit breaker.
 
 These run against the real database because the whole point is what the server
-does with its statement-time limit (`max_statement_time` on MariaDB,
-`statement_timeout` on Postgres) -- a stub would prove nothing. The probes are
-per-dialect; the property under test is the same on both.
+does with its statement-time limit (`statement_timeout` on Postgres) -- a stub
+would prove nothing.
 """
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import statement_timeout
-from tests.conftest import IS_POSTGRES
 
 # pg_settings.setting reports statement_timeout in ms as a bare number, which
 # sidesteps parsing the unit-suffixed SHOW output.
-_SLEEP_2 = text("SELECT pg_sleep(2)") if IS_POSTGRES else text("SELECT SLEEP(2)")
+_SLEEP_2 = text("SELECT pg_sleep(2)")
 # asyncpg surfaces the cancelled statement as QueryCanceledError, which
-# SQLAlchemy wraps as a generic DBAPIError rather than OperationalError.
-_TIMEOUT_ERROR: type[Exception] = DBAPIError if IS_POSTGRES else OperationalError
+# SQLAlchemy wraps as a generic DBAPIError.
+_TIMEOUT_ERROR: type[Exception] = DBAPIError
 
 
 async def _session_limit(db: AsyncSession) -> float:
-    if IS_POSTGRES:
-        result = await db.execute(
-            text("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'")
-        )
-        return float(result.scalar() or 0) / 1000.0
-    result = await db.execute(text("SELECT @@SESSION.max_statement_time"))
-    return float(result.scalar() or 0)
+    result = await db.execute(
+        text("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'")
+    )
+    return float(result.scalar() or 0) / 1000.0
 
 
 class TestStatementTimeout:

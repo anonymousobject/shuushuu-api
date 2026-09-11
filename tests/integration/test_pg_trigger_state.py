@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pg_triggers import disabled_triggers
 
-pytestmark = [pytest.mark.integration, pytest.mark.postgres_only]
+pytestmark = [pytest.mark.integration]
 
 
 async def test_reports_nothing_on_a_healthy_schema(db_session: AsyncSession) -> None:

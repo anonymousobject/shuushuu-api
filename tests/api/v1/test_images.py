@@ -3253,55 +3253,6 @@ class TestCommentFilters:
         assert response.status_code == 200
 
     @pytest.mark.needs_commit  # FULLTEXT search requires committed data
-    @pytest.mark.mariadb_only  # asserts MySQL boolean-mode operator semantics
-    async def test_commentsearch_boolean_mode_passes_operators_through(
-        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
-    ):
-        """`boolean` mode hands raw operators to MySQL rather than parsing them.
-
-        Pinned because it was the only mode with no coverage. A trailing wildcard is
-        the discriminator: MySQL expands `wombat*` to the token "wombats", whereas
-        the all_words parser strips `*` as a non-word character and searches for the
-        exact token "wombat", which does not match. So this test fails if boolean
-        mode ever falls through to the default — asserted explicitly below.
-        """
-        from app.models import Comments
-
-        user = Users(
-            username="boolmode_user",
-            email="boolmode@test.com",
-            password="testpass",
-            password_type="bcrypt",
-            salt="testsalt0000017",
-        )
-        db_session.add(user)
-        await db_session.flush()
-
-        wanted = Images(**{**sample_image_data, "user_id": user.user_id})
-        db_session.add(wanted)
-        await db_session.flush()
-        db_session.add(
-            Comments(
-                image_id=wanted.image_id,
-                user_id=user.user_id,
-                post_text="wombats appreciation thread",
-            )
-        )
-        await db_session.commit()
-
-        boolean_hit = await client.get(
-            "/api/v1/images?commentsearch=wombat*&commentsearch_mode=boolean"
-        )
-        assert boolean_hit.status_code == 200
-        assert wanted.image_id in {img["image_id"] for img in boolean_hit.json()["images"]}
-
-        # The same string under the default mode must NOT match, or the test above
-        # would pass even if boolean mode stopped being wired up at all.
-        default_miss = await client.get("/api/v1/images?commentsearch=wombat*")
-        assert default_miss.status_code == 200
-        assert wanted.image_id not in {img["image_id"] for img in default_miss.json()["images"]}
-
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
     async def test_commentsearch_ignores_soft_deleted_comments(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3466,43 +3417,6 @@ class TestCommentFilters:
         """`@` and `)` are ERROR 1064 in boolean mode if passed through raw."""
         response = await client.get("/api/v1/images?commentsearch=happy@birthday)")
         assert response.status_code == 200
-
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
-    @pytest.mark.mariadb_only  # asserts MySQL natural-language-mode OR semantics
-    async def test_commentsearch_natural_mode_still_available(
-        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
-    ):
-        """The old OR behaviour remains reachable via an explicit mode."""
-        from app.models import Comments
-
-        user = Users(
-            username="natural_user",
-            email="natural@test.com",
-            password="testpass",
-            password_type="bcrypt",
-            salt="testsalt0000013",
-        )
-        db_session.add(user)
-        await db_session.flush()
-
-        image = Images(**{**sample_image_data, "user_id": user.user_id})
-        db_session.add(image)
-        await db_session.flush()
-        db_session.add(
-            Comments(
-                image_id=image.image_id,
-                user_id=user.user_id,
-                post_text="such a happy picture",
-            )
-        )
-        await db_session.commit()
-
-        response = await client.get(
-            "/api/v1/images?commentsearch=happy birthday&commentsearch_mode=natural"
-        )
-        assert response.status_code == 200
-        returned = {img["image_id"] for img in response.json()["images"]}
-        assert image.image_id in returned
 
     async def test_commentsearch_unsearchable_query_returns_zero_rows(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
