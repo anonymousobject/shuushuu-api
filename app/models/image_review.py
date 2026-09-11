@@ -24,7 +24,7 @@ from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
 from app.config import DeactivationReason, ReviewOutcome, ReviewStatus
-from app.models.types import UnsignedInt, UtcDateTime
+from app.models.types import UtcDateTime
 
 
 class ImageReviewBase(SQLModel):
@@ -90,7 +90,7 @@ class ImageReviews(ImageReviewBase, table=True):
     # Primary key (INT UNSIGNED in the legacy schema, as are all FKs to it)
     review_id: int | None = Field(
         default=None,
-        sa_column=Column(UnsignedInt, primary_key=True, autoincrement=True),
+        sa_column=Column(Integer, primary_key=True, autoincrement=True),
     )
 
     # Image under review - CASCADE delete when image is deleted
@@ -106,7 +106,7 @@ class ImageReviews(ImageReviewBase, table=True):
     source_report_id: int | None = Field(
         default=None,
         sa_column=Column(
-            UnsignedInt,
+            Integer,
             ForeignKey("image_reports.report_id", ondelete="SET NULL", onupdate="CASCADE"),
             nullable=True,
         ),

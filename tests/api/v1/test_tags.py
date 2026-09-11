@@ -5136,8 +5136,7 @@ class TestAddTagLink:
         self, client: AsyncClient, db_session: AsyncSession
     ):
         """The duplicate-identity guard matches case-insensitively (ADR-0008:
-        `site`/`external_id` are ci_string -- citext on Postgres, the default
-        collation on MariaDB). Real pixiv ids are digit-only so this can't
+        `site`/`external_id` are citext). Real pixiv ids are digit-only so this can't
         happen through today's parser, but a future alphanumeric site's ids
         could collide on case, and the guard is a DB comparison -- it must
         hold regardless of what the parser produces. Only `parse_identity_url`

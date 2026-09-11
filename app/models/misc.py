@@ -241,7 +241,7 @@ class Donations(DonationBase, table=True):
             onupdate="CASCADE",
             name="fk_donations_user_id",
         ),
-        Index("idx_date", "date"),
+        Index("donations_idx_date", "date"),
     )
 
     # SQLModel requires a primary key, but original table has none

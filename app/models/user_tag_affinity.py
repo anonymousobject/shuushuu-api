@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import Column, Float, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
-from app.models.types import UnsignedInt, UtcDateTime
+from app.models.types import UtcDateTime
 
 
 class UserTagAffinity(SQLModel, table=True):
@@ -22,8 +22,8 @@ class UserTagAffinity(SQLModel, table=True):
 
     __table_args__ = (Index("idx_user_tag_affinity_lookup", "user_id", "affinity"),)
 
-    user_id: int = Field(sa_column=Column(UnsignedInt, primary_key=True, nullable=False))
-    tag_id: int = Field(sa_column=Column(UnsignedInt, primary_key=True, nullable=False))
+    user_id: int = Field(sa_column=Column(Integer, primary_key=True, nullable=False))
+    tag_id: int = Field(sa_column=Column(Integer, primary_key=True, nullable=False))
     # positive pool = favorites ∪ uploads, deduped; pool_cnt is the lift support
     pool_cnt: int = Field(sa_column=Column(Integer, nullable=False))
     fav_count: int = Field(sa_column=Column(Integer, nullable=False))

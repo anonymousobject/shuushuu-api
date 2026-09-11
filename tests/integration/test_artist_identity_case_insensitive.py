@@ -1,10 +1,9 @@
 """Integration tests pinning DB-level case-insensitive identity semantics.
 
-ADR-0008: `tag_external_links.site` / `.external_id` are ci_string --
-VARCHAR(n) on MariaDB (case-insensitive via utf8mb4_unicode_ci) and CITEXT on
-Postgres. `resolve_identity` does a plain `==` comparison in SQL; the
-case-folding guarantee has to live in the column type, not the query, so
-these tests go straight at the DB rather than mocking anything.
+ADR-0008: `tag_external_links.site` / `.external_id` are CITEXT, which
+compares case-insensitively. `resolve_identity` does a plain `==` comparison
+in SQL; the case-folding guarantee has to live in the column type, not the
+query, so these tests go straight at the DB rather than mocking anything.
 """
 
 import pytest
@@ -45,7 +44,7 @@ class TestResolveIdentityCaseInsensitive:
         assert found.tag_id == artist.tag_id
 
     async def test_matches_case_variant_site(self, db_session: AsyncSession) -> None:
-        """Same guarantee for `site` -- both columns are ci_string."""
+        """Same guarantee for `site` -- both columns are citext."""
         artist = Tags(title="CaseFoldArtistSite", type=TagType.ARTIST, usage_count=1)
         db_session.add(artist)
         await db_session.flush()

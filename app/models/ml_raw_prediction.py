@@ -10,8 +10,6 @@ small dictionaries; ml_raw_predictions is the large fact table.
 from sqlalchemy import Column, ForeignKey, Integer, SmallInteger, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
-from app.models.types import UnsignedInt, UnsignedSmallInt
-
 
 class MlExternalTags(SQLModel, table=True):
     """Dictionary of the model vocabulary: external tag name + its category."""
@@ -19,11 +17,9 @@ class MlExternalTags(SQLModel, table=True):
     __tablename__ = "ml_external_tags"
     __table_args__ = (UniqueConstraint("name", name="unique_ml_external_tag_name"),)
 
-    # INT UNSIGNED to match the migration (edb3f5912896); ml_raw_predictions.external_tag_id
-    # below must carry the same type or create_all's FK fails with errno 150.
     id: int | None = Field(
         default=None,
-        sa_column=Column(UnsignedInt, primary_key=True, autoincrement=True),
+        sa_column=Column(Integer, primary_key=True, autoincrement=True),
     )
     name: str = Field(max_length=255)
     category: int = Field(sa_column=Column(SmallInteger, nullable=False))
@@ -35,11 +31,9 @@ class MlModels(SQLModel, table=True):
     __tablename__ = "ml_models"
     __table_args__ = (UniqueConstraint("name", name="unique_ml_model_name"),)
 
-    # SMALLINT UNSIGNED to match the migration (edb3f5912896); ml_raw_predictions.model_id
-    # below must carry the same type or create_all's FK fails with errno 150.
     id: int | None = Field(
         default=None,
-        sa_column=Column(UnsignedSmallInt, primary_key=True, autoincrement=True),
+        sa_column=Column(SmallInteger, primary_key=True, autoincrement=True),
     )
     name: str = Field(max_length=100)
 
@@ -64,7 +58,7 @@ class MlRawPredictions(SQLModel, table=True):
     )
     model_id: int = Field(
         sa_column=Column(
-            UnsignedSmallInt,
+            SmallInteger,
             ForeignKey("ml_models.id", ondelete="CASCADE", onupdate="CASCADE"),
             primary_key=True,
             nullable=False,
@@ -72,7 +66,7 @@ class MlRawPredictions(SQLModel, table=True):
     )
     external_tag_id: int = Field(
         sa_column=Column(
-            UnsignedInt,
+            Integer,
             ForeignKey("ml_external_tags.id", ondelete="CASCADE", onupdate="CASCADE"),
             primary_key=True,
             nullable=False,
