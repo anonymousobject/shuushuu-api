@@ -15,6 +15,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.logging import get_logger
 from app.utils.like_escape import escape_like_pattern
 
@@ -237,3 +240,44 @@ scored AS (
 )
 SELECT tag_id FROM scored ORDER BY tier, typos, pos, eff_usage DESC, tag_id ASC LIMIT :limit OFFSET :offset"""
     return SearchStatements(ids_sql, count_sql, params)
+
+
+async def search_tags(
+    db: AsyncSession,
+    query: str,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    type_filter: int | None = None,
+    exclude_aliases: bool = False,
+    sort: list[str] | None = None,
+) -> TagSearchResult:
+    """Run one tag search and return the page's ids in rank order with an exact total.
+
+    Args:
+        db: Session; the SET LOCALs bind to its current transaction.
+        query: Search text. Empty lists every tag.
+        limit: Page size.
+        offset: Rows to skip.
+        type_filter: TagType constant, or None for all types.
+        exclude_aliases: Drop rows whose alias_of is set.
+        sort: Meilisearch-style spec such as ["title:asc"]; None means relevance.
+    """
+    statements = build_search(
+        query,
+        limit=limit,
+        offset=offset,
+        type_filter=type_filter,
+        exclude_aliases=exclude_aliases,
+        sort=sort,
+    )
+    # One command per execute: asyncpg rejects multi-statement strings. SET
+    # LOCAL lasts for this transaction only, so a pooled connection never
+    # carries it to the next request.
+    await db.execute(text("SET LOCAL pg_trgm.word_similarity_threshold = 0.5"))
+    await db.execute(text("SET LOCAL jit = off"))
+    rows = await db.execute(text(statements.ids_sql), statements.params)
+    tag_ids = [row.tag_id for row in rows.all()]
+    total = int((await db.execute(text(statements.count_sql), statements.params)).scalar_one())
+    logger.debug("tag_search", query=query, hits=len(tag_ids), total=total)
+    return TagSearchResult(tag_ids=tag_ids, total=total)
