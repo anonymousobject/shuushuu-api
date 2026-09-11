@@ -9,13 +9,10 @@ from sqlalchemy.orm import aliased
 
 from app.api.dependencies import SortOrder, TagSortBy
 from app.core.database import get_db
-from app.core.logging import get_logger
 from app.models.tag import Tags
 from app.schemas.search import SearchResponse, TagSearchHit
 from app.services.artist_identity import parse_identity_query, resolve_identity, site_display_name
 from app.services.tag_search import search_tags
-
-logger = get_logger(__name__)
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -114,9 +111,8 @@ async def search(
 
     # Exact artist-identity layer: if the query names a specific external
     # identity (bare ID, "pixiv <id>", or a profile URL), prepend the tag that
-    # owns it — even if the text search missed it or ranked it lower.
-    # Runs after the engine call above; the owning tag must still satisfy the
-    # request's own filters.
+    # owns it — even if the text search missed it or ranked it lower. Runs
+    # after the engine call above.
     #
     # The owning tag must still satisfy the request's own `type`/
     # `exclude_aliases` filters before it's surfaced — this layer supplements
