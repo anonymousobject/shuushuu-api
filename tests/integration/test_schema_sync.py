@@ -1,328 +1,114 @@
-"""
-Test to verify SQLModel models are in sync with Alembic migrations.
+"""Models vs the migration chain (alembic/).
 
-This test creates two databases:
-1. One using SQLModel.metadata.create_all() (from models)
-2. One using Alembic migrations
+One database is built from the models (build_pg_schema — create_all, citext,
+triggers) and one from `alembic upgrade head`; their catalogs must be
+identical. A model change without a matching migration turns this red.
 
-Then compares the schemas to detect drift between models and migrations.
-
-Run with:
-    pytest tests/integration/test_schema_sync.py --schema-sync -v
-
-Uses default credentials matching CI, or override via environment variables.
+Run with: pytest tests/integration/test_schema_sync.py --schema-sync -v
 """
 
 import os
 import subprocess
-from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
-from sqlmodel import SQLModel
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import create_async_engine
 
-# Import defaults from conftest (single source of truth)
-from tests.conftest import (
-    DEFAULT_ROOT_PASSWORD,
-    DEFAULT_TEST_DB_HOST,
-    DEFAULT_TEST_DB_PASSWORD,
-    DEFAULT_TEST_DB_PORT,
-    DEFAULT_TEST_DB_USER,
-)
+from app.core.pg_schema import build_pg_schema
+from tests.conftest import TEST_DATABASE_URL
 
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.schema_sync,
+    # Fixed-name databases: keep on one xdist worker (--dist loadgroup).
+    pytest.mark.xdist_group("pg_schema_sync"),
+]
 
-def get_foreign_keys(inspector, table_name: str) -> dict[str, dict]:
-    """Get foreign keys for a table, normalized for comparison."""
-    fks = {}
-    for fk in inspector.get_foreign_keys(table_name):
-        # Key by constrained columns for comparison
-        key = tuple(sorted(fk["constrained_columns"]))
-        fks[key] = {
-            "referred_table": fk["referred_table"],
-            "referred_columns": tuple(sorted(fk["referred_columns"])),
-            "ondelete": fk.get("options", {}).get("ondelete"),
-            "onupdate": fk.get("options", {}).get("onupdate"),
-        }
-    return fks
+_DB_MODELS = "shuushuu_schema_models_pg"
+_DB_MIGRATIONS = "shuushuu_schema_migrations_pg"
 
-
-def get_column_types(inspector, table_name: str) -> dict[str, dict]:
-    """Get column types for a table, normalized for comparison.
-
-    Compares the reflected type class (INTEGER vs TINYINT, etc.), signedness,
-    and length. Display width is ignored (cosmetic in MariaDB); nullability and
-    defaults are out of scope here (this targets type drift specifically).
-    """
-    columns = {}
-    for column in inspector.get_columns(table_name):
-        column_type = column["type"]
-        columns[column["name"]] = {
-            "type": type(column_type).__name__,
-            "unsigned": getattr(column_type, "unsigned", False),
-            "length": getattr(column_type, "length", None),
-        }
-    return columns
+_SNAPSHOT_QUERIES = {
+    "columns": """
+        SELECT table_name || '.' || column_name || ' ' || udt_name
+               || ' nullable=' || is_nullable
+               || ' default=' || COALESCE(column_default, '-')
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+    """,
+    "indexes": "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'",
+    "constraints": """
+        SELECT conrelid::regclass || ' ' || conname || ' '
+               || pg_get_constraintdef(oid)
+        FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+    """,
+    "triggers": """
+        SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE NOT tgisinternal
+    """,
+}
 
 
-def get_index_columns(inspector, table_name: str) -> dict[str, list[str]]:
-    """Get index column lists for a table, keyed by index name.
-
-    Column order is preserved (not sorted) since some indexes here depend
-    on exact column order matching a query's ORDER BY clause.
-    """
-    return {idx["name"]: idx["column_names"] for idx in inspector.get_indexes(table_name)}
-
-
-def normalize_fk_action(action: str | None) -> str | None:
-    """Normalize FK action for comparison (handle NO ACTION vs None)."""
-    if action is None or action == "NO ACTION":
-        return None
-    return action.upper()
-
-
-@pytest.fixture(scope="class")
-def schema_inspectors():
-    """Build one database from models (create_all) and one from migrations.
-
-    Yields (models_inspector, migrations_inspector) for schema comparison.
-    """
-    # Get credentials with defaults matching CI
-    db_user = os.getenv("TEST_DB_USER", DEFAULT_TEST_DB_USER)
-    db_password = os.getenv("TEST_DB_PASSWORD", DEFAULT_TEST_DB_PASSWORD)
-    db_host = os.getenv("TEST_DB_HOST", DEFAULT_TEST_DB_HOST)
-    db_port = os.getenv("TEST_DB_PORT", DEFAULT_TEST_DB_PORT)
-    root_password = os.getenv("MYSQL_ROOT_PASSWORD", DEFAULT_ROOT_PASSWORD)
-
-    admin_url = f"mysql+pymysql://root:{root_password}@{db_host}:{db_port}/mysql"
-
-    # Database names for comparison
-    db_models = "shuushuu_schema_models"
-    db_migrations = "shuushuu_schema_migrations"
-
-    admin_engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-
+async def _snapshot(database: str) -> dict[str, set[str]]:
+    engine = create_async_engine(make_url(TEST_DATABASE_URL).set(database=database))
     try:
-        # Create fresh databases
-        with admin_engine.connect() as conn:
-            conn.execute(text(f"DROP DATABASE IF EXISTS `{db_models}`"))
-            conn.execute(text(f"DROP DATABASE IF EXISTS `{db_migrations}`"))
-            conn.execute(
-                text(
-                    f"CREATE DATABASE `{db_models}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-                )
-            )
-            conn.execute(
-                text(
-                    f"CREATE DATABASE `{db_migrations}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-                )
-            )
-            conn.execute(
-                text(f"GRANT ALL PRIVILEGES ON `{db_models}`.* TO :db_user@'%'"),
-                {"db_user": db_user},
-            )
-            conn.execute(
-                text(f"GRANT ALL PRIVILEGES ON `{db_migrations}`.* TO :db_user@'%'"),
-                {"db_user": db_user},
-            )
-            conn.execute(text("FLUSH PRIVILEGES"))
-
-        # Create schema from models
-        models_url = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_models}"
-        models_engine = create_engine(models_url)
-        SQLModel.metadata.create_all(models_engine)
-
-        # Create schema from migrations
-        # Run alembic via subprocess so it picks up the env var fresh
-        # (app.config.settings caches DATABASE_URL_SYNC at import time)
-        migrations_url = (
-            f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_migrations}"
-        )
-
-        env = os.environ.copy()
-        env["DATABASE_URL_SYNC"] = migrations_url
-        result = subprocess.run(
-            ["uv", "run", "alembic", "upgrade", "head"],
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=str(Path(__file__).parent.parent.parent),
-        )
-        if result.returncode != 0:
-            pytest.fail(f"Alembic migrations failed:\n{result.stderr}\n{result.stdout}")
-
-        migrations_engine = create_engine(migrations_url)
-
-        yield inspect(models_engine), inspect(migrations_engine)
-
+        async with engine.connect() as conn:
+            return {
+                name: {row[0] for row in await conn.execute(text(query))}
+                for name, query in _SNAPSHOT_QUERIES.items()
+            }
     finally:
-        # Cleanup
-        with admin_engine.connect() as conn:
-            conn.execute(text(f"DROP DATABASE IF EXISTS `{db_models}`"))
-            conn.execute(text(f"DROP DATABASE IF EXISTS `{db_migrations}`"))
-        admin_engine.dispose()
+        await engine.dispose()
 
 
-@pytest.mark.integration
-@pytest.mark.schema_sync
-@pytest.mark.mariadb_only  # compares models against the MariaDB migration chain
-# These tests rebuild fixed-name databases (shuushuu_schema_models/_migrations),
-# so under xdist they must all run on the same worker (--dist loadgroup).
-@pytest.mark.xdist_group("schema_sync")
-class TestSchemaSync:
-    """Tests to verify models match migrations.
+async def _fresh_database(database: str) -> None:
+    admin = create_async_engine(
+        make_url(TEST_DATABASE_URL).set(database="postgres"),
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        async with admin.connect() as conn:
+            await conn.execute(text(f'DROP DATABASE IF EXISTS "{database}"'))
+            await conn.execute(text(f'CREATE DATABASE "{database}"'))
+    finally:
+        await admin.dispose()
 
-    Run with: pytest tests/integration/test_schema_sync.py --schema-sync -v
-    """
 
-    def test_foreign_key_cascade_behavior_matches(self, schema_inspectors):
-        """
-        Verify that foreign key CASCADE behavior in models matches migrations.
+async def test_models_match_migration_chain():
+    """create_all-from-models and the chain must produce identical schemas."""
+    await _fresh_database(_DB_MODELS)
+    await _fresh_database(_DB_MIGRATIONS)
 
-        This catches issues where Field(foreign_key=...) doesn't include
-        CASCADE behavior that ForeignKeyConstraint in migrations specifies.
-        """
-        models_inspector, migrations_inspector = schema_inspectors
+    models_engine = create_async_engine(make_url(TEST_DATABASE_URL).set(database=_DB_MODELS))
+    try:
+        async with models_engine.begin() as conn:
+            await build_pg_schema(conn)
+    finally:
+        await models_engine.dispose()
 
-        # Tables to check (the ones we fixed)
-        tables_to_check = ["image_reports", "image_reviews", "review_votes"]
+    # Subprocess, not programmatic: the async env.py runs its own event loop,
+    # which cannot nest inside this test's.
+    migrations_url = make_url(TEST_DATABASE_URL).set(database=_DB_MIGRATIONS)
+    env = os.environ.copy()
+    env["ALEMBIC_DB_URL"] = migrations_url.render_as_string(hide_password=False)
+    result = subprocess.run(
+        ["uv", "run", "alembic", "upgrade", "head"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, f"alembic upgrade failed:\n{result.stderr}"
 
-        differences = []
-        for table in tables_to_check:
-            models_fks = get_foreign_keys(models_inspector, table)
-            migrations_fks = get_foreign_keys(migrations_inspector, table)
+    models = await _snapshot(_DB_MODELS)
+    migrations = await _snapshot(_DB_MIGRATIONS)
 
-            for col_key, model_fk in models_fks.items():
-                if col_key not in migrations_fks:
-                    differences.append(
-                        f"{table}: FK on {col_key} exists in models but not migrations"
-                    )
-                    continue
-
-                migration_fk = migrations_fks[col_key]
-
-                # Compare CASCADE behavior
-                model_ondelete = normalize_fk_action(model_fk["ondelete"])
-                migration_ondelete = normalize_fk_action(migration_fk["ondelete"])
-
-                if model_ondelete != migration_ondelete:
-                    differences.append(
-                        f"{table}.{col_key}: ondelete mismatch - "
-                        f"models={model_ondelete}, migrations={migration_ondelete}"
-                    )
-
-                model_onupdate = normalize_fk_action(model_fk["onupdate"])
-                migration_onupdate = normalize_fk_action(migration_fk["onupdate"])
-
-                if model_onupdate != migration_onupdate:
-                    differences.append(
-                        f"{table}.{col_key}: onupdate mismatch - "
-                        f"models={model_onupdate}, migrations={migration_onupdate}"
-                    )
-
-        if differences:
-            pytest.fail(
-                "Schema differences between models and migrations:\n" + "\n".join(differences)
-            )
-
-    def test_column_types_match(self, schema_inspectors):
-        """
-        Verify that column types (including signedness) in models match migrations.
-
-        This catches drift like the report_id/review_id family: the DB has them
-        as INT UNSIGNED (legacy schema), but models declared them signed. The FK
-        CASCADE test never compared column types, so this went unnoticed.
-
-        Scoped to the report_id/review_id column family. A whole-table diff also
-        flags image_id/user_id/tag_id signedness and TINYINT/MEDIUMTEXT drift,
-        but fixing those cascades into the images/users/tags parent PKs — that
-        full-schema type audit is tracked separately
-        (docs/plans/2026-Q2/2026-06-10-schema-sync-signed-unsigned-drift.md).
-        """
-        models_inspector, migrations_inspector = schema_inspectors
-
-        # The report_id/review_id family: the PKs and every FK to them
-        columns_to_check = [
-            ("image_reports", "report_id"),
-            ("image_reviews", "review_id"),
-            ("image_reviews", "source_report_id"),
-            ("image_status_history", "report_id"),
-            ("image_status_history", "review_id"),
-            ("image_report_tag_suggestions", "report_id"),
-            ("admin_actions", "report_id"),
-            ("admin_actions", "review_id"),
-            ("review_votes", "review_id"),
-        ]
-
-        differences = []
-        for table in sorted({table for table, _ in columns_to_check}):
-            models_columns = get_column_types(models_inspector, table)
-            migrations_columns = get_column_types(migrations_inspector, table)
-
-            for check_table, name in columns_to_check:
-                if check_table != table:
-                    continue
-
-                model_col = models_columns.get(name)
-                migration_col = migrations_columns.get(name)
-                if model_col is None or migration_col is None:
-                    differences.append(
-                        f"{table}.{name}: missing - models={model_col}, migrations={migration_col}"
-                    )
-                elif model_col != migration_col:
-                    differences.append(
-                        f"{table}.{name}: type mismatch - "
-                        f"models={model_col}, migrations={migration_col}"
-                    )
-
-        if differences:
-            pytest.fail(
-                "Column type differences between models and migrations:\n" + "\n".join(differences)
-            )
-
-    def test_tag_history_scan_indexes_match(self, schema_inspectors):
-        """
-        Verify the composite indexes for date-ordered tag/user history scans
-        exist in both models and migrations, with matching column order.
-
-        Column order matters: tag_links.idx_tag_links_user_date_image keeps
-        image_id explicit so the on-disk index order matches the query's
-        ORDER BY date_linked, image_id. Without it, InnoDB's implicit PK
-        suffix reorders the index and reintroduces a large filesort.
-        """
-        models_inspector, migrations_inspector = schema_inspectors
-
-        expected_indexes = {
-            "tag_links": {
-                "idx_tag_links_tag_date": ["tag_id", "date_linked"],
-                "idx_tag_links_user_date_image": ["user_id", "date_linked", "image_id"],
-            },
-            "tag_history": {
-                "idx_tag_history_tag_date": ["tag_id", "date"],
-                "idx_tag_history_user_date": ["user_id", "date"],
-            },
-        }
-
-        differences = []
-        for table, indexes in expected_indexes.items():
-            models_indexes = get_index_columns(models_inspector, table)
-            migrations_indexes = get_index_columns(migrations_inspector, table)
-
-            for index_name, expected_columns in indexes.items():
-                models_columns = models_indexes.get(index_name)
-                migrations_columns = migrations_indexes.get(index_name)
-
-                if models_columns != expected_columns:
-                    differences.append(
-                        f"{table}.{index_name}: models columns {models_columns} "
-                        f"!= expected {expected_columns}"
-                    )
-                if migrations_columns != expected_columns:
-                    differences.append(
-                        f"{table}.{index_name}: migrations columns {migrations_columns} "
-                        f"!= expected {expected_columns}"
-                    )
-
-        if differences:
-            pytest.fail(
-                "Index differences for tag/user history scan indexes:\n" + "\n".join(differences)
-            )
+    for section in _SNAPSHOT_QUERIES:
+        only_models = models[section] - migrations[section]
+        only_migrations = migrations[section] - models[section]
+        # alembic_version exists only on the chain side, by design.
+        only_migrations = {s for s in only_migrations if "alembic_version" not in s}
+        assert not only_models and not only_migrations, (
+            f"{section} differ.\n"
+            f"Only in models-built schema:\n  " + "\n  ".join(sorted(only_models)) + "\n"
+            "Only in chain-built schema:\n  " + "\n  ".join(sorted(only_migrations))
+        )

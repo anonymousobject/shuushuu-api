@@ -238,10 +238,9 @@ def _setup_postgres_test_database() -> None:
 
     All admin work runs as the test user, which is the compose container's
     bootstrap superuser — none of the MariaDB root/grant machinery applies.
-    Schema comes from the POSTGRES Alembic chain (alembic_pg/), mirroring the
-    MariaDB path: reuse-and-truncate when already at the chain head, else
-    rebuild by running the chain — which is how broken PG migrations surface
-    in CI instead of being papered over by create_all.
+    Schema comes from the Alembic chain: reuse-and-truncate when already at
+    the chain head, else rebuild by running the chain — which is how broken
+    PG migrations surface in CI instead of being papered over by create_all.
     """
     import asyncio
 
@@ -252,7 +251,7 @@ def _setup_postgres_test_database() -> None:
     test_db_name = url.database
 
     alembic_cfg = AlembicConfig()
-    alembic_cfg.set_main_option("script_location", "alembic_pg")
+    alembic_cfg.set_main_option("script_location", "alembic")
     head_revision = ScriptDirectory.from_config(alembic_cfg).get_current_head()
 
     async def _prepare() -> bool:

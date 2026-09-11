@@ -153,8 +153,6 @@ services:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
       - ./alembic:/app/alembic
-      - ./alembic_pg:/app/alembic_pg
-      - ./alembic.pg.ini:/app/alembic.pg.ini:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
@@ -245,8 +243,6 @@ services:
       # Mount only necessary directories, excluding .venv to prevent conflicts
       - ./app:/app/app
       - ./alembic:/app/alembic
-      - ./alembic_pg:/app/alembic_pg
-      - ./alembic.pg.ini:/app/alembic.pg.ini:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}

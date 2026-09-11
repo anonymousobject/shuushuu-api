@@ -283,8 +283,6 @@ async def run_alembic_upgrade(project_root: Path) -> bool:
         "run",
         "--no-project",
         "alembic",
-        "-c",
-        "alembic.pg.ini",
         "upgrade",
         "head",
     ]

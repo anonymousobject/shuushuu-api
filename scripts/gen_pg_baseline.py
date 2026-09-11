@@ -7,9 +7,9 @@ of single statements joined by `-- ==stmt==` marker lines (asyncpg cannot run
 multi-command prepared statements, and parsing $$-quoted bodies is fragile;
 the marker sidesteps both).
 
-Used ONCE to produce alembic_pg/versions/0001_pg_baseline.sql. A merged
+Used ONCE to produce alembic/versions/0001_pg_baseline.sql. A merged
 baseline is frozen (repo migration rule): do NOT rerun this against it —
-subsequent model changes ship as incremental migrations in alembic_pg/.
+subsequent model changes ship as incremental migrations in alembic/.
 
     uv run python scripts/gen_pg_baseline.py
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from sqlalchemy import create_mock_engine
 
-OUT = Path(__file__).resolve().parent.parent / "alembic_pg" / "versions" / "0001_pg_baseline.sql"
+OUT = Path(__file__).resolve().parent.parent / "alembic" / "versions" / "0001_pg_baseline.sql"
 MARKER = "-- ==stmt=="
 
 

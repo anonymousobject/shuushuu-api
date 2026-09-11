@@ -206,8 +206,7 @@ jobs:
           ENVIRONMENT: development
           DEBUG: "True"
           REDIS_URL: redis://localhost:6379/0
-        # --schema-sync runs the PG schema-sync test (models vs alembic_pg
-        # chain); the MariaDB schema-sync suite is mariadb_only and skips here.
+        # --schema-sync runs the schema-sync test (models vs the alembic chain).
         run: |
           uv run pytest tests/ -v --tb=short --maxfail=5 --schema-sync -n auto --dist loadgroup
 
