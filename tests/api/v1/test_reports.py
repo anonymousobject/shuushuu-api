@@ -31,7 +31,7 @@ from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
-from tests.transient_conflict import _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _deadlock_error, _flaky_flush
 
 
 async def create_auth_user(
@@ -2524,7 +2524,7 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
         image_id: int = image.image_id
         suggestion_ids = [s.suggestion_id for s in suggestions]
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await client.post(
                 f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",
@@ -2574,7 +2574,7 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
         report_id: int = report.report_id
         suggestion_id: int = suggestion.suggestion_id
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
         with flush_patch, pytest.raises(OperationalError):
             await client.post(
                 f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",

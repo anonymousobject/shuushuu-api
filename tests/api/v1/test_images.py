@@ -22,7 +22,7 @@ from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import Groups, UserGroups
 from app.models.tag_history import TagHistory
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from tests.transient_conflict import _db_error, _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _db_error, _deadlock_error, _flaky_flush
 
 
 @pytest.mark.api
@@ -4603,7 +4603,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.refresh(image)
         initial_favorites = image.favorites
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
@@ -4641,7 +4641,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.refresh(image)
         favorites_before = image.favorites
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.delete(
                 f"/api/v1/images/{image.image_id}/favorite"
@@ -4674,7 +4674,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(
                 f"/api/v1/images/{image.image_id}/rating?rating=8"
@@ -4704,7 +4704,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
         with flush_patch, pytest.raises(OperationalError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
@@ -4722,7 +4722,9 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
+        flush_patch, calls = _flaky_flush(
+            100, _db_error("23505", "duplicate key value violates unique constraint")
+        )
         with flush_patch, pytest.raises(OperationalError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
@@ -4776,7 +4778,7 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
@@ -4829,7 +4831,7 @@ class TestTagWriteSnapshotConflictRetry:
         db_session.add(TagLinks(image_id=image_id, tag_id=tag_id, user_id=sample_user.user_id))
         await db_session.commit()
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.delete(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
@@ -4877,7 +4879,7 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
         with flush_patch, pytest.raises(OperationalError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
@@ -4906,7 +4908,9 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
+        flush_patch, calls = _flaky_flush(
+            100, _db_error("23505", "duplicate key value violates unique constraint")
+        )
         with flush_patch, pytest.raises(OperationalError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 

@@ -16,9 +16,9 @@ from app.models.user import Users
 from app.schemas.image import SimilarImageResult
 from tests.transient_conflict import (
     _db_error,
+    _deadlock_error,
     _flaky_flush,
     _flaky_flush_nth,
-    _snapshot_conflict_error,
 )
 
 
@@ -514,7 +514,7 @@ class TestUploadSnapshotConflictRetry:
     async def test_upload_retries_snapshot_conflict_and_succeeds(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """A transient 1020 on the temp-row INSERT is retried and the upload succeeds.
+        """A transient Postgres deadlock (40P01) on the temp-row INSERT is retried and the upload succeeds.
 
         needs_commit: the retry performs a real session rollback to obtain a
         fresh snapshot; under the default SAVEPOINT isolation that rollback
@@ -522,7 +522,7 @@ class TestUploadSnapshotConflictRetry:
         INSERT), which can't happen in production where the user is durably
         committed.
         """
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with (
             _mock_upload_storage("snapshotretry1"),
             patch(
@@ -554,7 +554,7 @@ class TestUploadSnapshotConflictRetry:
         OperationalError: the retried unit sits inside upload's try/except, so
         the failure also rolls back and unlinks the staged file.
         """
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
         with (
             _mock_upload_storage("snapshotretry2"),
             patch(
@@ -579,7 +579,9 @@ class TestUploadSnapshotConflictRetry:
         self, upload_client: AsyncClient, verified_user: Users
     ):
         """Database errors outside the transient set fail immediately with no retry."""
-        flush_patch, calls = _flaky_flush(100, _db_error(1062, "Duplicate entry"))
+        flush_patch, calls = _flaky_flush(
+            100, _db_error("23505", "duplicate key value violates unique constraint")
+        )
         with (
             _mock_upload_storage("snapshotretry3"),
             patch(
@@ -633,7 +635,7 @@ class TestUploadTagLinkSnapshotConflictRetry:
         await db_session.refresh(tag)
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush_nth(2, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush_nth(2, _deadlock_error())
         with (
             _mock_upload_storage("tagsnapshotretry1"),
             patch(

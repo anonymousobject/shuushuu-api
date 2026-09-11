@@ -14,7 +14,7 @@ from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.models.user_favorite import UserFavoriteLinks, UserFavoriteTags
-from tests.transient_conflict import _flaky_commit, _snapshot_conflict_error
+from tests.transient_conflict import _deadlock_error, _flaky_commit
 
 CHAR_A = 9801  # linked to SRC_A and SRC_B (two combos)
 SRC_A = 9803
@@ -279,7 +279,7 @@ class TestAddFavorite:
         ids = await _seed(db_session)
         headers = await _login(client)
 
-        commit_patch, calls = _flaky_commit(1, _snapshot_conflict_error("user_favorite_tags"))
+        commit_patch, calls = _flaky_commit(1, _deadlock_error())
         with commit_patch:
             response = await client.post(
                 "/api/v1/users/me/favorite-tags", json={"tag_id": SRC_A}, headers=headers
@@ -308,7 +308,7 @@ class TestAddFavorite:
         ids = await _seed(db_session)
         headers = await _login(client)
 
-        commit_patch, calls = _flaky_commit(1, _snapshot_conflict_error("user_favorite_links"))
+        commit_patch, calls = _flaky_commit(1, _deadlock_error())
         with commit_patch:
             response = await client.post(
                 "/api/v1/users/me/favorite-tags",
@@ -433,7 +433,7 @@ class TestReorder:
         await _favorite_all(db_session, ids)
         headers = await _login(client)
 
-        commit_patch, calls = _flaky_commit(1, _snapshot_conflict_error("user_favorite_links"))
+        commit_patch, calls = _flaky_commit(1, _deadlock_error())
         with commit_patch:
             response = await client.put(
                 "/api/v1/users/me/favorite-tags/order",

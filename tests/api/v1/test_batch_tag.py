@@ -15,7 +15,7 @@ from app.models.tag import Tags
 from app.models.tag_link import TagLinks
 from app.models.user import Users
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from tests.transient_conflict import _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _deadlock_error, _flaky_flush
 
 
 async def _create_user_with_tag_permission(
@@ -741,7 +741,7 @@ class TestBatchTagSnapshotConflictRetry:
         image_ids = [img.image_id for img in images]
         tag_id: int = tags[0].tag_id
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await client.post(
                 "/api/v1/tags/batch",
@@ -782,7 +782,7 @@ class TestBatchTagSnapshotConflictRetry:
             db_session.add(TagLinks(image_id=image_id, tag_id=tag_id, user_id=user.user_id))
         await db_session.commit()
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await client.post(
                 "/api/v1/tags/batch",
@@ -817,7 +817,7 @@ class TestBatchTagSnapshotConflictRetry:
         image_ids = [img.image_id for img in images]
         tag_id: int = tags[0].tag_id
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
         with flush_patch, pytest.raises(OperationalError):
             await client.post(
                 "/api/v1/tags/batch",

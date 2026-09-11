@@ -31,7 +31,7 @@ from app.services.ml_suggestion_pipeline import (
     persist_predictions,
     store_predictions,
 )
-from tests.transient_conflict import _flaky_commit, _snapshot_conflict_error
+from tests.transient_conflict import _deadlock_error, _flaky_commit
 
 PIPELINE = "app.services.ml_suggestion_pipeline"
 
@@ -789,7 +789,7 @@ async def test_persist_predictions_retries_transient_conflict(db_session, tmp_pa
         {"tag_id": 161, "confidence": 0.88, "model_version": "v3"},
     ]
 
-    commit_patch, calls = _flaky_commit(1, _snapshot_conflict_error("ml_raw_predictions"))
+    commit_patch, calls = _flaky_commit(1, _deadlock_error())
     with (
         commit_patch,
         patch(f"{PIPELINE}.resolve_external_tags", _resolver_to_tag_ids(mapped)),
