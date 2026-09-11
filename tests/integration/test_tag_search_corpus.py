@@ -199,11 +199,12 @@ class TestSearchCorpus:
         only_characters = await search_tags(db_session, "sakura", type_filter=TagType.CHARACTER)
         assert only_characters.tag_ids
         assert all(by_type[tag_id] == TagType.CHARACTER for tag_id in only_characters.tag_ids)
-        no_aliases = titles_for(
-            by_title, await search_tags(db_session, "sakura", exclude_aliases=True)
-        )
+        assert only_characters.total == len(only_characters.tag_ids)
+        no_aliases_result = await search_tags(db_session, "sakura", exclude_aliases=True)
+        no_aliases = titles_for(by_title, no_aliases_result)
         assert "sakura" not in no_aliases  # the alias row
         assert "Sakura" in no_aliases
+        assert no_aliases_result.total == len(no_aliases_result.tag_ids)
 
     async def test_total_is_exact_and_pagination_is_stable(self, db_session: AsyncSession):
         by_title = await seed_corpus(db_session)
