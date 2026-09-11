@@ -40,6 +40,16 @@ class TestBuildSearch:
         assert st.params["like_q"] == "%sakura kino%"
         assert st.params["q"] == "sakura kino"
 
+    def test_relevance_order_is_tier_typos_position_usage_id(self):
+        st = _build("sakura kino")
+        assert (
+            "ORDER BY tier, typos, pos, eff_usage DESC, tag_id ASC LIMIT :limit OFFSET :offset"
+            in st.ids_sql
+        )
+        assert (
+            "CASE WHEN tiers.tier < 4 THEN 0 ELSE (" in st.ids_sql
+        )  # typo keys are lazy, tier 4 only
+
     def test_short_letters_skip_fuzzy_and_one_char_token_skips_secondary(self):
         st = _build("the f")
         assert "<%" not in st.ids_sql
