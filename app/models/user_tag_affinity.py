@@ -11,12 +11,11 @@ from app.models.types import UnsignedInt, UtcDateTime
 class UserTagAffinity(SQLModel, table=True):
     """Per-(user, tag) taste evidence + blended affinity score.
 
-    Rebuilt nightly by refresh_user_tag_affinity via atomic staging-table swap;
-    treat as read-only outside the refresh job. No FKs by design (same rationale
-    as tag_cooccurrence: full rebuild maintains consistency, and
-    CREATE TABLE ... LIKE would silently drop FKs after the first swap anyway).
-    Only rows meeting min support are stored: pool_cnt >= TASTE_MIN_SUPPORT or
-    rated_count >= TASTE_MIN_SUPPORT.
+    Rebuilt nightly by refresh_user_tag_affinity inside one transaction (delete
+    then batched insert); treat as read-only outside the refresh job. No FKs by
+    design: the full rebuild maintains consistency, and FK checks on the bulk
+    insert would only slow it. Only rows meeting min support are stored:
+    pool_cnt >= TASTE_MIN_SUPPORT or rated_count >= TASTE_MIN_SUPPORT.
     """
 
     __tablename__ = "user_tag_affinity"

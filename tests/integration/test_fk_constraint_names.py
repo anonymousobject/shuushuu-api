@@ -103,9 +103,8 @@ async def test_one_fk_constraint_per_column_set(db_session: AsyncSession) -> Non
 
 # The FK coverage decided 2026-08-29 (users cleanup after PR #370): membership
 # and grant links die with the user/group/perm; donations outlive the donor.
-# user_tag_affinity stays FK-less BY DESIGN — its nightly staging-table swap
-# (CREATE TABLE ... LIKE, app/services/user_tag_affinity.py) does not copy FKs,
-# so one added here would silently vanish at the next rebuild.
+# user_tag_affinity stays FK-less BY DESIGN (see its model docstring): the
+# nightly full rebuild keeps it consistent without per-row FK checks.
 _EXPECTED_USER_REFERENCE_FKS = [
     ("user_groups", "user_id", "users", "CASCADE"),
     ("user_groups", "group_id", "groups", "CASCADE"),
