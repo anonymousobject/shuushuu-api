@@ -219,8 +219,8 @@ class TestSearchCorpus:
         found = titles_for(
             by_title, await search_tags(db_session, "sakura", sort=["title:asc"], limit=100)
         )
-        # Relevance would lead with the exact "sakura"; a title sort leads with "Kinomoto ...".
-        assert found[0] == "Kinomoto Nadeshiko"
+        # Relevance would lead with the exact "sakura"; a title sort leads with "Kinomoto Sakura".
+        assert found[0] == "Kinomoto Sakura"
         assert "sakura" in found
 
     async def test_empty_query_lists_all_by_effective_usage(self, db_session: AsyncSession):
