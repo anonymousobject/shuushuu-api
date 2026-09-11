@@ -3,7 +3,7 @@
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
@@ -818,7 +818,7 @@ class TestBatchTagSnapshotConflictRetry:
         tag_id: int = tags[0].tag_id
 
         flush_patch, calls = _flaky_flush(100, _deadlock_error())
-        with flush_patch, pytest.raises(OperationalError):
+        with flush_patch, pytest.raises(DBAPIError):
             await client.post(
                 "/api/v1/tags/batch",
                 json={"action": "add", "tag_ids": [tag_id], "image_ids": image_ids},

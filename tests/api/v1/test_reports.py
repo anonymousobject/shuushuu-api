@@ -9,7 +9,7 @@ Tests cover:
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import (
@@ -2575,7 +2575,7 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
         suggestion_id: int = suggestion.suggestion_id
 
         flush_patch, calls = _flaky_flush(100, _deadlock_error())
-        with flush_patch, pytest.raises(OperationalError):
+        with flush_patch, pytest.raises(DBAPIError):
             await client.post(
                 f"/api/v1/admin/reports/{report_id}/apply-tag-suggestions",
                 json={"approved_suggestion_ids": [suggestion_id]},

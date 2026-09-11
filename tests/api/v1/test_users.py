@@ -3593,11 +3593,10 @@ class TestHideRepostsSetting:
 
 
 class TestUserUpdateSnapshotConflictRetry:
-    """Concurrent PATCHes of one users row trip MariaDB ER_CHECKREAD (errno
-    1020) under innodb_snapshot_isolation — the losing transaction's UPDATE
-    meets a row version committed after its snapshot. The update must retry on
-    a fresh snapshot instead of surfacing a 500. (Observed in practice when
-    the frontend's settings auto-save fires several PATCHes back-to-back.)"""
+    """Concurrent PATCHes of one users row can hit a Postgres deadlock
+    (SQLSTATE 40P01). The update must retry on a fresh transaction instead
+    of surfacing a 500. (Observed in practice when the frontend's settings
+    auto-save fires several PATCHes back-to-back.)"""
 
     async def _make_user_and_token(self, db_session: AsyncSession) -> tuple[Users, str]:
         user = Users(
@@ -3618,7 +3617,7 @@ class TestUserUpdateSnapshotConflictRetry:
     async def test_patch_me_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 on the users UPDATE is retried and the PATCH succeeds.
+        """A transient Postgres deadlock (40P01) on the users UPDATE is retried and the PATCH succeeds.
 
         needs_commit: the retry performs a real session rollback for a fresh
         snapshot; under SAVEPOINT isolation that rollback would unwind the
@@ -3626,8 +3625,7 @@ class TestUserUpdateSnapshotConflictRetry:
         """
         from unittest.mock import patch
 
-        import pymysql
-        from sqlalchemy.exc import OperationalError
+        from tests.transient_conflict import _deadlock_error
 
         _, token = await self._make_user_and_token(db_session)
 
@@ -3637,13 +3635,7 @@ class TestUserUpdateSnapshotConflictRetry:
         async def flaky_commit(self, *args, **kwargs):
             calls.append(1)
             if len(calls) == 1:
-                raise OperationalError(
-                    "UPDATE users ...",
-                    None,
-                    pymysql.err.OperationalError(
-                        1020, "Record has changed since last read in table 'users'"
-                    ),
-                )
+                raise _deadlock_error()
             await real_commit(self, *args, **kwargs)
 
         with patch.object(AsyncSession, "commit", flaky_commit):
@@ -3662,7 +3654,7 @@ class TestUserUpdateSnapshotConflictRetry:
     async def test_patch_me_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A persistent 1020 propagates after a bounded number of attempts.
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts.
 
         needs_commit: each retry re-SELECTs the user after a real rollback;
         under SAVEPOINT isolation that rollback unwinds the fixture's user row
@@ -3670,8 +3662,9 @@ class TestUserUpdateSnapshotConflictRetry:
         """
         from unittest.mock import patch
 
-        import pymysql
-        from sqlalchemy.exc import OperationalError
+        from sqlalchemy.exc import DBAPIError
+
+        from tests.transient_conflict import _deadlock_error
 
         _, token = await self._make_user_and_token(db_session)
 
@@ -3679,17 +3672,11 @@ class TestUserUpdateSnapshotConflictRetry:
 
         async def always_conflict(self, *args, **kwargs):
             calls.append(1)
-            raise OperationalError(
-                "UPDATE users ...",
-                None,
-                pymysql.err.OperationalError(
-                    1020, "Record has changed since last read in table 'users'"
-                ),
-            )
+            raise _deadlock_error()
 
         with (
             patch.object(AsyncSession, "commit", always_conflict),
-            pytest.raises(OperationalError),
+            pytest.raises(DBAPIError),
         ):
             await client.patch(
                 "/api/v1/users/me",

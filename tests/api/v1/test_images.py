@@ -13,7 +13,7 @@ from decimal import Decimal
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
@@ -4705,7 +4705,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.refresh(image)
 
         flush_patch, calls = _flaky_flush(100, _deadlock_error())
-        with flush_patch, pytest.raises(OperationalError):
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
         assert len(calls) == 3  # bounded: no infinite retry loop
@@ -4725,7 +4725,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         flush_patch, calls = _flaky_flush(
             100, _db_error("23505", "duplicate key value violates unique constraint")
         )
-        with flush_patch, pytest.raises(OperationalError):
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
         assert len(calls) == 1  # not retried
@@ -4880,7 +4880,7 @@ class TestTagWriteSnapshotConflictRetry:
         tag_id: int = tag.tag_id
 
         flush_patch, calls = _flaky_flush(100, _deadlock_error())
-        with flush_patch, pytest.raises(OperationalError):
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert len(calls) == 3  # bounded: no infinite retry loop
@@ -4911,7 +4911,7 @@ class TestTagWriteSnapshotConflictRetry:
         flush_patch, calls = _flaky_flush(
             100, _db_error("23505", "duplicate key value violates unique constraint")
         )
-        with flush_patch, pytest.raises(OperationalError):
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert len(calls) == 1  # not retried
