@@ -80,8 +80,12 @@ _SORT_COLUMNS = {
 # The word list of a folded string: split on runs that are not letters,
 # digits, or underscore; drop empties. The same expression tokenizes the
 # query (`:q`) and each title, so both sides agree on what a word is.
+# Words are capped at 255 characters: fuzzystrmatch.levenshtein errors above
+# that, and unaccent can expand text (ß -> ss).
 _WORDS = (
+    "ARRAY(SELECT left(w, 255) FROM unnest("
     "array_remove(regexp_split_to_array(public.fold_search_text({expr}), '[^[:alnum:]_]+'), '')"
+    ") AS w)"
 )
 
 _BASE_FROM = "FROM tags t LEFT JOIN tags parent ON parent.tag_id = t.alias_of"

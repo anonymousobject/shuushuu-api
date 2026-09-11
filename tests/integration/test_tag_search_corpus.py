@@ -229,3 +229,19 @@ class TestSearchCorpus:
         result = await search_tags(db_session, "", limit=2)
         assert result.total >= len(CORPUS)
         assert len(result.tag_ids) == 2
+
+    async def test_expanding_long_query_does_not_error(self, db_session: AsyncSession):
+        # 128 sharp-s characters fold to 256 characters; levenshtein caps at 255.
+        # The corpus alone never puts a row into the scored (tier-4) CTE for a
+        # query this long, so the crash would go untested without a decoy: seed
+        # one whose description literally contains the string, which admits it
+        # as a candidate but not a literal title match, forcing the levenshtein
+        # comparison that overflows.
+        await seed_corpus(db_session)
+        decoy = Tags(title="Overflow Decoy", type=TagType.THEME, desc="ß" * 128)
+        db_session.add(decoy)
+        await db_session.commit()
+        await db_session.refresh(decoy)
+        result = await search_tags(db_session, "ß" * 128, limit=10)
+        assert result.tag_ids == [decoy.tag_id]
+        assert result.total == 1

@@ -50,6 +50,12 @@ class TestBuildSearch:
             "CASE WHEN tiers.tier < 4 THEN 0 ELSE (" in st.ids_sql
         )  # typo keys are lazy, tier 4 only
 
+    def test_words_are_capped_for_levenshtein(self):
+        st = _build("sakura kino")
+        assert (
+            st.ids_sql.count("ARRAY(SELECT left(w, 255) FROM unnest(") == 2
+        )  # query words and title words
+
     def test_short_letters_skip_fuzzy_and_one_char_token_skips_secondary(self):
         st = _build("the f")
         assert "<%" not in st.ids_sql
