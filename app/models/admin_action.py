@@ -15,10 +15,10 @@ see git history for `prune_admin_actions`.)
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKeyConstraint, Index, text
+from sqlalchemy import JSON, ForeignKeyConstraint, Index, Integer, text
 from sqlmodel import Column, Field, SQLModel
 
-from app.models.types import UnsignedInt, UtcDateTime
+from app.models.types import UtcDateTime
 
 
 class AdminActions(SQLModel, table=True):
@@ -86,8 +86,8 @@ class AdminActions(SQLModel, table=True):
     action_type: int = Field(default=0)
 
     # INT UNSIGNED to match the legacy-unsigned image_reports/image_reviews PKs
-    report_id: int | None = Field(default=None, sa_column=Column(UnsignedInt, nullable=True))
-    review_id: int | None = Field(default=None, sa_column=Column(UnsignedInt, nullable=True))
+    report_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
+    review_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
     image_id: int | None = Field(default=None)
 
     # JSON details with action context

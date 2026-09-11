@@ -48,7 +48,7 @@ from app.config import (
     settings,
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
-from app.core.database import get_db, is_postgres, statement_timeout
+from app.core.database import get_db, statement_timeout
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
@@ -490,7 +490,7 @@ async def list_images(
         Query(description="Comma-separated user IDs; exclude images any of them commented on"),
     ] = None,
     commentsearch: Annotated[
-        str | None, Query(description="Full-text search in comment text")
+        str | None, Query(description="Substring search in comment text")
     ] = None,
     commentsearch_mode: Annotated[
         str | None,
@@ -498,7 +498,8 @@ async def list_images(
             pattern="^(all_words|natural|boolean|like)$",
             description=(
                 "Search mode: all_words (default, every term required), "
-                "natural language fulltext (any term), boolean fulltext, or LIKE"
+                "like (whole string as one substring); natural and boolean "
+                "are accepted and behave as all_words"
             ),
         ),
     ] = None,
@@ -537,20 +538,18 @@ async def list_images(
     - Comment filtering (by commenter user ID, text search, or presence)
 
     **Comment Search Modes:**
-    - `all_words` (default): every term must appear. Index-backed where the
-      fulltext index can see the term, LIKE where it cannot (short words,
-      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
-      or whitespace-only `commentsearch` applies no filter at all; a non-blank
+    - `all_words` (default): every term must appear, as a case-insensitive
+      substring match. Supports `"exact phrase"` and `-excluded`. A blank or
+      whitespace-only `commentsearch` applies no filter at all; a non-blank
       value with nothing searchable in it (e.g. `!!!`) matches zero comments.
-    - `natural`: MySQL fulltext natural language search — matches ANY term
-    - `boolean`: MySQL fulltext boolean search with raw operators
-    - `like`: Simple pattern matching, works anywhere. `%` and `_` in the query
+    - `natural`, `boolean`: accepted for compatibility and behave as
+      `all_words`; operators such as `+` and `*` are ignored.
+    - `like`: the whole string as one substring match. `%` and `_` in the query
       are escaped to literals, not treated as wildcards.
 
-    **Boolean Mode Examples:**
-    - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
-    - `"exact phrase"`: Search for exact phrase
-    - `word*`: Wildcard search
+    **Search Examples:**
+    - `happy -terrible`: must contain "happy", must not contain "terrible"
+    - `"exact phrase"`: the words in that order
 
     **Examples:**
     - `/images?tags=1,2,3&tags_mode=all` - Images with ALL tags 1, 2, and 3
@@ -566,7 +565,7 @@ async def list_images(
       comments collectively, so an image with a "happy" comment and a separate "sad"
       comment still matches. This is what keeps the image-level filter in agreement
       with the per-comment filter on /comments.
-    - `/images?commentsearch=awesome&commentsearch_mode=natural` - Any-term match
+    - `/images?commentsearch=awesome&commentsearch_mode=natural` - behaves as all_words
     - `/images?hascomments=true` - Images that have comments
     - `/images?hascomments=false` - Images with no comments
     - `/images?exclude_user_id=5,6` - Hide uploads by users 5 and 6
@@ -819,12 +818,7 @@ async def list_images(
         if commenter is not None:
             query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
         if commentsearch is not None:
-            query = apply_comment_text_search(
-                query,
-                commentsearch,
-                commentsearch_mode,
-                use_fulltext=not is_postgres(db),
-            )
+            query = apply_comment_text_search(query, commentsearch, commentsearch_mode)
     elif hascomments is True:
         # Use posts counter field (fast indexed lookup)
         query = query.where(Images.posts > 0)  # type: ignore[arg-type]
@@ -1969,13 +1963,10 @@ async def get_image_reposts(
     if not image_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Nullable sort column: MariaDB places NULLs last on a DESC sort, Postgres
-    # places them first. A legacy repost with no status_updated belongs at the
-    # bottom on both. MariaDB has no NULLS LAST syntax, so this is Postgres-only
-    # by construction (same pattern as the user list in app/api/v1/users.py).
-    status_updated_desc: Any = desc(Images.status_updated)  # type: ignore[arg-type]
-    if is_postgres(db):
-        status_updated_desc = status_updated_desc.nullslast()
+    # Nullable sort column: Postgres puts NULLs first on DESC, but a legacy
+    # repost with no status_updated belongs at the bottom (same pattern as the
+    # user list in app/api/v1/users.py).
+    status_updated_desc: Any = desc(Images.status_updated).nullslast()  # type: ignore[arg-type]
 
     # Eager load user groups for UserSummary; outer join because status_user_id
     # is NULL on legacy rows.
@@ -2589,10 +2580,11 @@ async def add_tag_to_image(
 
     # The TagLinks/TagHistory INSERTs take locking reads on their FK parents
     # (tags, images, users) and the usage_count trigger on tag_links keeps those
-    # parent rows moving, so under innodb_snapshot_isolation a concurrent tag
-    # write aborts this one with ER_CHECKREAD (1020) — reported against the
-    # child table. Retry on a fresh snapshot instead of surfacing a 500 (see
-    # app/core/db_retry.py). The unit re-fetches its rows.
+    # parent rows moving. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry on a
+    # fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows.
     async def _apply_tag_add() -> int:
         # Verify tag exists and resolve aliases
         tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -2765,9 +2757,11 @@ async def rate_image(
     user_id: int = current_user.id
 
     # The rating INSERT/UPDATE and the image stats UPDATE are read-modify-write
-    # on shared rows, so under innodb_snapshot_isolation a concurrent commit can
-    # abort them with ER_CHECKREAD (1020). Retry on a fresh snapshot instead of
-    # surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its rows.
+    # on shared rows. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry on
+    # a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows.
     async def _apply_rating() -> tuple[str, RatingStats]:
         # Verify image exists
         image = await db.get(Images, image_id)
@@ -2838,10 +2832,12 @@ async def favorite_image(
     user_id: int = current_user.id
 
     # Incrementing image.favorites and current_user.favorites is read-modify-write
-    # on shared rows, so under innodb_snapshot_isolation a concurrent commit (a
-    # double-click is enough) can abort the UPDATE with ER_CHECKREAD (1020). Retry
-    # on a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
-    # The unit re-fetches its rows and re-checks idempotency so a retry re-decides.
+    # on shared rows. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry on
+    # a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows and re-checks idempotency so a retry
+    # re-decides.
     async def _apply_favorite() -> tuple[bool, int]:
         # Verify image exists
         image = await db.get(Images, image_id)
@@ -2918,9 +2914,11 @@ async def unfavorite_image(
     user_id: int = current_user.id
 
     # Decrementing image.favorites and current_user.favorites is read-modify-write
-    # on shared rows, so under innodb_snapshot_isolation a concurrent commit can
-    # abort the UPDATE with ER_CHECKREAD (1020). Retry on a fresh snapshot instead
-    # of surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its rows.
+    # on shared rows. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry on
+    # a fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows.
     async def _apply_unfavorite() -> int:
         # Verify image exists
         image = await db.get(Images, image_id)
@@ -3174,10 +3172,12 @@ async def upload_image(
         # Everything above is non-DB work. What remains is a short,
         # self-contained transaction: INSERT the row, name it from the id it
         # just minted, link tags, commit. Its tag_links/tag_history INSERTs take
-        # locking reads on FK parents that other taggers keep moving, so under
-        # innodb_snapshot_isolation it can abort with ER_CHECKREAD (1020) —
-        # retry it on a fresh snapshot (see app/core/db_retry.py). A rolled-back
-        # attempt just burns an auto-inc id.
+        # locking reads on FK parents that other taggers keep moving. This
+        # opted into the retry after a MariaDB snapshot conflict (ER_CHECKREAD)
+        # before the Postgres cutover; kept per ADR-0004, where it can now
+        # abort with a deadlock (SQLSTATE 40P01) — retry it on a fresh
+        # snapshot (see app/core/db_retry.py). A rolled-back attempt just
+        # burns an auto-inc id.
         async def _insert_image() -> Images:
             image = Images(
                 filename="",  # set below, from the id this INSERT mints

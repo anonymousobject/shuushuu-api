@@ -14,11 +14,12 @@ This approach eliminates field duplication while maintaining security boundaries
 from datetime import UTC, datetime
 
 from pydantic import field_validator
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import CheckConstraint, Column, ForeignKeyConstraint, Index, text
+from sqlalchemy.dialects.postgresql import CITEXT
 from sqlmodel import Field, SQLModel
 
 from app.config import TagType
-from app.models.types import UtcDateTime, ci_string
+from app.models.types import UtcDateTime
 
 
 class TagBase(SQLModel):
@@ -32,8 +33,8 @@ class TagBase(SQLModel):
     """
 
     # Basic information
-    # ci_string: title matching/dedupe is case-insensitive on both dialects
-    title: str | None = Field(default=None, max_length=255, sa_type=ci_string(255))  # type: ignore[call-overload]
+    # CITEXT (ADR-0008): title matching/dedupe is case-insensitive
+    title: str | None = Field(default=None, max_length=255, sa_type=CITEXT)
     desc: str | None = Field(default=None, max_length=200)
     type: int = Field(
         default=TagType.THEME,
@@ -108,6 +109,7 @@ class Tags(TagBase, table=True):
         Index("type_alias", "type", "alias_of"),
         Index("idx_tags_usage_count", "usage_count"),
         Index("idx_tags_title", "title"),
+        CheckConstraint("char_length(title) <= 255", name="ck_tags_title_len"),
     )
 
     # Primary key

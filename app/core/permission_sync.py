@@ -10,7 +10,6 @@ source of truth for permissions. On startup, it:
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import is_postgres
 from app.core.logging import get_logger
 from app.core.permissions import Permission
 from app.models.permissions import Perms
@@ -38,8 +37,7 @@ async def sync_permissions(db: AsyncSession) -> None:
     # has no unique constraint, so two workers that both read before either
     # commits would both insert the same row. A transaction-scoped advisory
     # lock serializes them; the commit below releases it.
-    if is_postgres(db):
-        await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _SYNC_LOCK_KEY})
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _SYNC_LOCK_KEY})
 
     # Get all existing permissions from DB
     result = await db.execute(select(Perms))

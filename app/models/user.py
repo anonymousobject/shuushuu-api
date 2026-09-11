@@ -14,10 +14,11 @@ This approach eliminates field duplication while maintaining security boundaries
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import CheckConstraint, Column, ForeignKeyConstraint, Index, text
+from sqlalchemy.dialects.postgresql import CITEXT
 from sqlmodel import Field, Relationship, SQLModel
 
-from app.models.types import UtcDateTime, ci_string
+from app.models.types import UtcDateTime
 
 if TYPE_CHECKING:
     from app.models.permissions import UserGroups
@@ -34,8 +35,8 @@ class UserBase(SQLModel):
     """
 
     # Basic information
-    # ci_string: login and uniqueness are case-insensitive on both dialects
-    username: str = Field(max_length=30, sa_type=ci_string(30))  # type: ignore[call-overload]
+    # CITEXT (ADR-0008): login and uniqueness are case-insensitive
+    username: str = Field(max_length=30, sa_type=CITEXT)
 
     # Public profile
     location: str | None = Field(default=None, max_length=100)
@@ -101,6 +102,8 @@ class Users(UserBase, table=True):
         Index("idx_user_posts", "posts"),
         Index("idx_user_image_posts", "image_posts"),
         Index("idx_user_favorites", "favorites"),
+        CheckConstraint("char_length(username) <= 30", name="ck_users_username_len"),
+        CheckConstraint("char_length(email) <= 120", name="ck_users_email_len"),
     )
 
     # Primary key
@@ -147,8 +150,8 @@ class Users(UserBase, table=True):
     )
 
     # Contact info (privacy-sensitive)
-    # ci_string: lookups (password reset) and uniqueness are case-insensitive
-    email: str = Field(max_length=120, sa_type=ci_string(120))  # type: ignore[call-overload]
+    # CITEXT (ADR-0008): lookups (password reset) and uniqueness are case-insensitive
+    email: str = Field(max_length=120, sa_type=CITEXT)
     email_verified: bool = Field(default=False)
     email_verification_token: str | None = Field(default=None, max_length=64)
     email_verification_sent_at: datetime | None = Field(

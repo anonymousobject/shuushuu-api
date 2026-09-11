@@ -107,7 +107,7 @@ class Comments(CommentBase, table=True):
         Index("fk_posts_parent_comment_id", "parent_comment_id"),
         Index("fk_posts_last_updated_user_id", "last_updated_user_id"),
         Index("fk_posts_user_id", "user_id"),
-        Index("idx_date", "date"),
+        Index("posts_idx_date", "date"),
     )
 
     # Primary key

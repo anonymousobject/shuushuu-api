@@ -2543,8 +2543,8 @@ class TestOwnerStatusChangeSyncsMlSuggestions:
 class TestTagUsageCount:
     """Tests for automatic tag usage_count updates via database triggers.
 
-    Both backends: the MariaDB migration chain and the Postgres bootstrap
-    (app/core/pg_triggers.py) each install the triggers under test.
+    The Postgres bootstrap (app/core/pg_triggers.py) installs the triggers
+    under test.
     """
 
     async def test_tag_usage_count_increments_on_add(
@@ -2962,7 +2962,7 @@ class TestCommentFilters:
         db_session.add_all([comment1, comment2, comment3])
         await db_session.commit()
 
-        # Search for "awesome" using LIKE mode (always works, doesn't need fulltext index)
+        # Search for "awesome" using explicit LIKE mode (raw string as one ILIKE substring)
         response = await client.get("/api/v1/images?commentsearch=awesome&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()
@@ -3092,7 +3092,7 @@ class TestCommentFilters:
         assert data["total"] == 1
         assert data["images"][0]["filename"] == "img1"
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_defaults_to_all_words(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3152,7 +3152,7 @@ class TestCommentFilters:
         response = await client.get("/api/v1/images?commentsearch=happy&commentsearch_mode=bogus")
         assert response.status_code == 422
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_short_token_does_not_zero_results(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3212,14 +3212,15 @@ class TestCommentFilters:
         response = await client.get("/api/v1/images?commentsearch=ab cd")
         assert response.status_code == 400
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_allows_short_non_ascii_terms(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """CJK must never be refused: LIKE is the only path it has.
 
-        MariaDB has no ngram parser, so a short Japanese term is unindexable by
-        definition. Refusing it would break Japanese comment search outright.
+        A short Japanese term is served by the ILIKE substring match, not a
+        minimum-length index lookup. Refusing it would break Japanese comment
+        search outright.
         """
         from app.models import Comments
 
@@ -3252,7 +3253,7 @@ class TestCommentFilters:
         response = await client.get("/api/v1/images?commentsearch=happy bd")
         assert response.status_code == 200
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_ignores_soft_deleted_comments(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3377,11 +3378,15 @@ class TestCommentFilters:
         returned = {img["image_id"] for img in response.json()["images"]}
         assert only_deleted.image_id not in returned
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_stopword_does_not_zero_results(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
-        """`the` is an InnoDB stopword; `+the +cat` returns 0 rows."""
+        """On Postgres, `the` is not a stopword: `commentsearch=the cat` matches
+        every comment containing both terms. Under MariaDB fulltext, `the` was
+        an InnoDB stopword excluded by the `+the +cat` boolean-mode query,
+        which is why this case exists.
+        """
         from app.models import Comments
 
         user = Users(
@@ -3509,7 +3514,7 @@ class TestCommentFilters:
         db_session.add_all([image1, image2])
         await db_session.flush()
 
-        # Add comments - using substring that fulltext might not find but LIKE will
+        # Add comments - "concatenation" contains "cat" as a substring, not a whole word
         comment1 = Comments(
             image_id=image1.image_id, user_id=user.id, post_text="concatenation test"
         )
@@ -3518,7 +3523,6 @@ class TestCommentFilters:
         await db_session.commit()
 
         # LIKE search: "cat" as substring should match "concatenation"
-        # Works in all environments (doesn't require FULLTEXT index)
         response = await client.get("/api/v1/images?commentsearch=cat&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()

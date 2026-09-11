@@ -11,10 +11,10 @@ Visibility rules:
 
 from datetime import datetime
 
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
-from app.models.types import UnsignedInt, UtcDateTime
+from app.models.types import UtcDateTime
 
 
 class ImageStatusHistoryBase(SQLModel):
@@ -86,8 +86,8 @@ class ImageStatusHistory(ImageStatusHistoryBase, table=True):
     # Originating report/review for this transition (set on the triage/review-close
     # paths; NULL for direct mod changes and legacy rows). Exposed mods-only in the API.
     # INT UNSIGNED to match the legacy-unsigned image_reports/image_reviews PKs.
-    report_id: int | None = Field(default=None, sa_column=Column(UnsignedInt, nullable=True))
-    review_id: int | None = Field(default=None, sa_column=Column(UnsignedInt, nullable=True))
+    report_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
+    review_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
 
     # Timestamp
     created_at: datetime | None = Field(

@@ -8,7 +8,6 @@ from the repost to the original image, then cleans up the repost.
 from sqlalchemy import TextClause, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import is_postgres
 from app.models.favorite import Favorites
 from app.models.image import Images
 from app.models.image_rating import ImageRatings
@@ -18,20 +17,13 @@ from app.services.ml_suggestion_review import approve_pending_suggestions_for_li
 from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 
-def _copy_to_original_sql(
-    db: AsyncSession, table: str, insert_cols: str, select_cols: str
-) -> TextClause:
-    """INSERT-or-skip-duplicates, copying `table` rows from the repost to the original.
-
-    MariaDB spells "skip duplicates" INSERT IGNORE; Postgres ON CONFLICT DO NOTHING.
-    """
-    base = (
-        f"INTO {table} ({insert_cols}) "
-        f"SELECT {select_cols} FROM {table} WHERE image_id = :repost_id"
+def _copy_to_original_sql(table: str, insert_cols: str, select_cols: str) -> TextClause:
+    """INSERT-or-skip-duplicates, copying `table` rows from the repost to the original."""
+    return text(
+        f"INSERT INTO {table} ({insert_cols}) "
+        f"SELECT {select_cols} FROM {table} WHERE image_id = :repost_id "
+        "ON CONFLICT DO NOTHING"
     )
-    if is_postgres(db):
-        return text(f"INSERT {base} ON CONFLICT DO NOTHING")
-    return text(f"INSERT IGNORE {base}")
 
 
 async def _tag_ids_for(db: AsyncSession, image_id: int) -> set[int]:
@@ -46,8 +38,8 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
     """
     Migrate favorites, ratings, and tags from a repost to the original image.
 
-    Uses INSERT IGNORE to handle duplicates: if a user already favorited/rated
-    the original, the repost's record is silently discarded.
+    Uses INSERT … ON CONFLICT DO NOTHING to skip duplicates: if a user already
+    favorited/rated the original, the repost's record is silently discarded.
 
     Args:
         repost_id: Image ID of the repost being marked
@@ -69,7 +61,7 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
 
     await db.execute(
         _copy_to_original_sql(
-            db, "favorites", "user_id, image_id, fav_date", "user_id, :original_id, fav_date"
+            "favorites", "user_id, image_id, fav_date", "user_id, :original_id, fav_date"
         ),
         {"original_id": original_id, "repost_id": repost_id},
     )
@@ -112,7 +104,6 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
 
     await db.execute(
         _copy_to_original_sql(
-            db,
             "image_ratings",
             "user_id, image_id, rating, date",
             "user_id, :original_id, rating, date",
@@ -145,9 +136,10 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
 
     # --- Tags ---
     # Read both sides' tag ids up front and diff them. tag_links is keyed on
-    # (tag_id, image_id), so the INSERT IGNORE below adds exactly the repost's
-    # tags that the original lacks — the difference IS the moved count, and it
-    # is also the precise scope of the suggestion resolution further down.
+    # (tag_id, image_id), so the INSERT … ON CONFLICT DO NOTHING below adds
+    # exactly the repost's tags that the original lacks — the difference IS the
+    # moved count, and it is also the precise scope of the suggestion resolution
+    # further down.
     # (Replaces a COUNT-before/COUNT-after pair plus a third SELECT of the
     # original's tag ids.)
     original_tag_ids_before = await _tag_ids_for(db, original_id)
@@ -157,7 +149,6 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
 
     await db.execute(
         _copy_to_original_sql(
-            db,
             "tag_links",
             "tag_id, image_id, date_linked, user_id",
             "tag_id, :original_id, date_linked, user_id",

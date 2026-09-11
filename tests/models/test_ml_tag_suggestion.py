@@ -61,11 +61,11 @@ async def test_status_tag_index_covers_confidence():
     list_pending_for_tag (app/services/ml_suggestion_queue.py) filters on
     status='pending' AND tag_id=? (both equality) AND confidence >= ?, then
     orders by confidence DESC. A 2-column (status, tag_id) index only serves
-    the equality predicates, so MariaDB has to filesort every pending row for
+    the equality predicates, so the planner has to sort every pending row for
     the tag before LIMIT applies -- a cost that scales with the per-tag
     backlog. Adding confidence as the third column lets the two leading
-    equality predicates narrow to a tight range, which MariaDB can then scan
-    on confidence (serving the >= filter) and read in reverse to satisfy
+    equality predicates narrow to a tight range, which the planner can then
+    scan on confidence (serving the >= filter) and read in reverse to satisfy
     ORDER BY confidence DESC without a sort.
     """
     engine = create_async_engine(TEST_DATABASE_URL)

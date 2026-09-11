@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies import CommentSortParams, PaginationParams
 from app.config import AdminActionType, ReportStatus
 from app.core.auth import get_current_user
-from app.core.database import get_db, is_postgres, statement_timeout
+from app.core.database import get_db, statement_timeout
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
 from app.models import Comments, Images, Users
@@ -58,7 +58,8 @@ async def list_comments(
             pattern="^(all_words|natural|boolean|like)$",
             description=(
                 "Search mode: all_words (default, every term required), "
-                "natural language fulltext (any term), boolean fulltext, or LIKE"
+                "like (whole string as one substring); natural and boolean "
+                "are accepted and behave as all_words"
             ),
         ),
     ] = None,
@@ -76,23 +77,21 @@ async def list_comments(
     - Sorting by date, post_id, or update_count
     - Filter by image, user, or text search
     - Date range filtering
-    - Multiple search modes (all_words, natural fulltext, boolean fulltext, LIKE)
+    - Search modes (all_words, like; natural and boolean accepted as all_words)
 
     **Search Modes:**
-    - `all_words` (default): every term must appear. Index-backed where the
-      fulltext index can see the term, LIKE where it cannot (short words,
-      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
-      or whitespace-only `search_text` applies no filter at all; a non-blank
+    - `all_words` (default): every term must appear, as a case-insensitive
+      substring match. Supports `"exact phrase"` and `-excluded`. A blank or
+      whitespace-only `search_text` applies no filter at all; a non-blank
       value with nothing searchable in it (e.g. `!!!`) matches zero comments.
-    - `natural`: MySQL fulltext natural language search — matches ANY term
-    - `boolean`: MySQL fulltext boolean search with raw operators
-    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`.
+    - `natural`, `boolean`: accepted for compatibility and behave as
+      `all_words`; operators such as `+` and `*` are ignored.
+    - `like`: the whole string as one substring match. Example: `?search_text=awesome`.
       `%` and `_` in the query are escaped to literals, not treated as wildcards.
 
-    **Boolean Mode Examples:**
-    - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
-    - `"exact phrase"`: Search for exact phrase
-    - `word*`: Wildcard search
+    **Search Examples:**
+    - `happy -terrible`: must contain "happy", must not contain "terrible"
+    - `"exact phrase"`: the words in that order
 
     **Examples:**
     - `/comments?image_id=123` - All comments on image 123
@@ -100,8 +99,9 @@ async def list_comments(
     - `/comments?user_id=5` - All comments by user 5
     - `/comments?search_text=happy birthday` - Comments containing BOTH words
     - `/comments?search_text=awesome&search_mode=like` - Simple search using LIKE
-    - `/comments?search_text=awesome&search_mode=natural` - Any-term match
-    - `/comments?search_text=+great -bad&search_mode=boolean` - Boolean fulltext
+    - `/comments?search_text=awesome&search_mode=natural` - behaves as all_words
+    - `/comments?search_text=+great -bad&search_mode=boolean` - behaves as
+      all_words; `+` is ignored, `-bad` still excludes
     - `/comments?date_from=2024-01-01` - Comments from 2024 onwards
     """
     # Build base query - exclude deleted comments
@@ -131,7 +131,6 @@ async def list_comments(
             query,
             search_text,  # type: ignore[arg-type]
             search_mode,
-            use_fulltext=not is_postgres(db),
         )
     # Only the text-search path can degrade to an unindexed scan; None makes the
     # bound a no-op so plain image_ids/user_id listings are untouched.

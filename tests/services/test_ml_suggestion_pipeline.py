@@ -767,7 +767,7 @@ async def test_persist_predictions_retries_transient_conflict(db_session, tmp_pa
     The pipeline writes ml_raw_predictions and ml_tag_suggestions for whatever
     image the worker is on while moderators write the same tables from the
     request path, so either side can lose a snapshot conflict or a deadlock
-    (#335). The unit is idempotent — INSERT IGNORE for the raw rows, keep-
+    (#335). The unit is idempotent — ON CONFLICT DO NOTHING for the raw rows, keep-
     existing for the suggestions — so a replay must leave exactly one row per
     suggested tag, not two.
     """

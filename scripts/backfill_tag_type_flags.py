@@ -14,28 +14,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.core.database import is_postgres
 
+# UPDATE ... FROM + bool_or, same shape as app/services/tag_type_flags.py.
 _BATCH_SQL = text(
-    """
-    UPDATE images i
-    LEFT JOIN (
-        SELECT tl.image_id,
-               MAX(t.type = 1) AS ht, MAX(t.type = 2) AS hs,
-               MAX(t.type = 3) AS ha, MAX(t.type = 4) AS hc
-        FROM tag_links tl JOIN tags t ON tl.tag_id = t.tag_id
-        WHERE tl.image_id >= :lo AND tl.image_id < :hi
-        GROUP BY tl.image_id
-    ) agg ON agg.image_id = i.image_id
-    SET i.has_theme = COALESCE(agg.ht, 0), i.has_source = COALESCE(agg.hs, 0),
-        i.has_artist = COALESCE(agg.ha, 0), i.has_character = COALESCE(agg.hc, 0)
-    WHERE i.image_id >= :lo AND i.image_id < :hi
-    """
-)
-
-# Postgres twin: UPDATE ... FROM + bool_or, same shape as
-# app/services/tag_type_flags.py's recompute pair.
-_BATCH_SQL_PG = text(
     """
     UPDATE images
     SET has_theme = COALESCE(agg.ht, FALSE), has_source = COALESCE(agg.hs, FALSE),
@@ -57,8 +38,7 @@ _BATCH_SQL_PG = text(
 
 async def backfill_range(db: AsyncSession, lo: int, hi: int) -> None:
     """Recompute flags for all images with image_id in [lo, hi). Does not commit."""
-    sql = _BATCH_SQL_PG if is_postgres(db) else _BATCH_SQL
-    await db.execute(sql, {"lo": lo, "hi": hi})
+    await db.execute(_BATCH_SQL, {"lo": lo, "hi": hi})
 
 
 async def backfill(batch: int, start: int) -> None:

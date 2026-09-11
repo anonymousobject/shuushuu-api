@@ -1,51 +1,22 @@
 """SQLAlchemy column types for the shuushuu-api models.
 
-UtcDateTime: a DateTime variant that round-trips tz-aware datetimes through
-MariaDB's tz-naive DATETIME. Stores values as UTC (tzinfo stripped); attaches
+UtcDateTime: a DateTime variant that round-trips tz-aware datetimes through a
+tz-naive TIMESTAMP column. Stores values as UTC (tzinfo stripped); attaches
 tzinfo=UTC on read. Naive datetimes are rejected on bind to avoid ambiguous
 "is this UTC or local?" assumptions.
-
-UnsignedInt: INT UNSIGNED, matching the legacy schema's ID columns. Models must
-declare the same signedness as the migrations, or create_all-built schemas
-(schema-sync tests) fail FK creation with errno 150 (signed PK <- unsigned FK).
-Postgres has no unsigned ints, so the variant maps to plain INTEGER there
-(values in these columns stay well under the signed 32-bit ceiling today; a
-real data migration must re-verify that).
-
-UnsignedSmallInt: SMALLINT UNSIGNED, same rationale, for the ml_models
-dictionary table (small enough to fit SMALLINT) and its FKs. Plain SMALLINT
-on Postgres.
 """
 
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, SmallInteger, String
-from sqlalchemy.dialects.mysql import INTEGER, SMALLINT
-from sqlalchemy.dialects.postgresql import CITEXT
-from sqlalchemy.types import TypeDecorator, TypeEngine
-
-# Shared type instances, not classes — use as Column(UnsignedInt, ...); don't call them.
-UnsignedInt = INTEGER(unsigned=True).with_variant(Integer(), "postgresql")
-UnsignedSmallInt = SMALLINT(unsigned=True).with_variant(SmallInteger(), "postgresql")
-
-
-def ci_string(length: int) -> TypeEngine[str]:
-    """VARCHAR(length) on MariaDB; citext on Postgres.
-
-    For natural-key columns (username, email, tag title) whose comparisons were
-    case-insensitive on MariaDB via utf8mb4_unicode_ci. Postgres compares
-    case-sensitively by default, which breaks login/uniqueness semantics; the
-    citext variant restores them at the type level. citext has no length
-    modifier — the length cap on Postgres is application validation only.
-    """
-    return String(length).with_variant(CITEXT(), "postgresql")
+from sqlalchemy import DateTime
+from sqlalchemy.types import TypeDecorator
 
 
 class UtcDateTime(TypeDecorator[datetime]):
     """DATETIME column that always exposes tz-aware UTC datetimes in Python.
 
-    MariaDB's DATETIME stores no tz info. Without this decorator, reads return
+    The column stores no tz info. Without this decorator, reads return
     naive datetimes that cannot be compared with `datetime.now(UTC)` without
     raising TypeError. This decorator centralizes the convention "DB stores
     UTC, Python sees aware" so call sites never need to strip or attach

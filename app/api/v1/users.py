@@ -41,7 +41,7 @@ from app.core.auth import (
     get_current_user_id,
     get_optional_current_user,
 )
-from app.core.database import get_db, is_postgres
+from app.core.database import get_db
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
@@ -147,11 +147,10 @@ async def list_users(
     sort_func = desc if sorting.sort_order == "DESC" else asc
 
     ordered_column: Any = sort_func(sort_column)  # type: ignore[arg-type]
-    if is_postgres(db) and sorting.sort_by in ("last_login", "last_active"):
-        # Nullable sort columns: MariaDB places NULLs first on ASC / last on
-        # DESC and that ordering is the API contract; Postgres defaults to the
-        # opposite. MariaDB has no NULLS FIRST/LAST syntax, so this is
-        # Postgres-only by construction.
+    if sorting.sort_by in ("last_login", "last_active"):
+        # Nullable sort columns: NULLs first on ASC / last on DESC is the API
+        # contract (inherited from the legacy site); Postgres defaults to the
+        # opposite, so say so explicitly.
         ordered_column = (
             ordered_column.nullslast()
             if sorting.sort_order == "DESC"
@@ -1181,15 +1180,17 @@ async def add_favorite_tag(
         tag_usage = tag.usage_count
 
         # The cap count, max(position) read, and INSERT below are a single
-        # unit that can hit ER_CHECKREAD (1020) under innodb_snapshot_isolation
-        # when it races another write on the same rows (e.g. a double-submit
-        # re-adding/reordering this tag-type). Retry on a fresh snapshot
-        # instead of surfacing a 500 (see app/core/db_retry.py; ADR-0004).
-        # The unit re-fetches its rows.
+        # unit that races another write on the same rows (e.g. a double-submit
+        # re-adding/reordering this tag-type). This opted into the retry after
+        # a MariaDB snapshot conflict (ER_CHECKREAD) before the Postgres
+        # cutover; kept per ADR-0004, where the transient error is now a
+        # deadlock (SQLSTATE 40P01). Retry on a fresh snapshot instead of
+        # surfacing a 500 (see app/core/db_retry.py). The unit re-fetches its
+        # rows.
         #
         # That retry does not close every race: two concurrent POSTs for
         # DIFFERENT tag_ids insert into different rows, so neither locks the
-        # other and no 1020 fires — both can still pass this cap check before
+        # other and no conflict fires — both can still pass this cap check before
         # either commits. That residual race is accepted: same-user only,
         # overshoot bounded to one per in-flight request, and positions
         # self-heal on the next reorder (which rewrites 0..n-1).
@@ -1344,13 +1345,14 @@ async def reorder_favorite_tags(
     # transaction, which expires ORM instances (including current_user).
     user_id: int = current_user.user_id
 
-    # Same shape as user_profile_update's confirmed 1020 site: a
+    # Same shape as user_profile_update's confirmed snapshot-conflict site: a
     # read-then-UPDATE-many-then-commit unit on rows this user exclusively
     # owns. A double-submit (or a reorder racing an add/remove touching the
-    # same rows) can abort the position UPDATEs under
-    # innodb_snapshot_isolation. Retry on a fresh snapshot instead of
-    # surfacing a 500 (see app/core/db_retry.py; ADR-0004). The unit
-    # re-fetches its rows.
+    # same rows) opted into the retry after a MariaDB snapshot conflict
+    # (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004, where
+    # the transient error is now a deadlock (SQLSTATE 40P01). Retry on a
+    # fresh snapshot instead of surfacing a 500 (see app/core/db_retry.py).
+    # The unit re-fetches its rows.
     async def _apply() -> None:
         rows: Sequence[UserFavoriteLinks] | Sequence[UserFavoriteTags]
         if body.category == "characters":

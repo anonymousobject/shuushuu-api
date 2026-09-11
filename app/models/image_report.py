@@ -17,7 +17,7 @@ from sqlalchemy import Column, ForeignKey, Index, Integer, text
 from sqlmodel import Field, SQLModel
 
 from app.config import ReportStatus
-from app.models.types import UnsignedInt, UtcDateTime
+from app.models.types import UtcDateTime
 
 
 class ImageReportBase(SQLModel):
@@ -73,7 +73,7 @@ class ImageReports(ImageReportBase, table=True):
     # Primary key (INT UNSIGNED in the legacy schema, as are all FKs to it)
     report_id: int | None = Field(
         default=None,
-        sa_column=Column(UnsignedInt, primary_key=True, autoincrement=True),
+        sa_column=Column(Integer, primary_key=True, autoincrement=True),
     )
 
     # Override to add foreign keys with CASCADE behavior

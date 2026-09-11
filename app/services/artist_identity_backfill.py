@@ -50,8 +50,8 @@ class BackfillReport:
 def _identity_key(site: str, external_id: str) -> tuple[str, str]:
     """Normalize a (site, external_id) pair the way the DB will compare it.
 
-    `site`/`external_id` are ci_string columns (ADR-0008): case-insensitive
-    at the DB level on both dialects. Plain Python dict/set lookups get no
+    `site`/`external_id` are citext columns (ADR-0008): case-insensitive
+    at the DB level. Plain Python dict/set lookups get no
     such folding, so every in-memory owners-map key goes through here rather
     than a bare tuple -- today this is a no-op (the parser only ever emits
     the lowercase 'pixiv' constant and digit-only ids), but the invariant
