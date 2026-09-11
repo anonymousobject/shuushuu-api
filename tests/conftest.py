@@ -42,9 +42,7 @@ from app.main import app as main_app
 # Override via environment variables if your local setup differs
 
 DEFAULT_TEST_DB_USER = "shuushuu"
-DEFAULT_TEST_DB_PASSWORD = (
-    "shuushuu_password"  # Matches local .env; CI overrides via TEST_DATABASE_URL
-)
+DEFAULT_TEST_DB_PASSWORD = "pg_dev_password"  # Matches the compose dev default; run-tests.sh and CI override via TEST_DATABASE_URL
 DEFAULT_TEST_DB_HOST = "localhost"
 DEFAULT_TEST_DB_PORT = "5432"
 DEFAULT_TEST_DB_NAME = (

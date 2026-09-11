@@ -234,6 +234,6 @@ exclude_lines = [
 
 [tool.alembic]
 # Alembic migration configuration
-# Database URL is set dynamically in alembic/env.py from settings.DATABASE_URL_SYNC
+# Database URL is set dynamically in alembic/env.py from settings.DATABASE_URL
 script_location = "alembic"
 # All other settings use Alembic defaults

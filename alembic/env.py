@@ -20,7 +20,7 @@ from app.config import settings
 
 config = context.config
 
-# URL precedence (highest to lowest), matching alembic/env.py:
+# URL precedence (highest to lowest):
 #   1. -x dbUrl=...     CLI override
 #   2. $ALEMBIC_DB_URL  programmatic override (tests/conftest.py)
 #   3. settings.DATABASE_URL  the application's configured DB (async URL —
