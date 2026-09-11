@@ -32,7 +32,7 @@ from sqlalchemy.orm import aliased, selectinload
 from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
 from app.config import ImageStatus, TagAuditActionType, TagType
 from app.core.auth import get_current_user, get_optional_current_user
-from app.core.database import get_db, is_postgres
+from app.core.database import get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
 from app.core.redis import get_redis
@@ -151,100 +151,6 @@ async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalL
 character_source_links_router = APIRouter(
     prefix="/character-source-links", tags=["character-source-links"]
 )
-
-# MySQL/MariaDB default fulltext stopwords that cause search failures when used with `+` (required) operator
-# Source: INFORMATION_SCHEMA.INNODB_FT_DEFAULT_STOPWORD
-FULLTEXT_STOPWORDS = frozenset(
-    {
-        "a",
-        "about",
-        "an",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "com",
-        "de",
-        "en",
-        "for",
-        "from",
-        "how",
-        "i",
-        "in",
-        "is",
-        "it",
-        "la",
-        "of",
-        "on",
-        "or",
-        "that",
-        "the",
-        "this",
-        "to",
-        "was",
-        "what",
-        "when",
-        "where",
-        "who",
-        "will",
-        "with",
-        "und",
-        "www",
-    }
-)
-
-# Minimum token size for InnoDB fulltext (innodb_ft_min_token_size default is 3)
-FULLTEXT_MIN_TOKEN_SIZE = 3
-
-# MySQL fulltext boolean operators that need to be stripped from search terms
-# These characters have special meaning in BOOLEAN MODE and could cause unexpected behavior
-# e.g., "C++" would create "+C++*" which interprets the extra + as operators
-FULLTEXT_SPECIAL_CHARS = frozenset('+-~*"()><@')
-
-# Characters that MySQL/MariaDB InnoDB fulltext parser typically treats as word delimiters.
-# This is an approximation of default tokenization behavior in BOOLEAN MODE, used only for
-# local validation to determine if a search term will produce valid tokens.
-#
-# Derived from testing against default InnoDB FULLTEXT indexes on MariaDB with utf8mb4.
-# Actual delimiters may vary by server version, storage engine, charset, collation, or
-# custom fulltext parser configuration. If any change, verify against current behavior.
-#
-# These split terms into separate tokens, which may result in tokens too short for fulltext.
-# e.g., "C.C." becomes ["C", "C"] which are both below min token size.
-FULLTEXT_WORD_DELIMITERS = frozenset(" \n\t;:!?.'\"`()[]{}|&/\\,-=~")
-
-# Pre-computed translation table for efficient delimiter replacement (used by str.translate)
-_DELIMITER_TRANS_TABLE = str.maketrans(dict.fromkeys(FULLTEXT_WORD_DELIMITERS, " "))
-
-
-def _sanitize_fulltext_term(term: str) -> str:
-    """Remove MySQL fulltext boolean operators from a search term."""
-    return "".join(char for char in term if char not in FULLTEXT_SPECIAL_CHARS)
-
-
-def _get_fulltext_tokens(term: str) -> list[str]:
-    """
-    Simulate MySQL fulltext tokenization of a term.
-
-    MySQL splits on word delimiters, so "C.C." becomes ["C", "C"].
-    This helps determine if a term will actually produce searchable tokens.
-    """
-    # Replace all delimiters with spaces using pre-computed translation table, then split
-    return term.translate(_DELIMITER_TRANS_TABLE).split()
-
-
-def _has_valid_fulltext_tokens(term: str) -> bool:
-    """
-    Check if a term will produce at least one valid fulltext token.
-
-    A token is valid if it's >= FULLTEXT_MIN_TOKEN_SIZE after tokenization.
-    e.g., "C.C." -> False (tokens are "C", "C", both < 3)
-    e.g., "sakura" -> True (token is "sakura", >= 3)
-    """
-    tokens = _get_fulltext_tokens(term)
-    return any(len(t) >= FULLTEXT_MIN_TOKEN_SIZE for t in tokens)
-
 
 # TODO: Create tag proposal/review system. Let users petition for new tags, and allow admins to review and approve them.
 
@@ -623,9 +529,10 @@ async def list_tags(
 
     Uses a hybrid approach for optimal UX:
     - **Short queries (< 3 chars)**: Prefix matching (e.g., "sa" finds "sakura kinomoto")
-    - **Long queries (≥ 3 chars)**: Full-text search (word-order independent)
+    - **Long queries (≥ 3 chars)**: every word must appear as a case-insensitive
+      substring (word-order independent)
 
-    The full-text search solves the Japanese character name problem:
+    Matching per word solves the Japanese character name problem:
     Searching "sakura kinomoto" will find tags with "kinomoto sakura" in any word order.
 
     When filtering by IDs, invalid (non-numeric) IDs are reported in the response
@@ -674,90 +581,20 @@ async def list_tags(
         else:
             # All IDs were invalid - return empty result
             query = query.where(False)  # type: ignore[arg-type]
-    # Track whether we're using fulltext search and what query string
-    fulltext_query_str: str | None = None
-
-    # Postgres has no MySQL FULLTEXT; its LIKE is also case-sensitive (the
-    # MariaDB columns are *_ci), so the fallback uses ILIKE.
-    use_fulltext = not is_postgres(db)
-
     if search:
-        # Hybrid search strategy:
-        # - Queries < 3 chars: Use LIKE (autocomplete, prefix matching)
-        # - Queries >= 3 chars: Use FULLTEXT MATCH with wildcard expansion (word-order independent + partial words)
-        #
-        # This handles both:
-        # 1. Japanese name problem: "sakura kinomoto" finds "kinomoto sakura" (word-order independence)
-        # 2. Partial word matching: "thig" finds "thighs" (wildcard expansion)
+        # Hybrid: queries under 3 chars are a prefix match (autocomplete);
+        # longer ones AND a case-insensitive contains-match per word, which
+        # keeps word order independent ("sakura kinomoto" finds "kinomoto
+        # sakura") and matches partial words ("thig" finds "thighs").
         if len(search) < 3:
-            # Short query: prefix match with LIKE (e.g., "sa" -> "sakura")
             # Escape LIKE special characters to prevent unintended wildcard matching
             escaped_search = escape_like_pattern(search)
-            prefix_pattern = f"{escaped_search}%"
-            query = query.where(
-                Tags.title.like(prefix_pattern)  # type: ignore[union-attr]
-                if use_fulltext
-                else Tags.title.ilike(prefix_pattern)  # type: ignore[union-attr]
-            )
-        elif not use_fulltext:
-            # Postgres: no index tokenizer to mirror — AND of case-insensitive
-            # contains matches per word keeps word-order independence.
-            # fulltext_query_str stays None so relevance ordering below takes
-            # the LIKE branch (built on portable lower() comparisons).
+            query = query.where(Tags.title.ilike(f"{escaped_search}%"))  # type: ignore[union-attr]
+        else:
             for word in search.split():
                 query = query.where(
                     Tags.title.ilike(f"%{escape_like_pattern(word)}%")  # type: ignore[union-attr]
                 )
-        else:
-            # Long query: word-order independent full-text search with wildcard expansion
-            # Split search into words and add wildcard to each word to match partial terms
-            # e.g., "sakura kinomoto" -> "+sakura* +kinomoto*"
-            #
-            # IMPORTANT: Filter out stopwords and short terms to prevent search failures.
-            # MySQL/MariaDB fulltext treats words like "the", "a", "of" as stopwords.
-            # When combined with `+` (required), the entire query fails if a stopword is required.
-            # Also, terms shorter than innodb_ft_min_token_size (default 3) are ignored.
-            # Additionally, strip special fulltext boolean operators from terms to prevent
-            # unexpected behavior (e.g., "C++" becoming "+C++*" with extra operators).
-            search_terms = search.split()
-            # Tokenize and sanitize terms to match MySQL/MariaDB fulltext behavior.
-            # First split on word delimiters (hyphens, periods, etc.) the same way
-            # MySQL does, then strip boolean operators from each token. This ensures
-            # "deep-blue" becomes tokens ["deep", "blue"] matching how the indexed
-            # data is tokenized.
-            #
-            # Filter out stopwords and tokens below minimum size to prevent query
-            # failures (required stopwords cause the entire BOOLEAN MODE query to fail).
-            valid_terms = []
-            for term in search_terms:
-                # Tokenize FIRST (split on delimiters like -, ., etc.) to match
-                # how MySQL tokenizes indexed data, THEN sanitize each token
-                # (strip boolean operators). Order matters: "-" is both a delimiter
-                # and a boolean operator, so tokenizing first preserves the split.
-                tokens = _get_fulltext_tokens(term)
-                for token in tokens:
-                    sanitized = _sanitize_fulltext_term(token)
-                    if not sanitized:
-                        continue
-                    if sanitized.lower() in FULLTEXT_STOPWORDS:
-                        continue
-                    if len(sanitized) >= FULLTEXT_MIN_TOKEN_SIZE:
-                        valid_terms.append(sanitized)
-
-            if valid_terms:
-                # Build fulltext query with valid terms only
-                fulltext_query_str = " ".join(f"+{term}*" for term in valid_terms)
-                query = query.where(
-                    text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
-                        search=fulltext_query_str
-                    )
-                )
-            else:
-                # All terms were stopwords or too short - fall back to LIKE prefix search
-                # This handles edge cases like searching for "The" or "A" or "The A"
-                # Escape LIKE special characters to prevent unintended wildcard matching
-                escaped_search = escape_like_pattern(search)
-                query = query.where(Tags.title.like(f"{escaped_search}%"))  # type: ignore[union-attr]
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
     if parent_tag_id is not None:
@@ -822,31 +659,19 @@ async def list_tags(
         sort_column = sort_column_map[sorting.sort_by]
         query = query.order_by(sort_func(sort_column), sort_func(Tags.tag_id))  # type: ignore[arg-type]
     elif search:
-        # No explicit sort_by + search: use relevance ranking
-        if len(search) < 3 or not fulltext_query_str:
-            # Short query or fallback to LIKE (prefix match): prioritize exact and starts-with
-            query = query.order_by(
-                case(
-                    (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
-                    (
-                        func.lower(Tags.title).like(f"{search.lower()}%"),
-                        1,
-                    ),  # Starts with (case-insensitive)
-                    else_=2,  # Contains (middle/end)
-                ),
-                func.lower(Tags.title),  # Alphabetical within each priority group
-            )
-        else:
-            # Long query (full-text): prioritize exact matches, then sort by relevance
-            query = query.order_by(
-                case(
-                    (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
-                    else_=1,  # Non-exact matches
-                ),
-                text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE) DESC"),
-                desc(Tags.usage_count),  # type: ignore[arg-type]  # Most popular tags first
-                func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
-            ).params(search=fulltext_query_str)
+        # No explicit sort_by + search: relevance ranking — exact match first,
+        # then prefix matches, then the rest; alphabetical within each group.
+        query = query.order_by(
+            case(
+                (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
+                (
+                    func.lower(Tags.title).like(f"{search.lower()}%"),
+                    1,
+                ),  # Starts with (case-insensitive)
+                else_=2,  # Contains (middle/end)
+            ),
+            func.lower(Tags.title),  # Alphabetical within each priority group
+        )
     else:
         # No search, no explicit sort_by: default to usage_count, honoring
         # sort_order. Only reachable with exclude_aliases (aliases-visible

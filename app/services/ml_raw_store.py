@@ -99,7 +99,7 @@ async def ingest_raw_predictions(
     3. Collects ``(image_id, model_id, external_tag_id, confidence)`` rows,
        skipping predictions whose ``external_tag`` is not in the dictionary.
     4. Bulk-inserts in batches of up to :data:`_BATCH_SIZE` rows using
-       ``INSERT IGNORE`` so re-running is idempotent.  The sum of
+       ``INSERT … ON CONFLICT DO NOTHING`` so re-running is idempotent.  The sum of
        ``rowcount`` values across batches is returned; this equals 0 on a
        pure re-run because existing composite-PK rows are silently skipped.
 

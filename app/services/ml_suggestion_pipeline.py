@@ -353,9 +353,10 @@ async def persist_predictions(
     for whatever image the worker is on while the request path writes the same
     tables (a moderator flagging a repost, a tagger approving suggestions), so
     either side can lose a snapshot conflict or a deadlock (#335). Replay is
-    safe because both halves are idempotent — INSERT IGNORE for the raw rows,
-    keep-existing for the suggestions — and both re-read everything they need
-    from the session rather than closing over rows the rollback expired.
+    safe because both halves are idempotent — INSERT … ON CONFLICT DO NOTHING
+    for the raw rows, keep-existing for the suggestions — and both re-read
+    everything they need from the session rather than closing over rows the
+    rollback expired.
     ``raw_predictions`` is plain dicts, so it survives the rollback untouched."""
 
     async def _persist() -> int:

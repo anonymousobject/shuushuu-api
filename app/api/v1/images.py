@@ -48,7 +48,7 @@ from app.config import (
     settings,
 )
 from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
-from app.core.database import get_db, is_postgres, statement_timeout
+from app.core.database import get_db, statement_timeout
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
@@ -537,20 +537,18 @@ async def list_images(
     - Comment filtering (by commenter user ID, text search, or presence)
 
     **Comment Search Modes:**
-    - `all_words` (default): every term must appear. Index-backed where the
-      fulltext index can see the term, LIKE where it cannot (short words,
-      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
-      or whitespace-only `commentsearch` applies no filter at all; a non-blank
+    - `all_words` (default): every term must appear, as a case-insensitive
+      substring match. Supports `"exact phrase"` and `-excluded`. A blank or
+      whitespace-only `commentsearch` applies no filter at all; a non-blank
       value with nothing searchable in it (e.g. `!!!`) matches zero comments.
-    - `natural`: MySQL fulltext natural language search — matches ANY term
-    - `boolean`: MySQL fulltext boolean search with raw operators
-    - `like`: Simple pattern matching, works anywhere. `%` and `_` in the query
+    - `natural`, `boolean`: accepted for compatibility and behave as
+      `all_words`; operators such as `+` and `*` are ignored.
+    - `like`: the whole string as one substring match. `%` and `_` in the query
       are escaped to literals, not treated as wildcards.
 
-    **Boolean Mode Examples:**
-    - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
-    - `"exact phrase"`: Search for exact phrase
-    - `word*`: Wildcard search
+    **Search Examples:**
+    - `happy -terrible`: must contain "happy", must not contain "terrible"
+    - `"exact phrase"`: the words in that order
 
     **Examples:**
     - `/images?tags=1,2,3&tags_mode=all` - Images with ALL tags 1, 2, and 3
@@ -819,12 +817,7 @@ async def list_images(
         if commenter is not None:
             query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
         if commentsearch is not None:
-            query = apply_comment_text_search(
-                query,
-                commentsearch,
-                commentsearch_mode,
-                use_fulltext=not is_postgres(db),
-            )
+            query = apply_comment_text_search(query, commentsearch, commentsearch_mode)
     elif hascomments is True:
         # Use posts counter field (fast indexed lookup)
         query = query.where(Images.posts > 0)  # type: ignore[arg-type]
@@ -1969,13 +1962,10 @@ async def get_image_reposts(
     if not image_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Nullable sort column: MariaDB places NULLs last on a DESC sort, Postgres
-    # places them first. A legacy repost with no status_updated belongs at the
-    # bottom on both. MariaDB has no NULLS LAST syntax, so this is Postgres-only
-    # by construction (same pattern as the user list in app/api/v1/users.py).
-    status_updated_desc: Any = desc(Images.status_updated)  # type: ignore[arg-type]
-    if is_postgres(db):
-        status_updated_desc = status_updated_desc.nullslast()
+    # Nullable sort column: Postgres puts NULLs first on DESC, but a legacy
+    # repost with no status_updated belongs at the bottom (same pattern as the
+    # user list in app/api/v1/users.py).
+    status_updated_desc: Any = desc(Images.status_updated).nullslast()  # type: ignore[arg-type]
 
     # Eager load user groups for UserSummary; outer join because status_user_id
     # is NULL on legacy rows.

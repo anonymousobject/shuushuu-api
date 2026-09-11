@@ -38,8 +38,8 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
     """
     Migrate favorites, ratings, and tags from a repost to the original image.
 
-    Uses INSERT IGNORE to handle duplicates: if a user already favorited/rated
-    the original, the repost's record is silently discarded.
+    Uses INSERT … ON CONFLICT DO NOTHING to skip duplicates: if a user already
+    favorited/rated the original, the repost's record is silently discarded.
 
     Args:
         repost_id: Image ID of the repost being marked
@@ -136,9 +136,10 @@ async def migrate_repost_data(repost_id: int, original_id: int, db: AsyncSession
 
     # --- Tags ---
     # Read both sides' tag ids up front and diff them. tag_links is keyed on
-    # (tag_id, image_id), so the INSERT IGNORE below adds exactly the repost's
-    # tags that the original lacks — the difference IS the moved count, and it
-    # is also the precise scope of the suggestion resolution further down.
+    # (tag_id, image_id), so the INSERT … ON CONFLICT DO NOTHING below adds
+    # exactly the repost's tags that the original lacks — the difference IS the
+    # moved count, and it is also the precise scope of the suggestion resolution
+    # further down.
     # (Replaces a COUNT-before/COUNT-after pair plus a third SELECT of the
     # original's tag ids.)
     original_tag_ids_before = await _tag_ids_for(db, original_id)

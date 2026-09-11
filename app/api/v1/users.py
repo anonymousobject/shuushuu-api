@@ -41,7 +41,7 @@ from app.core.auth import (
     get_current_user_id,
     get_optional_current_user,
 )
-from app.core.database import get_db, is_postgres
+from app.core.database import get_db
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
@@ -147,11 +147,10 @@ async def list_users(
     sort_func = desc if sorting.sort_order == "DESC" else asc
 
     ordered_column: Any = sort_func(sort_column)  # type: ignore[arg-type]
-    if is_postgres(db) and sorting.sort_by in ("last_login", "last_active"):
-        # Nullable sort columns: MariaDB places NULLs first on ASC / last on
-        # DESC and that ordering is the API contract; Postgres defaults to the
-        # opposite. MariaDB has no NULLS FIRST/LAST syntax, so this is
-        # Postgres-only by construction.
+    if sorting.sort_by in ("last_login", "last_active"):
+        # Nullable sort columns: NULLs first on ASC / last on DESC is the API
+        # contract (inherited from the legacy site); Postgres defaults to the
+        # opposite, so say so explicitly.
         ordered_column = (
             ordered_column.nullslast()
             if sorting.sort_order == "DESC"
