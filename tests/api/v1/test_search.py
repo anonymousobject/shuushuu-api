@@ -357,6 +357,21 @@ class TestTagListFilters:
         titles, total = await self._titles(client, aliases="all", min_usage=100)
         assert set(titles) == {"feline", "feline alias"} and total == 2
 
+    async def test_max_usage_bounds_the_effective_count(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        await self._seed_family(db_session)
+        titles, total = await self._titles(client, aliases="all", min_usage=100, max_usage=600)
+        assert set(titles) == {"feline", "feline alias"} and total == 2
+        titles, total = await self._titles(client, max_usage=10)
+        assert set(titles) == {"feline child", "feline loner"} and total == 2
+
+    async def test_min_usage_above_max_usage_is_422(self, client: AsyncClient):
+        response = await client.get(
+            "/api/v1/search", params={"q": "", "min_usage": 5, "max_usage": 4}
+        )
+        assert response.status_code == 422
+
     async def test_added_range(self, client: AsyncClient, db_session: AsyncSession):
         family = await self._seed_family(db_session)
         family["loner"].date_added = datetime(2020, 6, 15, 12, 0, tzinfo=UTC)
@@ -410,6 +425,8 @@ class TestTagListFilters:
             {"aliases": "sometimes"},
             {"min_usage": -1},
             {"min_usage": 2147483648},
+            {"max_usage": -1},
+            {"max_usage": 2147483648},
             {"has_alias": "maybe"},
             {"added_from": "2020-13-01"},
         ],

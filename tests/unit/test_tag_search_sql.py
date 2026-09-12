@@ -126,6 +126,19 @@ class TestBuildSearch:
         st = _build("sakura", SearchFilters(aliases="hide"))
         assert "parent" not in st.count_sql
 
+    @pytest.mark.parametrize("query", ["", "sa", "sakura"])
+    def test_max_usage_uses_effective_count_and_joins_parent_in_count(self, query: str):
+        st = _build(query, SearchFilters(max_usage=5))
+        for sql in (st.ids_sql, st.count_sql):
+            assert "COALESCE(parent.usage_count, t.usage_count) <= :max_usage" in sql
+        assert "LEFT JOIN tags parent ON parent.tag_id = t.alias_of" in st.count_sql
+        assert st.params["max_usage"] == 5
+
+    def test_min_and_max_usage_together(self):
+        st = _build("", SearchFilters(min_usage=10, max_usage=20))
+        assert ">= :min_usage" in st.count_sql and "<= :max_usage" in st.count_sql
+        assert SearchFilters(max_usage=0).is_structural
+
     def test_added_range_binds_naive_utc_midnights(self):
         st = _build("", SearchFilters(added_from=date(2020, 6, 1), added_to=date(2020, 6, 30)))
         assert "t.date_added >= :added_from_ts" in st.ids_sql

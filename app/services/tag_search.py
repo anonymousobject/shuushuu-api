@@ -98,6 +98,7 @@ class SearchFilters:
     type_filter: int | None = None
     aliases: Aliases = "all"
     min_usage: int | None = None
+    max_usage: int | None = None
     added_from: date | None = None
     added_to: date | None = None
     has_alias: YesNo | None = None
@@ -112,6 +113,7 @@ class SearchFilters:
             value is not None
             for value in (
                 self.min_usage,
+                self.max_usage,
                 self.added_from,
                 self.added_to,
                 self.has_alias,
@@ -140,6 +142,9 @@ def _filter_clauses(filters: SearchFilters, params: dict[str, Any]) -> list[str]
     if filters.min_usage is not None:
         clauses.append(f"{_EFFECTIVE_USAGE} >= :min_usage")
         params["min_usage"] = filters.min_usage
+    if filters.max_usage is not None:
+        clauses.append(f"{_EFFECTIVE_USAGE} <= :max_usage")
+        params["max_usage"] = filters.max_usage
     # date_added is a naive UTC timestamp: bind naive midnights, half-open at
     # the far end so the column stays bare for a future index.
     if filters.added_from is not None:
@@ -235,7 +240,11 @@ def build_search(
     params: dict[str, Any] = {"limit": limit, "offset": offset}
     filters_sql = _filter_clauses(filters, params)
     # The count needs the parent join only when the effective count is filtered.
-    count_from = _BASE_FROM if filters.min_usage is not None else "FROM tags t"
+    count_from = (
+        _BASE_FROM
+        if filters.min_usage is not None or filters.max_usage is not None
+        else "FROM tags t"
+    )
     order = _order_clause(sort)
 
     # Empty query: list every tag.

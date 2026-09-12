@@ -78,6 +78,17 @@ async def search(
             ),
         ),
     ] = None,
+    max_usage: Annotated[
+        int | None,
+        Query(
+            ge=0,
+            le=2_147_483_647,
+            description=(
+                "Maximum effective usage count (the parent's for aliases); "
+                "capped at the Postgres integer range"
+            ),
+        ),
+    ] = None,
     added_from: Annotated[date | None, Query(description="Added on or after this UTC date")] = None,
     added_to: Annotated[date | None, Query(description="Added on or before this UTC date")] = None,
     has_alias: Annotated[
@@ -104,6 +115,8 @@ async def search(
     """Search tags. Relevance order unless sort_by is given, in which case the sort dominates."""
     if added_from is not None and added_to is not None and added_from > added_to:
         raise HTTPException(status_code=422, detail="added_from must not be after added_to")
+    if min_usage is not None and max_usage is not None and min_usage > max_usage:
+        raise HTTPException(status_code=422, detail="min_usage must not exceed max_usage")
     if source_linked is not None and type_id not in (TagType.SOURCE, TagType.CHARACTER):
         raise HTTPException(
             status_code=422, detail="source_linked requires type 2 (source) or 4 (character)"
@@ -112,6 +125,7 @@ async def search(
         type_filter=type_id,
         aliases=aliases,
         min_usage=min_usage,
+        max_usage=max_usage,
         added_from=added_from,
         added_to=added_to,
         has_alias=has_alias,

@@ -186,6 +186,13 @@ async def seed_corpus(db_session: AsyncSession) -> dict[str, Tags]:
     return by_title
 
 
+def by_title_usage(by_title: dict[str, Tags], tag: Tags) -> int:
+    if tag.alias_of is None:
+        return tag.usage_count
+    parent = next(t for t in by_title.values() if t.tag_id == tag.alias_of)
+    return parent.usage_count
+
+
 def titles_for(by_title: dict[str, Tags], result) -> list[str]:
     id_to_title = {tag.tag_id: title for title, tag in by_title.items()}
     return [id_to_title[tag_id] for tag_id in result.tag_ids]
@@ -287,6 +294,23 @@ class TestSearchCorpus:
         assert "sakura" in titles  # alias of cherry blossoms (21,476)
         assert "Sakura" not in titles  # the character has 797
         assert result.total == len(result.tag_ids)
+
+    async def test_max_usage_zero_excludes_aliases_of_used_tags(self, db_session: AsyncSession):
+        by_title = await seed_corpus(db_session)
+        unused = await search_tags(
+            db_session, "", filters=SearchFilters(aliases="all", max_usage=0), limit=100
+        )
+        assert unused.total == 0  # every zero-count row in the corpus is an alias of a used tag
+        rare = await search_tags(
+            db_session, "", filters=SearchFilters(aliases="all", max_usage=1), limit=100
+        )
+        titles = titles_for(by_title, rare)
+        assert titles and "Kinomoto Sakura" not in titles
+        assert rare.total == len(rare.tag_ids)
+        for title in titles:
+            tag = by_title[title]
+            effective = by_title_usage(by_title, tag)
+            assert effective <= 1, (title, effective)
 
     async def test_aliases_only(self, db_session: AsyncSession):
         by_title = await seed_corpus(db_session)
