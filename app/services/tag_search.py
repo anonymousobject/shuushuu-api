@@ -163,13 +163,14 @@ def _filter_clauses(filters: SearchFilters, params: dict[str, Any]) -> list[str]
     if filters.has_children is not None:
         clauses.append(
             _exists(
-                "SELECT 1 FROM tags c WHERE c.inheritedfrom_id = t.tag_id", filters.has_children
+                "SELECT 1 FROM tags child WHERE child.inheritedfrom_id = t.tag_id",
+                filters.has_children,
             )
         )
     if filters.source_linked is not None:
-        column = _SOURCE_LINK_COLUMN.get(filters.type_filter or 0)
-        if column is None:
+        if filters.type_filter not in _SOURCE_LINK_COLUMN:
             raise ValueError("source_linked requires type_filter 2 (source) or 4 (character)")
+        column = _SOURCE_LINK_COLUMN[filters.type_filter]
         clauses.append(
             _exists(
                 f"SELECT 1 FROM character_source_links l WHERE l.{column} = t.tag_id",

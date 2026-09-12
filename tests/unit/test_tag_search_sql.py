@@ -155,8 +155,14 @@ class TestBuildSearch:
     def test_has_children_yes_and_no(self):
         yes = _build("", SearchFilters(has_children="yes"))
         no = _build("", SearchFilters(has_children="no"))
-        assert "EXISTS (SELECT 1 FROM tags c WHERE c.inheritedfrom_id = t.tag_id)" in yes.ids_sql
-        assert "NOT EXISTS (SELECT 1 FROM tags c WHERE c.inheritedfrom_id = t.tag_id)" in no.ids_sql
+        assert (
+            "EXISTS (SELECT 1 FROM tags child WHERE child.inheritedfrom_id = t.tag_id)"
+            in yes.ids_sql
+        )
+        assert (
+            "NOT EXISTS (SELECT 1 FROM tags child WHERE child.inheritedfrom_id = t.tag_id)"
+            in no.ids_sql
+        )
 
     def test_source_linked_picks_the_column_by_type(self):
         character = _build("", SearchFilters(type_filter=4, source_linked="yes"))
