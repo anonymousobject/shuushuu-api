@@ -4,13 +4,16 @@ Seeds the titles behind every query in the design doc's appendix, with the
 decoys that broke earlier ranking attempts, and asserts the top hit by title.
 """
 
+from datetime import UTC, date, datetime
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.tag import Tags
 from app.models.tag_external_link import TagExternalLinks
-from app.services.tag_search import search_tags
+from app.services.tag_search import SearchFilters, search_tags
 
 # (title, type, usage_count, desc, alias_of_title, urls)
 CORPUS = [
@@ -97,6 +100,21 @@ CORPUS = [
     ("Louise Françoise le Blanc de la Vallière", TagType.CHARACTER, 447, "", None, []),
     ("Francoise", TagType.CHARACTER, 3, "", None, []),
     ("Claire Francois", TagType.CHARACTER, 50, "", None, []),
+    ("sailor uniform", TagType.THEME, 30000, "", None, []),
+    ("blazer", TagType.THEME, 12000, "", None, []),
+    ("Cardcaptor Sakura", TagType.SOURCE, 6000, "", None, []),
+]
+
+# (parent_title, child_title): inheritedfrom_id wiring
+HIERARCHY = [
+    ("school uniform", "sailor uniform"),
+    ("school uniform", "blazer"),
+    ("Pokémon", "Pokémon Adventures"),
+]
+# (character_title, source_title): character_source_links rows
+SOURCE_LINKS = [
+    ("Kinomoto Sakura", "Cardcaptor Sakura"),
+    ("Kinomoto Touya", "Cardcaptor Sakura"),
 ]
 
 # (query, expected top-1 title) — spec appendix, asserted by title.
@@ -155,6 +173,15 @@ async def seed_corpus(db_session: AsyncSession) -> dict[str, Tags]:
             by_title[title].alias_of = by_title[alias_of_title].tag_id
         for url in urls:
             db_session.add(TagExternalLinks(tag_id=by_title[title].tag_id, url=url))
+    for parent_title, child_title in HIERARCHY:
+        by_title[child_title].inheritedfrom_id = by_title[parent_title].tag_id
+    for character_title, source_title in SOURCE_LINKS:
+        db_session.add(
+            CharacterSourceLinks(
+                character_tag_id=by_title[character_title].tag_id,
+                source_tag_id=by_title[source_title].tag_id,
+            )
+        )
     await db_session.commit()
     return by_title
 
@@ -196,11 +223,15 @@ class TestSearchCorpus:
     async def test_type_filter_and_exclude_aliases(self, db_session: AsyncSession):
         by_title = await seed_corpus(db_session)
         by_type = {tag.tag_id: tag.type for tag in by_title.values()}
-        only_characters = await search_tags(db_session, "sakura", type_filter=TagType.CHARACTER)
+        only_characters = await search_tags(
+            db_session, "sakura", filters=SearchFilters(type_filter=TagType.CHARACTER)
+        )
         assert only_characters.tag_ids
         assert all(by_type[tag_id] == TagType.CHARACTER for tag_id in only_characters.tag_ids)
         assert only_characters.total == len(only_characters.tag_ids)
-        no_aliases_result = await search_tags(db_session, "sakura", exclude_aliases=True)
+        no_aliases_result = await search_tags(
+            db_session, "sakura", filters=SearchFilters(aliases="hide")
+        )
         no_aliases = titles_for(by_title, no_aliases_result)
         assert "sakura" not in no_aliases  # the alias row
         assert "Sakura" in no_aliases
@@ -220,8 +251,8 @@ class TestSearchCorpus:
         found = titles_for(
             by_title, await search_tags(db_session, "sakura", sort=["title:asc"], limit=100)
         )
-        # Relevance would lead with the exact "sakura"; a title sort leads with "Kinomoto Sakura".
-        assert found[0] == "Kinomoto Sakura"
+        # Relevance would lead with the exact "sakura"; a title sort leads with "Cardcaptor Sakura".
+        assert found[0] == "Cardcaptor Sakura"
         assert "sakura" in found
 
     async def test_empty_query_lists_all_by_effective_usage(self, db_session: AsyncSession):
@@ -246,3 +277,99 @@ class TestSearchCorpus:
         result = await search_tags(db_session, "ß" * 128, limit=10)
         assert result.tag_ids == [decoy.tag_id]
         assert result.total == 1
+
+    async def test_min_usage_filters_on_effective_count(self, db_session: AsyncSession):
+        by_title = await seed_corpus(db_session)
+        result = await search_tags(
+            db_session, "sakura", filters=SearchFilters(aliases="all", min_usage=20000), limit=50
+        )
+        titles = titles_for(by_title, result)
+        assert "sakura" in titles  # alias of cherry blossoms (21,476)
+        assert "Sakura" not in titles  # the character has 797
+        assert result.total == len(result.tag_ids)
+
+    async def test_aliases_only(self, db_session: AsyncSession):
+        by_title = await seed_corpus(db_session)
+        result = await search_tags(db_session, "", filters=SearchFilters(aliases="only"), limit=100)
+        titles = titles_for(by_title, result)
+        assert set(titles) == {t for t, _, _, _, alias, _ in CORPUS if alias}
+        assert result.total == len(titles)
+
+    async def test_added_range_uses_the_utc_date(self, db_session: AsyncSession):
+        by_title = await seed_corpus(db_session)
+        by_title["blazer"].date_added = datetime(2020, 6, 30, 23, 59, tzinfo=UTC)
+        await db_session.commit()
+        inside = await search_tags(
+            db_session,
+            "",
+            filters=SearchFilters(added_from=date(2020, 6, 30), added_to=date(2020, 6, 30)),
+        )
+        assert titles_for(by_title, inside) == ["blazer"] and inside.total == 1
+        outside = await search_tags(
+            db_session, "", filters=SearchFilters(added_to=date(2020, 6, 29))
+        )
+        assert outside.tag_ids == [] and outside.total == 0
+
+    async def test_hierarchy_filters(self, db_session: AsyncSession):
+        by_title = await seed_corpus(db_session)
+        parents = titles_for(
+            by_title,
+            await search_tags(db_session, "", filters=SearchFilters(has_children="yes"), limit=100),
+        )
+        assert set(parents) == {"school uniform", "Pokémon"}
+        children = titles_for(
+            by_title,
+            await search_tags(db_session, "", filters=SearchFilters(is_child="yes"), limit=100),
+        )
+        assert set(children) == {"sailor uniform", "blazer", "Pokémon Adventures"}
+        no_parent = await search_tags(
+            db_session, "", filters=SearchFilters(is_child="no"), limit=100
+        )
+        assert no_parent.total == len(CORPUS) - 3
+
+    async def test_has_alias(self, db_session: AsyncSession):
+        by_title = await seed_corpus(db_session)
+        result = await search_tags(
+            db_session, "", filters=SearchFilters(has_alias="yes"), limit=100
+        )
+        assert set(titles_for(by_title, result)) == {
+            "cherry blossoms",
+            "cat",
+            "swimsuit",
+            "bikini",
+            "TKennshou",
+        }
+
+    async def test_source_linked_both_sides(self, db_session: AsyncSession):
+        by_title = await seed_corpus(db_session)
+        linked_chars = await search_tags(
+            db_session,
+            "",
+            filters=SearchFilters(type_filter=TagType.CHARACTER, source_linked="yes"),
+            limit=100,
+        )
+        assert set(titles_for(by_title, linked_chars)) == {"Kinomoto Sakura", "Kinomoto Touya"}
+        unlinked_chars = await search_tags(
+            db_session,
+            "kinomoto",
+            filters=SearchFilters(type_filter=TagType.CHARACTER, source_linked="no"),
+            limit=100,
+        )
+        assert "Kinomoto Sakura" not in titles_for(by_title, unlinked_chars)
+        assert "Kinomoto Nadeshiko" in titles_for(by_title, unlinked_chars)
+        linked_sources = await search_tags(
+            db_session,
+            "",
+            filters=SearchFilters(type_filter=TagType.SOURCE, source_linked="yes"),
+            limit=100,
+        )
+        assert titles_for(by_title, linked_sources) == ["Cardcaptor Sakura"]
+
+    async def test_filters_apply_on_the_prefix_path_too(self, db_session: AsyncSession):
+        by_title = await seed_corpus(db_session)
+        result = await search_tags(
+            db_session, "sa", filters=SearchFilters(aliases="only"), limit=100
+        )
+        titles = titles_for(by_title, result)
+        assert titles and all(by_title[t].alias_of is not None for t in titles)
+        assert result.total == len(titles)
