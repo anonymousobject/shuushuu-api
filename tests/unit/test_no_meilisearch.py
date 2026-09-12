@@ -30,6 +30,7 @@ def test_no_meilisearch_references_outside_history():
         text=True,
         check=False,
     )
+    assert result.returncode in (0, 1), result.stderr
     offenders = [
         line for line in result.stdout.splitlines() if line != "tests/unit/test_no_meilisearch.py"
     ]

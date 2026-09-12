@@ -12,7 +12,7 @@ class TagSearchHit(TagResponse):
 
     # Set when this hit was resolved by the exact artist-identity layer rather
     # than (or in addition to) the text search. Format: "{site}
-    # {external_id}", e.g. "pixiv 21412050". None for ordinary fuzzy hits.
+    # {external_id}", e.g. "pixiv 21412050". None for ordinary text hits.
     matched_identity: str | None = None
 
 
