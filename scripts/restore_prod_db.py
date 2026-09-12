@@ -163,9 +163,8 @@ async def restore_prod_db(
     else:
         print("⚠️  Restore completed with warnings (see above)")
 
-    # Derived indexes do not come back with the dump. Say so plainly either
-    # way: an empty index is invisible in normal use — search and duplicate
-    # detection just quietly return nothing.
+    # IQDB does not come back with the dump, and an empty index is invisible
+    # in normal use: duplicate detection just quietly returns nothing.
     print("\nDerived indexes:")
     print("  ⚠️  IQDB is not rebuilt by this script — duplicate detection will")
     print("     find nothing until it is populated. This is a long job over every")

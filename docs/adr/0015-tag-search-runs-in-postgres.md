@@ -31,3 +31,9 @@ commits.
   `tests/integration/test_tag_search_corpus.py` guards it.
 - `public.fold_search_text` is `IMMUTABLE` and sits inside four indexes;
   changing the unaccent dictionary means rebuilding them.
+- Removing Meilisearch from a host is an operator step: stop and remove the
+  `meilisearch` container and the `meilisearch_data` volume, and drop
+  `MEILI_MASTER_KEY` / `MEILISEARCH_API_KEY` from the host `.env` (leftover
+  keys are inert; settings ignore unknown variables).
+- A restored database is searchable immediately; only the IQDB index still
+  needs a rebuild after a restore.
