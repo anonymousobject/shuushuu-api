@@ -323,7 +323,7 @@ with the docstring's `type_filter`/`exclude_aliases` lines replaced by `filters:
 - [ ] **Step 4: Run the unit tests and the other callers**
 
 Run: `./run-tests.sh tests/unit/test_tag_search_sql.py`
-Expected: PASS (13 existing + 13 new).
+Expected: PASS (13 existing + 18 new cases).
 
 The corpus and route tests still pass `type_filter=`/`exclude_aliases=`; they are updated in Tasks 2 and 3, so expect them to fail with `TypeError` until then. Do not run them now.
 
