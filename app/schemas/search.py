@@ -6,12 +6,12 @@ from app.schemas.tag import TagResponse
 
 
 class TagSearchHit(TagResponse):
-    """A tag search result from Meilisearch, extending the standard tag response."""
+    """A tag search hit, extending the standard tag response."""
 
     model_config = {"from_attributes": True}
 
     # Set when this hit was resolved by the exact artist-identity layer rather
-    # than (or in addition to) Meilisearch's fuzzy match. Format: "{site}
+    # than (or in addition to) the text search. Format: "{site}
     # {external_id}", e.g. "pixiv 21412050". None for ordinary fuzzy hits.
     matched_identity: str | None = None
 

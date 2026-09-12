@@ -76,7 +76,6 @@ from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSugg
 from app.services.artist_identity import parse_identity_url, resolve_identity, site_display_name
 from app.services.character_source_counts import get_shared_image_counts
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
-from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
 from app.utils.like_escape import escape_like_pattern
 
@@ -1589,8 +1588,6 @@ async def create_tag(
     await db.commit()
     await db.refresh(new_tag)
 
-    await sync_tag_to_search(new_tag, db=db)
-
     return TagResponse.model_validate(new_tag)
 
 
@@ -1703,7 +1700,6 @@ async def update_tag(
         db.add(audit_entry)
 
     # Check for type change
-    type_cascaded_alias_ids: list[int | None] = []
     if tag.type != original_type:
         audit_entry = TagAuditLog(
             tag_id=tag_id,
@@ -1743,7 +1739,6 @@ async def update_tag(
             )
             cascade_alias.type = tag.type
             db.add(cascade_alias)
-        type_cascaded_alias_ids = [alias.tag_id for alias in type_cascade_aliases]
 
     # Check for alias change
     if tag.alias_of != original_alias_of:
@@ -1830,7 +1825,6 @@ async def update_tag(
             db.add(audit_entry)
 
     # Migrate tag_links when alias is set
-    reparented_alias_ids: list[int | None] = []
     if tag.alias_of is not None and tag.alias_of != original_alias_of:
         canonical_id = tag.alias_of
 
@@ -1979,7 +1973,6 @@ async def update_tag(
             )
         )
         incoming_aliases = incoming_aliases_result.scalars().all()
-        reparented_alias_ids = [incoming_alias.tag_id for incoming_alias in incoming_aliases]
         for incoming_alias in incoming_aliases:
             db.add(
                 TagAuditLog(
@@ -2005,29 +1998,6 @@ async def update_tag(
     db.add(tag)
     await db.commit()
     await db.refresh(tag)
-
-    await sync_tag_to_search(tag, db=db)
-
-    # If alias was set and tag_links migrated, also sync the canonical tag
-    # (its usage_count changed)
-    if tag.alias_of is not None and tag.alias_of != original_alias_of:
-        canonical_result = await db.execute(
-            select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
-        )
-        canonical_tag = canonical_result.scalar_one_or_none()
-        if canonical_tag:
-            await sync_tag_to_search(canonical_tag, db=db)
-
-    # Re-pointed and type-cascaded incoming aliases also need re-syncing: their
-    # indexed canonical tag / type changed. A combined type+alias request can
-    # cascade the same alias into both sets, so dedupe before syncing.
-    cascaded_alias_ids = set(reparented_alias_ids) | set(type_cascaded_alias_ids)
-    if cascaded_alias_ids:
-        cascaded_result = await db.execute(
-            select(Tags).where(Tags.tag_id.in_(cascaded_alias_ids))  # type: ignore[union-attr]
-        )
-        for cascaded_alias in cascaded_result.scalars().all():
-            await sync_tag_to_search(cascaded_alias, db=db)
 
     return TagResponse.model_validate(tag)
 
@@ -2058,8 +2028,6 @@ async def delete_tag(
     await db.flush()  # apply the FK CASCADE within this transaction before recompute
     await refresh_images_tag_type_flags(db, affected_image_ids)
     await db.commit()
-
-    await sync_tag_delete_to_search(tag_id)
 
 
 @router.post("/{tag_id}/links", response_model=TagExternalLinkResponse, status_code=201)
@@ -2155,11 +2123,6 @@ async def add_tag_link(
         await db.rollback()
         raise HTTPException(status_code=409, detail="URL already exists for this tag") from None
 
-    # Refresh tag: commit expires its attributes, and sync_tag_to_search reads
-    # alias_of — a lazy load there would raise MissingGreenlet (silently
-    # swallowed) and the new external URL would never reach Meilisearch.
-    await db.refresh(tag)
-    await sync_tag_to_search(tag, db=db)
     return TagExternalLinkResponse.model_validate(new_link)
 
 
@@ -2245,12 +2208,6 @@ async def delete_tag_link(
     )
     await db.delete(link)
     await db.commit()
-
-    # Re-sync tag to update external_urls in search index
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    tag = tag_result.scalar_one_or_none()
-    if tag:
-        await sync_tag_to_search(tag, db=db)
 
 
 @router.patch("/{tag_id}/links/{link_id}", response_model=TagExternalLinkResponse)

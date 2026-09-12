@@ -1434,7 +1434,7 @@ class TestReviewMlTagSuggestions:
     async def test_approve_syncs_affected_tags_to_search(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Approving creates a TagLink and syncs the affected tag to Meilisearch."""
+        """Approving creates a TagLink."""
         user = Users(
             username="test_search_sync",
             email="test_search_sync@example.com",
@@ -1473,24 +1473,21 @@ class TestReviewMlTagSuggestions:
         await db_session.commit()
 
         access_token = create_access_token(user_id=user.user_id)
-        with patch(
-            "app.services.ml_suggestion_review.sync_tags_to_search",
-            new_callable=AsyncMock,
-        ) as mock_sync:
-            response = await client.post(
-                f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
-                json={
-                    "suggestions": [
-                        {"suggestion_id": suggestion.suggestion_id, "action": "approve"}
-                    ]
-                },
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+        response = await client.post(
+            f"/api/v1/images/{image.image_id}/ml-tag-suggestions/review",
+            json={
+                "suggestions": [{"suggestion_id": suggestion.suggestion_id, "action": "approve"}]
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         assert response.status_code == 200
 
-        mock_sync.assert_awaited_once()
-        synced_tags = mock_sync.await_args.args[0]
-        assert {t.tag_id for t in synced_tags} == {tag.tag_id}
+        result = await db_session.execute(
+            select(TagLinks).where(
+                TagLinks.image_id == image.image_id, TagLinks.tag_id == tag.tag_id
+            )
+        )
+        assert result.scalar_one_or_none() is not None
 
     async def test_moderator_can_review_others_image(
         self, client: AsyncClient, db_session: AsyncSession

@@ -158,31 +158,6 @@ async def repair(*, apply: bool) -> None:
             if not affected_ids:
                 print("\nNo rows needed repair.")
                 return
-
-            print(f"\nRe-syncing {len(affected_ids)} affected tag(s) to Meilisearch...")
-            try:
-                from meilisearch_python_sdk import AsyncClient as MeilisearchClient
-
-                from app.services.search import SearchService, sync_tag_to_search
-
-                meili_client = MeilisearchClient(
-                    url=settings.MEILISEARCH_URL, api_key=settings.MEILISEARCH_API_KEY
-                )
-                try:
-                    search_service = SearchService(meili_client)
-                    for tag_id in affected_ids:
-                        tag = (
-                            await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-                        ).scalar_one()
-                        await sync_tag_to_search(tag, db=db, service=search_service)
-                    print("Meilisearch re-sync complete.")
-                finally:
-                    await meili_client.aclose()
-            except Exception:
-                print(
-                    "WARNING: could not reach Meilisearch to re-sync affected tags. "
-                    "Run `uv run python scripts/reindex_search.py` afterward."
-                )
     finally:
         # Must run after the session above has released its connection back to
         # the pool -- disposing while `db` is still open orphans the raw
