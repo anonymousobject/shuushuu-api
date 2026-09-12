@@ -135,7 +135,7 @@ async def _apply_reviews_for_image(
     image_id: int,
     items: list[ReviewSuggestionRequest],
     user_id: int,
-) -> tuple[set[int], list[int]]:
+) -> list[int]:
     """Apply approve/reject decisions for all suggestions on a single image.
 
     Performs:
@@ -144,10 +144,9 @@ async def _apply_reviews_for_image(
     - refresh_image_tag_type_flags(db, image_id) when any TagLink was created
 
     Does NOT call db.commit().
-    Returns (created_link_tag_ids, removed_suggestion_ids): the set of
-    canonical tag_ids for which a new TagLink was created, and the
-    suggestion_ids of any PENDING ancestor suggestions cascade-deleted as a
-    result (empty when no TagLink was created).
+    Returns removed_suggestion_ids: the suggestion_ids of any PENDING
+    ancestor suggestions cascade-deleted as a result of a newly created
+    TagLink (empty when no TagLink was created).
     """
     suggestion_ids = [item.suggestion_id for item in items]
     suggestions_result = await db.execute(
@@ -233,7 +232,7 @@ async def _apply_reviews_for_image(
     if created_link_tag_ids:
         await refresh_image_tag_type_flags(db, image_id)
 
-    return created_link_tag_ids, removed_suggestion_ids
+    return removed_suggestion_ids
 
 
 async def review_ml_tag_suggestions(
@@ -262,7 +261,7 @@ async def review_ml_tag_suggestions(
     # so changes already committed by the other writer are visible under the
     # new snapshot (no double-apply), and a suggestion the other writer
     # removed simply falls through to the missing-suggestion errors path.
-    async def _apply() -> tuple[int, int, list[str], set[int], list[int]]:
+    async def _apply() -> tuple[int, int, list[str], list[int]]:
         suggestions_result = await db.execute(
             select(MlTagSuggestions).where(
                 MlTagSuggestions.suggestion_id.in_(suggestion_ids),  # type: ignore[union-attr]
@@ -289,19 +288,16 @@ async def review_ml_tag_suggestions(
                 elif review_item.action == "reject":
                     rejected_count += 1
 
-        created, removed_suggestion_ids = await _apply_reviews_for_image(
-            db, image_id, found_items, user_id
-        )
+        removed_suggestion_ids = await _apply_reviews_for_image(db, image_id, found_items, user_id)
 
         await db.commit()
 
-        return approved_count, rejected_count, errors, created, removed_suggestion_ids
+        return approved_count, rejected_count, errors, removed_suggestion_ids
 
     (
         approved_count,
         rejected_count,
         errors,
-        created,
         removed_suggestion_ids,
     ) = await retry_on_transient_conflict(db, _apply, what="ml_review_apply")
 
@@ -337,7 +333,7 @@ async def bulk_review_suggestions(
     # the other writer are visible under the new snapshot (no double-apply),
     # and rows the other writer removed simply fall through to the
     # missing-suggestion errors path.
-    async def _apply() -> tuple[int, int, list[str], set[int], list[int]]:
+    async def _apply() -> tuple[int, int, list[str], list[int]]:
         suggestions_result = await db.execute(
             select(MlTagSuggestions).where(
                 MlTagSuggestions.suggestion_id.in_(suggestion_ids)  # type: ignore[union-attr]
@@ -368,15 +364,11 @@ async def bulk_review_suggestions(
             elif action == "reject":
                 rejected_count += 1
 
-        # Process each image's suggestions; accumulate created tag_ids and
-        # cascade-deleted ancestor suggestion_ids.
-        all_created_tag_ids: set[int] = set()
+        # Process each image's suggestions; accumulate cascade-deleted
+        # ancestor suggestion_ids.
         all_removed_suggestion_ids: list[int] = []
         for image_id, items in items_by_image.items():
-            created, removed_suggestion_ids = await _apply_reviews_for_image(
-                db, image_id, items, user_id
-            )
-            all_created_tag_ids |= created
+            removed_suggestion_ids = await _apply_reviews_for_image(db, image_id, items, user_id)
             all_removed_suggestion_ids.extend(removed_suggestion_ids)
 
         # Single commit spanning all images.
@@ -386,7 +378,6 @@ async def bulk_review_suggestions(
             approved_count,
             rejected_count,
             errors,
-            all_created_tag_ids,
             all_removed_suggestion_ids,
         )
 
@@ -394,7 +385,6 @@ async def bulk_review_suggestions(
         approved_count,
         rejected_count,
         errors,
-        all_created_tag_ids,
         all_removed_suggestion_ids,
     ) = await retry_on_transient_conflict(db, _apply, what="ml_review_bulk_apply")
 

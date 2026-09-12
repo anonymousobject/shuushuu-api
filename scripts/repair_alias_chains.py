@@ -155,9 +155,10 @@ async def repair(*, apply: bool) -> None:
             await db.commit()
 
             affected_ids = self_alias_ids + repaired_ids
-            if not affected_ids:
+            if affected_ids:
+                print(f"\nRepaired {len(affected_ids)} tag(s).")
+            else:
                 print("\nNo rows needed repair.")
-                return
     finally:
         # Must run after the session above has released its connection back to
         # the pool -- disposing while `db` is still open orphans the raw
