@@ -27,6 +27,7 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 
 | Date | Effort | Docs |
 | --- | --- | --- |
+| 2026-09-12 | Tag List Filters (API) Implementation Plan | [impl](2026-Q3/2026-09-12-tag-list-filters-impl.md) |
 | 2026-09-11 | Postgres tag search replaces Meilisearch | [design](2026-Q3/2026-09-11-postgres-tag-search-design.md) · [impl](2026-Q3/2026-09-11-postgres-tag-search-impl.md) |
 | 2026-09-10 | MariaDB retirement — design | [design](2026-Q3/2026-09-10-mariadb-retirement-design.md) · [impl](2026-Q3/2026-09-10-mariadb-retirement-impl.md) |
 | 2026-08-21 | Postgres cutover runbook — plan | [impl](2026-Q3/2026-08-21-pg-cutover-runbook-impl.md) |
@@ -113,4 +114,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-70 efforts, 104 documents.
+71 efforts, 105 documents.
