@@ -409,6 +409,7 @@ class TestTagListFilters:
         [
             {"aliases": "sometimes"},
             {"min_usage": -1},
+            {"min_usage": 2147483648},
             {"has_alias": "maybe"},
             {"added_from": "2020-13-01"},
         ],
@@ -416,6 +417,10 @@ class TestTagListFilters:
     async def test_invalid_values_are_422(self, client: AsyncClient, params):
         response = await client.get("/api/v1/search", params={"q": "", **params})
         assert response.status_code == 422
+
+    async def test_min_usage_at_the_integer_maximum_is_accepted(self, client: AsyncClient):
+        response = await client.get("/api/v1/search", params={"q": "", "min_usage": 2147483647})
+        assert response.status_code == 200
 
     async def test_identity_prepend_skips_under_a_structural_filter(
         self, client: AsyncClient, db_session: AsyncSession

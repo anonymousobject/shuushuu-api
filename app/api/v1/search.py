@@ -69,7 +69,14 @@ async def search(
     ] = "all",
     min_usage: Annotated[
         int | None,
-        Query(ge=0, description="Minimum effective usage count (the parent's for aliases)"),
+        Query(
+            ge=0,
+            le=2_147_483_647,
+            description=(
+                "Minimum effective usage count (the parent's for aliases); "
+                "capped at the Postgres integer range"
+            ),
+        ),
     ] = None,
     added_from: Annotated[date | None, Query(description="Added on or after this UTC date")] = None,
     added_to: Annotated[date | None, Query(description="Added on or before this UTC date")] = None,
