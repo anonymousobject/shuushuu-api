@@ -1,886 +1,283 @@
-"""Tests for the search API endpoint (/api/v1/search)."""
-
-from unittest.mock import AsyncMock
+"""Tests for the search API endpoint (/api/v1/search), Postgres engine."""
 
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.search import get_search_service
 from app.config import TagType
 from app.models.tag import Tags
 from app.models.tag_external_link import TagExternalLinks
-from app.services.search import TagSearchResult
 
 
-@pytest.fixture
-def mock_search_service():
-    """Create a mock SearchService with async search_tags method."""
-    service = AsyncMock()
-    service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-    return service
+async def _seed(db_session: AsyncSession, *tags: Tags) -> list[Tags]:
+    db_session.add_all(tags)
+    await db_session.commit()
+    for tag in tags:
+        await db_session.refresh(tag)
+    return list(tags)
 
 
-@pytest.fixture
-def search_client(app: FastAPI, mock_search_service):
-    """Override the search service dependency on the test app."""
-    app.dependency_overrides[get_search_service] = lambda: mock_search_service
-    return app
-
-
-@pytest.fixture
-async def client_with_search(search_client: FastAPI):
-    """AsyncClient wired to the app with search service override."""
-    from httpx import ASGITransport
-
-    async with AsyncClient(
-        transport=ASGITransport(app=search_client),
-        base_url="http://test",
-    ) as ac:
-        yield ac
+async def _seed_identity_owner(
+    db_session: AsyncSession, *, title: str = "TKennshou", alias_titles: tuple[str, ...] = ()
+) -> tuple[Tags, list[Tags]]:
+    """An artist owning pixiv id 21412050, plus optional alias rows pointing at it."""
+    (owner,) = await _seed(db_session, Tags(title=title, type=TagType.ARTIST, usage_count=1))
+    db_session.add(
+        TagExternalLinks(
+            tag_id=owner.tag_id,
+            url="https://www.pixiv.net/users/21412050",
+            site="pixiv",
+            external_id="21412050",
+        )
+    )
+    aliases = [Tags(title=t, type=TagType.ARTIST, alias_of=owner.tag_id) for t in alias_titles]
+    db_session.add_all(aliases)
+    await db_session.commit()
+    for alias in aliases:
+        await db_session.refresh(alias)
+    return owner, aliases
 
 
 @pytest.mark.api
 class TestSearchEndpoint:
-    """Tests for GET /api/v1/search."""
-
-    async def test_search_returns_matching_tags(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
+    async def test_search_returns_matching_tags_exact_first(
+        self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Search returns full tag data for IDs returned by Meilisearch."""
-        # Create tags in DB
-        tag1 = Tags(title="Sakura", desc="Cherry blossom", type=TagType.CHARACTER)
-        tag2 = Tags(title="Sakura Kinomoto", desc="Card Captor", type=TagType.CHARACTER)
-        db_session.add_all([tag1, tag2])
-        await db_session.commit()
-        await db_session.refresh(tag1)
-        await db_session.refresh(tag2)
-
-        # Mock Meilisearch returning both tag IDs
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[tag1.tag_id, tag2.tag_id], total=2
+        await _seed(
+            db_session,
+            Tags(
+                title="Sakura Kinomoto", desc="Card Captor", type=TagType.CHARACTER, usage_count=50
+            ),
+            Tags(title="Sakura", desc="Cherry blossom", type=TagType.CHARACTER, usage_count=5),
         )
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "sakura"})
+        response = await client.get("/api/v1/search", params={"q": "sakura"})
         assert response.status_code == 200
-
         data = response.json()
         assert data["query"] == "sakura"
         assert data["entity"] == "tags"
         assert data["total"] == 2
         assert data["limit"] == 20
         assert data["offset"] == 0
-        assert len(data["hits"]) == 2
-        assert data["hits"][0]["title"] == "Sakura"
-        assert data["hits"][1]["title"] == "Sakura Kinomoto"
+        assert [hit["title"] for hit in data["hits"]] == ["Sakura", "Sakura Kinomoto"]
 
-    async def test_search_missing_query_lists_all(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
+    @pytest.mark.parametrize("params", [{}, {"q": ""}])
+    async def test_missing_or_empty_query_lists_all(
+        self, client: AsyncClient, db_session: AsyncSession, params
     ):
-        """Omitting 'q' entirely defaults to a placeholder search."""
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get("/api/v1/search")
-        assert response.status_code == 200
-        assert mock_search_service.search_tags.call_args[0][0] == ""
-
-    async def test_search_empty_query_lists_all(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
-    ):
-        """Empty 'q' is a placeholder search: Meilisearch returns all docs
-        (filter + sort still apply). Used by the frontend's tag-list view."""
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get("/api/v1/search", params={"q": ""})
-        assert response.status_code == 200
-
-        # The empty string should reach the service unchanged.
-        mock_search_service.search_tags.assert_called_once()
-        assert mock_search_service.search_tags.call_args[0][0] == ""
-
-    async def test_search_with_type_filter(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """The type filter is forwarded to search_tags."""
-        tag = Tags(title="Naruto", desc="Anime source", type=TagType.SOURCE)
-        db_session.add(tag)
-        await db_session.commit()
-        await db_session.refresh(tag)
-
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[tag.tag_id], total=1
+        await _seed(
+            db_session,
+            Tags(title="popular", type=TagType.THEME, usage_count=100),
+            Tags(title="rare", type=TagType.THEME, usage_count=1),
         )
+        response = await client.get("/api/v1/search", params=params)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        assert [hit["title"] for hit in data["hits"]] == ["popular", "rare"]
 
-        response = await client_with_search.get(
+    async def test_search_with_type_filter(self, client: AsyncClient, db_session: AsyncSession):
+        await _seed(
+            db_session,
+            Tags(title="Naruto", type=TagType.SOURCE),
+            Tags(title="Naruto Uzumaki", type=TagType.CHARACTER),
+        )
+        response = await client.get(
             "/api/v1/search", params={"q": "naruto", "type": TagType.SOURCE}
         )
         assert response.status_code == 200
+        assert [hit["title"] for hit in response.json()["hits"]] == ["Naruto"]
 
-        # Verify the type filter was passed through to the service
-        mock_search_service.search_tags.assert_called_once_with(
-            "naruto",
-            limit=20,
-            offset=0,
-            type_filter=TagType.SOURCE,
-            exclude_aliases=False,
-            sort=None,
+    async def test_search_with_exclude_aliases(self, client: AsyncClient, db_session: AsyncSession):
+        (canonical,) = await _seed(db_session, Tags(title="test canonical", type=TagType.THEME))
+        await _seed(
+            db_session, Tags(title="test alias", type=TagType.THEME, alias_of=canonical.tag_id)
         )
-
-    async def test_search_with_exclude_aliases(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
-    ):
-        """The exclude_aliases flag is forwarded to search_tags."""
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "test", "exclude_aliases": True}
-        )
+        response = await client.get("/api/v1/search", params={"q": "test", "exclude_aliases": True})
         assert response.status_code == 200
+        assert [hit["title"] for hit in response.json()["hits"]] == ["test canonical"]
 
-        mock_search_service.search_tags.assert_called_once_with(
-            "test",
-            limit=20,
-            offset=0,
-            type_filter=None,
-            exclude_aliases=True,
-            sort=None,
-        )
-
-    async def test_search_preserves_meilisearch_order(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """Response preserves Meilisearch relevance order, not DB ID order."""
-        # Create tags with ascending IDs
-        tag_a = Tags(title="Alpha", type=TagType.THEME)
-        tag_b = Tags(title="Beta", type=TagType.THEME)
-        tag_c = Tags(title="Gamma", type=TagType.THEME)
-        db_session.add_all([tag_a, tag_b, tag_c])
-        await db_session.commit()
-        await db_session.refresh(tag_a)
-        await db_session.refresh(tag_b)
-        await db_session.refresh(tag_c)
-
-        # Meilisearch returns them in reverse order (by relevance)
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[tag_c.tag_id, tag_a.tag_id, tag_b.tag_id], total=3
-        )
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "test"})
+    async def test_search_no_results(self, client: AsyncClient):
+        response = await client.get("/api/v1/search", params={"q": "nonexistent"})
         assert response.status_code == 200
-
-        data = response.json()
-        titles = [hit["title"] for hit in data["hits"]]
-        assert titles == ["Gamma", "Alpha", "Beta"]
-
-    async def test_search_no_results(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
-    ):
-        """Empty Meilisearch results yield empty hits list."""
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "nonexistent"})
-        assert response.status_code == 200
-
-        data = response.json()
-        assert data["hits"] == []
-        assert data["total"] == 0
-        assert data["query"] == "nonexistent"
+        assert response.json() == {
+            "query": "nonexistent",
+            "entity": "tags",
+            "hits": [],
+            "total": 0,
+            "limit": 20,
+            "offset": 0,
+        }
 
     async def test_search_with_limit_and_offset(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
+        self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Custom limit and offset are forwarded and reflected in response."""
-        tag = Tags(title="Test", type=TagType.THEME)
-        db_session.add(tag)
-        await db_session.commit()
-        await db_session.refresh(tag)
-
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[tag.tag_id], total=50
+        await _seed(
+            db_session,
+            *[
+                Tags(title=f"test {i:02d}", type=TagType.THEME, usage_count=100 - i)
+                for i in range(8)
+            ],
         )
-
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "test", "limit": 10, "offset": 5}
-        )
+        response = await client.get("/api/v1/search", params={"q": "test", "limit": 3, "offset": 5})
         assert response.status_code == 200
-
         data = response.json()
-        assert data["limit"] == 10
+        assert data["total"] == 8
+        assert data["limit"] == 3
         assert data["offset"] == 5
-        assert data["total"] == 50
+        assert [hit["title"] for hit in data["hits"]] == ["test 05", "test 06", "test 07"]
 
-        mock_search_service.search_tags.assert_called_once_with(
-            "test",
-            limit=10,
-            offset=5,
-            type_filter=None,
-            exclude_aliases=False,
-            sort=None,
-        )
-
-    async def test_search_returns_503_when_meilisearch_unavailable(
-        self,
-        app: FastAPI,
-    ):
-        """Without Meilisearch, the search endpoint returns 503."""
-        from httpx import ASGITransport
-
-        # No dependency override — default get_search_service raises HTTPException(503)
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as ac:
-            response = await ac.get("/api/v1/search", params={"q": "test"})
-        assert response.status_code == 503
-        assert response.json()["detail"] == "Search service is not available"
-
-    async def test_search_returns_503_when_meilisearch_fails_mid_request(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
-    ):
-        """If Meilisearch errors during search, endpoint returns 503."""
-        mock_search_service.search_tags.side_effect = Exception("Connection refused")
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "test"})
-        assert response.status_code == 503
-        assert "temporarily unavailable" in response.json()["detail"]
-
-    async def test_search_rejects_offset_over_max_total_hits(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
-    ):
-        """Offset above the index max_total_hits cap returns 422."""
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "test", "offset": 500_001}
-        )
+    async def test_search_rejects_offset_over_max(self, client: AsyncClient):
+        response = await client.get("/api/v1/search", params={"q": "test", "offset": 500_001})
         assert response.status_code == 422
 
-    async def test_search_passes_sort_to_service(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
-    ):
-        """sort_by + sort_order map to a Meilisearch sort string."""
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get(
-            "/api/v1/search",
-            params={"q": "sakura", "sort_by": "title", "sort_order": "ASC"},
+    async def test_search_honours_sort(self, client: AsyncClient, db_session: AsyncSession):
+        await _seed(
+            db_session,
+            Tags(title="sakura b", type=TagType.THEME, usage_count=1),
+            Tags(title="sakura a", type=TagType.THEME, usage_count=100),
         )
-        assert response.status_code == 200
+        response = await client.get(
+            "/api/v1/search", params={"q": "sakura", "sort_by": "title", "sort_order": "ASC"}
+        )
+        assert [hit["title"] for hit in response.json()["hits"]] == ["sakura a", "sakura b"]
 
-        call_kwargs = mock_search_service.search_tags.call_args[1]
-        assert call_kwargs["sort"] == ["title:asc"]
-
-    async def test_search_default_sort_is_none(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
-    ):
-        """No sort_by means sort=None — relevance ranking."""
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "sakura"})
-        assert response.status_code == 200
-
-        call_kwargs = mock_search_service.search_tags.call_args[1]
-        assert call_kwargs["sort"] is None
-
-    async def test_search_rejects_invalid_sort_by(
-        self,
-        client_with_search: AsyncClient,
-    ):
-        """sort_by not in the allowed set returns 422."""
-        response = await client_with_search.get(
-            "/api/v1/search",
-            params={"q": "sakura", "sort_by": "not_a_field"},
+    async def test_search_rejects_invalid_sort_by(self, client: AsyncClient):
+        response = await client.get(
+            "/api/v1/search", params={"q": "sakura", "sort_by": "not_a_field"}
         )
         assert response.status_code == 422
 
     async def test_search_populates_alias_of_name_for_alias_hits(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
+        self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Alias hits include alias_of_name and alias_of_usage_count from the parent."""
-        canonical = Tags(title="cat ears", type=TagType.THEME, usage_count=5000)
-        db_session.add(canonical)
-        await db_session.commit()
-        await db_session.refresh(canonical)
-
-        alias = Tags(title="neko mimi", type=TagType.THEME, alias_of=canonical.tag_id)
-        db_session.add(alias)
-        await db_session.commit()
-        await db_session.refresh(alias)
-
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[alias.tag_id, canonical.tag_id], total=2
+        (canonical,) = await _seed(
+            db_session, Tags(title="feline", type=TagType.THEME, usage_count=42)
         )
+        await _seed(db_session, Tags(title="cat", type=TagType.THEME, alias_of=canonical.tag_id))
+        response = await client.get("/api/v1/search", params={"q": "cat"})
+        hit = response.json()["hits"][0]
+        assert hit["title"] == "cat"
+        assert hit["is_alias"] is True
+        assert hit["alias_of_name"] == "feline"
+        assert hit["alias_of_usage_count"] == 42
 
-        response = await client_with_search.get("/api/v1/search", params={"q": "cat"})
-        assert response.status_code == 200
 
-        hits = response.json()["hits"]
-        assert len(hits) == 2
-
-        alias_hit = next(h for h in hits if h["tag_id"] == alias.tag_id)
-        assert alias_hit["alias_of"] == canonical.tag_id
-        assert alias_hit["alias_of_name"] == "cat ears"
-        assert alias_hit["alias_of_usage_count"] == 5000
-        assert alias_hit["is_alias"] is True
-
-        canonical_hit = next(h for h in hits if h["tag_id"] == canonical.tag_id)
-        assert canonical_hit["alias_of"] is None
-        assert canonical_hit["alias_of_name"] is None
-        assert canonical_hit["alias_of_usage_count"] is None
-        assert canonical_hit["is_alias"] is False
-
-    async def test_search_handles_missing_db_tags_gracefully(
-        self,
-        client_with_search: AsyncClient,
-        mock_search_service: AsyncMock,
+@pytest.mark.api
+class TestExactIdentityLayer:
+    async def test_bare_id_prepends_owner_with_matched_identity(
+        self, client: AsyncClient, db_session: AsyncSession
     ):
-        """If Meilisearch returns IDs that don't exist in DB, they're skipped."""
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[99999, 99998], total=2
-        )
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "ghost"})
+        owner, _ = await _seed_identity_owner(db_session)
+        response = await client.get("/api/v1/search", params={"q": "21412050"})
         assert response.status_code == 200
-
         data = response.json()
-        # Total comes from Meilisearch, but hits only include DB-verified tags
-        assert data["total"] == 2
-        assert data["hits"] == []
-
-    async def test_exact_identity_query_prepends_artist_hit(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """A bare pixiv ID returns the owning artist first, flagged with matched_identity."""
-        artist = Tags(title="Some Artist", type=TagType.ARTIST)
-        db_session.add(artist)
-        await db_session.commit()
-        await db_session.refresh(artist)
-
-        link = TagExternalLinks(
-            tag_id=artist.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
-        )
-        db_session.add(link)
-        await db_session.commit()
-
-        # Meilisearch has nothing for the bare-ID query — the exact layer is the
-        # only source of this hit.
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
-        assert response.status_code == 200
-
-        data = response.json()
-        hits = data["hits"]
-        assert hits[0]["tag_id"] == artist.tag_id
-        assert hits[0]["matched_identity"] == "Pixiv 21412050"
-        # The exact hit wasn't already counted by Meilisearch, so total gains one.
+        assert data["hits"][0]["tag_id"] == owner.tag_id
+        assert data["hits"][0]["matched_identity"] == "Pixiv 21412050"
+        # The owner is also a text hit through its URL, so the total is not inflated.
         assert data["total"] == 1
-
-    async def test_exact_hit_not_duplicated_when_meili_also_returns_it(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """If the fuzzy layer already found the artist, it appears once, flagged."""
-        artist = Tags(title="Some Artist", type=TagType.ARTIST)
-        db_session.add(artist)
-        await db_session.commit()
-        await db_session.refresh(artist)
-
-        link = TagExternalLinks(
-            tag_id=artist.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
-        )
-        db_session.add(link)
-        await db_session.commit()
-
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[artist.tag_id], total=1
-        )
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
-        assert response.status_code == 200
-
-        data = response.json()
-        hits = data["hits"]
-        assert [h["tag_id"] for h in hits].count(artist.tag_id) == 1
-        assert hits[0]["matched_identity"] == "Pixiv 21412050"
-        # The hit was already in the Meilisearch results, so total is unchanged.
-        assert data["total"] == 1
+        assert [hit["tag_id"] for hit in data["hits"]].count(owner.tag_id) == 1
 
     async def test_text_query_has_no_matched_identity(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
+        self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A regular text query never sets matched_identity on its hits."""
-        tag = Tags(title="Sakura", type=TagType.CHARACTER)
-        db_session.add(tag)
-        await db_session.commit()
-        await db_session.refresh(tag)
+        await _seed_identity_owner(db_session, title="Tsunekichi")
+        response = await client.get("/api/v1/search", params={"q": "tsunekichi"})
+        assert response.json()["hits"][0]["matched_identity"] is None
 
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[tag.tag_id], total=1
-        )
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "sakura"})
-        assert response.status_code == 200
-        assert all(h["matched_identity"] is None for h in response.json()["hits"])
-
-    async def test_exact_hit_insertion_respects_limit(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
+    async def test_alias_rows_of_the_owner_are_dropped(
+        self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Prepending a new exact hit to an already-full page doesn't exceed limit."""
-        artist = Tags(title="Some Artist", type=TagType.ARTIST)
-        other = Tags(title="Other Tag", type=TagType.THEME)
-        db_session.add_all([artist, other])
-        await db_session.commit()
-        await db_session.refresh(artist)
-        await db_session.refresh(other)
-
-        link = TagExternalLinks(
-            tag_id=artist.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
-        )
-        db_session.add(link)
-        await db_session.commit()
-
-        # Meilisearch already fills the requested page with an unrelated tag.
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[other.tag_id], total=1
-        )
-
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "21412050", "limit": 1}
-        )
-        assert response.status_code == 200
-
+        owner, aliases = await _seed_identity_owner(db_session, alias_titles=("Pixiv 21412050",))
+        response = await client.get("/api/v1/search", params={"q": "21412050"})
         data = response.json()
-        hits = data["hits"]
-        assert len(hits) == 1
-        assert hits[0]["tag_id"] == artist.tag_id
-        assert hits[0]["matched_identity"] == "Pixiv 21412050"
+        ids = [hit["tag_id"] for hit in data["hits"]]
+        assert ids == [owner.tag_id]
+        assert data["total"] == 1
 
-    async def test_identity_query_on_later_page_does_not_inject_exact_hit(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """A page-2+ request for an identity query isn't prepended with the
-        exact hit — only the first page is boosted, so the tag never
-        duplicates itself as a user paginates."""
-        artist = Tags(title="Some Artist", type=TagType.ARTIST)
-        other = Tags(title="Other Tag", type=TagType.THEME)
-        db_session.add_all([artist, other])
-        await db_session.commit()
-        await db_session.refresh(artist)
-        await db_session.refresh(other)
-
-        link = TagExternalLinks(
-            tag_id=artist.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
+    async def test_prepend_respects_limit(self, client: AsyncClient, db_session: AsyncSession):
+        owner, _ = await _seed_identity_owner(db_session)
+        await _seed(
+            db_session, Tags(title="21412050 fan club", type=TagType.THEME, usage_count=999)
         )
-        db_session.add(link)
-        await db_session.commit()
-
-        # Every page (including the offset=0 reference check) returns the
-        # same unrelated tag — the artist is nowhere in Meilisearch's results.
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[other.tag_id], total=1
-        )
-
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "21412050", "offset": 20, "limit": 1}
-        )
-        assert response.status_code == 200
-
+        response = await client.get("/api/v1/search", params={"q": "21412050", "limit": 1})
         data = response.json()
-        hits = data["hits"]
-        assert [h["tag_id"] for h in hits] == [other.tag_id]
-        assert all(h["matched_identity"] is None for h in hits)
-
-    async def test_identity_query_total_consistent_across_pages(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """The same identity query reports the same total on page 1 and
-        page 2, even though the exact hit is only ever injected on page 1.
-
-        Meilisearch genuinely ranks the artist on page 1 (so it's *not* a
-        new hit — total shouldn't be bumped) but page 2's own slice
-        naturally doesn't contain it, since it's a different set of tags
-        entirely. A page-local-only "already found" check would wrongly
-        treat page 2 as a fresh discovery and inflate its total.
-        """
-        artist = Tags(title="Some Artist", type=TagType.ARTIST)
-        page2_tag = Tags(title="Page Two Tag", type=TagType.THEME)
-        db_session.add_all([artist, page2_tag])
-        await db_session.commit()
-        for tag in (artist, page2_tag):
-            await db_session.refresh(tag)
-
-        link = TagExternalLinks(
-            tag_id=artist.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
-        )
-        db_session.add(link)
-        await db_session.commit()
-
-        # Meilisearch itself ranks the artist first (page 1); page 2 is a
-        # different, unrelated tag entirely — same overall total (5) on
-        # both calls, as real pagination of a stable query would look.
-        def fake_search_tags(_q, *, limit, offset, type_filter, exclude_aliases, sort):
-            tag_ids = [artist.tag_id] if offset == 0 else [page2_tag.tag_id]
-            return TagSearchResult(tag_ids=tag_ids, total=5)
-
-        mock_search_service.search_tags.side_effect = fake_search_tags
-
-        page1_response = await client_with_search.get(
-            "/api/v1/search", params={"q": "21412050", "offset": 0, "limit": 1}
-        )
-        page2_response = await client_with_search.get(
-            "/api/v1/search", params={"q": "21412050", "offset": 1, "limit": 1}
-        )
-        assert page1_response.status_code == 200
-        assert page2_response.status_code == 200
-
-        page1_total = page1_response.json()["total"]
-        page2_total = page2_response.json()["total"]
-        # The artist was genuinely part of Meilisearch's own result set
-        # (ranked on page 1), so it's never counted as "new" on either page:
-        # both totals equal Meilisearch's own total, unmodified.
-        assert page1_total == 5
-        assert page2_total == page1_total
-
-        # The second lookup made an extra reference call (page 1, offset=0)
-        # to answer "already found by Meilisearch" consistently.
-        assert mock_search_service.search_tags.call_count == 3
-
-    async def test_exact_identity_query_respects_mismatched_type_filter(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """An identity query filtered to a type the owning tag isn't never
-        surfaces the exact-identity hit — it's not reachable through that
-        type's filter, so injecting it would leak a result across types."""
-        artist = Tags(title="Some Artist", type=TagType.ARTIST)
-        db_session.add(artist)
-        await db_session.commit()
-        await db_session.refresh(artist)
-
-        link = TagExternalLinks(
-            tag_id=artist.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
-        )
-        db_session.add(link)
-        await db_session.commit()
-
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "21412050", "type": TagType.THEME}
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert data["hits"] == []
-        assert data["total"] == 0
-
-    async def test_exact_identity_query_present_with_matching_type_filter(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """The same identity query, filtered to the owning tag's own type,
-        still surfaces the exact-identity hit."""
-        artist = Tags(title="Some Artist", type=TagType.ARTIST)
-        db_session.add(artist)
-        await db_session.commit()
-        await db_session.refresh(artist)
-
-        link = TagExternalLinks(
-            tag_id=artist.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
-        )
-        db_session.add(link)
-        await db_session.commit()
-
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "21412050", "type": TagType.ARTIST}
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert data["hits"][0]["tag_id"] == artist.tag_id
+        assert [hit["tag_id"] for hit in data["hits"]] == [owner.tag_id]
         assert data["hits"][0]["matched_identity"] == "Pixiv 21412050"
-        assert data["total"] == 1
 
-    async def test_exact_identity_query_respects_exclude_aliases(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
+    async def test_later_page_does_not_inject_and_total_is_consistent(
+        self, client: AsyncClient, db_session: AsyncSession
     ):
-        """exclude_aliases=true must suppress an exact-identity hit that
-        resolves to an alias tag, the same as it suppresses alias tags from
-        the fuzzy layer."""
-        canonical = Tags(title="Some Artist", type=TagType.ARTIST)
-        db_session.add(canonical)
-        await db_session.commit()
-        await db_session.refresh(canonical)
-
-        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
-        db_session.add(alias)
-        await db_session.commit()
-        await db_session.refresh(alias)
-
-        link = TagExternalLinks(
-            tag_id=alias.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
+        owner, _ = await _seed_identity_owner(db_session)
+        await _seed(
+            db_session, Tags(title="21412050 fan club", type=TagType.THEME, usage_count=999)
         )
-        db_session.add(link)
-        await db_session.commit()
-
-        mock_search_service.search_tags.return_value = TagSearchResult(tag_ids=[], total=0)
-
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "21412050", "exclude_aliases": True}
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert data["hits"] == []
-        assert data["total"] == 0
-
-    async def test_identity_query_drops_alias_row_when_meili_returns_both(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """A legacy alias tag of the matched canonical is redundant with the
-        flagged canonical hit and must not also appear as its own row."""
-        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
-        db_session.add(canonical)
-        await db_session.commit()
-        await db_session.refresh(canonical)
-
-        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
-        db_session.add(alias)
-        await db_session.commit()
-        await db_session.refresh(alias)
-
-        link = TagExternalLinks(
-            tag_id=canonical.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
-        )
-        db_session.add(link)
-        await db_session.commit()
-
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[alias.tag_id, canonical.tag_id], total=2
-        )
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
-        assert response.status_code == 200
-
-        data = response.json()
-        hits = data["hits"]
-        assert [h["tag_id"] for h in hits] == [canonical.tag_id]
-        assert hits[0]["matched_identity"] == "Pixiv 21412050"
-        # Meilisearch's raw total (2) minus the dropped alias row.
-        assert data["total"] == 1
-
-    async def test_identity_query_drops_alias_row_when_meili_returns_alias_only(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """If Meilisearch only surfaced the alias (not the canonical), the
-        exact layer still prepends the canonical and drops the alias row."""
-        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
-        db_session.add(canonical)
-        await db_session.commit()
-        await db_session.refresh(canonical)
-
-        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
-        db_session.add(alias)
-        await db_session.commit()
-        await db_session.refresh(alias)
-
-        link = TagExternalLinks(
-            tag_id=canonical.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
-        )
-        db_session.add(link)
-        await db_session.commit()
-
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[alias.tag_id], total=1
-        )
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "21412050"})
-        assert response.status_code == 200
-
-        data = response.json()
-        hits = data["hits"]
-        assert [h["tag_id"] for h in hits] == [canonical.tag_id]
-        assert hits[0]["matched_identity"] == "Pixiv 21412050"
-        # Meilisearch total (1) minus the dropped alias, plus the newly
-        # counted canonical: 1 - 1 + 1 == 1.
-        assert data["total"] == 1
-
-    async def test_text_query_leaves_alias_rows_untouched(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
-    ):
-        """A non-identity text query never triggers alias dedup — aliases of
-        an unrelated tag are ordinary, independent search results."""
-        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
-        db_session.add(canonical)
-        await db_session.commit()
-        await db_session.refresh(canonical)
-
-        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
-        db_session.add(alias)
-        await db_session.commit()
-        await db_session.refresh(alias)
-
-        mock_search_service.search_tags.return_value = TagSearchResult(
-            tag_ids=[alias.tag_id, canonical.tag_id], total=2
-        )
-
-        response = await client_with_search.get("/api/v1/search", params={"q": "tsunekichi"})
-        assert response.status_code == 200
-
-        data = response.json()
-        assert {h["tag_id"] for h in data["hits"]} == {alias.tag_id, canonical.tag_id}
-        assert data["total"] == 2
-        assert all(h["matched_identity"] is None for h in data["hits"])
+        first = (
+            await client.get("/api/v1/search", params={"q": "21412050", "limit": 1, "offset": 0})
+        ).json()
+        second = (
+            await client.get("/api/v1/search", params={"q": "21412050", "limit": 1, "offset": 1})
+        ).json()
+        # The identity layer resolves "already found" against page 1 for both requests,
+        # so the totals agree; their exact value is the engine's count plus the
+        # injected owner when it sits beyond page 1.
+        assert first["total"] == second["total"]
+        assert all(hit["matched_identity"] is None for hit in second["hits"])
 
     async def test_identity_query_drops_alias_row_on_later_page(
-        self,
-        client_with_search: AsyncClient,
-        db_session: AsyncSession,
-        mock_search_service: AsyncMock,
+        self, client: AsyncClient, db_session: AsyncSession
     ):
-        """An alias row of the matched canonical is dropped even on a
-        page > 0 request, even though the canonical itself is only ever
-        injected/flagged on the first page."""
-        canonical = Tags(title="Tsunekichi", type=TagType.ARTIST)
-        other = Tags(title="Other Tag", type=TagType.THEME)
-        db_session.add_all([canonical, other])
-        await db_session.commit()
-        await db_session.refresh(canonical)
-        await db_session.refresh(other)
-
-        alias = Tags(title="Pixiv 21412050", type=TagType.ARTIST, alias_of=canonical.tag_id)
-        db_session.add(alias)
-        await db_session.commit()
-        await db_session.refresh(alias)
-
-        link = TagExternalLinks(
-            tag_id=canonical.tag_id,
-            url="https://www.pixiv.net/users/21412050",
-            site="pixiv",
-            external_id="21412050",
+        # Ranking for "21412050": the prefix-titled theme first, then the alias row
+        # (title contains the id), then the owner (matched only through its URL).
+        # With limit=1 the alias row is page 2's only hit and must be dropped there too.
+        owner, aliases = await _seed_identity_owner(db_session, alias_titles=("Pixiv 21412050",))
+        await _seed(
+            db_session, Tags(title="21412050 fan club", type=TagType.THEME, usage_count=999)
         )
-        db_session.add(link)
-        await db_session.commit()
-
-        # The requested (later) page has the alias plus an unrelated tag; the
-        # first-page reference lookup (offset=0, used to decide whether the
-        # canonical itself is "new") finds neither the canonical nor the
-        # alias — the canonical is genuinely outside Meilisearch's match set.
-        def fake_search_tags(_q, *, limit, offset, type_filter, exclude_aliases, sort):
-            if offset == 0:
-                return TagSearchResult(tag_ids=[other.tag_id], total=5)
-            return TagSearchResult(tag_ids=[alias.tag_id, other.tag_id], total=5)
-
-        mock_search_service.search_tags.side_effect = fake_search_tags
-
-        response = await client_with_search.get(
-            "/api/v1/search", params={"q": "21412050", "offset": 20, "limit": 2}
+        response = await client.get(
+            "/api/v1/search", params={"q": "21412050", "limit": 1, "offset": 1}
         )
         assert response.status_code == 200
-
         data = response.json()
-        hits = data["hits"]
-        # The alias is dropped; the canonical is never injected into a later
-        # page; the unrelated tag is untouched.
-        assert [h["tag_id"] for h in hits] == [other.tag_id]
-        assert all(h["matched_identity"] is None for h in hits)
-        # Meilisearch's total (5) minus the dropped alias, plus the
-        # canonical counted as new (not found on the first-page reference
-        # lookup): 5 - 1 + 1 == 5.
-        assert data["total"] == 5
+        assert all(hit["tag_id"] != aliases[0].tag_id for hit in data["hits"])
+        assert all(hit["alias_of"] != owner.tag_id for hit in data["hits"])
+        assert all(hit["matched_identity"] is None for hit in data["hits"])
+
+    async def test_mismatched_type_filter_suppresses_injection(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        await _seed_identity_owner(db_session)
+        response = await client.get(
+            "/api/v1/search", params={"q": "21412050", "type": TagType.THEME}
+        )
+        assert response.json()["hits"] == []
+
+    async def test_matching_type_filter_keeps_injection(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner, _ = await _seed_identity_owner(db_session)
+        response = await client.get(
+            "/api/v1/search", params={"q": "21412050", "type": TagType.ARTIST}
+        )
+        assert response.json()["hits"][0]["tag_id"] == owner.tag_id
+
+    async def test_exclude_aliases_blocks_an_alias_owner(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        # An owner that is itself an alias must not be injected when aliases are excluded.
+        (canonical,) = await _seed(db_session, Tags(title="Canonical Artist", type=TagType.ARTIST))
+        (alias_owner,) = await _seed(
+            db_session, Tags(title="Legacy", type=TagType.ARTIST, alias_of=canonical.tag_id)
+        )
+        db_session.add(
+            TagExternalLinks(
+                tag_id=alias_owner.tag_id,
+                url="https://www.pixiv.net/users/21412050",
+                site="pixiv",
+                external_id="21412050",
+            )
+        )
+        await db_session.commit()
+        response = await client.get(
+            "/api/v1/search", params={"q": "21412050", "exclude_aliases": True}
+        )
+        assert all(hit["tag_id"] != alias_owner.tag_id for hit in response.json()["hits"])
