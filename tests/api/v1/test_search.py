@@ -263,7 +263,7 @@ class TestExactIdentityLayer:
         )
         assert response.json()["hits"][0]["tag_id"] == owner.tag_id
 
-    async def test_exclude_aliases_blocks_an_alias_owner(
+    async def test_aliases_hide_blocks_an_alias_owner(
         self, client: AsyncClient, db_session: AsyncSession
     ):
         # An owner that is itself an alias must not be injected when aliases are excluded.
@@ -282,6 +282,15 @@ class TestExactIdentityLayer:
         await db_session.commit()
         response = await client.get("/api/v1/search", params={"q": "21412050", "aliases": "hide"})
         assert all(hit["tag_id"] != alias_owner.tag_id for hit in response.json()["hits"])
+
+    async def test_aliases_only_blocks_a_canonical_owner(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner, _ = await _seed_identity_owner(db_session, alias_titles=("Pixiv 21412050",))
+        response = await client.get("/api/v1/search", params={"q": "21412050", "aliases": "only"})
+        data = response.json()
+        assert all(hit["matched_identity"] is None for hit in data["hits"])
+        assert all(hit["tag_id"] != owner.tag_id for hit in data["hits"])
 
 
 @pytest.mark.api
@@ -370,12 +379,9 @@ class TestTagListFilters:
         assert (await self._titles(client, has_alias="yes"))[0] == ["feline"]
         assert (await self._titles(client, is_child="yes"))[0] == ["feline child"]
         assert (await self._titles(client, has_children="yes"))[0] == ["feline parent"]
-        titles, _ = await self._titles(client, has_children="no", is_child="no", has_alias="no")
-        assert (
-            "feline parent" not in titles
-            and "feline child" not in titles
-            and "feline" not in titles
-        )
+        titles, total = await self._titles(client, has_children="no", is_child="no", has_alias="no")
+        assert set(titles) == {"feline alias", "feline girl", "feline loner", "feline show"}
+        assert total == 4
 
     async def test_source_linked_by_type(self, client: AsyncClient, db_session: AsyncSession):
         await self._seed_family(db_session)
@@ -389,7 +395,9 @@ class TestTagListFilters:
             "feline show"
         ]
 
-    @pytest.mark.parametrize("params", [{}, {"type": TagType.THEME}, {"type": TagType.ARTIST}])
+    @pytest.mark.parametrize(
+        "params", [{}, {"type": 0}, {"type": TagType.THEME}, {"type": TagType.ARTIST}]
+    )
     async def test_source_linked_needs_character_or_source_type(self, client: AsyncClient, params):
         response = await client.get(
             "/api/v1/search", params={"q": "", "source_linked": "yes", **params}
