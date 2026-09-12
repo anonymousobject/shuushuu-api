@@ -16,7 +16,6 @@ from app.schemas.tag import (
     BatchTagSkippedItem,
 )
 from app.services.ml_suggestion_review import approve_pending_suggestions_for_links
-from app.services.search import sync_tags_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 logger = get_logger(__name__)
@@ -168,15 +167,6 @@ async def batch_add_tags(
 
     added, skipped = await retry_on_transient_conflict(db, _apply, what="batch_tag_add")
 
-    # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
-    # Non-DB side effect: stays outside the retried unit so it never repeats.
-    affected_tag_ids = {item.tag_id for item in added}
-    if affected_tag_ids:
-        tag_results = await db.execute(
-            select(Tags).where(Tags.tag_id.in_(affected_tag_ids))  # type: ignore[union-attr]
-        )
-        await sync_tags_to_search(list(tag_results.scalars().all()), db=db)
-
     return BatchTagResponse(added=added, skipped=skipped)
 
 
@@ -324,14 +314,5 @@ async def batch_remove_tags(
         return removed, skipped
 
     removed, skipped = await retry_on_transient_conflict(db, _apply, what="batch_tag_remove")
-
-    # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
-    # Non-DB side effect: stays outside the retried unit so it never repeats.
-    affected_tag_ids = {item.tag_id for item in removed}
-    if affected_tag_ids:
-        tag_results = await db.execute(
-            select(Tags).where(Tags.tag_id.in_(affected_tag_ids))  # type: ignore[union-attr]
-        )
-        await sync_tags_to_search(list(tag_results.scalars().all()), db=db)
 
     return BatchTagResponse(removed=removed, skipped=skipped)

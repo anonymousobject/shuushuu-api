@@ -1,5 +1,5 @@
 # Production override — containerised nginx + certbot as TLS edge
-# Docker provides: api, arq-worker, frontend, nginx, certbot, mediawiki, meilisearch, iqdb, loki, grafana, alloy, docker-socket-proxy
+# Docker provides: api, arq-worker, frontend, nginx, certbot, mediawiki, iqdb, loki, grafana, alloy, docker-socket-proxy
 # DB tier (native, out-of-stack): postgres + redis reached over private network; containers are busybox stubs
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # Config comes from the host's .env (one env per host; see .env.example)
@@ -49,13 +49,6 @@ services:
       test: ["CMD", "true"]
       interval: 5s
       retries: 1
-
-  # Meilisearch runs as an actual container in prod (unlike redis/postgres),
-  # but only api/arq-worker should reach it over the compose default
-  # network. Drop the base service's 7700 host publish so it isn't
-  # accessible from outside the container network.
-  meilisearch:
-    ports: !override []
 
   frontend:
     # NOTE: Expects shuushuu-frontend repo at ../shuushuu-frontend (sibling directory)
@@ -208,7 +201,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    # List form adds redis; the base's postgres/meilisearch entries still merge
+    # List form adds redis; the base's postgres entries still merge
     # in, which is why the postgres stub carries a passing healthcheck.
     depends_on:
       - redis
@@ -244,15 +237,14 @@ services:
     # draining the old one. `arq --check` reads a per-container health key that
     # the worker refreshes every 15s (see WorkerSettings) — per-container so the
     # old replica's heartbeat can't vouch for a broken new one. start_period
-    # covers Meilisearch config + ML model load (~5s observed; headroom for a
-    # loaded host).
+    # covers ML model load (~5s observed; headroom for a loaded host).
     healthcheck:
       test: ["CMD", "uv", "run", "--no-project", "arq", "--check", "app.tasks.worker.WorkerSettings"]
       interval: 10s
       timeout: 10s
       retries: 3
       start_period: 30s
-    # List form adds redis; the base's postgres/meilisearch entries still merge
+    # List form adds redis; the base's postgres entries still merge
     # in, which is why the postgres stub carries a passing healthcheck.
     depends_on:
       - redis

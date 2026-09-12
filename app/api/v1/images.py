@@ -135,7 +135,6 @@ from app.services.ml_suggestion_review import approve_pending_suggestions_for_li
 from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import RatingStats, recalculate_image_ratings
 from app.services.recommendations import get_recommended_images
-from app.services.search import sync_tag_to_search
 from app.services.tag_context import stamp_context_sources
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import (
@@ -2633,15 +2632,7 @@ async def add_tag_to_image(
         await db.commit()
         return resolved
 
-    # Non-DB side effect: the search sync stays outside the retried unit so a
-    # retry never repeats it.
-    resolved_tag_id = await retry_on_transient_conflict(db, _apply_tag_add, what="image_tag_add")
-
-    # Re-fetch tag to get updated usage_count (maintained by DB trigger)
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == resolved_tag_id))  # type: ignore[arg-type]
-    updated_tag = tag_result.scalar_one_or_none()
-    if updated_tag:
-        await sync_tag_to_search(updated_tag, db=db)
+    await retry_on_transient_conflict(db, _apply_tag_add, what="image_tag_add")
 
     return {"message": "Tag added successfully"}
 
@@ -2720,15 +2711,7 @@ async def remove_tag_from_image(
         await refresh_image_tag_type_flags(db, image_id)
         await db.commit()
 
-    # Non-DB side effect: the search sync stays outside the retried unit so a
-    # retry never repeats it.
     await retry_on_transient_conflict(db, _apply_tag_remove, what="image_tag_remove")
-
-    # Re-fetch tag to get updated usage_count (maintained by DB trigger)
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    updated_tag = tag_result.scalar_one_or_none()
-    if updated_tag:
-        await sync_tag_to_search(updated_tag, db=db)
 
 
 @router.post("/{image_id}/rating", status_code=status.HTTP_201_CREATED)

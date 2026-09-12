@@ -30,8 +30,8 @@ _ALNUM_RUN = re.compile(r"[^\W_]{3}")
 # match literally, never fuzzily.
 _DIGITS = re.compile(r"^\d+$")
 
-# Meilisearch's minimum word length for one typo; below it a word matches
-# literally only.
+# Minimum letters in a token before fuzzy matching applies; shorter words
+# match literally only.
 MIN_FUZZY_LETTERS = 5
 # A one-character token contains-matches nearly every description.
 MIN_SECONDARY_TOKEN_CHARS = 2
@@ -66,8 +66,8 @@ def gates_for(query: str, tokens: list[str]) -> SearchGates:
     return SearchGates(prefix_only=prefix_only, fuzzy=fuzzy, secondary=secondary)
 
 
-# Meilisearch sort fields -> SQL. usage_count resolves to the effective count so
-# alias rows rank by their parent's popularity.
+# Sort fields accepted by the search endpoint -> SQL. usage_count resolves to
+# the effective count so alias rows rank by their parent's popularity.
 _EFFECTIVE_USAGE = "COALESCE(parent.usage_count, t.usage_count)"
 _SORT_COLUMNS = {
     "usage_count": _EFFECTIVE_USAGE,
@@ -265,7 +265,7 @@ async def search_tags(
         offset: Rows to skip.
         type_filter: TagType constant, or None for all types.
         exclude_aliases: Drop rows whose alias_of is set.
-        sort: Meilisearch-style spec such as ["title:asc"]; None means relevance.
+        sort: Sort spec such as ["title:asc"]; None means relevance.
     """
     statements = build_search(
         query,

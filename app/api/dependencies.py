@@ -93,8 +93,8 @@ class UserRatingsSortParams(BaseModel):
 
 
 TagSortBy = Literal["usage_count", "title", "date_added", "tag_id", "type"]
-"""Allowed tag sort fields. Must be a subset of `sortableAttributes`
-configured in `app/services/search.py::configure_tags_index`."""
+"""Allowed tag sort fields. Must match the keys of `_SORT_COLUMNS` in
+app/services/tag_search.py."""
 
 
 class TagSortParams(BaseModel):
