@@ -60,10 +60,6 @@ class Settings(BaseSettings):
     # instead of letting a burst open unbounded sockets (see #381).
     REDIS_MAX_CONNECTIONS: int = Field(default=64, ge=1)
 
-    # Meilisearch
-    MEILISEARCH_URL: str = Field(default="http://localhost:7700")
-    MEILISEARCH_API_KEY: str | None = Field(default=None)
-
     # Task Queue - UPDATED to support multiple options
     TASK_QUEUE_TYPE: str = Field(
         default="background",  # Options: "background", "arq", "celery"
