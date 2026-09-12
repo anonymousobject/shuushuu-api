@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from datetime import date, datetime, time, timedelta
+from typing import Any, Literal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +78,113 @@ _SORT_COLUMNS = {
     "tag_id": "t.tag_id",
 }
 
+Aliases = Literal["hide", "only", "all"]
+YesNo = Literal["yes", "no"]
+
+# Tag types that carry character_source_links rows, and the column each side
+# of the link uses (app.config.TagType values; imported here as literals to
+# keep this module free of app.config).
+_SOURCE_LINK_COLUMN = {4: "character_tag_id", 2: "source_tag_id"}
+
+
+@dataclass(frozen=True)
+class SearchFilters:
+    """Structural filters applied to both the page of ids and the exact count.
+
+    `type_filter` and `aliases` narrow the corpus the way the old kwargs did;
+    the rest are the tag-list filters. Field names match the API parameters.
+    """
+
+    type_filter: int | None = None
+    aliases: Aliases = "all"
+    min_usage: int | None = None
+    max_usage: int | None = None
+    added_from: date | None = None
+    added_to: date | None = None
+    has_alias: YesNo | None = None
+    is_child: YesNo | None = None
+    has_children: YesNo | None = None
+    source_linked: YesNo | None = None
+
+    @property
+    def is_structural(self) -> bool:
+        """True when any filter beyond type and aliases is set."""
+        return any(
+            value is not None
+            for value in (
+                self.min_usage,
+                self.max_usage,
+                self.added_from,
+                self.added_to,
+                self.has_alias,
+                self.is_child,
+                self.has_children,
+                self.source_linked,
+            )
+        )
+
+
+def _exists(subquery: str, value: YesNo) -> str:
+    prefix = "" if value == "yes" else "NOT "
+    return f"{prefix}EXISTS ({subquery})"
+
+
+def _filter_clauses(filters: SearchFilters, params: dict[str, Any]) -> list[str]:
+    """WHERE predicates for `filters`, binding their values into `params`."""
+    clauses: list[str] = []
+    if filters.type_filter is not None:
+        clauses.append("t.type = :type_filter")
+        params["type_filter"] = filters.type_filter
+    if filters.aliases == "hide":
+        clauses.append("t.alias_of IS NULL")
+    elif filters.aliases == "only":
+        clauses.append("t.alias_of IS NOT NULL")
+    if filters.min_usage is not None:
+        clauses.append(f"{_EFFECTIVE_USAGE} >= :min_usage")
+        params["min_usage"] = filters.min_usage
+    if filters.max_usage is not None:
+        clauses.append(f"{_EFFECTIVE_USAGE} <= :max_usage")
+        params["max_usage"] = filters.max_usage
+    # date_added is a naive UTC timestamp: bind naive midnights, half-open at
+    # the far end so the column stays bare for a future index.
+    if filters.added_from is not None:
+        clauses.append("t.date_added >= :added_from_ts")
+        params["added_from_ts"] = datetime.combine(filters.added_from, time.min)
+    if filters.added_to is not None:
+        clauses.append("t.date_added < :added_to_next_ts")
+        params["added_to_next_ts"] = datetime.combine(
+            filters.added_to + timedelta(days=1), time.min
+        )
+    if filters.has_alias is not None:
+        clauses.append(
+            _exists("SELECT 1 FROM tags a WHERE a.alias_of = t.tag_id", filters.has_alias)
+        )
+    if filters.is_child is not None:
+        clauses.append(
+            "t.inheritedfrom_id IS NOT NULL"
+            if filters.is_child == "yes"
+            else "t.inheritedfrom_id IS NULL"
+        )
+    if filters.has_children is not None:
+        clauses.append(
+            _exists(
+                "SELECT 1 FROM tags child WHERE child.inheritedfrom_id = t.tag_id",
+                filters.has_children,
+            )
+        )
+    if filters.source_linked is not None:
+        if filters.type_filter not in _SOURCE_LINK_COLUMN:
+            raise ValueError("source_linked requires type_filter 2 (source) or 4 (character)")
+        column = _SOURCE_LINK_COLUMN[filters.type_filter]
+        clauses.append(
+            _exists(
+                f"SELECT 1 FROM character_source_links l WHERE l.{column} = t.tag_id",
+                filters.source_linked,
+            )
+        )
+    return clauses
+
+
 # The word list of a folded string: split on runs that are not letters,
 # digits, or underscore; drop empties. The same expression tokenizes the
 # query (`:q`) and each title, so both sides agree on what a word is.
@@ -123,31 +231,31 @@ def build_search(
     *,
     limit: int,
     offset: int,
-    type_filter: int | None,
-    exclude_aliases: bool,
+    filters: SearchFilters,
     sort: list[str] | None,
 ) -> SearchStatements:
     """Build the ids and count statements for one search. Pure."""
     query = query.strip()
     tokens = query.split()
     params: dict[str, Any] = {"limit": limit, "offset": offset}
-    filters: list[str] = []
-    if type_filter is not None:
-        filters.append("t.type = :type_filter")
-        params["type_filter"] = type_filter
-    if exclude_aliases:
-        filters.append("t.alias_of IS NULL")
+    filters_sql = _filter_clauses(filters, params)
+    # The count needs the parent join only when the effective count is filtered.
+    count_from = (
+        _BASE_FROM
+        if filters.min_usage is not None or filters.max_usage is not None
+        else "FROM tags t"
+    )
     order = _order_clause(sort)
 
     # Empty query: list every tag.
     if not tokens:
-        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        where = f"WHERE {' AND '.join(filters_sql)}" if filters_sql else ""
         ids_sql = (
             f"SELECT t.tag_id {_BASE_FROM} {where} "
             f"ORDER BY {order or f'{_EFFECTIVE_USAGE} DESC, t.tag_id ASC'} "
             "LIMIT :limit OFFSET :offset"
         )
-        return SearchStatements(ids_sql, f"SELECT count(*) FROM tags t {where}", params)
+        return SearchStatements(ids_sql, f"SELECT count(*) {count_from} {where}", params)
 
     params["q"] = query
     params["prefix_q"] = f"{escape_like_pattern(query)}%"
@@ -157,10 +265,10 @@ def build_search(
 
     # Short or sub-trigram query: title prefix on the btree index, nothing else.
     if gates.prefix_only:
-        filters.insert(
+        filters_sql.insert(
             0, "public.fold_search_text(t.title::text) LIKE public.fold_search_text(:prefix_q)"
         )
-        where = f"WHERE {' AND '.join(filters)}"
+        where = f"WHERE {' AND '.join(filters_sql)}"
         exact_first = (
             "CASE WHEN public.fold_search_text(t.title::text) = public.fold_search_text(:q) "
             "THEN 0 ELSE 1 END"
@@ -170,7 +278,7 @@ def build_search(
             f"ORDER BY {order or f'{exact_first}, {_EFFECTIVE_USAGE} DESC, t.tag_id ASC'} "
             "LIMIT :limit OFFSET :offset"
         )
-        return SearchStatements(ids_sql, f"SELECT count(*) FROM tags t {where}", params)
+        return SearchStatements(ids_sql, f"SELECT count(*) {count_from} {where}", params)
 
     # General path: the candidate set is a UNION, never an OR — an OR that
     # mixes these branches defeats the planner's bitmap and scans the table.
@@ -191,15 +299,15 @@ def build_search(
     # Digits match literally somewhere, whatever branch admitted the row.
     for i, token in enumerate(tokens):
         if _DIGITS.match(token):
-            filters.append(
+            filters_sql.append(
                 f"(public.fold_search_text(t.title::text) LIKE public.fold_search_text(:like_tok{i})"
                 f' OR public.fold_search_text(t."desc") LIKE public.fold_search_text(:like_tok{i})'
                 f" OR EXISTS (SELECT 1 FROM tag_external_links l WHERE l.tag_id = t.tag_id"
                 f" AND public.fold_search_text(l.url) LIKE public.fold_search_text(:like_tok{i})))"
             )
     candidates = "candidates AS (\n    " + "\n    UNION\n    ".join(branches) + "\n)"
-    where = f"WHERE {' AND '.join(filters)}" if filters else ""
-    count_sql = f"WITH {candidates} SELECT count(*) FROM tags t JOIN candidates c ON c.tag_id = t.tag_id {where}"
+    where = f"WHERE {' AND '.join(filters_sql)}" if filters_sql else ""
+    count_sql = f"WITH {candidates} SELECT count(*) {count_from} JOIN candidates c ON c.tag_id = t.tag_id {where}"
 
     if order:
         ids_sql = (
@@ -252,8 +360,7 @@ async def search_tags(
     *,
     limit: int = 20,
     offset: int = 0,
-    type_filter: int | None = None,
-    exclude_aliases: bool = False,
+    filters: SearchFilters = SearchFilters(),
     sort: list[str] | None = None,
 ) -> TagSearchResult:
     """Run one tag search and return the page's ids in rank order with an exact total.
@@ -263,16 +370,14 @@ async def search_tags(
         query: Search text. Empty lists every tag.
         limit: Page size.
         offset: Rows to skip.
-        type_filter: TagType constant, or None for all types.
-        exclude_aliases: Drop rows whose alias_of is set.
+        filters: Type, alias, and structural filters; see SearchFilters.
         sort: Sort spec such as ["title:asc"]; None means relevance.
     """
     statements = build_search(
         query,
         limit=limit,
         offset=offset,
-        type_filter=type_filter,
-        exclude_aliases=exclude_aliases,
+        filters=filters,
         sort=sort,
     )
     # One command per execute: asyncpg rejects multi-statement strings. SET

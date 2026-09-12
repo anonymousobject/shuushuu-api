@@ -1,10 +1,13 @@
 """Tests for the search API endpoint (/api/v1/search), Postgres engine."""
 
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType
+from app.models.character_source_link import CharacterSourceLinks
 from app.models.tag import Tags
 from app.models.tag_external_link import TagExternalLinks
 
@@ -87,12 +90,12 @@ class TestSearchEndpoint:
         assert response.status_code == 200
         assert [hit["title"] for hit in response.json()["hits"]] == ["Naruto"]
 
-    async def test_search_with_exclude_aliases(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_search_with_aliases_hide(self, client: AsyncClient, db_session: AsyncSession):
         (canonical,) = await _seed(db_session, Tags(title="test canonical", type=TagType.THEME))
         await _seed(
             db_session, Tags(title="test alias", type=TagType.THEME, alias_of=canonical.tag_id)
         )
-        response = await client.get("/api/v1/search", params={"q": "test", "exclude_aliases": True})
+        response = await client.get("/api/v1/search", params={"q": "test", "aliases": "hide"})
         assert response.status_code == 200
         assert [hit["title"] for hit in response.json()["hits"]] == ["test canonical"]
 
@@ -260,7 +263,7 @@ class TestExactIdentityLayer:
         )
         assert response.json()["hits"][0]["tag_id"] == owner.tag_id
 
-    async def test_exclude_aliases_blocks_an_alias_owner(
+    async def test_aliases_hide_blocks_an_alias_owner(
         self, client: AsyncClient, db_session: AsyncSession
     ):
         # An owner that is itself an alias must not be injected when aliases are excluded.
@@ -277,7 +280,172 @@ class TestExactIdentityLayer:
             )
         )
         await db_session.commit()
-        response = await client.get(
-            "/api/v1/search", params={"q": "21412050", "exclude_aliases": True}
-        )
+        response = await client.get("/api/v1/search", params={"q": "21412050", "aliases": "hide"})
         assert all(hit["tag_id"] != alias_owner.tag_id for hit in response.json()["hits"])
+
+    async def test_aliases_only_blocks_a_canonical_owner(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner, _ = await _seed_identity_owner(db_session, alias_titles=("Pixiv 21412050",))
+        response = await client.get("/api/v1/search", params={"q": "21412050", "aliases": "only"})
+        data = response.json()
+        assert all(hit["matched_identity"] is None for hit in data["hits"])
+        assert all(hit["tag_id"] != owner.tag_id for hit in data["hits"])
+
+
+@pytest.mark.api
+class TestTagListFilters:
+    async def _seed_family(self, db_session: AsyncSession) -> dict[str, Tags]:
+        (canonical,) = await _seed(
+            db_session, Tags(title="feline", type=TagType.THEME, usage_count=500)
+        )
+        (alias,) = await _seed(
+            db_session, Tags(title="feline alias", type=TagType.THEME, alias_of=canonical.tag_id)
+        )
+        (parent,) = await _seed(
+            db_session, Tags(title="feline parent", type=TagType.THEME, usage_count=40)
+        )
+        (child,) = await _seed(
+            db_session,
+            Tags(
+                title="feline child",
+                type=TagType.THEME,
+                usage_count=3,
+                inheritedfrom_id=parent.tag_id,
+            ),
+        )
+        (character,) = await _seed(
+            db_session, Tags(title="feline girl", type=TagType.CHARACTER, usage_count=20)
+        )
+        (loner,) = await _seed(
+            db_session, Tags(title="feline loner", type=TagType.CHARACTER, usage_count=7)
+        )
+        (source,) = await _seed(
+            db_session, Tags(title="feline show", type=TagType.SOURCE, usage_count=90)
+        )
+        db_session.add(
+            CharacterSourceLinks(character_tag_id=character.tag_id, source_tag_id=source.tag_id)
+        )
+        await db_session.commit()
+        return {
+            "canonical": canonical,
+            "alias": alias,
+            "parent": parent,
+            "child": child,
+            "character": character,
+            "loner": loner,
+            "source": source,
+        }
+
+    async def _titles(self, client: AsyncClient, **params) -> tuple[list[str], int]:
+        response = await client.get("/api/v1/search", params={"q": "feline", **params})
+        assert response.status_code == 200, response.text
+        data = response.json()
+        return [hit["title"] for hit in data["hits"]], data["total"]
+
+    async def test_aliases_only_and_all(self, client: AsyncClient, db_session: AsyncSession):
+        await self._seed_family(db_session)
+        only, only_total = await self._titles(client, aliases="only")
+        assert only == ["feline alias"] and only_total == 1
+        every, every_total = await self._titles(client, aliases="all")
+        assert "feline alias" in every and every_total == 7
+
+    async def test_min_usage_counts_the_alias_by_its_parent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        await self._seed_family(db_session)
+        titles, total = await self._titles(client, aliases="all", min_usage=100)
+        assert set(titles) == {"feline", "feline alias"} and total == 2
+
+    async def test_max_usage_bounds_the_effective_count(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        await self._seed_family(db_session)
+        titles, total = await self._titles(client, aliases="all", min_usage=100, max_usage=600)
+        assert set(titles) == {"feline", "feline alias"} and total == 2
+        titles, total = await self._titles(client, max_usage=10)
+        assert set(titles) == {"feline child", "feline loner"} and total == 2
+
+    async def test_min_usage_above_max_usage_is_422(self, client: AsyncClient):
+        response = await client.get(
+            "/api/v1/search", params={"q": "", "min_usage": 5, "max_usage": 4}
+        )
+        assert response.status_code == 422
+
+    async def test_added_range(self, client: AsyncClient, db_session: AsyncSession):
+        family = await self._seed_family(db_session)
+        family["loner"].date_added = datetime(2020, 6, 15, 12, 0, tzinfo=UTC)
+        await db_session.commit()
+        titles, total = await self._titles(client, added_from="2020-01-01", added_to="2020-12-31")
+        assert titles == ["feline loner"] and total == 1
+        titles, total = await self._titles(client, added_to="2019-12-31")
+        assert titles == [] and total == 0
+
+    async def test_added_from_after_added_to_is_422(self, client: AsyncClient):
+        response = await client.get(
+            "/api/v1/search", params={"q": "", "added_from": "2021-01-01", "added_to": "2020-01-01"}
+        )
+        assert response.status_code == 422
+
+    async def test_has_alias_is_child_has_children(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        await self._seed_family(db_session)
+        assert (await self._titles(client, has_alias="yes"))[0] == ["feline"]
+        assert (await self._titles(client, is_child="yes"))[0] == ["feline child"]
+        assert (await self._titles(client, has_children="yes"))[0] == ["feline parent"]
+        titles, total = await self._titles(client, has_children="no", is_child="no", has_alias="no")
+        assert set(titles) == {"feline alias", "feline girl", "feline loner", "feline show"}
+        assert total == 4
+
+    async def test_source_linked_by_type(self, client: AsyncClient, db_session: AsyncSession):
+        await self._seed_family(db_session)
+        assert (await self._titles(client, type=TagType.CHARACTER, source_linked="yes"))[0] == [
+            "feline girl"
+        ]
+        assert (await self._titles(client, type=TagType.CHARACTER, source_linked="no"))[0] == [
+            "feline loner"
+        ]
+        assert (await self._titles(client, type=TagType.SOURCE, source_linked="yes"))[0] == [
+            "feline show"
+        ]
+
+    @pytest.mark.parametrize(
+        "params", [{}, {"type": 0}, {"type": TagType.THEME}, {"type": TagType.ARTIST}]
+    )
+    async def test_source_linked_needs_character_or_source_type(self, client: AsyncClient, params):
+        response = await client.get(
+            "/api/v1/search", params={"q": "", "source_linked": "yes", **params}
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"aliases": "sometimes"},
+            {"min_usage": -1},
+            {"min_usage": 2147483648},
+            {"max_usage": -1},
+            {"max_usage": 2147483648},
+            {"has_alias": "maybe"},
+            {"added_from": "2020-13-01"},
+        ],
+    )
+    async def test_invalid_values_are_422(self, client: AsyncClient, params):
+        response = await client.get("/api/v1/search", params={"q": "", **params})
+        assert response.status_code == 422
+
+    async def test_min_usage_at_the_integer_maximum_is_accepted(self, client: AsyncClient):
+        response = await client.get("/api/v1/search", params={"q": "", "min_usage": 2147483647})
+        assert response.status_code == 200
+
+    async def test_identity_prepend_skips_under_a_structural_filter(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner, _ = await _seed_identity_owner(db_session)
+        response = await client.get("/api/v1/search", params={"q": "21412050", "min_usage": 0})
+        data = response.json()
+        assert all(hit["matched_identity"] is None for hit in data["hits"])
+        assert owner.tag_id in [
+            hit["tag_id"] for hit in data["hits"]
+        ]  # still a plain text hit via its URL
