@@ -337,7 +337,7 @@ def _linked_tag_sample(titles: list[str]) -> str:
 
 
 async def validate_character_source_links_for_type(
-    db: AsyncSession, *, tag_id: int, new_type: int
+    db: AsyncSession, *, tag_id: int, new_type: int, subject: str = "this tag"
 ) -> None:
     """Reject a type change that would orphan the tag's character-source links.
 
@@ -347,6 +347,11 @@ async def validate_character_source_links_for_type(
     behind as orphans: invisible on its own page, still listed on the
     counterpart's. Blocking keeps the link (and its picture crop) intact and
     puts the delete in the moderator's hands.
+
+    `subject` names the tag being checked in the error message -- the default
+    reads naturally when `tag_id` is the tag under edit; callers checking a
+    tag on the edited tag's behalf (e.g. an incoming alias about to inherit
+    its type) should pass something like "its alias '<title>'" instead.
 
     Raises HTTPException(400) on validation failure.
     """
@@ -362,7 +367,7 @@ async def validate_character_source_links_for_type(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Cannot change tag type: this tag is linked as a character to "
+                    f"Cannot change tag type: {subject} is linked as a character to "
                     f"{len(source_titles)} source tag(s): {_linked_tag_sample(source_titles)}. "
                     f"Remove the character-source link(s) first."
                 ),
@@ -380,7 +385,7 @@ async def validate_character_source_links_for_type(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Cannot change tag type: this tag is linked as a source to "
+                    f"Cannot change tag type: {subject} is linked as a source to "
                     f"{len(character_titles)} character tag(s): "
                     f"{_linked_tag_sample(character_titles)}. "
                     f"Remove the character-source link(s) first."
@@ -1669,6 +1674,23 @@ async def update_tag(
                 )
 
         await validate_character_source_links_for_type(db, tag_id=tag_id, new_type=new_type)
+
+        # A type change cascades to incoming aliases (see below), so an
+        # alias holding a character-source link of its own must clear the
+        # same guard -- otherwise the cascade would silently orphan it.
+        incoming_aliases_result = await db.execute(
+            select(Tags.tag_id, Tags.title).where(  # type: ignore[call-overload]
+                Tags.alias_of == tag_id,
+                Tags.tag_id != tag_id,
+            )
+        )
+        for alias_tag_id, alias_title in incoming_aliases_result.all():
+            await validate_character_source_links_for_type(
+                db,
+                tag_id=alias_tag_id,
+                new_type=new_type,
+                subject=f"its alias '{alias_title}'",
+            )
 
     # Update fields
     for key, value in update_data.items():

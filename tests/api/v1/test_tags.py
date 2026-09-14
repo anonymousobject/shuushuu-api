@@ -4170,6 +4170,109 @@ class TestUpdateTag:
         await db_session.refresh(tag_p)
         assert tag_p.type == TagType.ARTIST
 
+    async def test_type_cascade_blocked_while_alias_linked_as_character(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Issue #348: A's type change cascades to incoming alias P, but if P
+        (not A) holds a character-source link as the character side, the
+        cascade must not silently orphan it. The API refuses to create a link
+        on an alias, so the row is inserted directly, mirroring the legacy
+        data the issue describes."""
+        access_token = await self._admin_token(client, db_session, "admincascadeguardchar")
+
+        tag_a = Tags(title="Cascade Guard Char A", desc="", type=TagType.CHARACTER)
+        source_tag = Tags(title="Cascade Guard Char Source", desc="", type=TagType.SOURCE)
+        db_session.add_all([tag_a, source_tag])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(source_tag)
+
+        tag_p = Tags(
+            title="Cascade Guard Char P",
+            desc="",
+            type=TagType.CHARACTER,
+            alias_of=tag_a.tag_id,
+        )
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        db_session.add(
+            CharacterSourceLinks(character_tag_id=tag_p.tag_id, source_tag_id=source_tag.tag_id)
+        )
+        await db_session.commit()
+
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "Cascade Guard Char A", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "character-source link" in detail
+        assert "Cascade Guard Char P" in detail
+        assert "Cascade Guard Char Source" in detail
+
+        # Neither tag's type moved, and the link survives untouched
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_p)
+        assert tag_a.type == TagType.CHARACTER
+        assert tag_p.type == TagType.CHARACTER
+        links_result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == tag_p.tag_id
+            )
+        )
+        assert len(links_result.scalars().all()) == 1
+
+    async def test_type_cascade_blocked_while_alias_linked_as_source(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Mirror case: alias P holds the link on the source side."""
+        access_token = await self._admin_token(client, db_session, "admincascadeguardsource")
+
+        tag_a = Tags(title="Cascade Guard Source A", desc="", type=TagType.SOURCE)
+        char_tag = Tags(title="Cascade Guard Source Char", desc="", type=TagType.CHARACTER)
+        db_session.add_all([tag_a, char_tag])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(char_tag)
+
+        tag_p = Tags(
+            title="Cascade Guard Source P",
+            desc="",
+            type=TagType.SOURCE,
+            alias_of=tag_a.tag_id,
+        )
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        db_session.add(
+            CharacterSourceLinks(character_tag_id=char_tag.tag_id, source_tag_id=tag_p.tag_id)
+        )
+        await db_session.commit()
+
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "Cascade Guard Source A", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "character-source link" in detail
+        assert "Cascade Guard Source P" in detail
+        assert "Cascade Guard Source Char" in detail
+
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_p)
+        assert tag_a.type == TagType.SOURCE
+        assert tag_p.type == TagType.SOURCE
+        links_result = await db_session.execute(
+            select(CharacterSourceLinks).where(CharacterSourceLinks.source_tag_id == tag_p.tag_id)
+        )
+        assert len(links_result.scalars().all()) == 1
+
     async def test_changing_type_and_alias_together_cascades_both(
         self, client: AsyncClient, db_session: AsyncSession
     ):
