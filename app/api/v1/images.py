@@ -26,7 +26,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
-from sqlalchemy import and_, asc, delete, desc, func, or_, select
+from sqlalchemy import ColumnElement, and_, asc, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -349,6 +349,28 @@ def _parse_user_id_list(raw: str | None, param: str) -> list[int]:
     return ids
 
 
+def _not_linked_to(link_model: type[Any], *predicates: ColumnElement[bool]) -> ColumnElement[bool]:
+    """NOT EXISTS anti-join: images with no `link_model` row matching `predicates`.
+
+    Postgres can only hash a NOT IN (subquery) when it fits in work_mem (4MB); a
+    popular tag's tag_links rows (717k for one tag) overflow that and the planner
+    falls back to a per-row Materialize scan that never finishes (#394). NOT EXISTS
+    always plans as a hash anti-join regardless of subquery size.
+
+    ``correlate(Images)`` pins correlation to just the outer ``Images`` row: some
+    callers also JOIN `link_model` for an include-side filter in the same query
+    (e.g. ``favorited_by_user_id`` + ``exclude_favorited_by_user_id``), and without
+    this, SQLAlchemy's auto-correlation sees `link_model` in both places and drops
+    it from this subquery's FROM entirely, producing an empty, table-less EXISTS.
+    """
+    return ~(
+        select(link_model.image_id)
+        .where(link_model.image_id == Images.image_id, *predicates)
+        .correlate(Images)
+        .exists()
+    )
+
+
 async def _default_feed_total(
     db: AsyncSession,
     current_user: Users | None,
@@ -601,10 +623,9 @@ async def list_images(
     )
     if exclude_favorited_ids:
         query = query.where(
-            Images.image_id.notin_(  # type: ignore[union-attr]
-                select(Favorites.image_id).where(  # type: ignore[call-overload]
-                    Favorites.user_id.in_(exclude_favorited_ids)  # type: ignore[attr-defined]
-                )
+            _not_linked_to(
+                Favorites,
+                Favorites.user_id.in_(exclude_favorited_ids),  # type: ignore[attr-defined]
             )
         )
     # Status filtering: explicit param overrides, otherwise use user's show_all_images
@@ -718,10 +739,14 @@ async def list_images(
                 else:
                     resolved_exclude_ids.add(resolved_etid)
 
-            # Apply NOT IN subquery
+            # NOT EXISTS anti-join, not NOT IN (subquery): Postgres can only hash a
+            # NOT IN subquery when it fits in work_mem, and a popular tag's tag_links
+            # rows overflow that and never finish (#394). NOT EXISTS always plans as
+            # a hash anti-join.
             query = query.where(
-                Images.image_id.notin_(  # type: ignore[union-attr]
-                    select(TagLinks.image_id).where(TagLinks.tag_id.in_(resolved_exclude_ids))  # type: ignore[call-overload,attr-defined]
+                _not_linked_to(
+                    TagLinks,
+                    TagLinks.tag_id.in_(resolved_exclude_ids),  # type: ignore[attr-defined]
                 )
             )
 
@@ -825,21 +850,21 @@ async def list_images(
         # Filter to images WITHOUT comments using posts counter
         query = query.where(Images.posts == 0)  # type: ignore[arg-type]
 
-    # Exclude commenter filter: anti-join to exclude images commented on by specified users.
-    # The legacy posts table's image_id is nullable, so the subquery must exclude NULL
-    # rows explicitly — SQL's NOT IN returns UNKNOWN (not TRUE) for every row when the
-    # subquery yields a NULL, which would silently empty the whole search.
+    # Exclude commenter filter: anti-join to exclude images commented on by specified
+    # users. NOT EXISTS (not NOT IN (subquery) — see _not_linked_to) also sidesteps the
+    # legacy posts table's nullable image_id for free: the correlation
+    # `Comments.image_id == Images.image_id` can never match a NULL row, unlike SQL's
+    # NOT IN, which returns UNKNOWN (not TRUE) for every row when the subquery yields
+    # a NULL and would silently empty the whole search.
     exclude_commenter_ids = _parse_user_id_list(exclude_commenter, "exclude_commenter")
     if exclude_commenter_ids:
         query = query.where(
-            Images.image_id.notin_(  # type: ignore[union-attr]
-                select(Comments.image_id).where(  # type: ignore[call-overload]
-                    Comments.user_id.in_(exclude_commenter_ids),  # type: ignore[attr-defined]
-                    Comments.image_id.is_not(None),  # type: ignore[union-attr]
-                    # Deleted comments must not hide an image, for the same reason
-                    # they must not surface one: /comments never shows them.
-                    Comments.deleted == False,  # noqa: E712
-                )
+            _not_linked_to(
+                Comments,
+                Comments.user_id.in_(exclude_commenter_ids),  # type: ignore[attr-defined]
+                # Deleted comments must not hide an image, for the same reason
+                # they must not surface one: /comments never shows them.
+                Comments.deleted == False,  # type: ignore[arg-type]  # noqa: E712
             )
         )
 
