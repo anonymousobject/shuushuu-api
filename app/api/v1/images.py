@@ -349,6 +349,23 @@ def _parse_user_id_list(raw: str | None, param: str) -> list[int]:
     return ids
 
 
+def _linked_to(link_model: type[Any], *predicates: ColumnElement[bool]) -> ColumnElement[bool]:
+    """EXISTS semi-join: images with at least one `link_model` row matching `predicates`.
+
+    ``correlate(Images)`` pins correlation to just the outer ``Images`` row: some
+    callers also JOIN `link_model` for an include-side filter in the same query
+    (e.g. ``favorited_by_user_id`` + ``exclude_favorited_by_user_id``), and without
+    this, SQLAlchemy's auto-correlation sees `link_model` in both places and drops
+    it from this subquery's FROM entirely, producing an empty, table-less EXISTS.
+    """
+    return (
+        select(link_model.image_id)
+        .where(link_model.image_id == Images.image_id, *predicates)
+        .correlate(Images)
+        .exists()
+    )
+
+
 def _not_linked_to(link_model: type[Any], *predicates: ColumnElement[bool]) -> ColumnElement[bool]:
     """NOT EXISTS anti-join: images with no `link_model` row matching `predicates`.
 
@@ -357,18 +374,9 @@ def _not_linked_to(link_model: type[Any], *predicates: ColumnElement[bool]) -> C
     falls back to a per-row Materialize scan that never finishes (#394). NOT EXISTS
     always plans as a hash anti-join regardless of subquery size.
 
-    ``correlate(Images)`` pins correlation to just the outer ``Images`` row: some
-    callers also JOIN `link_model` for an include-side filter in the same query
-    (e.g. ``favorited_by_user_id`` + ``exclude_favorited_by_user_id``), and without
-    this, SQLAlchemy's auto-correlation sees `link_model` in both places and drops
-    it from this subquery's FROM entirely, producing an empty, table-less EXISTS.
+    See `_linked_to` for why the EXISTS is correlated explicitly.
     """
-    return ~(
-        select(link_model.image_id)
-        .where(link_model.image_id == Images.image_id, *predicates)
-        .correlate(Images)
-        .exists()
-    )
+    return ~_linked_to(link_model, *predicates)
 
 
 async def _default_feed_total(
@@ -595,8 +603,8 @@ async def list_images(
     """
     # A blank/whitespace-only commentsearch means "not searching," not "search for
     # nothing" -- normalize it to None up front so it reads as absent everywhere
-    # below: the Comments JOIN guard, the count's JOIN guard, and the _FeedFilters
-    # entry all key off `commentsearch is not None`.
+    # below: the comment-filter EXISTS guard and the _FeedFilters entry both key
+    # off `commentsearch is not None`.
     if commentsearch is not None and not commentsearch.strip():
         commentsearch = None
     if commentsearch is not None:
@@ -828,21 +836,28 @@ async def list_images(
     if min_num_ratings is not None:
         query = query.where(Images.num_ratings >= min_num_ratings)  # type: ignore[arg-type]
 
-    # Comment filtering
-    # Note: We use distinct() to avoid duplicate rows when an image has multiple comments
-    # The distinct is applied to the subquery stage for efficiency
+    # Comment filtering: correlated EXISTS so an image with several matching
+    # comments still surfaces once, with no DISTINCT needed downstream (#366).
+    # Built by hand rather than via `_linked_to` because `apply_comment_text_search`
+    # needs a `Select` to add its predicates to (see its docstring), not a
+    # ColumnElement predicate list; the EXISTS/correlate shape mirrors `_linked_to`.
     if commenter is not None or commentsearch is not None:
-        # Join with Comments table for filtering when we need to filter by comment attributes.
-        # Soft-deleted comments are excluded here so this join agrees with /comments, which
-        # filters them everywhere. Without it an image can match on a comment the comment
-        # endpoint will never return, producing a result whose match is invisible.
-        query = query.join(Comments, Images.image_id == Comments.image_id).where(  # type: ignore[arg-type]
-            Comments.deleted == False  # type: ignore[arg-type]  # noqa: E712
+        # Soft-deleted comments are excluded here so this agrees with /comments,
+        # which filters them everywhere. Without it an image can match on a comment
+        # the comment endpoint will never return, producing a result whose match is
+        # invisible.
+        comment_match = select(Comments.image_id).where(  # type: ignore[call-overload]
+            Comments.deleted == False  # noqa: E712
         )
         if commenter is not None:
-            query = query.where(Comments.user_id == commenter)  # type: ignore[arg-type]
+            comment_match = comment_match.where(Comments.user_id == commenter)
         if commentsearch is not None:
-            query = apply_comment_text_search(query, commentsearch, commentsearch_mode)
+            comment_match = apply_comment_text_search(
+                comment_match, commentsearch, commentsearch_mode
+            )
+        query = query.where(
+            comment_match.where(Comments.image_id == Images.image_id).correlate(Images).exists()
+        )
     elif hascomments is True:
         # Use posts counter field (fast indexed lookup)
         query = query.where(Images.posts > 0)  # type: ignore[arg-type]
@@ -929,17 +944,7 @@ async def list_images(
     if is_bare_default_feed:
         total = await _default_feed_total(db, current_user, redis_client)
     else:
-        # When comment filters JOIN Comments, one image can match multiple
-        # comment rows — count distinct images to match the page subquery's
-        # distinct() below, or the pagination total is inflated.
-        if commenter is not None or commentsearch is not None:
-            distinct_ids = query.with_only_columns(
-                Images.image_id.label("image_id")  # type: ignore[union-attr]
-            ).distinct()
-            count_query = select(func.count()).select_from(distinct_ids.subquery())
-            async with statement_timeout(db, search_timeout):
-                total = await get_filtered_count(db, count_query, redis_client)
-        elif decompose_count and current_user is not None:
+        if decompose_count and current_user is not None:
             # Default logged-in (show_all=0) feed. The visibility OR bakes the viewer's
             # user_id into the count, which would give every user a private cache entry.
             # Decompose instead (disjoint union):
@@ -1005,26 +1010,11 @@ async def list_images(
     # (e.g., multiple images with same favorites count). Use descending for "newest first".
     secondary_order = desc(Images.image_id)  # type: ignore[var-annotated,arg-type]
 
-    # Subquery: Apply all filters, sort, and limit to get matching image_ids
-    # When comment filters are used with JOIN, apply distinct() to avoid duplicate rows
-    # (one image can have multiple comments)
-    # Only need distinct when we JOIN with Comments (commenter or commentsearch filters)
-    needs_distinct = commenter is not None or commentsearch is not None
-
-    subquery_columns = [Images.image_id.label("image_id")]  # type: ignore[union-attr]
-    if needs_distinct and sort_column.key != "image_id":
-        # Postgres rejects an ORDER BY expression that is absent from a SELECT
-        # DISTINCT select list; MySQL permits it, which is why this only broke
-        # after the cutover. Adding the sort column cannot change which rows
-        # survive DISTINCT: it comes from Images, so it is constant per
-        # image_id and (image_id, sort_column) collapses exactly as image_id
-        # alone. Sorts whose get_column() already resolves to image_id
-        # (image_id, date_added) satisfy the rule and must not add a duplicate.
-        subquery_columns.append(sort_column)
-
-    image_id_subquery = query.with_only_columns(*subquery_columns)
-    if needs_distinct:
-        image_id_subquery = image_id_subquery.distinct()
+    # Subquery: Apply all filters, sort, and limit to get matching image_ids.
+    # Every content filter (including comment filters, since #366) is a WHERE/EXISTS
+    # predicate on Images, so image_id alone is always a unique key here — no DISTINCT
+    # needed.
+    image_id_subquery = query.with_only_columns(Images.image_id.label("image_id"))  # type: ignore[union-attr]
 
     imageset = (
         image_id_subquery.order_by(subquery_order, secondary_order)
