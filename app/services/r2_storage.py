@@ -77,7 +77,14 @@ class R2Storage:
             yield s3
 
     async def upload_file(self, bucket: str, key: str, path: Path) -> None:
-        """Upload a local file to `{bucket}/{key}`."""
+        """Upload a local file to `{bucket}/{key}`.
+
+        Refuses a zero-byte file: no image, avatar, or banner is ever empty, so
+        one on disk is a write lost to a host crash, and publishing it serves a
+        blank 200 from the CDN while every `object_exists` check reports healthy.
+        """
+        if path.stat().st_size == 0:
+            raise ValueError(f"Refusing to upload empty file {path} to {bucket}/{key}")
         async with self._acquire_client() as s3:
             await s3.upload_file(str(path), bucket, key)
 

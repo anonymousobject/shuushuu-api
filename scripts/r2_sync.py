@@ -415,6 +415,14 @@ async def reconcile(*, stale_after: int) -> None:
                         )
                         all_uploaded = False
                         break
+                    if local.stat().st_size == 0:
+                        # A write lost to a host crash. upload_file would refuse
+                        # it; skip the row so one bad file can't wedge every run.
+                        logger.error(
+                            "reconcile_local_empty", image_id=image.image_id, variant=variant
+                        )
+                        all_uploaded = False
+                        break
                     if not await r2.object_exists(bucket=bucket, key=key):
                         await r2.upload_file(bucket=bucket, key=key, path=local)
 
@@ -856,6 +864,15 @@ async def force_reupload_image(*, image_id: int, dry_run: bool) -> None:
             if not local.exists():
                 logger.warning(
                     "force_reupload_local_missing",
+                    image_id=image_id,
+                    variant=variant,
+                )
+                continue
+            if local.stat().st_size == 0:
+                # A write lost to a host crash: the R2 object may be the only
+                # good copy left, so don't delete it to make way for nothing.
+                logger.error(
+                    "force_reupload_local_empty",
                     image_id=image_id,
                     variant=variant,
                 )

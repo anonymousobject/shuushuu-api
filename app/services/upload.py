@@ -2,6 +2,7 @@
 Image upload helpers for rate limiting, file saving, and tag linking.
 """
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
 from uuid import uuid4
@@ -109,6 +110,12 @@ async def stage_uploaded_image(file: UploadFile, storage_path: str) -> tuple[Fil
                     detail=f"File size exceeds maximum of {settings.MAX_IMAGE_SIZE} bytes",
                 )
             f.write(content)
+            # Force the bytes to disk before the caller commits the image row.
+            # The row lives on another host, so a crash here inside the
+            # writeback window would otherwise leave it pointing at a
+            # zero-byte file with the original unrecoverable.
+            f.flush()
+            os.fsync(f.fileno())
 
         # Validate file is actually an image (security check)
         validate_image_file(file, staged_path)
