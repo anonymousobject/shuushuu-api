@@ -113,6 +113,23 @@ class TestReconcile:
         log_messages = " ".join(rec.getMessage() for rec in caplog.records)
         assert "reconcile_local_empty" in log_messages
 
+    async def test_empty_local_file_is_ignored_when_object_already_in_r2(
+        self, stale_image, db_session, tmp_path
+    ):
+        """The size check guards the upload, not the row: if R2 already holds the
+        object there is nothing to publish, so an empty local copy must not
+        keep the row unsynced forever."""
+        (tmp_path / "thumbs" / "2026-04-17-42.webp").write_bytes(b"")
+
+        mock_r2 = _attach_bulk_session(AsyncMock())
+        mock_r2.object_exists = AsyncMock(return_value=True)
+        with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
+            await reconcile(stale_after=60)
+
+        mock_r2.upload_file.assert_not_awaited()
+        await db_session.refresh(stale_image)
+        assert stale_image.r2_location == R2Location.PUBLIC
+
 
 @pytest.mark.unit
 class TestHealth:

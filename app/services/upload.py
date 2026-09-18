@@ -2,6 +2,7 @@
 Image upload helpers for rate limiting, file saving, and tag linking.
 """
 
+import asyncio
 import os
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
@@ -115,7 +116,7 @@ async def stage_uploaded_image(file: UploadFile, storage_path: str) -> tuple[Fil
             # writeback window would otherwise leave it pointing at a
             # zero-byte file with the original unrecoverable.
             f.flush()
-            os.fsync(f.fileno())
+            await asyncio.to_thread(os.fsync, f.fileno())
 
         # Validate file is actually an image (security check)
         validate_image_file(file, staged_path)
