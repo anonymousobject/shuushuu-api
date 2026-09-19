@@ -19,6 +19,16 @@ class TestR2Storage:
         assert await storage.object_exists(bucket="public", key="fullsize/a.bin") is True
         assert await storage.object_exists(bucket="public", key="fullsize/missing.bin") is False
 
+    async def test_upload_file_refuses_empty_file(self, setup_buckets, tmp_path: Path):
+        """A zero-byte local file is a lost write (host crashed before
+        writeback), never a real image — publishing it serves a blank 200."""
+        storage = setup_buckets
+        src = tmp_path / "empty.png"
+        src.touch()
+        with pytest.raises(ValueError, match="empty"):
+            await storage.upload_file(bucket="public", key="fullsize/empty.png", path=src)
+        assert await storage.object_exists(bucket="public", key="fullsize/empty.png") is False
+
     async def test_copy_object(self, setup_buckets, tmp_path: Path):
         storage = setup_buckets
         src = tmp_path / "a.bin"
@@ -105,6 +115,16 @@ class TestR2Storage:
                 assert await storage.object_exists(bucket="public", key="nested") is True
             # outer client still usable after inner exits
             await storage.delete_object(bucket="public", key="nested")
+
+    async def test_upload_bytes_refuses_empty_body(self, setup_buckets):
+        """Avatars and banners publish via upload_bytes; an empty body is the
+        same lost write as an empty file."""
+        storage = setup_buckets
+        with pytest.raises(ValueError, match="empty"):
+            await storage.upload_bytes(
+                bucket="public", key="avatars/empty.png", body=b"", content_type="image/png"
+            )
+        assert await storage.object_exists(bucket="public", key="avatars/empty.png") is False
 
     async def test_upload_bytes_round_trip(self, setup_buckets, moto_session, moto_server):
         storage = setup_buckets

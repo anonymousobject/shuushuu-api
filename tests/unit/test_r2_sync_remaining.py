@@ -43,6 +43,95 @@ class TestReconcileGuard:
 
 
 @pytest.mark.unit
+class TestReconcile:
+    @pytest.fixture(autouse=True)
+    def _patch_get_session(self, db_session):
+        with patch(
+            "scripts.r2_sync.get_async_session",
+            return_value=_mock_session_cm(db_session),
+        ):
+            yield
+
+    @pytest.fixture
+    async def stale_image(self, db_session, monkeypatch, tmp_path):
+        """An unsynced row old enough to reconcile, with both local variants."""
+        from datetime import UTC, datetime
+
+        from app.models.image import Images
+
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "R2_ALLOW_BULK_BACKFILL", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+        (tmp_path / "fullsize").mkdir()
+        (tmp_path / "thumbs").mkdir()
+        (tmp_path / "fullsize" / "2026-04-17-42.jpg").write_bytes(b"x")
+        (tmp_path / "thumbs" / "2026-04-17-42.webp").write_bytes(b"x")
+
+        image = Images(
+            user_id=1,
+            filename="2026-04-17-42",
+            ext="jpg",
+            status=ImageStatus.ACTIVE,
+            r2_location=R2Location.NONE,
+            date_added=datetime(2026, 4, 17, tzinfo=UTC),
+        )
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        return image
+
+    async def test_uploads_missing_objects_and_flips_location(self, stale_image, db_session):
+        mock_r2 = _attach_bulk_session(AsyncMock())
+        mock_r2.object_exists = AsyncMock(return_value=False)
+        with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
+            await reconcile(stale_after=60)
+
+        assert mock_r2.upload_file.await_count == 2
+        await db_session.refresh(stale_image)
+        assert stale_image.r2_location == R2Location.PUBLIC
+
+    async def test_skips_row_whose_local_file_is_empty(
+        self, stale_image, db_session, tmp_path, caplog
+    ):
+        """A zero-byte local file (lost write) is treated like a missing one:
+        nothing is published and the row stays unsynced for an operator to heal."""
+        import logging
+
+        (tmp_path / "fullsize" / "2026-04-17-42.jpg").write_bytes(b"")
+
+        mock_r2 = _attach_bulk_session(AsyncMock())
+        mock_r2.object_exists = AsyncMock(return_value=False)
+        with (
+            patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2),
+            caplog.at_level(logging.ERROR),
+        ):
+            await reconcile(stale_after=60)
+
+        mock_r2.upload_file.assert_not_awaited()
+        await db_session.refresh(stale_image)
+        assert stale_image.r2_location == R2Location.NONE
+        log_messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "reconcile_local_empty" in log_messages
+
+    async def test_empty_local_file_is_ignored_when_object_already_in_r2(
+        self, stale_image, db_session, tmp_path
+    ):
+        """The size check guards the upload, not the row: if R2 already holds the
+        object there is nothing to publish, so an empty local copy must not
+        keep the row unsynced forever."""
+        (tmp_path / "thumbs" / "2026-04-17-42.webp").write_bytes(b"")
+
+        mock_r2 = _attach_bulk_session(AsyncMock())
+        mock_r2.object_exists = AsyncMock(return_value=True)
+        with patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2):
+            await reconcile(stale_after=60)
+
+        mock_r2.upload_file.assert_not_awaited()
+        await db_session.refresh(stale_image)
+        assert stale_image.r2_location == R2Location.PUBLIC
+
+
+@pytest.mark.unit
 class TestHealth:
     @pytest.fixture(autouse=True)
     def _patch_get_session(self, db_session):
@@ -321,6 +410,47 @@ class TestForceReuploadImage:
             await force_reupload_image(image_id=54, dry_run=False)
 
         assert mock_r2.upload_file.await_count == 1  # fullsize only
+
+    async def test_empty_local_file_keeps_the_r2_object(
+        self, db_session, monkeypatch, tmp_path, caplog
+    ):
+        """An empty local file is a lost write, and the R2 object may be the only
+        good copy left — it must not be deleted to make way for nothing."""
+        import logging
+
+        from app.models.image import Images
+
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+        (tmp_path / "fullsize").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "thumbs").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "fullsize" / "empty-reup.jpg").write_bytes(b"")
+        (tmp_path / "thumbs" / "empty-reup.webp").write_bytes(b"x")
+        db_session.add(
+            Images(
+                image_id=55,
+                user_id=1,
+                filename="empty-reup",
+                ext="jpg",
+                status=ImageStatus.ACTIVE,
+                r2_location=R2Location.PUBLIC,
+            )
+        )
+        await db_session.commit()
+
+        mock_r2 = _attach_bulk_session(AsyncMock())
+        with (
+            patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2),
+            patch("scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock),
+            caplog.at_level(logging.ERROR),
+        ):
+            await force_reupload_image(image_id=55, dry_run=False)
+
+        touched = {c.kwargs["key"] for c in mock_r2.delete_object.await_args_list}
+        assert touched == {"thumbs/empty-reup.webp"}
+        assert mock_r2.upload_file.await_count == 1  # thumbs only
+        log_messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "force_reupload_local_empty" in log_messages
 
     async def test_prints_not_found_for_missing_image(self, db_session, monkeypatch, capsys):
         monkeypatch.setattr(settings, "R2_ENABLED", True)

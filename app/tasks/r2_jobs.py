@@ -100,6 +100,17 @@ async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str
                     path=str(path),
                 )
                 raise Retry(defer=ctx.get("job_try", 1) * 30)
+            if path.stat().st_size == 0:
+                # Still being encoded (img.save writes in place) or a write
+                # lost to a host crash. Retry covers the first; the second
+                # exhausts its tries and fails with r2_location still NONE.
+                logger.warning(
+                    "r2_finalize_retry_empty_variant",
+                    image_id=image_id,
+                    variant=variant,
+                    path=str(path),
+                )
+                raise Retry(defer=ctx.get("job_try", 1) * 30)
 
         bucket = _bucket_for_status(image.status)
         r2 = get_r2_storage()
