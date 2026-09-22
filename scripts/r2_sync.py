@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import sys
 import time
+from collections.abc import Collection
 from pathlib import Path as FilePath
 from typing import Any
 
@@ -812,8 +813,13 @@ async def resync_image(image_id: int) -> None:
         print(f"  {variant}: {bucket}/{key} exists={exists}")
 
 
-async def force_reupload_image(*, image_id: int, dry_run: bool) -> None:
+async def force_reupload_image(
+    *, image_id: int, dry_run: bool, only: Collection[str] | None = None
+) -> None:
     """Delete + re-upload each ready variant for one image from local files.
+
+    `only` restricts the re-upload to a subset of variant names (e.g. the
+    derived files after a regeneration), leaving the rest untouched.
 
     For healing a partially-corrupted R2 object (truncated upload that passes
     HEAD but fails GET, or a CDN-cached bad copy) where `reconcile` wouldn't
@@ -845,7 +851,7 @@ async def force_reupload_image(*, image_id: int, dry_run: bool) -> None:
         if image.r2_location == R2Location.PUBLIC
         else settings.R2_PRIVATE_BUCKET
     )
-    variants = _ready_variants(image)
+    variants = [v for v in _ready_variants(image) if only is None or v in only]
     processed_keys: list[str] = []
 
     async with r2.bulk_session():
