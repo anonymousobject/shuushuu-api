@@ -416,8 +416,17 @@ async def reconcile(*, stale_after: int) -> None:
                         )
                         all_uploaded = False
                         break
-                    if not await r2.object_exists(bucket=bucket, key=key):
-                        await r2.upload_file(bucket=bucket, key=key, path=local)
+                    if await r2.object_exists(bucket=bucket, key=key):
+                        continue
+                    if local.stat().st_size == 0:
+                        # A write lost to a host crash. upload_file would refuse
+                        # it; skip the row so one bad file can't wedge every run.
+                        logger.error(
+                            "reconcile_local_empty", image_id=image.image_id, variant=variant
+                        )
+                        all_uploaded = False
+                        break
+                    await r2.upload_file(bucket=bucket, key=key, path=local)
 
                 if all_uploaded:
                     if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2:
@@ -824,8 +833,8 @@ async def force_reupload_image(
     For healing a partially-corrupted R2 object (truncated upload that passes
     HEAD but fails GET, or a CDN-cached bad copy) where `reconcile` wouldn't
     help because `object_exists` returns true. Refuses when r2_location=NONE
-    — that's reconcile's job. Variants whose local file is missing are
-    skipped with a warning (no delete, no upload). PUBLIC bucket uploads
+    — that's reconcile's job. Variants whose local file is missing or empty
+    are skipped with a log line (no delete, no upload). PUBLIC bucket uploads
     trigger a best-effort CDN purge after re-upload.
     """
     from pathlib import Path as FilePath
@@ -862,6 +871,15 @@ async def force_reupload_image(
             if not local.exists():
                 logger.warning(
                     "force_reupload_local_missing",
+                    image_id=image_id,
+                    variant=variant,
+                )
+                continue
+            if local.stat().st_size == 0:
+                # A write lost to a host crash: the R2 object may be the only
+                # good copy left, so don't delete it to make way for nothing.
+                logger.error(
+                    "force_reupload_local_empty",
                     image_id=image_id,
                     variant=variant,
                 )
