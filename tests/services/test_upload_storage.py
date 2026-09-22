@@ -5,6 +5,7 @@ staged file first, permanent YYYY-MM-DD-{image_id}.{ext} name only once the row
 exists — is only checked here.
 """
 
+import os
 from io import BytesIO
 from pathlib import Path
 
@@ -57,6 +58,27 @@ class TestStageUploadedImage:
         assert first != second
         assert first.exists() and second.exists()
         assert first_md5 != second_md5  # neither clobbered the other
+
+    async def test_staged_bytes_are_fsynced(self, tmp_path: Path, monkeypatch):
+        """The full upload is forced to disk before staging returns.
+
+        The caller commits the image row next; without the fsync a host crash
+        inside the writeback window leaves a row pointing at a zero-byte file.
+        The spy records the file's size at fsync time, so an fsync issued
+        before the buffered write is flushed fails this too.
+        """
+        synced_sizes: list[int] = []
+        real_fsync = os.fsync
+
+        def _spy(fd: int) -> None:
+            synced_sizes.append(os.fstat(fd).st_size)
+            real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", _spy)
+
+        staged_path, _, _ = await stage_uploaded_image(_upload(), str(tmp_path))
+
+        assert synced_sizes == [staged_path.stat().st_size]
 
     async def test_rejects_a_non_image_and_leaves_nothing_behind(self, tmp_path: Path):
         """Bytes that aren't an image are refused and the staged file removed.

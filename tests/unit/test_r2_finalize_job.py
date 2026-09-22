@@ -149,6 +149,31 @@ class TestR2FinalizeUploadJob:
         await db_session.refresh(fresh_image)
         assert fresh_image.r2_location == R2Location.NONE  # no flip on retry
 
+    async def test_retries_when_variant_file_is_empty(
+        self, fresh_image, db_session, monkeypatch, tmp_path
+    ):
+        """A zero-byte variant is either mid-encode (img.save writes in place) or
+        a write lost to a host crash. Neither is publishable: retry before
+        uploading anything, so no variant lands in R2 while the row says NONE."""
+        from arq import Retry
+
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+        (tmp_path / "fullsize").mkdir()
+        (tmp_path / "thumbs").mkdir()
+        (tmp_path / "fullsize" / "2026-04-17-42.jpg").write_bytes(b"x")
+        (tmp_path / "thumbs" / "2026-04-17-42.webp").write_bytes(b"")
+
+        mock_r2 = AsyncMock()
+        mock_r2.object_exists = AsyncMock(return_value=False)
+        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
+            with pytest.raises(Retry):
+                await r2_finalize_upload_job({"job_try": 1}, image_id=fresh_image.image_id)
+
+        mock_r2.upload_file.assert_not_awaited()
+        await db_session.refresh(fresh_image)
+        assert fresh_image.r2_location == R2Location.NONE
+
     async def test_no_op_when_r2_disabled(self, fresh_image, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", False)
         mock_r2 = AsyncMock()

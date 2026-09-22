@@ -177,14 +177,20 @@ cross-reference your SMTP provider dashboard.
 ### Stuck R2 uploads / iqdb indexing (e.g. midnight-boundary filename drift)
 
 ```logql
-{service="arq-worker"} |~ "r2_finalize_retry_missing_variant|iqdb_job_thumbnail_missing"
+{service="arq-worker"} |~ "r2_finalize_retry_missing_variant|r2_finalize_retry_empty_variant|iqdb_job_thumbnail_missing"
 ```
 
-Both events fire when a worker job expects a path that doesn't exist
-on disk. Repeated retries for the same `image_id` mean the file was
+The `_missing` events fire when a worker job expects a path that doesn't
+exist on disk. Repeated retries for the same `image_id` mean the file was
 written under a different name (typically the midnight-boundary drift
 fixed in PR #218). Compare the logged `path` to the actual file with
 `ls /shuushuu/images/<variant>/*<image_id>*` on the api container.
+
+`r2_finalize_retry_empty_variant` means the file exists but is zero bytes.
+One retry is a variant still being encoded; retries that exhaust mean the
+write was lost to a host crash (PR #402). Restore the fullsize from the
+uploader's original, or regenerate the variant from the fullsize, then run
+`r2_sync.py reconcile`.
 
 ### nginx upstream connection refused (stale DNS after recreate)
 
