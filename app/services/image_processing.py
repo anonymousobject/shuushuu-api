@@ -3,6 +3,7 @@ Image processing utilities for validation, dimension extraction, and thumbnail g
 """
 
 import hashlib
+import io
 from pathlib import Path as FilePath
 
 from fastapi import HTTPException, UploadFile, status
@@ -235,15 +236,16 @@ def _convert_to_srgb(img: Image.Image) -> Image.Image:
     try:
         icc_profile = img.info.get("icc_profile")
         if icc_profile:
-            input_profile = ImageCms.ImageCmsProfile(ImageCms.getOpenProfile(icc_profile))
-            # Preserve grayscale mode; only force RGB for non-grayscale images
-            if img.mode == "L":
-                img = ImageCms.profileToProfile(img, input_profile, _srgb_profile)  # type: ignore[assignment]
-            else:
-                img = ImageCms.profileToProfile(img, input_profile, _srgb_profile, outputMode="RGB")  # type: ignore[assignment]
+            # getOpenProfile wants a filename or file object, not raw bytes
+            input_profile = ImageCms.getOpenProfile(io.BytesIO(icc_profile))
+            # Keep grayscale and alpha as-is; anything else (CMYK etc.) lands in RGB
+            output_mode = img.mode if img.mode in ("RGB", "RGBA", "L") else "RGB"
+            img = ImageCms.profileToProfile(
+                img, input_profile, _srgb_profile, outputMode=output_mode
+            )  # type: ignore[assignment]
     except PyCMSError, OSError, TypeError:
-        # If color profile conversion fails, just ensure RGB mode
-        if img.mode not in ("RGB", "L"):
+        # If color profile conversion fails, skip it but never drop alpha
+        if img.mode not in ("RGB", "RGBA", "L"):
             img = img.convert("RGB")
     return img
 
