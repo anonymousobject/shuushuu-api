@@ -50,16 +50,24 @@ DERIVED_VARIANTS = {"thumbs", "medium", "large"}
 def is_affected_png(path: Path) -> bool:
     """True when the file is RGBA and carries an ICC profile.
 
-    Reads the header only; Image.open is lazy and does not decode pixels.
+    Reads the header only; Image.open is lazy and does not decode pixels, so
+    Pillow's decompression-bomb pixel ceiling is lifted for the duration of
+    the check (prod has legitimate PNGs past the default 178M-pixel limit).
     """
-    with Image.open(path) as img:
-        return img.mode == "RGBA" and bool(img.info.get("icc_profile"))
+    pixel_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        with Image.open(path) as img:
+            return img.mode == "RGBA" and bool(img.info.get("icc_profile"))
+    finally:
+        Image.MAX_IMAGE_PIXELS = pixel_limit
 
 
 @dataclass
 class ScanResult:
     candidates: list[int] = field(default_factory=list)
     missing: list[int] = field(default_factory=list)
+    unreadable: list[tuple[int, str]] = field(default_factory=list)
     scanned: int = 0
 
 
@@ -72,12 +80,18 @@ def scan(rows: Iterable[tuple[int, str, str]], storage_path: str) -> ScanResult:
         source = Path(storage_path) / "fullsize" / f"{filename}.{ext}"
         if not source.exists():
             result.missing.append(image_id)
-        elif is_affected_png(source):
+            continue
+        try:
+            affected = is_affected_png(source)
+        except Exception as exc:
+            result.unreadable.append((image_id, f"{type(exc).__name__}: {exc}"))
+            continue
+        if affected:
             result.candidates.append(image_id)
         if time.time() - last_report >= 5:
             print(
                 f"  scanned {result.scanned:,} | affected {len(result.candidates):,} "
-                f"| missing {len(result.missing):,}",
+                f"| missing {len(result.missing):,} | unreadable {len(result.unreadable):,}",
                 flush=True,
             )
             last_report = time.time()
@@ -184,8 +198,11 @@ async def cmd_scan(*, min_id: int | None, output: Path) -> int:
     print(f"Scanned:   {result.scanned:,}")
     print(f"Affected:  {len(result.candidates):,}  -> {output}")
     print(f"Missing:   {len(result.missing):,}")
+    print(f"Unreadable: {len(result.unreadable):,}")
     for image_id in result.missing:
         print(f"  MISSING SOURCE: image {image_id}", file=sys.stderr)
+    for image_id, error in result.unreadable:
+        print(f"  UNREADABLE: image {image_id}: {error}", file=sys.stderr)
     return 0
 
 

@@ -59,6 +59,18 @@ class TestIsAffectedPng:
         _write_png(tmp_path / "a.png", "RGB", icc=True)
         assert is_affected_png(tmp_path / "a.png") is False
 
+    def test_header_check_ignores_decompression_bomb_limit(self, tmp_path, monkeypatch):
+        """Only the header is read, so the pixel-count guard is irrelevant here.
+
+        Prod has PNGs past Pillow's default 178M-pixel ceiling that the guard
+        would otherwise turn into a crash mid-scan.
+        """
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+        _write_png(tmp_path / "a.png", "RGBA", icc=True)
+
+        assert is_affected_png(tmp_path / "a.png") is True
+        assert Image.MAX_IMAGE_PIXELS == 10  # restored for everything else
+
 
 @pytest.mark.unit
 class TestScan:
@@ -77,6 +89,19 @@ class TestScan:
         assert result.candidates == [1]
         assert result.missing == [3]
         assert result.scanned == 3
+
+    def test_unreadable_file_is_reported_and_scan_continues(self, tmp_path):
+        fullsize = tmp_path / "fullsize"
+        _write_png(fullsize / "2026-01-01-1.png", "RGBA", icc=True)
+        (fullsize / "2026-01-01-2.png").write_bytes(b"definitely not a png")
+        _write_png(fullsize / "2026-01-01-3.png", "RGBA", icc=True)
+        rows = [(1, "2026-01-01-1", "png"), (2, "2026-01-01-2", "png"), (3, "2026-01-01-3", "png")]
+
+        result = scan(rows, str(tmp_path))
+
+        assert result.candidates == [1, 3]
+        assert [image_id for image_id, _ in result.unreadable] == [2]
+        assert "UnidentifiedImageError" in result.unreadable[0][1]
 
 
 @pytest.mark.unit
