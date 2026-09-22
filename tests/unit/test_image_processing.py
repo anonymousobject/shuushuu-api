@@ -8,12 +8,13 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
-from PIL import Image
+from PIL import Image, ImageCms
 
 from app.config import settings
 from app.services.image_processing import (
     create_large_variant,
     create_medium_variant,
+    create_thumbnail,
     validate_image_file,
 )
 
@@ -61,6 +62,24 @@ def temp_storage():
 
 
 @pytest.fixture
+def test_image_rgba_with_icc():
+    """A transparent PNG tagged with an embedded ICC profile.
+
+    Mirrors what Clip Studio / Photoshop / pixiv originals look like: fully
+    transparent pixels carry a non-white colour underneath (black here), so
+    dropping the alpha channel exposes it as a blob behind the subject.
+    Sized to exceed MEDIUM_EDGE so variant generation also runs.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "2026-09-19-99004.png"
+        img = Image.new("RGBA", (1600, 1600), color=(0, 0, 0, 0))
+        img.paste((200, 50, 50, 255), (400, 400, 1200, 1200))
+        srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        img.save(path, icc_profile=srgb)
+        yield path
+
+
+@pytest.fixture
 def test_image_highly_compressed():
     """Create a temporary highly compressed small image for size validation tests."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -70,6 +89,43 @@ def test_image_highly_compressed():
         img = Image.new("RGB", (100, 100), color="red")
         img.save(path, quality=1)  # Extremely low quality
         yield path
+
+
+class TestTransparencyWithIccProfile:
+    """Alpha must survive the sRGB conversion an embedded ICC profile triggers."""
+
+    def test_thumbnail_keeps_alpha_for_icc_tagged_png(self, test_image_rgba_with_icc, temp_storage):
+        create_thumbnail(test_image_rgba_with_icc, 99004, "png", temp_storage)
+
+        thumb_path = Path(temp_storage) / "thumbs" / "2026-09-19-99004.webp"
+        with Image.open(thumb_path) as thumb:
+            assert thumb.mode == "RGBA"
+            assert thumb.getpixel((0, 0))[3] == 0
+
+    def test_medium_variant_keeps_alpha_for_icc_tagged_png(
+        self, test_image_rgba_with_icc, temp_storage
+    ):
+        result = create_medium_variant(
+            test_image_rgba_with_icc, 99004, "png", temp_storage, 1600, 1600
+        )
+        assert result is True
+
+        variant_path = Path(temp_storage) / "medium" / "2026-09-19-99004.png"
+        with Image.open(variant_path) as variant:
+            assert variant.mode == "RGBA"
+            assert variant.getpixel((0, 0)) == (0, 0, 0, 0)
+
+    def test_thumbnail_keeps_alpha_when_icc_profile_is_unreadable(self, temp_storage):
+        """A garbage profile must degrade to 'skip colour management', not 'drop alpha'."""
+        source_path = Path(temp_storage) / "2026-09-19-99005.png"
+        img = Image.new("RGBA", (600, 600), color=(0, 0, 0, 0))
+        img.save(source_path, icc_profile=b"not an icc profile")
+
+        create_thumbnail(source_path, 99005, "png", temp_storage)
+
+        with Image.open(Path(temp_storage) / "thumbs" / "2026-09-19-99005.webp") as thumb:
+            assert thumb.mode == "RGBA"
+            assert thumb.getpixel((0, 0))[3] == 0
 
 
 class TestCreateMediumVariant:
