@@ -83,6 +83,25 @@ server {
 
     client_max_body_size 100M;
 
+    # Dead legacy URLs. phpBB lived at /forums/; the frontend has no route
+    # for it and 404s only after running the full layout load (3 api calls,
+    # 2 Redis connections per hit), and bots hammer it at thousands per
+    # minute. 410 tells crawlers the content is gone.
+    location ^~ /forums/ { return 410; }
+
+    # MediaWiki URL forms from when the wiki lived at the apex:
+    # /index.php/<Title> and /index.php?title=<Title>&... still get thousands
+    # of hits per wave (mostly Special:RecentChanges). wiki.e-shuushuu.net
+    # serves both forms, so send them there with the query string intact.
+    # Anything else at /index.php is the dead PHP-era site.
+    location ~ "^/index\.php/(.+)$" { return 301 https://wiki.e-shuushuu.net/index.php/$1$is_args$args; }
+    location = /index.php {
+        if ($arg_title) {
+            return 301 https://wiki.e-shuushuu.net/index.php$is_args$args;
+        }
+        return 410;
+    }
+
     # API proxy to FastAPI backend
     location /api/ {
         set $api_upstream api:8000;
