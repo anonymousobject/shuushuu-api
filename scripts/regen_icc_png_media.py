@@ -48,8 +48,10 @@ from sqlmodel import col
 
 from app.config import settings
 from app.core.database import get_async_session
+from app.core.r2_client import get_r2_storage
 from app.core.r2_constants import R2Location
 from app.models.image import Images, VariantStatus
+from app.services.cloudflare import purge_cache_by_urls
 from app.services.image_processing import _create_variant, create_thumbnail
 from scripts.r2_sync import force_reupload_image
 
@@ -201,13 +203,50 @@ def _local_variant_path(image: Images, variant: str) -> Path:
     return Path(settings.STORAGE_PATH) / variant / f"{image.filename}.{ext}"
 
 
+async def _prune_stale_variants(
+    *, filename: str, ext: str, r2_location: int, variants: list[str], dry_run: bool
+) -> list[str]:
+    """Delete R2 objects for variants whose status is NONE but that still exist.
+
+    force_reupload_image only touches READY variants, so a demoted variant's
+    pre-fix object would otherwise stay fetchable at its predictable CDN URL.
+    Returns the variant names that were (or would be) deleted.
+    """
+    bucket = (
+        settings.R2_PUBLIC_BUCKET
+        if r2_location == R2Location.PUBLIC
+        else settings.R2_PRIVATE_BUCKET
+    )
+    r2 = get_r2_storage()
+    pruned: list[str] = []
+    urls: list[str] = []
+    for variant in variants:
+        key = f"{variant}/{filename}.{ext}"
+        if not await r2.object_exists(bucket=bucket, key=key):
+            continue
+        pruned.append(variant)
+        if dry_run:
+            continue
+        await r2.delete_object(bucket=bucket, key=key)
+        if r2_location == R2Location.PUBLIC:
+            urls.append(f"{settings.R2_PUBLIC_CDN_URL}/{key}")
+    if urls:
+        try:
+            await purge_cache_by_urls(urls)
+        except Exception as exc:
+            print(f"  WARN purge failed for {filename}: {exc!r}", file=sys.stderr, flush=True)
+    return pruned
+
+
 async def sync_image(image_id: int, *, dry_run: bool) -> FixOutcome:
     """Push one image's fix-regenerated derived files to R2 and align its statuses.
 
     Local disk after `fix` is the truth: a medium/large file present means
     READY, absent means NONE (the fix deleted it as not smaller than the
     original). The row is read from whatever DB this process points at —
-    prod, when syncing from the dev box.
+    prod, when syncing from the dev box. Variants ending up NONE also have
+    any leftover R2 object removed, so re-running over already-synced ids
+    is a valid cleanup pass.
     """
     async with get_async_session() as db:
         result = await db.execute(select(Images).where(Images.image_id == image_id))  # type: ignore[arg-type]
@@ -219,8 +258,10 @@ async def sync_image(image_id: int, *, dry_run: bool) -> FixOutcome:
         if not _local_variant_path(image, "thumbs").exists():
             return FixOutcome(image_id, False, "local thumb missing; was fix run here?")
 
+        filename, ext, r2_location = image.filename or "", image.ext, image.r2_location
         flips: dict[str, int] = {}
         notes: list[str] = []
+        none_variants: list[str] = []
         for variant in ("medium", "large"):
             current = getattr(image, variant)
             wanted = (
@@ -228,6 +269,8 @@ async def sync_image(image_id: int, *, dry_run: bool) -> FixOutcome:
                 if _local_variant_path(image, variant).exists()
                 else VariantStatus.NONE
             )
+            if wanted == VariantStatus.NONE:
+                none_variants.append(variant)
             if current != wanted:
                 flips[variant] = wanted
                 notes.append(f"{variant} {current}->{wanted}")
@@ -238,9 +281,15 @@ async def sync_image(image_id: int, *, dry_run: bool) -> FixOutcome:
             await db.commit()
 
     await force_reupload_image(image_id=image_id, dry_run=dry_run, only=DERIVED_VARIANTS)
+    pruned = await _prune_stale_variants(
+        filename=filename, ext=ext, r2_location=r2_location, variants=none_variants, dry_run=dry_run
+    )
 
     verb = "would sync" if dry_run else "synced"
-    return FixOutcome(image_id, True, f"{verb} ({', '.join(notes) or 'no status change'})")
+    summary = ", ".join(notes) or "no status change"
+    if pruned:
+        summary += f"; {'would delete' if dry_run else 'deleted'} stale {', '.join(pruned)}"
+    return FixOutcome(image_id, True, f"{verb} ({summary})")
 
 
 async def cmd_scan(*, min_id: int | None, output: Path) -> int:
