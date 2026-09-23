@@ -300,6 +300,43 @@ class TestForceReuploadImage:
         # Public bucket -> purge CDN after reupload.
         mock_purge.assert_awaited_once()
 
+    async def test_only_limits_which_variants_are_reuploaded(
+        self, db_session, monkeypatch, tmp_path
+    ):
+        from app.models.image import Images, VariantStatus
+
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(settings, "R2_PUBLIC_BUCKET", "pub")
+        self._seed_local_files(tmp_path, "only-reup", "png")
+        db_session.add(
+            Images(
+                image_id=52,
+                user_id=1,
+                filename="only-reup",
+                ext="png",
+                status=ImageStatus.ACTIVE,
+                medium=VariantStatus.READY,
+                large=VariantStatus.NONE,
+                r2_location=R2Location.PUBLIC,
+            )
+        )
+        await db_session.commit()
+
+        mock_r2 = _attach_bulk_session(AsyncMock())
+        with (
+            patch("scripts.r2_sync.get_r2_storage", return_value=mock_r2),
+            patch("scripts.r2_sync.purge_cache_by_urls", new_callable=AsyncMock) as mock_purge,
+        ):
+            await force_reupload_image(
+                image_id=52, dry_run=False, only={"thumbs", "medium", "large"}
+            )
+
+        uploaded = sorted(c.kwargs["key"] for c in mock_r2.upload_file.await_args_list)
+        assert uploaded == ["medium/only-reup.png", "thumbs/only-reup.webp"]
+        purged = mock_purge.await_args.args[0]
+        assert not any("fullsize/" in url for url in purged)
+
     async def test_private_bucket_does_not_purge(self, db_session, monkeypatch, tmp_path):
         from app.models.image import Images
 
