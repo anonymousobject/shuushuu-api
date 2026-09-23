@@ -12,6 +12,7 @@ from app.api.v1 import (
     donations,
     favorites,
     feeds,
+    forum,
     history,
     images,
     meta,
@@ -49,6 +50,7 @@ router.include_router(users.router)
 router.include_router(history.router)
 router.include_router(favorites.router)
 router.include_router(comments.router)
+router.include_router(forum.router)
 router.include_router(privmsgs.router)
 router.include_router(search.router)
 router.include_router(meta.router)
