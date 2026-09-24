@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus, TagAuditActionType, TagType
 from app.models.image import Images
+from app.models.image_metadata_history import ImageMetadataHistory
 from app.models.image_status_history import ImageStatusHistory
 from app.models.tag import Tags
 from app.models.tag_audit_log import TagAuditLog
@@ -1230,6 +1231,174 @@ class TestUserHistoryTagLinks:
         # Kind prefixes: 3=tag_links, 2=tag_history, 4=status, 1=audit, in the
         # newest-first order the previous test pins.
         assert [eid.split("-")[0] for eid in event_ids] == ["3", "2", "4", "1"]
+
+    async def test_returns_image_metadata_items_correctly(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "userhistmetaedit")
+        image = await self._make_image(db_session, user, "userhistmetaedit")
+        db_session.add(
+            ImageMetadataHistory(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                field="source_url",
+                old_value=None,
+                new_value="https://example.com/src",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        item = data["items"][0]
+        assert item["type"] == "image_metadata"
+        assert item["image_id"] == image.image_id
+        assert item["field"] == "source_url"
+        assert item["old_value"] is None
+        assert item["new_value"] == "https://example.com/src"
+        assert item["created_at"] is not None
+        assert item["event_id"].startswith("5-")
+
+    async def test_other_users_metadata_edits_absent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await self._make_user(db_session, "userhistmetaself")
+        other = await self._make_user(db_session, "userhistmetaother")
+        image = await self._make_image(db_session, user, "userhistmetaother")
+        db_session.add(
+            ImageMetadataHistory(
+                image_id=image.image_id,
+                user_id=other.user_id,
+                field="miscmeta",
+                old_value=None,
+                new_value="not mine",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+
+        assert response.json()["total"] == 0
+        assert response.json()["items"] == []
+
+    async def test_image_metadata_interleaves_and_breaks_ties(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """By date first; on an exact tie, status (prio 3) beats both prio-1
+        kinds, and image_metadata (kind 5) beats tag audit (kind 1)."""
+        user = await self._make_user(db_session, "userhistmetaorder")
+        tag = Tags(title="metadata order tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, user, "userhistmetaorder")
+
+        base_date = datetime(2026, 1, 1, tzinfo=UTC)
+        tie = base_date + timedelta(days=1)
+        db_session.add(
+            ImageMetadataHistory(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                field="miscmeta",
+                old_value=None,
+                new_value="oldest",
+                created_at=base_date,
+            )
+        )
+        db_session.add(
+            TagAuditLog(
+                tag_id=tag.tag_id,
+                user_id=user.user_id,
+                action_type=TagAuditActionType.RENAME,
+                old_title="old",
+                new_title="metadata order tag",
+                created_at=tie,
+            )
+        )
+        db_session.add(
+            ImageMetadataHistory(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                field="source_url",
+                old_value=None,
+                new_value="https://example.com/tie",
+                created_at=tie,
+            )
+        )
+        db_session.add(
+            ImageStatusHistory(
+                image_id=image.image_id,
+                user_id=user.user_id,
+                old_status=ImageStatus.ACTIVE,
+                new_status=ImageStatus.SPOILER,
+                created_at=tie,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/users/{user.user_id}/history")
+
+        items = response.json()["items"]
+        assert [(i["type"], i.get("field")) for i in items] == [
+            ("status_change", None),
+            ("image_metadata", "source_url"),
+            ("tag_metadata", None),
+            ("image_metadata", "miscmeta"),
+        ]
+
+    async def test_pagination_lossless_across_metadata_ties(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Walking one item per page yields exactly the one-page order: no
+        duplicates or gaps where metadata edits tie with tag audit rows."""
+        user = await self._make_user(db_session, "userhistmetapage")
+        tag = Tags(title="metadata page tag", type=TagType.THEME)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        image = await self._make_image(db_session, user, "userhistmetapage")
+
+        base_date = datetime(2026, 1, 1, tzinfo=UTC)
+        for i in range(4):
+            same_second = base_date + timedelta(days=i)
+            db_session.add(
+                ImageMetadataHistory(
+                    image_id=image.image_id,
+                    user_id=user.user_id,
+                    field="miscmeta",
+                    old_value=None,
+                    new_value=f"v{i}",
+                    created_at=same_second,
+                )
+            )
+            db_session.add(
+                TagAuditLog(
+                    tag_id=tag.tag_id,
+                    user_id=user.user_id,
+                    action_type=TagAuditActionType.RENAME,
+                    old_title=f"t{i}",
+                    new_title="metadata page tag",
+                    created_at=same_second,
+                )
+            )
+        await db_session.commit()
+
+        full = await client.get(f"/api/v1/users/{user.user_id}/history?per_page=100")
+        expected = [item["event_id"] for item in full.json()["items"]]
+        assert full.json()["total"] == 8
+        assert len(expected) == 8
+
+        walked = []
+        for page in range(1, 9):
+            response = await client.get(
+                f"/api/v1/users/{user.user_id}/history?page={page}&per_page=1"
+            )
+            walked.extend(item["event_id"] for item in response.json()["items"])
+
+        assert walked == expected
 
 
 @pytest.mark.api
