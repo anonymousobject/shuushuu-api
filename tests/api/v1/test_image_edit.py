@@ -575,3 +575,38 @@ class TestImageEditSourceAndMiscmeta:
         )
 
         assert response.status_code == 422, response.text
+
+    @pytest.mark.asyncio
+    async def test_miscmeta_at_limit_with_padding_is_trimmed_then_accepted(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id)
+        at_limit = "a" * 255
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": " " + at_limit + "\n"},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["miscmeta"] == at_limit
+
+    @pytest.mark.asyncio
+    async def test_source_url_at_limit_with_padding_is_trimmed_then_accepted(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id)
+        prefix = "https://example.com/"
+        at_limit = prefix + "a" * (2000 - len(prefix))
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": " " + at_limit + "\n"},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["source_url"] == at_limit

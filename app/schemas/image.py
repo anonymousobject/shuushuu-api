@@ -140,6 +140,12 @@ class ImageUpdate(BaseModel):
             return v
         return v.strip()
 
+    @field_validator("miscmeta", "source_url", mode="before")
+    @classmethod
+    def strip_before_length_check(cls, v: Any) -> Any:
+        """Trim before the Field(max_length=...) check, so padding never counts against it."""
+        return v.strip() if isinstance(v, str) else v
+
     @field_validator("miscmeta")
     @classmethod
     def normalize_miscmeta(cls, v: str | None) -> str | None:
