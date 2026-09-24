@@ -60,6 +60,7 @@ _EXPECTED_USER_REFERENCE_FKS = [
     ("user_perms", "user_id", "users", "CASCADE"),
     ("user_perms", "perm_id", "perms", "CASCADE"),
     ("donations", "user_id", "users", "SET NULL"),
+    ("image_metadata_history", "user_id", "users", "SET NULL"),
 ]
 
 
