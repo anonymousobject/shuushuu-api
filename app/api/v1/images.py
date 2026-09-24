@@ -1515,121 +1515,138 @@ async def update_image(
             detail="No fields to update",
         )
 
-    # Fetch image. Row-locked: two PATCHes in flight together (e.g. Enter plus
-    # a click) must serialize, so the second one diffs build_metadata_history
-    # against the first one's committed values instead of writing a duplicate
-    # row with a stale old_value. FOR NO KEY UPDATE (key_share=True), not FOR
-    # UPDATE: this never changes image_id, so it takes the lock its own UPDATE
-    # takes anyway, and it lets through the FOR KEY SHARE that an FK check on
-    # an insert referencing this image needs, instead of queueing those inserts
-    # behind the whole request.
-    result = await db.execute(
-        select(Images).where(Images.image_id == image_id).with_for_update(key_share=True)  # type: ignore[arg-type]
-    )
-    image = result.scalar_one_or_none()
-
-    if not image:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-
-    # Check ownership, admin, or permission
-    is_owner = image.user_id == current_user.id
+    # Capture as primitives: a transient-conflict retry below rolls back the
+    # transaction, which expires ORM instances (including current_user).
+    user_id: int = current_user.id
     is_admin = current_user.admin
-    has_edit_permission = False
-    if not is_owner and not is_admin:
-        has_edit_permission = await has_permission(
-            db, current_user.id, Permission.IMAGE_EDIT_META, redis_client
+
+    # The row lock below plus the repost migration's writes to the original
+    # image can deadlock against a writer taking the same rows in the other
+    # order (e.g. two images marked reposts of each other at once). Retry the
+    # whole unit on a fresh transaction (see app/core/db_retry.py); every
+    # non-DB side effect stays below its commit, so a replay repeats nothing
+    # external. Returns the image's status before this request.
+    async def _apply() -> int:
+        # Fetch image. Row-locked: two PATCHes in flight together (e.g. Enter plus
+        # a click) must serialize, so the second one diffs build_metadata_history
+        # against the first one's committed values instead of writing a duplicate
+        # row with a stale old_value. FOR NO KEY UPDATE (key_share=True), not FOR
+        # UPDATE: this never changes image_id, so it takes the lock its own UPDATE
+        # takes anyway, and it lets through the FOR KEY SHARE that an FK check on
+        # an insert referencing this image needs, instead of queueing those inserts
+        # behind the whole request.
+        result = await db.execute(
+            select(Images).where(Images.image_id == image_id).with_for_update(key_share=True)  # type: ignore[arg-type]
         )
+        image = result.scalar_one_or_none()
 
-    # Metadata fields require owner, admin, or IMAGE_EDIT_META
-    if update_fields and not is_owner and not is_admin and not has_edit_permission:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this image",
-        )
-
-    # Status changes require ownership
-    if new_status is not None:
-        if not is_owner:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to change this image's status",
-            )
-
-        # Owners can only set SPOILER or REPOST
-        allowed_statuses = {ImageStatus.SPOILER, ImageStatus.REPOST}
-        if new_status not in allowed_statuses:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Owners can only mark images as spoiler or repost",
-            )
-
-        # Image must be ACTIVE
-        if image.status != ImageStatus.ACTIVE:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only active images can have their status changed",
-            )
-
-        # Image must not be locked
-        if image.locked:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Locked images cannot have their status changed",
-            )
-
-        # Handle repost validation
-        if new_status == ImageStatus.REPOST:
-            if replacement_id is None:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="replacement_id is required when marking as repost",
-                )
-            if replacement_id == image_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="An image cannot be a repost of itself",
-                )
-            original_result = await db.execute(
-                select(Images).where(Images.image_id == replacement_id)
-            )
-            if not original_result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Original image not found",
-                )
-            image.replacement_id = replacement_id
-            await migrate_repost_data(image_id, replacement_id, db)
-        else:
-            # Clear replacement_id when not a repost
-            image.replacement_id = None
+        if not image:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
 
         previous_status = image.status
-        image.status = new_status
-        image.status_user_id = current_user.id
-        image.status_updated = datetime.now(UTC)
 
-        # Keep ML suggestion rows consistent with the new status (ADR-0002).
-        if new_status != previous_status:
-            await sync_suggestions_for_status_transition(db, image_id, previous_status, new_status)
+        # Check ownership, admin, or permission
+        is_owner = image.user_id == user_id
+        has_edit_permission = False
+        if not is_owner and not is_admin:
+            has_edit_permission = await has_permission(
+                db, user_id, Permission.IMAGE_EDIT_META, redis_client
+            )
 
-        # Log to status history
-        history = ImageStatusHistory(
-            image_id=image_id,
-            old_status=previous_status,
-            new_status=new_status,
-            user_id=current_user.id,
-        )
-        db.add(history)
+        # Metadata fields require owner, admin, or IMAGE_EDIT_META
+        if update_fields and not is_owner and not is_admin and not has_edit_permission:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to edit this image",
+            )
 
-    # Record miscmeta/source_url changes before applying them: the old values
-    # are read off the loaded image. Same transaction as the update.
-    db.add_all(build_metadata_history(image_id, image, update_fields, current_user.id))
+        # Status changes require ownership
+        if new_status is not None:
+            if not is_owner:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to change this image's status",
+                )
 
-    # Apply metadata updates
-    for field, value in update_fields.items():
-        setattr(image, field, value)
+            # Owners can only set SPOILER or REPOST
+            allowed_statuses = {ImageStatus.SPOILER, ImageStatus.REPOST}
+            if new_status not in allowed_statuses:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Owners can only mark images as spoiler or repost",
+                )
 
-    await db.commit()
+            # Image must be ACTIVE
+            if image.status != ImageStatus.ACTIVE:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Only active images can have their status changed",
+                )
+
+            # Image must not be locked
+            if image.locked:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Locked images cannot have their status changed",
+                )
+
+            # Handle repost validation
+            if new_status == ImageStatus.REPOST:
+                if replacement_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="replacement_id is required when marking as repost",
+                    )
+                if replacement_id == image_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="An image cannot be a repost of itself",
+                    )
+                original_result = await db.execute(
+                    select(Images).where(Images.image_id == replacement_id)
+                )
+                if not original_result.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Original image not found",
+                    )
+                image.replacement_id = replacement_id
+                await migrate_repost_data(image_id, replacement_id, db)
+            else:
+                # Clear replacement_id when not a repost
+                image.replacement_id = None
+
+            image.status = new_status
+            image.status_user_id = user_id
+            image.status_updated = datetime.now(UTC)
+
+            # Keep ML suggestion rows consistent with the new status (ADR-0002).
+            if new_status != previous_status:
+                await sync_suggestions_for_status_transition(
+                    db, image_id, previous_status, new_status
+                )
+
+            # Log to status history
+            history = ImageStatusHistory(
+                image_id=image_id,
+                old_status=previous_status,
+                new_status=new_status,
+                user_id=user_id,
+            )
+            db.add(history)
+
+        # Record miscmeta/source_url changes before applying them: the old values
+        # are read off the loaded image. Same transaction as the update.
+        db.add_all(build_metadata_history(image_id, image, update_fields, user_id))
+
+        # Apply metadata updates
+        for field, value in update_fields.items():
+            setattr(image, field, value)
+
+        await db.commit()
+        return previous_status
+
+    previous_status = await retry_on_transient_conflict(db, _apply, what="image_update")
 
     if new_status is not None:
         await enqueue_r2_sync_on_status_change(

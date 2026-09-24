@@ -2,14 +2,20 @@
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import ImageStatus, TagType
 from app.core.security import create_access_token, get_password_hash
+from app.models.favorite import Favorites
 from app.models.image import Images
 from app.models.image_metadata_history import ImageMetadataHistory
+from app.models.image_status_history import ImageStatusHistory
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
+from app.models.tag import Tags
+from app.models.tag_link import TagLinks
 from app.models.user import Users
+from tests.transient_conflict import _deadlock_error, _flaky_commit
 
 
 async def create_user(
@@ -825,3 +831,89 @@ class TestImageEditHistory:
 
         rows = await history_rows(db_session, image.image_id)
         assert [r.user_id for r in rows] == [mod.user_id]
+
+
+class TestImageEditTransientConflictRetry:
+    """PATCH /api/v1/images/{image_id} replays a transient conflict, not a 500.
+
+    The image's row lock plus the repost migration's writes to a second image
+    can deadlock: two images marked reposts of each other at once lock them in
+    opposite orders. As for the admin status change (test_admin_images.py), the
+    deadlock is injected into the unit's commit, which aborts the attempt with
+    nothing persisted, exactly as a real one does.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.needs_commit
+    async def test_repost_with_metadata_retries_deadlock_and_applies_once(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The replay lands the edit, the repost migration and both history rows once.
+
+        needs_commit: the retry performs a real transaction rollback; under the
+        default SAVEPOINT isolation that rollback would unwind the fixture's
+        committed rows too.
+        """
+        owner = await create_user(db_session, username="retryowner", email="retry@test.com")
+        original = await create_image(db_session, owner.user_id)
+        repost = await create_image(db_session, owner.user_id, miscmeta="old info")
+        tag = Tags(title="retry repost tag", type=TagType.THEME, user_id=owner.user_id)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        db_session.add(TagLinks(image_id=repost.image_id, tag_id=tag.tag_id, user_id=owner.user_id))
+        db_session.add(Favorites(image_id=repost.image_id, user_id=owner.user_id))
+        await db_session.commit()
+
+        # The route shares this session, so its retry rollback expires every
+        # instance above. Hold the ids as plain ints for the assertions.
+        repost_id, original_id, tag_id = repost.image_id, original.image_id, tag.tag_id
+        headers = auth_header(owner)
+
+        commit_patch, calls = _flaky_commit(1, _deadlock_error())
+        with commit_patch:
+            response = await client.patch(
+                f"/api/v1/images/{repost_id}",
+                json={
+                    "status": ImageStatus.REPOST,
+                    "replacement_id": original_id,
+                    "miscmeta": "new info",
+                },
+                headers=headers,
+            )
+
+        assert response.status_code == 200, response.text
+        assert len(calls) >= 2  # failed attempt + successful retry
+        data = response.json()
+        assert (data["status"], data["replacement_id"], data["miscmeta"]) == (
+            ImageStatus.REPOST,
+            original_id,
+            "new info",
+        )
+
+        # Both histories recorded once, not once per attempt.
+        rows = await history_rows(db_session, repost_id)
+        assert [(r.old_value, r.new_value) for r in rows] == [("old info", "new info")]
+        status_rows = await db_session.execute(
+            select(ImageStatusHistory.old_status, ImageStatusHistory.new_status).where(
+                ImageStatusHistory.image_id == repost_id
+            )
+        )
+        assert [tuple(row) for row in status_rows] == [(ImageStatus.ACTIVE, ImageStatus.REPOST)]
+
+        # The migration landed once: the tag and favourite moved to the
+        # original and the repost keeps neither.
+        moved_tags = await db_session.execute(
+            select(func.count())
+            .select_from(TagLinks)
+            .where(TagLinks.image_id == original_id, TagLinks.tag_id == tag_id)
+        )
+        assert moved_tags.scalar_one() == 1
+        leftover_tags = await db_session.execute(
+            select(func.count()).select_from(TagLinks).where(TagLinks.image_id == repost_id)
+        )
+        assert leftover_tags.scalar_one() == 0
+        moved_favs = await db_session.execute(
+            select(func.count()).select_from(Favorites).where(Favorites.image_id == original_id)
+        )
+        assert moved_favs.scalar_one() == 1
