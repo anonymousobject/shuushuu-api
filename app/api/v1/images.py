@@ -105,6 +105,7 @@ from app.schemas.image import (
     SimilarImageResult,
     SimilarImagesResponse,
     SimilarImagesUploadResponse,
+    normalize_source_url,
 )
 from app.schemas.report import (
     ReportCreate,
@@ -1478,7 +1479,7 @@ async def update_image(
     redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ImageDetailedResponse:
     """
-    Update image metadata (caption, miscmeta) and/or owner status.
+    Update image metadata (caption, miscmeta, source_url) and/or owner status.
 
     Metadata can be updated by:
     - The image owner
@@ -3075,15 +3076,14 @@ async def upload_image(
     staged_path: FilePath | None = None
     committed = False
     try:
-        # Validate source_url before touching storage: only http(s) URLs are
-        # accepted (blocks javascript:/data: schemes and similar).
-        if source_url is not None:
-            source_url = source_url.strip() or None
-        if source_url and not source_url.startswith(("http://", "https://")):
+        # Validate source_url before touching storage (see normalize_source_url).
+        try:
+            source_url = normalize_source_url(source_url)
+        except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="source_url must start with http:// or https://",
-            )
+                detail=str(exc),
+            ) from exc
 
         # Stage the file (validates and calculates hash) under a temporary name.
         # If validation fails, this will raise HTTPException.

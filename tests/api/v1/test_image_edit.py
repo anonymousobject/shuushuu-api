@@ -38,6 +38,7 @@ async def create_image(
     user_id: int,
     caption: str = "original caption",
     miscmeta: str | None = None,
+    source_url: str | None = None,
 ) -> Images:
     """Create a test image."""
     image = Images(
@@ -50,6 +51,7 @@ async def create_image(
         height=600,
         caption=caption,
         miscmeta=miscmeta,
+        source_url=source_url,
         user_id=user_id,
         status=1,
     )
@@ -428,3 +430,148 @@ class TestImageOwnerStatusChange:
         assert history.old_status == 1  # ACTIVE
         assert history.new_status == 2  # SPOILER
         assert history.user_id == owner.user_id
+
+
+class TestImageEditSourceAndMiscmeta:
+    """PATCH /api/v1/images/{image_id}: source_url and miscmeta validation."""
+
+    @pytest.mark.asyncio
+    async def test_owner_can_set_source_url(self, client: AsyncClient, db_session: AsyncSession):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id)
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": "  https://www.pixiv.net/artworks/1  "},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["source_url"] == "https://www.pixiv.net/artworks/1"
+
+    @pytest.mark.asyncio
+    async def test_mod_with_image_edit_meta_can_set_source_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session, username="srcowner", email="srcowner@test.com")
+        mod = await create_user(db_session, username="srcmod", email="srcmod@test.com")
+        image = await create_image(db_session, owner.user_id)
+        await grant_permission(db_session, mod.user_id, "image_edit_meta")
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": "https://example.com/art"},
+            headers=auth_header(mod),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["source_url"] == "https://example.com/art"
+
+    @pytest.mark.asyncio
+    async def test_blank_source_url_clears_it(self, client: AsyncClient, db_session: AsyncSession):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, source_url="https://example.com/a")
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": "   "},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["source_url"] is None
+
+    @pytest.mark.asyncio
+    async def test_non_http_source_url_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, source_url="https://example.com/a")
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": "javascript:alert(1)"},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 422, response.text
+        # No "Value error, " prefix: the frontend shows this message verbatim.
+        assert (
+            response.json()["detail"][0]["msg"] == "source_url must start with http:// or https://"
+        )
+        await db_session.refresh(image)
+        assert image.source_url == "https://example.com/a"
+
+    @pytest.mark.asyncio
+    async def test_source_url_length_boundary(self, client: AsyncClient, db_session: AsyncSession):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id)
+        prefix = "https://example.com/"
+        at_limit = prefix + "a" * (2000 - len(prefix))
+
+        ok = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": at_limit},
+            headers=auth_header(owner),
+        )
+        too_long = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": at_limit + "a"},
+            headers=auth_header(owner),
+        )
+
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["source_url"] == at_limit
+        assert too_long.status_code == 422, too_long.text
+
+    @pytest.mark.asyncio
+    async def test_non_editor_cannot_set_source_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session, username="srcowner2", email="srcowner2@test.com")
+        other = await create_user(db_session, username="srcother", email="srcother@test.com")
+        image = await create_image(db_session, owner.user_id)
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": "https://example.com/art"},
+            headers=auth_header(other),
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_miscmeta_trimmed_and_blank_clears(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, miscmeta="old")
+
+        trimmed = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "  circle: foo  "},
+            headers=auth_header(owner),
+        )
+        cleared = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "   "},
+            headers=auth_header(owner),
+        )
+
+        assert trimmed.status_code == 200, trimmed.text
+        assert trimmed.json()["miscmeta"] == "circle: foo"
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["miscmeta"] is None
+
+    @pytest.mark.asyncio
+    async def test_overlong_miscmeta_rejected(self, client: AsyncClient, db_session: AsyncSession):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id)
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "a" * 256},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 422, response.text

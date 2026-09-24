@@ -269,6 +269,7 @@ class TestUploadIQDBDuplicateDetection:
             )
 
         assert response.status_code == 422, response.text
+        assert response.json()["detail"] == "source_url must start with http:// or https://"
 
     @pytest.mark.asyncio
     async def test_upload_whitespace_source_url_normalizes_to_none(

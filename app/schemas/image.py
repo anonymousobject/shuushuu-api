@@ -5,6 +5,7 @@ Pydantic schemas for Image endpoints
 from typing import Any, Self
 
 from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic_core import PydanticCustomError
 
 from app.config import TagType, settings
 from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
@@ -97,11 +98,32 @@ class ImageCreate(ImageBase):
     user_id: int
 
 
+SOURCE_URL_SCHEME_ERROR = "source_url must start with http:// or https://"
+
+
+def normalize_source_url(value: str | None) -> str | None:
+    """Trim a source URL; blank becomes None; only http(s) is accepted.
+
+    Shared by the upload form and PATCH /images/{id}. The scheme check blocks
+    javascript:/data: URLs and similar, since the value renders as a link.
+    Raises ValueError with SOURCE_URL_SCHEME_ERROR on any other scheme.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if not value.startswith(("http://", "https://")):
+        raise ValueError(SOURCE_URL_SCHEME_ERROR)
+    return value
+
+
 class ImageUpdate(BaseModel):
     """Schema for updating image metadata and owner status — all fields optional."""
 
     caption: str | None = None
-    miscmeta: str | None = None
+    miscmeta: str | None = Field(default=None, max_length=255)
+    source_url: str | None = Field(default=None, max_length=2000)
     status: int | None = None
     replacement_id: int | None = None
 
@@ -117,6 +139,25 @@ class ImageUpdate(BaseModel):
         if v is None:
             return v
         return v.strip()
+
+    @field_validator("miscmeta")
+    @classmethod
+    def normalize_miscmeta(cls, v: str | None) -> str | None:
+        """Trim miscmeta; a blank value clears the field."""
+        if v is None:
+            return None
+        return v.strip() or None
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, v: str | None) -> str | None:
+        """Apply the shared source URL rules (see normalize_source_url)."""
+        try:
+            return normalize_source_url(v)
+        except ValueError as exc:
+            # A PydanticCustomError keeps the message free of pydantic's
+            # "Value error, " prefix, so the frontend can show it verbatim.
+            raise PydanticCustomError("source_url_scheme", str(exc)) from exc
 
 
 class ImageResponse(ImageBase):
