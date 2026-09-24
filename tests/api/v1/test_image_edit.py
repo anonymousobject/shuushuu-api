@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, get_password_hash
 from app.models.image import Images
+from app.models.image_metadata_history import ImageMetadataHistory
 from app.models.permissions import GroupPerms, Groups, Perms, UserGroups
 from app.models.user import Users
 
@@ -610,3 +611,183 @@ class TestImageEditSourceAndMiscmeta:
 
         assert response.status_code == 200, response.text
         assert response.json()["source_url"] == at_limit
+
+
+async def history_rows(db_session: AsyncSession, image_id: int) -> list[ImageMetadataHistory]:
+    result = await db_session.execute(
+        select(ImageMetadataHistory)
+        .where(ImageMetadataHistory.image_id == image_id)
+        .order_by(ImageMetadataHistory.id)
+    )
+    return list(result.scalars().all())
+
+
+class TestImageEditHistory:
+    """PATCH /api/v1/images/{image_id} records miscmeta/source_url changes."""
+
+    @pytest.mark.asyncio
+    async def test_setting_source_url_writes_one_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id)
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": "https://example.com/art"},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        rows = await history_rows(db_session, image.image_id)
+        assert [(r.field, r.old_value, r.new_value, r.user_id) for r in rows] == [
+            ("source_url", None, "https://example.com/art", owner.user_id)
+        ]
+        assert rows[0].created_at is not None
+
+    @pytest.mark.asyncio
+    async def test_changing_both_fields_writes_two_rows(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(
+            db_session, owner.user_id, miscmeta="old info", source_url="https://example.com/old"
+        )
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "new info", "source_url": "https://example.com/new"},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        rows = await history_rows(db_session, image.image_id)
+        assert sorted((r.field, r.old_value, r.new_value) for r in rows) == [
+            ("miscmeta", "old info", "new info"),
+            ("source_url", "https://example.com/old", "https://example.com/new"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_clearing_records_the_old_value(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, source_url="https://example.com/a")
+
+        await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": ""},
+            headers=auth_header(owner),
+        )
+
+        rows = await history_rows(db_session, image.image_id)
+        assert [(r.field, r.old_value, r.new_value) for r in rows] == [
+            ("source_url", "https://example.com/a", None)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unchanged_value_writes_no_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Covers a double submit, and a value that differs only by whitespace."""
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, miscmeta="same")
+
+        first = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "same"},
+            headers=auth_header(owner),
+        )
+        second = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "  same  "},
+            headers=auth_header(owner),
+        )
+
+        assert first.status_code == 200 and second.status_code == 200
+        assert await history_rows(db_session, image.image_id) == []
+
+    @pytest.mark.asyncio
+    async def test_legacy_empty_string_to_blank_writes_no_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A legacy '' and a cleared null both read as "none"; no visible change."""
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, miscmeta="")
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": ""},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        assert await history_rows(db_session, image.image_id) == []
+
+    @pytest.mark.asyncio
+    async def test_legacy_empty_string_old_value_recorded_as_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, miscmeta="")
+
+        await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "now set"},
+            headers=auth_header(owner),
+        )
+
+        rows = await history_rows(db_session, image.image_id)
+        assert [(r.old_value, r.new_value) for r in rows] == [(None, "now set")]
+
+    @pytest.mark.asyncio
+    async def test_caption_change_writes_no_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id)
+
+        await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"caption": "new caption"},
+            headers=auth_header(owner),
+        )
+
+        assert await history_rows(db_session, image.image_id) == []
+
+    @pytest.mark.asyncio
+    async def test_rejected_edits_write_no_row(self, client: AsyncClient, db_session: AsyncSession):
+        owner = await create_user(db_session, username="histowner", email="histowner@test.com")
+        other = await create_user(db_session, username="histother", email="histother@test.com")
+        image = await create_image(db_session, owner.user_id)
+
+        forbidden = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": "https://example.com/art"},
+            headers=auth_header(other),
+        )
+        invalid = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"source_url": "ftp://example.com/art"},
+            headers=auth_header(owner),
+        )
+
+        assert forbidden.status_code == 403
+        assert invalid.status_code == 422
+        assert await history_rows(db_session, image.image_id) == []
+
+    @pytest.mark.asyncio
+    async def test_mod_edit_records_the_mod(self, client: AsyncClient, db_session: AsyncSession):
+        owner = await create_user(db_session, username="histowner2", email="histowner2@test.com")
+        mod = await create_user(db_session, username="histmod", email="histmod@test.com")
+        image = await create_image(db_session, owner.user_id)
+        await grant_permission(db_session, mod.user_id, "image_edit_meta")
+
+        await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "credited"},
+            headers=auth_header(mod),
+        )
+
+        rows = await history_rows(db_session, image.image_id)
+        assert [r.user_id for r in rows] == [mod.user_id]

@@ -123,6 +123,7 @@ from app.schemas.user import (
 )
 from app.services.comments import comments_for_images
 from app.services.feed_count_cache import get_feed_counts, get_filtered_count
+from app.services.image_metadata_history import build_metadata_history
 from app.services.image_processing import (
     create_thumbnail,
     get_image_dimensions,
@@ -1608,6 +1609,10 @@ async def update_image(
             user_id=current_user.id,
         )
         db.add(history)
+
+    # Record miscmeta/source_url changes before applying them: the old values
+    # are read off the loaded image. Same transaction as the update.
+    db.add_all(build_metadata_history(image_id, image, update_fields, current_user.id))
 
     # Apply metadata updates
     for field, value in update_fields.items():
