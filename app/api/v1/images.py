@@ -1514,9 +1514,12 @@ async def update_image(
             detail="No fields to update",
         )
 
-    # Fetch image
+    # Fetch image. FOR UPDATE: two PATCHes in flight together (e.g. Enter plus
+    # a click) must serialize, so the second one diffs build_metadata_history
+    # against the first one's committed values instead of writing a duplicate
+    # row with a stale old_value.
     result = await db.execute(
-        select(Images).where(Images.image_id == image_id)  # type: ignore[arg-type]
+        select(Images).where(Images.image_id == image_id).with_for_update()  # type: ignore[arg-type]
     )
     image = result.scalar_one_or_none()
 
