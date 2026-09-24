@@ -2011,16 +2011,7 @@ async def get_image_metadata_history(
             field=history.field,
             old_value=history.old_value,
             new_value=history.new_value,
-            user=UserSummary(
-                user_id=user.user_id,
-                username=user.username,
-                avatar=user.avatar,
-                avatar_in_r2=user.avatar_in_r2,
-                user_title=user.user_title,
-                groups=user.groups,
-            )
-            if user
-            else None,
+            user=UserSummary.model_validate(user) if user else None,
             created_at=history.created_at,
         )
         for history, user in rows

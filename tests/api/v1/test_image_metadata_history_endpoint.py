@@ -86,6 +86,7 @@ class TestImageMetadataHistoryEndpoint:
         assert data["items"][0]["user"]["username"] == "mdhistuser"
         assert data["items"][0]["image_id"] == image.image_id
         assert data["items"][0]["created_at"] is not None
+        assert "avatar_url" in data["items"][0]["user"]
 
     async def test_same_timestamp_orders_by_id_desc(
         self, client: AsyncClient, db_session: AsyncSession
