@@ -101,6 +101,19 @@ class ImageCreate(ImageBase):
 SOURCE_URL_SCHEME_ERROR = "source_url must start with http:// or https://"
 
 
+def normalize_miscmeta(value: str | None) -> str | None:
+    """Trim miscmeta; blank becomes None.
+
+    Shared by the upload form and PATCH /images/{id}, so the two agree on
+    what counts as "no miscmeta" — a padded or whitespace-only value from
+    either path reads back identically to a value the other path cleared.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
 def normalize_source_url(value: str | None) -> str | None:
     """Trim a source URL; blank becomes None; only http(s) is accepted.
 
@@ -149,10 +162,8 @@ class ImageUpdate(BaseModel):
     @field_validator("miscmeta")
     @classmethod
     def normalize_miscmeta(cls, v: str | None) -> str | None:
-        """Trim miscmeta; a blank value clears the field."""
-        if v is None:
-            return None
-        return v.strip() or None
+        """Apply the shared miscmeta normalization rule (see normalize_miscmeta)."""
+        return normalize_miscmeta(v)
 
     @field_validator("source_url")
     @classmethod

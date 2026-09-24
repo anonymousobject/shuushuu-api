@@ -108,6 +108,7 @@ from app.schemas.image import (
     SimilarImageResult,
     SimilarImagesResponse,
     SimilarImagesUploadResponse,
+    normalize_miscmeta,
     normalize_source_url,
 )
 from app.schemas.report import (
@@ -3155,6 +3156,7 @@ async def upload_image(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
+        miscmeta = normalize_miscmeta(miscmeta)
 
         # Stage the file (validates and calculates hash) under a temporary name.
         # If validation fails, this will raise HTTPException.

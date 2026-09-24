@@ -296,6 +296,56 @@ class TestUploadIQDBDuplicateDetection:
         data = response.json()
         assert data["image"]["source_url"] is None
 
+    @pytest.mark.asyncio
+    async def test_upload_whitespace_miscmeta_normalizes_to_none(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Upload with whitespace-only miscmeta normalizes it to None."""
+        with (
+            _mock_upload_storage("abc123unique7"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "miscmeta": "   "},
+            )
+
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["image"]["miscmeta"] is None
+
+    @pytest.mark.asyncio
+    async def test_upload_padded_miscmeta_stores_trimmed(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Upload with a padded miscmeta stores it trimmed."""
+        with (
+            _mock_upload_storage("abc123unique8"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "miscmeta": "  pixiv: 12345  "},
+            )
+
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["image"]["miscmeta"] == "pixiv: 12345"
+
 
 class TestUploadMLTagSuggestions:
     """Tests for ML tag suggestion job enqueueing on upload."""
