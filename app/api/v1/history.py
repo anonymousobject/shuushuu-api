@@ -7,6 +7,7 @@ Provides aggregated history of all changes made by a user:
   which never get a tag_history row) with tag_history (edit-flow adds and
   all removes)
 - Status changes (only visible statuses: REPOST, SPOILER, ACTIVE)
+- Image metadata changes (miscmeta, source_url)
 """
 
 from typing import Annotated, Any

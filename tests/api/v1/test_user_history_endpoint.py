@@ -680,7 +680,7 @@ class TestUserHistoryTagLinks:
     the user-scoped dedup rule (deliberately different from the non-scoped
     rule on GET /tags/{id}/usage-history — see
     _user_history_tag_history_dedup_filter in app/api/v1/history.py), and
-    ordering/pagination across all four sources.
+    ordering/pagination across all five sources.
     """
 
     async def _make_user(self, db_session: AsyncSession, username: str) -> Users:
