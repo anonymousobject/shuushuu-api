@@ -725,6 +725,40 @@ class TestImageEditHistory:
         assert await history_rows(db_session, image.image_id) == []
 
     @pytest.mark.asyncio
+    async def test_legacy_padded_value_matching_trimmed_new_value_writes_no_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A legacy 'foo ' and a saved 'foo' read the same trimmed value; no visible change."""
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, miscmeta="foo ")
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": "foo"},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        assert await history_rows(db_session, image.image_id) == []
+
+    @pytest.mark.asyncio
+    async def test_legacy_whitespace_only_to_blank_writes_no_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A legacy '  ' and a cleared null both read as "none"; no visible change."""
+        owner = await create_user(db_session)
+        image = await create_image(db_session, owner.user_id, miscmeta="  ")
+
+        response = await client.patch(
+            f"/api/v1/images/{image.image_id}",
+            json={"miscmeta": ""},
+            headers=auth_header(owner),
+        )
+
+        assert response.status_code == 200, response.text
+        assert await history_rows(db_session, image.image_id) == []
+
+    @pytest.mark.asyncio
     async def test_legacy_empty_string_old_value_recorded_as_null(
         self, client: AsyncClient, db_session: AsyncSession
     ):

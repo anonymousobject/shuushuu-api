@@ -14,15 +14,16 @@ def build_metadata_history(
 
     Call before applying the update: old values are read from `current`.
     `update_fields` holds validated ImageUpdate values (already trimmed, blank
-    as None). A legacy '' in the column counts as None, so clearing an
-    already-empty field records nothing. Untracked fields (caption) and
-    unchanged values produce no row.
+    as None). A legacy '', or a legacy value that's only whitespace or padded
+    with it, reads the same as the update's own trimmed/blank-as-None value,
+    so saving over it with its trimmed self records nothing. Untracked fields
+    (caption) and unchanged values produce no row.
     """
     rows = []
     for field in ImageMetadataField.ALL:
         if field not in update_fields:
             continue
-        old_value = getattr(current, field) or None
+        old_value = (getattr(current, field) or "").strip() or None
         new_value = update_fields[field]
         if old_value != new_value:
             rows.append(
