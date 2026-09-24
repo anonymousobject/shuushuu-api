@@ -1,12 +1,25 @@
 """Tests for audit schemas."""
 
+import typing
 from datetime import UTC, datetime
 
+from app.config import ImageMetadataField
 from app.schemas.audit import (
+    ImageMetadataFieldName,
     ImageStatusHistoryResponse,
     TagAuditLogResponse,
     TagHistoryResponse,
 )
+
+
+class TestImageMetadataFieldName:
+    """ImageMetadataFieldName and ImageMetadataField.ALL are two sources of
+    truth for the same set of tracked fields; keep them in sync."""
+
+    def test_matches_image_metadata_field_all(self) -> None:
+        """A field added to one and not the other makes PATCH write rows that
+        the read endpoints then reject at response validation (500)."""
+        assert set(typing.get_args(ImageMetadataFieldName)) == set(ImageMetadataField.ALL)
 
 
 class TestTagAuditLogResponse:
