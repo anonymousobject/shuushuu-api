@@ -71,10 +71,13 @@ from app.models import (
     Users,
 )
 from app.models.image import ImageSortBy, VariantStatus
+from app.models.image_metadata_history import ImageMetadataHistory
 from app.models.image_status_history import ImageStatusHistory
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import UserGroups
 from app.schemas.audit import (
+    ImageMetadataHistoryListResponse,
+    ImageMetadataHistoryResponse,
     ImageRepostListResponse,
     ImageRepostResponse,
     ImageReviewListResponse,
@@ -1955,6 +1958,75 @@ async def get_image_status_history(
         )
 
     return ImageStatusHistoryListResponse(
+        total=total,
+        page=pagination.page,
+        per_page=pagination.per_page,
+        items=items,
+    )
+
+
+@router.get("/{image_id}/metadata-history", response_model=ImageMetadataHistoryListResponse)
+async def get_image_metadata_history(
+    image_id: Annotated[int, Path(description="Image ID")],
+    pagination: Annotated[PaginationParams, Depends()],
+    db: AsyncSession = Depends(get_db),
+) -> ImageMetadataHistoryListResponse:
+    """
+    Get the edit history of an image's miscmeta and source_url.
+
+    Public: every entry shows its editor and both values. Newest first.
+    """
+    image_result = await db.execute(select(Images.image_id).where(Images.image_id == image_id))  # type: ignore[call-overload]
+    if image_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(ImageMetadataHistory)
+            .where(ImageMetadataHistory.image_id == image_id)  # type: ignore[arg-type]
+        )
+    ).scalar() or 0
+
+    query = (
+        select(ImageMetadataHistory, Users)
+        .outerjoin(Users, ImageMetadataHistory.user_id == Users.user_id)  # type: ignore[arg-type]
+        .options(
+            selectinload(Users.user_groups).selectinload(UserGroups.group)  # type: ignore[arg-type]
+        )
+        .where(ImageMetadataHistory.image_id == image_id)  # type: ignore[arg-type]
+        .order_by(
+            desc(ImageMetadataHistory.created_at),  # type: ignore[arg-type]
+            desc(ImageMetadataHistory.id),  # type: ignore[arg-type]
+        )
+        .offset(pagination.offset)
+        .limit(pagination.per_page)
+    )
+    rows = (await db.execute(query)).all()
+
+    items = [
+        ImageMetadataHistoryResponse(
+            id=history.id,
+            image_id=history.image_id,
+            field=history.field,
+            old_value=history.old_value,
+            new_value=history.new_value,
+            user=UserSummary(
+                user_id=user.user_id,
+                username=user.username,
+                avatar=user.avatar,
+                avatar_in_r2=user.avatar_in_r2,
+                user_title=user.user_title,
+                groups=user.groups,
+            )
+            if user
+            else None,
+            created_at=history.created_at,
+        )
+        for history, user in rows
+    ]
+
+    return ImageMetadataHistoryListResponse(
         total=total,
         page=pagination.page,
         per_page=pagination.per_page,

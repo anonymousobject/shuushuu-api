@@ -197,6 +197,45 @@ class ImageStatusHistoryListResponse(BaseModel):
 
 
 # =============================================================================
+# Image Metadata History
+# =============================================================================
+
+# The image fields image_metadata_history records (app.config.ImageMetadataField).
+ImageMetadataFieldName = Literal["miscmeta", "source_url"]
+
+
+class ImageMetadataHistoryResponse(BaseModel):
+    """
+    One edit to an image's miscmeta or source_url.
+
+    Public: the editor and both values are always shown. None on either side
+    means unset (old_value) or cleared (new_value).
+    """
+
+    id: int
+    image_id: int
+    field: ImageMetadataFieldName
+    old_value: str | None = None
+    new_value: str | None = None
+
+    # Who made the edit; null only when that account no longer exists
+    user: UserSummary | None = None
+
+    created_at: UTCDatetime
+
+    model_config = {"from_attributes": True}
+
+
+class ImageMetadataHistoryListResponse(BaseModel):
+    """Paginated list of image metadata history entries."""
+
+    total: int
+    page: int
+    per_page: int
+    items: list[ImageMetadataHistoryResponse]
+
+
+# =============================================================================
 # Image Reposts
 # =============================================================================
 
