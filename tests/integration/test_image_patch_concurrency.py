@@ -23,6 +23,12 @@ moment its own SELECT ... FOR UPDATE is dispatched. Once that's dispatched,
 the test asserts the second call has NOT finished within a short window —
 proving it is genuinely blocked on the first side's row lock, not just slow —
 before releasing the first side and letting both finish.
+
+Every wait is bounded and every exit path releases the first side and ends
+both sessions: this file needs committed rows, and the needs_commit
+teardown's TRUNCATE waits forever on a session left holding its transaction
+open. With no pytest-timeout and no CI job timeout, a regressed lock would
+otherwise hang the run instead of failing it.
 """
 
 import asyncio
@@ -39,6 +45,55 @@ from app.models.user import Users
 from app.schemas.image import ImageUpdate
 
 pytestmark = [pytest.mark.integration, pytest.mark.needs_commit]
+
+# Bound on every wait that could otherwise block forever. The work waited on
+# takes milliseconds; this only has to be long enough never to fire spuriously.
+_GUARD_SECONDS = 5
+
+
+async def _finish(*tasks: asyncio.Task[None]) -> None:
+    """Wait for `tasks` to end, then re-raise the first error one of them hit.
+
+    A task still running after the guard is cancelled: unwinding its
+    `async with sessions()` closes the session, which ends its transaction.
+    """
+    _, still_running = await asyncio.wait(tasks, timeout=_GUARD_SECONDS)
+    for task in still_running:
+        task.cancel()
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(*tasks, return_exceptions=True), _GUARD_SECONDS
+    )
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+            raise outcome
+    if still_running:
+        names = ", ".join(task.get_name() for task in still_running)
+        pytest.fail(f"{names} still running after {_GUARD_SECONDS}s; cancelled")
+
+
+async def _patch_parked_at_commit(
+    sessions: async_sessionmaker[AsyncSession],
+    image_id: int,
+    user: Users,
+    parked: asyncio.Event,
+    release: asyncio.Event,
+) -> None:
+    """Run the real `update_image()`, pausing at its commit until `release`.
+
+    By the time update_image calls commit it has issued its SELECT ... FOR
+    UPDATE (and queued its setattr updates), so the row lock is held from
+    `parked` until `release`.
+    """
+    async with sessions() as db:
+        real_commit = db.commit
+
+        async def commit_after_release() -> None:
+            parked.set()
+            await release.wait()
+            await real_commit()
+
+        db.commit = commit_after_release  # type: ignore[method-assign]
+        await update_image(image_id, ImageUpdate(miscmeta="from-first"), user, db, AsyncMock())
 
 
 async def test_second_patch_diffs_against_first_patchs_committed_value(db_session, engine):
@@ -63,27 +118,9 @@ async def test_second_patch_diffs_against_first_patchs_committed_value(db_sessio
     await db_session.refresh(image)
 
     sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    mock_redis = AsyncMock()
     first_paused_holding_lock = asyncio.Event()
     release_first = asyncio.Event()
     second_select_dispatched = asyncio.Event()
-
-    async def first_patch() -> None:
-        async with sessions() as db:
-            real_commit = db.commit
-
-            async def commit_after_release() -> None:
-                # update_image has already issued its SELECT ... FOR UPDATE
-                # (and queued its setattr updates) by the time it calls
-                # commit; the row lock is held from here until real_commit().
-                first_paused_holding_lock.set()
-                await release_first.wait()
-                await real_commit()
-
-            db.commit = commit_after_release  # type: ignore[method-assign]
-            await update_image(
-                image.image_id, ImageUpdate(miscmeta="from-first"), owner, db, mock_redis
-            )
 
     async def second_patch() -> None:
         await first_paused_holding_lock.wait()
@@ -101,20 +138,25 @@ async def test_second_patch_diffs_against_first_patchs_committed_value(db_sessio
 
             db.execute = execute_and_flag_first_call  # type: ignore[method-assign]
             await update_image(
-                image.image_id, ImageUpdate(miscmeta="from-second"), owner, db, mock_redis
+                image.image_id, ImageUpdate(miscmeta="from-second"), owner, db, AsyncMock()
             )
 
-    first_task = asyncio.create_task(first_patch())
-    second_task = asyncio.create_task(second_patch())
-
-    await second_select_dispatched.wait()
-    done, pending = await asyncio.wait([second_task], timeout=0.3)
-    assert second_task in pending, (
-        "second update_image() completed without blocking on the first's row lock"
+    first_task = asyncio.create_task(
+        _patch_parked_at_commit(
+            sessions, image.image_id, owner, first_paused_holding_lock, release_first
+        ),
+        name="first PATCH",
     )
-
-    release_first.set()
-    await asyncio.gather(first_task, second_task)
+    second_task = asyncio.create_task(second_patch(), name="second PATCH")
+    try:
+        await asyncio.wait_for(second_select_dispatched.wait(), _GUARD_SECONDS)
+        done, _ = await asyncio.wait([second_task], timeout=0.3)
+        assert second_task not in done, (
+            "second update_image() completed without blocking on the first's row lock"
+        )
+    finally:
+        release_first.set()
+        await _finish(first_task, second_task)
 
     async with sessions() as db:
         result = await db.execute(
