@@ -4,9 +4,10 @@ Minor 1 of the image-metadata-history final review
 (.superpowers/sdd/2026-09-24-image-info-editing-impl/final-review.md): without
 a row lock, two requests in flight together can both read the same
 pre-update miscmeta/source_url and both write a history row, and the second
-row's old_value is stale. The fix is `.with_for_update()` on the image load
-in `update_image` (app/api/v1/images.py) so the second request blocks until
-the first commits, then diffs against the now-committed value.
+row's old_value is stale. The fix is `.with_for_update(key_share=True)`
+(SELECT ... FOR NO KEY UPDATE) on the image load in `update_image`
+(app/api/v1/images.py) so the second request blocks until the first commits,
+then diffs against the now-committed value.
 
 Real cross-session concurrency, like test_db_retry_deadlock.py: the request
 under test calls `update_image()` directly rather than through the `client`
@@ -16,10 +17,10 @@ to ONE shared AsyncSession (tests/conftest.py `app` fixture) — two
 transaction, so they could never contend for the row lock at all.
 
 A first session runs the real `update_image()` and is paused, via a patched
-`db.commit`, after it has taken the row lock (the SELECT ... FOR UPDATE) but
-before it releases it. A second session then runs the real `update_image()`
-against the same image, with its `db.execute` wrapped only to flag the
-moment its own SELECT ... FOR UPDATE is dispatched. Once that's dispatched,
+`db.commit`, after it has taken the row lock but before it releases it. A
+second session then runs the real `update_image()` against the same image,
+with its `db.execute` wrapped only to flag the moment its own locking SELECT
+is dispatched. Once that's dispatched,
 the test asserts the second call has NOT finished within a short window —
 proving it is genuinely blocked on the first side's row lock, not just slow —
 before releasing the first side and letting both finish.
@@ -41,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.api.v1.images import update_image
 from app.models.image import Images
 from app.models.image_metadata_history import ImageMetadataHistory
+from app.models.image_rating import ImageRatings
 from app.models.user import Users
 from app.schemas.image import ImageUpdate
 
@@ -80,9 +82,9 @@ async def _patch_parked_at_commit(
 ) -> None:
     """Run the real `update_image()`, pausing at its commit until `release`.
 
-    By the time update_image calls commit it has issued its SELECT ... FOR
-    UPDATE (and queued its setattr updates), so the row lock is held from
-    `parked` until `release`.
+    By the time update_image calls commit it has issued its locking SELECT
+    (and queued its setattr updates), so the row lock is held from `parked`
+    until `release`.
     """
     async with sessions() as db:
         real_commit = db.commit
@@ -96,7 +98,8 @@ async def _patch_parked_at_commit(
         await update_image(image_id, ImageUpdate(miscmeta="from-first"), user, db, AsyncMock())
 
 
-async def test_second_patch_diffs_against_first_patchs_committed_value(db_session, engine):
+async def _seed_image(db_session: AsyncSession) -> tuple[Users, Images]:
+    """A committed image with miscmeta "orig", and its owner (user 1)."""
     owner_result = await db_session.execute(select(Users).where(Users.user_id == 1))
     owner = owner_result.scalar_one()
 
@@ -116,7 +119,11 @@ async def test_second_patch_diffs_against_first_patchs_committed_value(db_sessio
     db_session.add(image)
     await db_session.commit()
     await db_session.refresh(image)
+    return owner, image
 
+
+async def test_second_patch_diffs_against_first_patchs_committed_value(db_session, engine):
+    owner, image = await _seed_image(db_session)
     sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     first_paused_holding_lock = asyncio.Event()
     release_first = asyncio.Event()
@@ -128,7 +135,7 @@ async def test_second_patch_diffs_against_first_patchs_committed_value(db_sessio
             real_execute = db.execute
 
             async def execute_and_flag_first_call(*args: object, **kwargs: object):
-                # The first call is update_image's own SELECT ... FOR UPDATE;
+                # The first call is update_image's own locking SELECT;
                 # flag it right before sending it so the test knows the
                 # second side is now (about to be) waiting on Postgres, not
                 # on Python-level scheduling.
@@ -172,3 +179,35 @@ async def test_second_patch_diffs_against_first_patchs_committed_value(db_sessio
         ("orig", "from-first"),
         ("from-first", "from-second"),
     ]
+
+
+async def test_fk_insert_referencing_the_image_does_not_wait_on_a_patch(db_session, engine):
+    """An insert that only references the image passes a PATCH in flight.
+
+    Its FK check takes FOR KEY SHARE on the image row. The PATCH's row lock
+    must be FOR NO KEY UPDATE, which lets that through; FOR UPDATE would queue
+    every such insert (tag_history, image_reports, ml_tag_suggestions, ...)
+    behind the whole PATCH. image_ratings stands in for them because nothing
+    on it writes the image row: favorites and posts have counter triggers that
+    UPDATE images, so those wait on any PATCH whichever lock it takes.
+    """
+    owner, image = await _seed_image(db_session)
+    sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    patch_holding_lock = asyncio.Event()
+    release_patch = asyncio.Event()
+
+    patch_task = asyncio.create_task(
+        _patch_parked_at_commit(sessions, image.image_id, owner, patch_holding_lock, release_patch),
+        name="PATCH",
+    )
+    try:
+        await asyncio.wait_for(patch_holding_lock.wait(), _GUARD_SECONDS)
+        async with sessions() as db:
+            db.add(ImageRatings(user_id=owner.user_id, image_id=image.image_id, rating=8))
+            try:
+                await asyncio.wait_for(db.commit(), _GUARD_SECONDS)
+            except TimeoutError:
+                pytest.fail("the image_ratings insert waited on the PATCH's row lock")
+    finally:
+        release_patch.set()
+        await _finish(patch_task)
