@@ -346,6 +346,70 @@ class TestUploadIQDBDuplicateDetection:
         data = response.json()
         assert data["image"]["miscmeta"] == "pixiv: 12345"
 
+    @pytest.mark.asyncio
+    async def test_upload_padded_values_at_the_limit_are_trimmed_then_accepted(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Padding never counts against a length limit — same rule as PATCH."""
+        miscmeta = "a" * 255
+        prefix = "https://example.com/"
+        source_url = prefix + "b" * (2000 - len(prefix))
+        with (
+            _mock_upload_storage("abc123unique9"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={
+                    "tag_ids": "",
+                    "miscmeta": f" {miscmeta}\n",
+                    "source_url": f"  {source_url}  ",
+                },
+            )
+
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["image"]["miscmeta"] == miscmeta
+        assert data["image"]["source_url"] == source_url
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "value", "detail"),
+        [
+            ("miscmeta", "a" * 256, "miscmeta must be at most 255 characters"),
+            (
+                "source_url",
+                "https://example.com/" + "b" * 1981,
+                "source_url must be at most 2000 characters",
+            ),
+        ],
+    )
+    async def test_upload_rejects_values_over_the_limit_after_trimming(
+        self,
+        upload_client: AsyncClient,
+        verified_user: Users,
+        field: str,
+        value: str,
+        detail: str,
+    ):
+        """Upload rejects a value whose trimmed form is over the limit with a 422."""
+        with _mock_upload_storage():
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", field: value},
+            )
+
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"] == detail
+
 
 class TestUploadMLTagSuggestions:
     """Tests for ML tag suggestion job enqueueing on upload."""

@@ -3106,8 +3106,10 @@ async def upload_image(
     current_user: VerifiedUser,
     file: Annotated[UploadFile, File(description="Image file to upload")],
     caption: Annotated[str, Form(max_length=35)] = "",
-    miscmeta: Annotated[str | None, Form(max_length=255)] = None,
-    source_url: Annotated[str | None, Form(max_length=2000)] = None,
+    # No Form(max_length=...): that would check the untrimmed value. The
+    # shared normalizers below trim first, then apply the length limits.
+    miscmeta: Annotated[str | None, Form()] = None,
+    source_url: Annotated[str | None, Form()] = None,
     tag_ids: Annotated[str, Form(description="Comma-separated tag IDs (e.g., '1,2,3')")] = "",
     confirm_similar: Annotated[
         bool, Form(description="Set to true to bypass IQDB similarity check")
@@ -3169,15 +3171,16 @@ async def upload_image(
     staged_path: FilePath | None = None
     committed = False
     try:
-        # Validate source_url before touching storage (see normalize_source_url).
+        # Validate source_url and miscmeta before touching storage (see the
+        # shared normalizers — the same rules PATCH /images/{id} applies).
         try:
             source_url = normalize_source_url(source_url)
+            miscmeta = normalize_miscmeta(miscmeta)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
-        miscmeta = normalize_miscmeta(miscmeta)
 
         # Stage the file (validates and calculates hash) under a temporary name.
         # If validation fails, this will raise HTTPException.
