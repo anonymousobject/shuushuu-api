@@ -197,6 +197,45 @@ class ImageStatusHistoryListResponse(BaseModel):
 
 
 # =============================================================================
+# Image Metadata History
+# =============================================================================
+
+# The image fields image_metadata_history records (app.config.ImageMetadataField).
+ImageMetadataFieldName = Literal["miscmeta", "source_url"]
+
+
+class ImageMetadataHistoryResponse(BaseModel):
+    """
+    One edit to an image's miscmeta or source_url.
+
+    Public: the editor and both values are always shown. None on either side
+    means unset (old_value) or cleared (new_value).
+    """
+
+    id: int
+    image_id: int
+    field: ImageMetadataFieldName
+    old_value: str | None = None
+    new_value: str | None = None
+
+    # Who made the edit; null only when that account no longer exists
+    user: UserSummary | None = None
+
+    created_at: UTCDatetime
+
+    model_config = {"from_attributes": True}
+
+
+class ImageMetadataHistoryListResponse(BaseModel):
+    """Paginated list of image metadata history entries."""
+
+    total: int
+    page: int
+    per_page: int
+    items: list[ImageMetadataHistoryResponse]
+
+
+# =============================================================================
 # Image Reposts
 # =============================================================================
 
@@ -266,9 +305,10 @@ class UserHistoryItem(BaseModel):
       created_at
     - tag_usage: action, tag, image_id, date
     - status_change: image_id, old_status, new_status, new_status_label, created_at
+    - image_metadata: image_id, field, old_value, new_value, created_at
     """
 
-    type: Literal["tag_metadata", "tag_usage", "status_change"]
+    type: Literal["tag_metadata", "tag_usage", "status_change", "image_metadata"]
 
     # Stable unique id for one feed event: "{kind}-{id_a}-{id_b}", the identity
     # tuple the union in app.api.v1.history already computes to re-fetch each
@@ -281,7 +321,7 @@ class UserHistoryItem(BaseModel):
     event_id: str = ""
 
     # Common timestamp fields (different types use different fields)
-    created_at: UTCDatetime | None = None  # For tag_metadata and status_change
+    created_at: UTCDatetime | None = None  # For tag_metadata, status_change and image_metadata
     date: UTCDatetime | None = None  # For tag_usage (uses 'date' field)
 
     # Common fields
@@ -297,6 +337,12 @@ class UserHistoryItem(BaseModel):
     old_status: int | None = None
     new_status: int | None = None
     new_status_label: str | None = None
+
+    # For image_metadata: which image field changed, and its values (None
+    # means unset before the edit, or cleared by it)
+    field: ImageMetadataFieldName | None = None
+    old_value: str | None = None
+    new_value: str | None = None
 
     # For tag_metadata: rename action
     action_type: str | None = None

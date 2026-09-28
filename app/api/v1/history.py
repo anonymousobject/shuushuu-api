@@ -7,6 +7,7 @@ Provides aggregated history of all changes made by a user:
   which never get a tag_history row) with tag_history (edit-flow adds and
   all removes)
 - Status changes (only visible statuses: REPOST, SPOILER, ACTIVE)
+- Image metadata changes (miscmeta, source_url)
 """
 
 from typing import Annotated, Any
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import PaginationParams
 from app.config import ImageStatus
 from app.core.database import get_db
+from app.models.image_metadata_history import ImageMetadataHistory
 from app.models.image_status_history import ImageStatusHistory
 from app.models.tag import Tags
 from app.models.tag_audit_log import TagAuditLog
@@ -64,23 +66,26 @@ def _user_history_tag_history_dedup_filter(user_id: int) -> ColumnElement[bool]:
 
 
 def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
-    """Paginated UNION ALL of a user's four history sources.
+    """Paginated UNION ALL of a user's five history sources.
 
     Each branch projects the same (kind, id_a, id_b, ts, prio, tiebreak)
     identity tuple only — not full row data — so hydration happens as a
     page-scoped follow-up per kind (see the hydration helpers below). `kind`
     identifies the source (1=audit, 2=tag_history, 3=tag_links,
-    4=status_history); id_a/id_b carry enough identity to re-fetch the row
-    (tag_links needs both, having a composite PK and no surrogate id);
-    `prio` reproduces today's per-type ordering (status > tag usage > audit
-    on a timestamp tie); `tiebreak` is a stable secondary sort within a
-    branch. `kind` sits between `prio` and `tiebreak` in the outer ORDER BY
-    because kinds 2 and 3 share prio 2 but draw tiebreaks from unrelated id
-    spaces (tag_history_id vs image_id) — for every other kind, prio already
-    implies kind, so ordering is otherwise unchanged from before.
+    4=status_history, 5=image_metadata_history); id_a/id_b carry enough
+    identity to re-fetch the row (tag_links needs both, having a composite
+    PK and no surrogate id); `prio` reproduces the per-type ordering
+    (status > tag usage > tag audit = image metadata on a timestamp tie);
+    `tiebreak` is a stable secondary sort within a branch. `kind` sits
+    between `prio` and `tiebreak` in the outer ORDER BY because kinds 2 and 3
+    share prio 2 but draw tiebreaks from unrelated id spaces (tag_history_id
+    vs image_id), and kinds 1 and 5 share prio 1 with unrelated id spaces
+    (tag_audit_log.id vs image_metadata_history.id) — for every other kind,
+    prio already implies kind, so ordering is otherwise unchanged from
+    before.
 
     `id_a` is appended as the FINAL outer sort key, after `tiebreak`. For
-    kinds 1/2/4, id_a *is* tiebreak (same column projected twice), so this
+    kinds 1/2/4/5, id_a *is* tiebreak (same column projected twice), so this
     is a no-op there. It is not a no-op for kind 3: tag_links' primary key
     is (tag_id, image_id), and tiebreak is image_id, so two links on the
     *same image* (an upload tagging N tags at once — see
@@ -103,7 +108,7 @@ def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
     the outer query (its prio/kind are constant within the branch, so
     date_linked, image_id, tag_id is the branch-local restriction of the
     outer ts/tiebreak/id_a order) — required to keep that pushdown lossless
-    too; the other three branches don't need it since id_a already equals
+    too; the other four branches don't need it since id_a already equals
     their tiebreak.
     """
     branch_limit = offset + per_page
@@ -170,7 +175,23 @@ def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
         .limit(branch_limit)
     )
 
-    merged = union_all(audit_branch, history_branch, link_branch, status_branch).subquery()
+    metadata_branch = (
+        select(
+            literal(5).label("kind"),
+            ImageMetadataHistory.id.label("id_a"),  # type: ignore[union-attr]
+            literal(0).label("id_b"),
+            ImageMetadataHistory.created_at.label("ts"),  # type: ignore[union-attr]
+            literal(1).label("prio"),
+            ImageMetadataHistory.id.label("tiebreak"),  # type: ignore[union-attr]
+        )
+        .where(ImageMetadataHistory.user_id == user_id)  # type: ignore[arg-type]
+        .order_by(desc(ImageMetadataHistory.created_at), desc(ImageMetadataHistory.id))  # type: ignore[arg-type]
+        .limit(branch_limit)
+    )
+
+    merged = union_all(
+        audit_branch, history_branch, link_branch, status_branch, metadata_branch
+    ).subquery()
     return (
         select(merged)
         .order_by(
@@ -186,7 +207,7 @@ def _user_history_union(user_id: int, offset: int, per_page: int) -> Any:
 
 
 async def _user_history_total(db: AsyncSession, user_id: int) -> int:
-    """Total history events for a user: sum of four plain COUNTs.
+    """Total history events for a user: sum of five plain COUNTs.
 
     Deliberately not COUNT(*) over the union subquery — same tradeoff as
     _tag_usage_history_total in app.api.v1.tags (measured ~1.37s vs 98ms for
@@ -219,7 +240,14 @@ async def _user_history_total(db: AsyncSession, user_id: int) -> int:
             .where(_STATUS_VISIBILITY_FILTER)
         )
     ).scalar() or 0
-    return audit_total + history_total + link_total + status_total
+    metadata_total = (
+        await db.execute(
+            select(func.count())
+            .select_from(ImageMetadataHistory)
+            .where(ImageMetadataHistory.user_id == user_id)  # type: ignore[arg-type]
+        )
+    ).scalar() or 0
+    return audit_total + history_total + link_total + status_total + metadata_total
 
 
 async def _hydrate_tag_metadata_items(
@@ -353,6 +381,34 @@ async def _hydrate_status_change_items(
     }
 
 
+async def _hydrate_image_metadata_items(
+    db: AsyncSession, ids: list[int]
+) -> dict[int, UserHistoryItem]:
+    """Load kind-5 (image_metadata) rows for the given ImageMetadataHistory ids."""
+    if not ids:
+        return {}
+    rows = (
+        (
+            await db.execute(
+                select(ImageMetadataHistory).where(ImageMetadataHistory.id.in_(ids))  # type: ignore[union-attr]
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        row.id or 0: UserHistoryItem(
+            type="image_metadata",
+            image_id=row.image_id,
+            field=row.field,  # type: ignore[arg-type]
+            old_value=row.old_value,
+            new_value=row.new_value,
+            created_at=row.created_at,
+        )
+        for row in rows
+    }
+
+
 async def _load_linked_tags(db: AsyncSession, tag_ids: set[int]) -> dict[int, LinkedTag]:
     """Batch-load tag_id -> LinkedTag for kind-3 (tag_links) hydration."""
     if not tag_ids:
@@ -377,6 +433,7 @@ async def get_user_history(
     - Tag history + tag links (tag add/remove on images, including upload-time adds
       which only ever exist as tag_links rows)
     - Image status history (only visible statuses: REPOST, SPOILER, ACTIVE)
+    - Image metadata history (miscmeta/source_url edits; always public)
 
     Status changes with hidden statuses (REVIEW, LOW_QUALITY, INAPPROPRIATE, OTHER)
     are excluded since this endpoint shows what the user did publicly.
@@ -396,6 +453,9 @@ async def get_user_history(
     usage_items = await _hydrate_tag_history_usage_items(db, [r.id_a for r in rows if r.kind == 2])
     linked_tags_map = await _load_linked_tags(db, {r.id_a for r in rows if r.kind == 3})
     status_items = await _hydrate_status_change_items(db, [r.id_a for r in rows if r.kind == 4])
+    image_metadata_items = await _hydrate_image_metadata_items(
+        db, [r.id_a for r in rows if r.kind == 5]
+    )
 
     # (kind, id_a, id_b) is the row identity the union already sorts on, so it
     # is the natural per-event id to hand clients. Stamped here rather than in
@@ -415,8 +475,10 @@ async def get_user_history(
                 image_id=row.id_b,
                 date=row.ts,
             )
-        else:
+        elif row.kind == 4:
             item = status_items[row.id_a]
+        else:
+            item = image_metadata_items[row.id_a]
         item.event_id = event_id
         items.append(item)
 

@@ -551,6 +551,15 @@ class TagAuditActionType:
     LINK_ARCHIVE_CHANGED = "link_archive_changed"
 
 
+class ImageMetadataField:
+    """Image fields whose edits image_metadata_history records."""
+
+    MISCMETA = "miscmeta"
+    SOURCE_URL = "source_url"
+
+    ALL = (MISCMETA, SOURCE_URL)
+
+
 class TagType:
     """Tag type constants"""
 

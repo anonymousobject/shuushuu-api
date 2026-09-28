@@ -5,6 +5,7 @@ Pydantic schemas for Image endpoints
 from typing import Any, Self
 
 from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic_core import PydanticCustomError
 
 from app.config import TagType, settings
 from app.core.r2_constants import PUBLIC_IMAGE_STATUSES_FOR_R2, R2Location
@@ -97,11 +98,61 @@ class ImageCreate(ImageBase):
     user_id: int
 
 
+SOURCE_URL_SCHEME_ERROR = "source_url must start with http:// or https://"
+
+# Widths of the images.miscmeta / images.source_url columns.
+MISCMETA_MAX_LENGTH = 255
+SOURCE_URL_MAX_LENGTH = 2000
+
+
+def _check_length(field: str, value: str, max_length: int) -> None:
+    if len(value) > max_length:
+        raise ValueError(f"{field} must be at most {max_length} characters")
+
+
+def normalize_miscmeta(value: str | None) -> str | None:
+    """Trim miscmeta; blank becomes None; at most MISCMETA_MAX_LENGTH.
+
+    Shared by the upload form and PATCH /images/{id}, so the two agree on
+    what counts as "no miscmeta" — a padded or whitespace-only value from
+    either path reads back identically to a value the other path cleared.
+    The length limit applies to the trimmed value, so padding never counts
+    against it. Raises ValueError when the trimmed value is too long.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    _check_length("miscmeta", value, MISCMETA_MAX_LENGTH)
+    return value
+
+
+def normalize_source_url(value: str | None) -> str | None:
+    """Trim a source URL; blank becomes None; only http(s), at most SOURCE_URL_MAX_LENGTH.
+
+    Shared by the upload form and PATCH /images/{id}. The scheme check blocks
+    javascript:/data: URLs and similar, since the value renders as a link.
+    The length limit applies to the trimmed value. Raises ValueError with
+    SOURCE_URL_SCHEME_ERROR on any other scheme, or when it is too long.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if not value.startswith(("http://", "https://")):
+        raise ValueError(SOURCE_URL_SCHEME_ERROR)
+    _check_length("source_url", value, SOURCE_URL_MAX_LENGTH)
+    return value
+
+
 class ImageUpdate(BaseModel):
     """Schema for updating image metadata and owner status — all fields optional."""
 
     caption: str | None = None
-    miscmeta: str | None = None
+    miscmeta: str | None = Field(default=None, max_length=MISCMETA_MAX_LENGTH)
+    source_url: str | None = Field(default=None, max_length=SOURCE_URL_MAX_LENGTH)
     status: int | None = None
     replacement_id: int | None = None
 
@@ -117,6 +168,29 @@ class ImageUpdate(BaseModel):
         if v is None:
             return v
         return v.strip()
+
+    @field_validator("miscmeta", "source_url", mode="before")
+    @classmethod
+    def strip_before_length_check(cls, v: Any) -> Any:
+        """Trim before the Field(max_length=...) check, so padding never counts against it."""
+        return v.strip() if isinstance(v, str) else v
+
+    @field_validator("miscmeta")
+    @classmethod
+    def normalize_miscmeta(cls, v: str | None) -> str | None:
+        """Apply the shared miscmeta normalization rule (see normalize_miscmeta)."""
+        return normalize_miscmeta(v)
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, v: str | None) -> str | None:
+        """Apply the shared source URL rules (see normalize_source_url)."""
+        try:
+            return normalize_source_url(v)
+        except ValueError as exc:
+            # A PydanticCustomError keeps the message free of pydantic's
+            # "Value error, " prefix, so the frontend can show it verbatim.
+            raise PydanticCustomError("source_url_scheme", str(exc)) from exc
 
 
 class ImageResponse(ImageBase):

@@ -25,6 +25,7 @@ from app.models.favorite import Favorites
 
 # Core entity models
 from app.models.image import Images
+from app.models.image_metadata_history import ImageMetadataHistory
 from app.models.image_rating import ImageRatings
 from app.models.image_report import ImageReports
 from app.models.image_report_tag_suggestion import ImageReportTagSuggestions
@@ -87,6 +88,7 @@ __all__ = [
     "CommentReports",
     "ImageReviews",
     "ImageStatusHistory",
+    "ImageMetadataHistory",
     "ReviewVotes",
     "AdminActions",
     "MlExternalTags",
