@@ -199,6 +199,7 @@ class UserResponse(UserBase):
     admin: bool
     groups: list[str] = []  # Group names for username coloring (e.g., ["mods", "admins"])
     maximgperday: int | None = None  # Upload limit - only visible to self or admins
+    email: EmailStr | None = None  # Only visible to self or admins
 
     # Allow Pydantic to read from SQLAlchemy model attributes (not just dicts)
     model_config = {"from_attributes": True}

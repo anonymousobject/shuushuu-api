@@ -489,7 +489,8 @@ class TestGetUser:
         assert "username" in data
         # maximgperday is hidden from anonymous users
         assert data.get("maximgperday") is None
-        # assert "email" in data  # Email may be omitted in public response
+        # email is hidden from anonymous users
+        assert data["email"] is None
 
     async def test_get_nonexistent_user(self, client: AsyncClient):
         """Test getting a user that doesn't exist."""
@@ -3284,6 +3285,75 @@ class TestMaxImgPerDayRestriction:
 
         assert response.status_code == 200
         assert response.json()["maximgperday"] == 15  # Default value
+
+    async def test_email_hidden_from_anonymous_users(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that email is not visible to anonymous users."""
+        user, _ = await create_test_user_with_password(
+            db_session, "emailhidanon", "emailhidanon@example.com"
+        )
+
+        response = await client.get(f"/api/v1/users/{user.user_id}")
+
+        assert response.status_code == 200
+        assert response.json()["email"] is None
+
+    async def test_email_hidden_from_other_regular_users(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that email is not visible to other regular users."""
+        target, _ = await create_test_user_with_password(
+            db_session, "emailhidtarget", "emailhidtarget@example.com"
+        )
+        viewer, viewer_password = await create_test_user_with_password(
+            db_session, "emailhidviewer", "emailhidviewer@example.com"
+        )
+        token = await login_test_user(client, viewer.username, viewer_password)
+
+        response = await client.get(
+            f"/api/v1/users/{target.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["email"] is None
+
+    async def test_email_visible_to_user_with_edit_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that email is visible to users with USER_EDIT_PROFILE permission."""
+        admin, admin_password = await create_test_user_with_password(
+            db_session, "emailadmin", "emailadmin@example.com"
+        )
+        await grant_user_permission(db_session, admin.user_id, "user_edit_profile")
+        target, _ = await create_test_user_with_password(
+            db_session, "emailadmintarget", "emailadmintarget@example.com"
+        )
+        token = await login_test_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            f"/api/v1/users/{target.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["email"] == "emailadmintarget@example.com"
+
+    async def test_email_visible_to_self(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that email is visible when viewing own profile via /users/{id}."""
+        user, password = await create_test_user_with_password(
+            db_session, "emailselfview", "emailselfview@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        response = await client.get(
+            f"/api/v1/users/{user.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["email"] == "emailselfview@example.com"
 
 
 @pytest.mark.api

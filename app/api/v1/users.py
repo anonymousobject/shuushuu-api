@@ -880,7 +880,7 @@ async def get_user(
     """
     Get user profile information.
 
-    The maximgperday field is only visible to:
+    The maximgperday and email fields are only visible to:
     - The user viewing their own profile
     - Users with USER_EDIT_PROFILE permission (moderators/admins)
     """
@@ -898,9 +898,10 @@ async def get_user(
 
     response = UserResponse.model_validate(user)
 
-    # maximgperday is only visible to self or users with edit permission
+    # maximgperday and email are only visible to self or users with edit permission
     # Default to hidden (None)
     response.maximgperday = None
+    response.email = None
     if current_user and current_user.user_id is not None:
         is_self = current_user.user_id == user_id
         has_edit_permission = await has_permission(
@@ -908,6 +909,7 @@ async def get_user(
         )
         if is_self or has_edit_permission:
             response.maximgperday = user.maximgperday
+            response.email = user.email
 
     return response
 
