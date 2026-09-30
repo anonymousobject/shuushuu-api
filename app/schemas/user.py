@@ -225,6 +225,16 @@ class UserResponse(UserBase):
     # Legacy data: Run scripts/normalize_db_text.py to decode HTML entities.
 
 
+class UserProfileResponse(UserResponse):
+    """GET /users/{id} response: adds fields gated to self or USER_EDIT_PROFILE holders.
+
+    Kept off UserResponse because from_attributes would populate them in every
+    list/PATCH/avatar response that calls UserResponse.model_validate(user).
+    """
+
+    email: EmailStr | None = None  # Only visible to self or USER_EDIT_PROFILE
+
+
 class UserPrivateResponse(UserResponse):
     """
     Schema for authenticated user's own profile - includes private settings.
