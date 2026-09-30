@@ -3355,6 +3355,41 @@ class TestMaxImgPerDayRestriction:
         assert response.status_code == 200
         assert response.json()["email"] == "emailselfview@example.com"
 
+    async def test_email_absent_from_user_list(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that the list endpoint never includes an email key."""
+        await create_test_user_with_password(
+            db_session, "emaillistuser", "emaillistuser@example.com"
+        )
+
+        response = await client.get("/api/v1/users?search=emaillistuser")
+
+        assert response.status_code == 200
+        users = response.json()["users"]
+        assert len(users) == 1
+        assert "email" not in users[0]
+
+    async def test_email_absent_from_patch_response(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that PATCH responses never include an email key, even for editors."""
+        editor, editor_password = await create_test_user_with_password(
+            db_session, "emailpatcheditor", "emailpatcheditor@example.com"
+        )
+        await grant_user_permission(db_session, editor.user_id, "user_edit_profile")
+        target, _ = await create_test_user_with_password(
+            db_session, "emailpatchtarget", "emailpatchtarget@example.com"
+        )
+        token = await login_test_user(client, editor.username, editor_password)
+
+        response = await client.patch(
+            f"/api/v1/users/{target.user_id}",
+            json={"maximgperday": 30},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert "email" not in response.json()
+
 
 @pytest.mark.api
 class TestUserProfileEditAuthorization:

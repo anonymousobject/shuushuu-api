@@ -77,6 +77,7 @@ from app.schemas.user import (
     UserFavoriteTagsResponse,
     UserListResponse,
     UserPrivateResponse,
+    UserProfileResponse,
     UserResponse,
     UserUpdate,
     UserWarningResponse,
@@ -870,13 +871,13 @@ async def get_user_images(
     )
 
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get("/{user_id}", response_model=UserProfileResponse)
 async def get_user(
     user_id: Annotated[int, Path(description="User ID")],
     db: AsyncSession = Depends(get_db),
     redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
     current_user: Users | None = Depends(get_optional_current_user),
-) -> UserResponse:
+) -> UserProfileResponse:
     """
     Get user profile information.
 
@@ -896,7 +897,7 @@ async def get_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    response = UserResponse.model_validate(user)
+    response = UserProfileResponse.model_validate(user)
 
     # maximgperday and email are only visible to self or users with edit permission
     # Default to hidden (None)
