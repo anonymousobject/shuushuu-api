@@ -188,6 +188,8 @@ class TestPaletteTransparency:
         with Image.open(thumb_path) as thumb:
             assert thumb.mode == "RGBA"
             assert thumb.getpixel((0, 0))[3] == 0
+            # The subject must still be opaque: guards against "everything transparent"
+            assert thumb.getpixel((250, 250))[3] == 255
 
     def test_thumbnail_keeps_alpha_for_palette_png_with_icc(
         self, test_image_palette_png_with_icc, temp_storage
