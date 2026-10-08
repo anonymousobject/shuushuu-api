@@ -280,10 +280,17 @@ def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_pat
         with Image.open(source_path) as img:
             original_size = img.size
 
+            # Palette images (GIF, pngquant PNG) carry transparency as a
+            # palette index. Unpack before colour management: profileToProfile
+            # can't take mode "P", and convert("RGB") would paint transparent
+            # pixels with the index's colour (often a garish placeholder).
+            if img.mode == "P":
+                img = img.convert("RGBA" if "transparency" in img.info else "RGB")  # type: ignore[assignment]
+
             # Convert to sRGB for consistent web display
             img = _convert_to_srgb(img)  # type: ignore[assignment]
 
-            # Ensure image is RGB (handle grayscale, palette, RGBA)
+            # Ensure image is RGB (handle grayscale, RGBA)
             if img.mode == "RGBA":
                 # Preserve alpha for WebP (it supports transparency)
                 pass

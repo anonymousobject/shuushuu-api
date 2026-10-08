@@ -82,8 +82,12 @@ class ScanResult:
     scanned: int = 0
 
 
-def scan(rows: Iterable[tuple[int, str, str]], storage_path: str) -> ScanResult:
-    """Check each (image_id, filename, ext) row's fullsize file."""
+def scan(
+    rows: Iterable[tuple[int, str, str]],
+    storage_path: str,
+    is_affected: Callable[[Path], bool] = is_affected_png,
+) -> ScanResult:
+    """Check each (image_id, filename, ext) row's fullsize file with `is_affected`."""
     result = ScanResult()
     last_report = time.time()
     for image_id, filename, ext in rows:
@@ -93,7 +97,7 @@ def scan(rows: Iterable[tuple[int, str, str]], storage_path: str) -> ScanResult:
             result.missing.append(image_id)
             continue
         try:
-            affected = is_affected_png(source)
+            affected = is_affected(source)
         except Exception as exc:
             result.unreadable.append((image_id, f"{type(exc).__name__}: {exc}"))
             continue
@@ -311,7 +315,7 @@ async def cmd_scan(*, min_id: int | None, output: Path) -> int:
     return 0
 
 
-async def _run_batch(
+async def run_batch(
     *,
     ids: list[int],
     progress_file: Path,
@@ -352,7 +356,7 @@ def _limited(ids: list[int], limit: int | None) -> list[int]:
 async def cmd_fix(*, candidates: Path, limit: int | None, dry_run: bool) -> int:
     done_file = candidates.with_suffix(candidates.suffix + ".done")
     print(f"Storage path: {settings.STORAGE_PATH} | R2: {settings.R2_ENABLED} | Dry run: {dry_run}")
-    return await _run_batch(
+    return await run_batch(
         ids=_limited(pending_ids(candidates, done_file), limit),
         progress_file=done_file,
         dry_run=dry_run,
@@ -367,7 +371,7 @@ async def cmd_sync(*, done: Path, limit: int | None, dry_run: bool) -> int:
         f"DB host: {db_host} | Storage path: {settings.STORAGE_PATH} | "
         f"R2 buckets: {settings.R2_PUBLIC_BUCKET} / {settings.R2_PRIVATE_BUCKET} | Dry run: {dry_run}"
     )
-    return await _run_batch(
+    return await run_batch(
         ids=_limited(pending_ids(done, synced_file), limit),
         progress_file=synced_file,
         dry_run=dry_run,
