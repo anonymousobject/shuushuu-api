@@ -104,6 +104,12 @@ select = [
     "TID251",  # banned APIs, listed under flake8-tidy-imports below
     "ARG",  # unused arguments
     "FAST",  # FastAPI: Annotated dependencies, redundant response_model, unused path params
+    # Size and complexity, at the default limits. Functions already over a
+    # limit carry a `# noqa` naming it; RUF100 flags the noqa once they're not.
+    "C90",  # mccabe complexity
+    "PLR0911",  # too many return statements
+    "PLR0912",  # too many branches
+    "PLR0915",  # too many statements
     # "FA",  # flake8-future-annotations (enforce modern type hints)
 ]
 ignore = [

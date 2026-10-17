@@ -139,7 +139,7 @@ def _candidates_str(index: InternalIndex, ids: list[int]) -> str:
     return "; ".join(f"{i}:{index.id_to_title[i]}" for i in ids)
 
 
-def classify(
+def classify(  # noqa: PLR0911
     danbooru_name: str,
     index: InternalIndex,
     *,

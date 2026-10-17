@@ -195,7 +195,7 @@ def _join(before: str, sep: str, after: str) -> str | None:
     return f"{before} {sep} {after}"
 
 
-def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:
+def _strip_and_tidy(desc: str, start: int, end: int) -> str | None:  # noqa: C901, PLR0911
     """Remove desc[start:end] and tidy what's left.
 
     Looks only at the text immediately touching the removed span (not just
@@ -353,7 +353,7 @@ async def _find_owning_link(
     return own_link, other_owner
 
 
-async def run_desc_mover(db: AsyncSession, *, apply: bool) -> DescMoverReport:
+async def run_desc_mover(db: AsyncSession, *, apply: bool) -> DescMoverReport:  # noqa: C901, PLR0912, PLR0915
     report = DescMoverReport()
 
     canonical_artists = (

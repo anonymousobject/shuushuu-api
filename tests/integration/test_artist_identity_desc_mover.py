@@ -1306,7 +1306,7 @@ def _core_tokens(text: str | None) -> list[str]:
 
 @pytest.mark.integration
 class TestDescMoverPropertySweep:
-    async def test_every_desc_shape_either_anomalies_or_moves_only_the_identity(
+    async def test_every_desc_shape_either_anomalies_or_moves_only_the_identity(  # noqa: C901, PLR0912, PLR0915
         self, db_session: AsyncSession
     ) -> None:
         cases = _prop_corpus()

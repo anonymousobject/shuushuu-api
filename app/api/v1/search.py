@@ -55,7 +55,7 @@ def _passes_alias_filter(tag: Tags, aliases: Aliases) -> bool:
 
 
 @router.get("", response_model=SearchResponse)
-async def search(
+async def search(  # noqa: C901, PLR0912
     db: Annotated[AsyncSession, Depends(get_db)],
     q: Annotated[
         str,

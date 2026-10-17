@@ -130,7 +130,7 @@ async def delete_pending_ancestor_suggestions(
     return doomed_ids
 
 
-async def _apply_reviews_for_image(
+async def _apply_reviews_for_image(  # noqa: C901
     db: AsyncSession,
     image_id: int,
     items: list[ReviewSuggestionRequest],

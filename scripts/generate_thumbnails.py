@@ -200,7 +200,7 @@ def format_time(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-def generate_thumbnails(
+def generate_thumbnails(  # noqa: PLR0915
     image_ids: list[int] | None = None,
     all_images: bool = False,
     dry_run: bool = False,

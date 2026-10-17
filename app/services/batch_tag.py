@@ -21,7 +21,7 @@ from app.services.tag_type_flags import refresh_images_tag_type_flags
 logger = get_logger(__name__)
 
 
-async def batch_add_tags(
+async def batch_add_tags(  # noqa: C901
     tag_ids: list[int],
     image_ids: list[int],
     user_id: int,
@@ -170,7 +170,7 @@ async def batch_add_tags(
     return BatchTagResponse(added=added, skipped=skipped)
 
 
-async def batch_remove_tags(
+async def batch_remove_tags(  # noqa: C901
     tag_ids: list[int],
     image_ids: list[int],
     user_id: int,
@@ -187,7 +187,7 @@ async def batch_remove_tags(
     # the parent `tags` rows moving. Retry the whole fetch-through-commit unit
     # on a fresh snapshot (see app/core/db_retry.py). The accumulators are built
     # inside the unit so a retry cannot report a pair once per attempt.
-    async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:
+    async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:  # noqa: C901
         removed: list[BatchTagResultItem] = []
         skipped: list[BatchTagSkippedItem] = []
 

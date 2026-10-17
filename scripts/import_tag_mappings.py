@@ -42,7 +42,7 @@ DEFAULT_CSV = Path("data/tag_mappings.csv")
 MAPPABLE_TAG_TYPES = (1, 4)  # 1=Theme, 4=Character
 
 
-async def import_mappings(db: AsyncSession, csv_path: Path) -> dict[str, object]:
+async def import_mappings(db: AsyncSession, csv_path: Path) -> dict[str, object]:  # noqa: C901, PLR0912, PLR0915
     """Import tag mappings from a CSV into the DB. Insert-only (existing
     external_tag rows are skipped). Returns a summary dict of counts."""
     # Pre-load mappable internal tags for case-insensitive title lookup.

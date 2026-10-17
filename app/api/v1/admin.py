@@ -796,7 +796,7 @@ async def change_image_status(
 
 
 @router.get("/reports", response_model=UnifiedReportListResponse)
-async def list_reports(
+async def list_reports(  # noqa: C901, PLR0912, PLR0915
     current_user: Annotated[Users, Depends(get_current_user)],
     db: DbSession,
     redis_client: RedisClient,
@@ -1489,7 +1489,7 @@ async def dismiss_report(
     "/reports/{report_id}/apply-tag-suggestions",
     response_model=ApplyTagSuggestionsResponse,
 )
-async def apply_tag_suggestions(
+async def apply_tag_suggestions(  # noqa: C901, PLR0915
     report_id: Annotated[int, Path(description="Report ID")],
     request_data: ApplyTagSuggestionsRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
@@ -1537,7 +1537,7 @@ async def apply_tag_suggestions(
     # Every row is re-fetched inside the unit — the rollback between attempts
     # expires the report and suggestion instances this mutates — and the
     # accumulators are rebuilt so a retry cannot report a tag once per attempt.
-    async def _apply() -> tuple[list[int], list[int], list[int], list[int]]:
+    async def _apply() -> tuple[list[int], list[int], list[int], list[int]]:  # noqa: C901, PLR0912, PLR0915
         # Get the report
         result = await db.execute(
             select(ImageReports).where(ImageReports.report_id == report_id)  # type: ignore[arg-type]

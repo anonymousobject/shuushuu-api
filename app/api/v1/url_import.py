@@ -183,7 +183,7 @@ async def resolve_url(
 
 
 @router.get("/fetch-external")
-async def fetch_external(
+async def fetch_external(  # noqa: C901
     token: str,
     current_user: VerifiedUser,
     redis_client: RedisClient,

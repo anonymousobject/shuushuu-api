@@ -57,7 +57,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-async def _check_and_handle_suspension(
+async def _check_and_handle_suspension(  # noqa: C901, PLR0912
     user: Users,
     db: AsyncSession,
     *,
@@ -298,7 +298,7 @@ async def _create_tokens_for_user(
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(
+async def login(  # noqa: C901
     credentials: LoginRequest,
     request: Request,
     response: Response,
@@ -577,7 +577,7 @@ async def _issue_access_only(
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(
+async def refresh_token(  # noqa: C901, PLR0911
     request: Request,
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],

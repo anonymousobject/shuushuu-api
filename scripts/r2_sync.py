@@ -190,7 +190,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
+async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:  # noqa: C901, PLR0915
     """Move protected-status images' R2 objects from public to private bucket.
 
     Assumes existing R2 state is "everything in R2_PUBLIC_BUCKET" (the starting
@@ -355,7 +355,7 @@ async def backfill_locations(*, batch_size: int = 1000) -> None:
     print(f"backfilled {total_flipped} rows")
 
 
-async def reconcile(*, stale_after: int) -> None:
+async def reconcile(*, stale_after: int) -> None:  # noqa: C901, PLR0912, PLR0915
     """Heal: upload missing R2 objects for unsynced rows older than `stale_after`.
 
     Idempotent: uploaded variants are re-detected via object_exists on the next
@@ -455,7 +455,7 @@ async def reconcile(*, stale_after: int) -> None:
     print(f"reconciled {healed}/{processed} rows")
 
 
-async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -> dict[str, int]:
+async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -> dict[str, int]:  # noqa: C901, PLR0915
     """Upload local avatars to R2 and flip avatar_in_r2=True per row.
 
     Walks `users` rows where ``avatar != ''`` AND ``avatar_in_r2 = false``,
@@ -631,7 +631,7 @@ async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -
     }
 
 
-async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
+async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:  # noqa: C901, PLR0915
     """Upload local banner images to R2 and flip in_r2=True per row.
 
     Walks `banners` rows where ``in_r2 = false``. For each row, collects the
@@ -905,7 +905,7 @@ async def force_reupload_image(
     print(f"{verb} {len(processed_keys)} variants for image {image_id}")
 
 
-async def verify(
+async def verify(  # noqa: C901, PLR0912, PLR0915
     *,
     sample: int | None = None,
     since_id: int | None = None,
@@ -1196,7 +1196,7 @@ async def _dispatch(args: argparse.Namespace) -> int:
         await engine.dispose()
 
 
-async def _run(args: argparse.Namespace) -> int:
+async def _run(args: argparse.Namespace) -> int:  # noqa: C901
     if args.command == "split-existing":
         await split_existing(dry_run=args.dry_run, concurrency=args.concurrency)
     elif args.command == "backfill-locations":

@@ -66,7 +66,7 @@ async def _abort(project_root: Path, message: str) -> bool:
     return False
 
 
-async def restore_prod_db(
+async def restore_prod_db(  # noqa: C901, PLR0911, PLR0912, PLR0915
     sql_file: Path,
     dry_run: bool = False,
     auto_confirm: bool = False,

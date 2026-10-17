@@ -21,7 +21,7 @@ from app.models.tag import Tags
 from app.schemas.image import ImageDetailedResponse
 
 
-async def stamp_context_sources(
+async def stamp_context_sources(  # noqa: C901
     db: AsyncSession, responses: Sequence[ImageDetailedResponse]
 ) -> None:
     """Mutate responses in place per the exactly-one rule."""

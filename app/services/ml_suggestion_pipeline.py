@@ -33,7 +33,7 @@ from app.services.tag_resolver import resolve_tag_relationships
 logger = get_logger(__name__)
 
 
-async def filter_redundant_suggestions(
+async def filter_redundant_suggestions(  # noqa: C901
     db: AsyncSession,
     suggestions: list[dict[str, Any]],
     existing_tag_ids: set[int],

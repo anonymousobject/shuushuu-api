@@ -685,7 +685,7 @@ async def update_user_profile(
     return UserResponse.model_validate(user)
 
 
-async def _update_user_profile(
+async def _update_user_profile(  # noqa: C901
     user_id: int,
     user_data: UserUpdate,
     db: AsyncSession,
@@ -1136,7 +1136,7 @@ FAVORITES_PER_CATEGORY_CAP = 20
 
 
 @router.post("/me/favorite-tags", status_code=201)
-async def add_favorite_tag(
+async def add_favorite_tag(  # noqa: C901
     body: FavoriteTagCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     db: DbSession,

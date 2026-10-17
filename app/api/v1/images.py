@@ -446,7 +446,7 @@ async def _default_feed_total(
 
 @router.get("/", response_model=ImageDetailedListResponse, include_in_schema=False)
 @router.get("", response_model=ImageDetailedListResponse)
-async def list_images(
+async def list_images(  # noqa: C901, PLR0912, PLR0915
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
     # Basic filters
@@ -1482,7 +1482,7 @@ async def delete_image(
 
 
 @router.patch("/{image_id}", response_model=ImageDetailedResponse)
-async def update_image(
+async def update_image(  # noqa: C901, PLR0915
     image_id: Annotated[int, Path(description="Image ID")],
     image_data: ImageUpdate,
     current_user: CurrentUser,
@@ -1532,7 +1532,7 @@ async def update_image(
     # whole unit on a fresh transaction (see app/core/db_retry.py); every
     # non-DB side effect stays below its commit, so a replay repeats nothing
     # external. Returns the image's status before this request.
-    async def _apply() -> int:
+    async def _apply() -> int:  # noqa: C901, PLR0912
         # Fetch image. Row-locked: two PATCHes in flight together (e.g. Enter plus
         # a click) must serialize, so the second one diffs build_metadata_history
         # against the first one's committed values instead of writing a duplicate
@@ -3105,7 +3105,7 @@ async def _discard_finalized_upload(db: AsyncSession, image_id: int, staged_path
         }
     },
 )
-async def upload_image(
+async def upload_image(  # noqa: C901, PLR0912, PLR0915
     request: Request,
     current_user: VerifiedUser,
     file: Annotated[UploadFile, File(description="Image file to upload")],
@@ -3477,7 +3477,7 @@ async def upload_image(
 @router.post(
     "/{image_id}/report", response_model=ReportResponse, status_code=status.HTTP_201_CREATED
 )
-async def report_image(
+async def report_image(  # noqa: C901, PLR0912, PLR0915
     image_id: Annotated[int, Path(description="Image ID to report")],
     report_data: ReportCreate,
     current_user: Annotated[Users, Depends(get_current_user)],

@@ -61,7 +61,7 @@ def _compute_ttl_seconds() -> int:
     return ttl
 
 
-async def get_current_banner(
+async def get_current_banner(  # noqa: C901, PLR0912
     theme: str,
     size: str,
     db: AsyncSession,

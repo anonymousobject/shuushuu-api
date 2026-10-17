@@ -33,7 +33,7 @@ from app.models import Comments
 logger = get_logger(__name__)
 
 
-def extract_quoted_text(comment_text: str) -> str | None:
+def extract_quoted_text(comment_text: str) -> str | None:  # noqa: C901
     """
     Extract quoted text from comment.
     Supports two formats:
@@ -192,7 +192,7 @@ async def find_parent_comment(
     return None
 
 
-async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000) -> None:
+async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000) -> None:  # noqa: C901, PLR0912, PLR0915
     """
     Main migration function (two-pass approach for correctness).
 

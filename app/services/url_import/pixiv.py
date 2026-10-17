@@ -46,7 +46,7 @@ class PixivResolver:
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None
 
-    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:
+    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:  # noqa: C901, PLR0912
         match = _URL_RE.match(url)
         assert match is not None  # caller guarantees match()
         illust_id = match.group(1)

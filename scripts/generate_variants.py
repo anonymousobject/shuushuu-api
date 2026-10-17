@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.models.image import VariantStatus
 
 
-def process_variant_worker(
+def process_variant_worker(  # noqa: C901, PLR0912
     args: tuple[int, str, str, str, int, int, str, bool, bool],
 ) -> tuple[int, str, bool, str]:
     """Worker function for multiprocessing.
@@ -173,7 +173,7 @@ def format_time(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901, PLR0912, PLR0915
     parser = argparse.ArgumentParser(description="Generate medium/large variants for images")
     parser.add_argument(
         "--all",

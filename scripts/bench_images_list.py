@@ -97,7 +97,7 @@ def build_scenarios(authed: bool) -> list[Scenario]:
     return scenarios
 
 
-def golden_diff(expected: object, actual: object, path: str = "") -> str | None:
+def golden_diff(expected: object, actual: object, path: str = "") -> str | None:  # noqa: C901, PLR0911
     """Return a description of the first difference, or None if equivalent."""
     if type(expected) is not type(actual):
         return f"{path or '$'}: type {type(expected).__name__} != {type(actual).__name__}"

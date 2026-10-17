@@ -364,7 +364,7 @@ async def run_conflated(
     return results
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901
     parser = argparse.ArgumentParser(description="Analyze character-source co-occurrence")
     parser.add_argument(
         "--threshold",

@@ -59,7 +59,7 @@ def resolve_terminal(tag_id: int, alias_map: dict[int, int | None]) -> int | Non
     return None
 
 
-async def repair(*, apply: bool) -> None:
+async def repair(*, apply: bool) -> None:  # noqa: C901
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
     async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

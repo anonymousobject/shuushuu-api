@@ -80,7 +80,7 @@ def jpeg_to_webp(source_path: Path, dest_path: Path) -> tuple[int, int, int, int
     return original_size[0], original_size[1], img.size[0], img.size[1]
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901, PLR0915
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

@@ -222,7 +222,7 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int, max_depth: int = 10) 
     return [row[0] for row in result.fetchall()]
 
 
-async def validate_tag_relationships(
+async def validate_tag_relationships(  # noqa: C901
     db: AsyncSession,
     *,
     tag_id: int | None,
@@ -505,7 +505,7 @@ async def get_tag_suggestion_stats(
 
 @router.get("/", response_model=TagListResponse, include_in_schema=False)
 @router.get("", response_model=TagListResponse)
-async def list_tags(
+async def list_tags(  # noqa: C901, PLR0912, PLR0915
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[TagSortParams, Depends()],
     db: DbSession,
@@ -1150,7 +1150,7 @@ async def get_tag(
 
 
 @router.get("/{tag_id}/history", response_model=TagAuditLogListResponse)
-async def get_tag_history(
+async def get_tag_history(  # noqa: C901, PLR0912, PLR0915
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
     db: DbSession,
@@ -1596,7 +1596,7 @@ async def create_tag(
 
 
 @router.put("/{tag_id}", response_model=TagResponse)
-async def update_tag(
+async def update_tag(  # noqa: C901, PLR0912, PLR0915
     tag_id: Annotated[int, Path(description="Tag ID")],
     tag_data: TagCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
@@ -2527,7 +2527,7 @@ async def delete_character_source_link(
 
 
 @character_source_links_router.put("/{link_id}/picture", response_model=LinkPictureResponse)
-async def set_character_source_link_picture(
+async def set_character_source_link_picture(  # noqa: C901, PLR0915
     link_id: Annotated[int, Path(description="Link ID")],
     body: LinkPictureSet,
     current_user: Annotated[Users, Depends(get_current_user)],
