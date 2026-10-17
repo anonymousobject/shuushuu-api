@@ -11,12 +11,12 @@ binds a lightweight client to that shared pool instead of opening its own.
 
 import pytest
 import redis.asyncio as redis
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.config import settings
-from app.core.redis import create_redis_pool, get_redis
+from app.core.redis import RedisClient, create_redis_pool
 
 
 @pytest.mark.unit
@@ -88,7 +88,7 @@ class TestGetRedisDependency:
         @app.get("/ping")
         async def ping_route(
             request: Request,
-            redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+            redis_client: RedisClient,
         ):
             await redis_client.ping()
             return {

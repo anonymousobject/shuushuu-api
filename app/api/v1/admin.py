@@ -16,7 +16,6 @@ These endpoints require admin-level permissions and provide:
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 
-import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,12 +32,12 @@ from app.config import (
     settings,
 )
 from app.core.auth import get_current_user
-from app.core.database import get_db
+from app.core.database import DbSession
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.permission_cache import invalidate_group_permissions, invalidate_user_permissions
 from app.core.permission_deps import require_all_permissions, require_permission
 from app.core.permissions import Permission
-from app.core.redis import get_redis
+from app.core.redis import RedisClient
 from app.models.admin_action import AdminActions
 from app.models.comment import Comments
 from app.models.comment_report import CommentReports
@@ -146,8 +145,8 @@ async def _build_user_summaries(db: AsyncSession, user_ids: set[int]) -> dict[in
 @router.get("/groups", response_model=GroupListResponse)
 async def list_groups(
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
+    db: DbSession,
     search: Annotated[str | None, Query(description="Search groups by title")] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> GroupListResponse:
     """
     List all groups.
@@ -178,7 +177,7 @@ async def list_groups(
 async def create_group(
     group_data: GroupCreate,
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> GroupResponse:
     """
     Create a new group.
@@ -202,7 +201,7 @@ async def create_group(
 async def get_group(
     group_id: Annotated[int, Path(description="Group ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> GroupResponse:
     """
     Get a specific group by ID.
@@ -223,7 +222,7 @@ async def update_group(
     group_id: Annotated[int, Path(description="Group ID")],
     group_data: GroupUpdate,
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> GroupResponse:
     """
     Update a group.
@@ -252,7 +251,7 @@ async def update_group(
 async def delete_group(
     group_id: Annotated[int, Path(description="Group ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """
     Delete a group.
@@ -278,7 +277,7 @@ async def delete_group(
 async def list_group_members(
     group_id: Annotated[int, Path(description="Group ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> GroupMembersResponse:
     """
     List all members of a group.
@@ -317,7 +316,7 @@ async def add_user_to_group(
     group_id: Annotated[int, Path(description="Group ID")],
     user_id: Annotated[int, Path(description="User ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """
     Add a user to a group.
@@ -360,7 +359,7 @@ async def remove_user_from_group(
     group_id: Annotated[int, Path(description="Group ID")],
     user_id: Annotated[int, Path(description="User ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """
     Remove a user from a group.
@@ -390,7 +389,7 @@ async def remove_user_from_group(
 async def list_group_permissions(
     group_id: Annotated[int, Path(description="Group ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> GroupPermsResponse:
     """
     List all permissions assigned to a group.
@@ -437,9 +436,9 @@ async def add_permission_to_group(
     group_id: Annotated[int, Path(description="Group ID")],
     perm_id: Annotated[int, Path(description="Permission ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
+    db: DbSession,
+    redis_client: RedisClient,
     permvalue: Annotated[int, Query(description="Permission value (1=enabled, 0=disabled)")] = 1,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> MessageResponse:
     """
     Add a permission to a group.
@@ -485,8 +484,8 @@ async def remove_permission_from_group(
     group_id: Annotated[int, Path(description="Group ID")],
     perm_id: Annotated[int, Path(description="Permission ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> None:
     """
     Remove a permission from a group.
@@ -519,7 +518,7 @@ async def remove_permission_from_group(
 async def list_user_permissions(
     user_id: Annotated[int, Path(description="User ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> UserPermsResponse:
     """
     List all direct permissions assigned to a user (not from groups).
@@ -566,9 +565,9 @@ async def add_permission_to_user(
     user_id: Annotated[int, Path(description="User ID")],
     perm_id: Annotated[int, Path(description="Permission ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
+    db: DbSession,
+    redis_client: RedisClient,
     permvalue: Annotated[int, Query(description="Permission value (1=enabled, 0=disabled)")] = 1,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> MessageResponse:
     """
     Add a direct permission to a user.
@@ -614,8 +613,8 @@ async def remove_permission_from_user(
     user_id: Annotated[int, Path(description="User ID")],
     perm_id: Annotated[int, Path(description="Permission ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> None:
     """
     Remove a direct permission from a user.
@@ -647,8 +646,8 @@ async def remove_permission_from_user(
 @router.get("/permissions", response_model=PermListResponse)
 async def list_permissions(
     _: Annotated[None, Depends(require_permission(Permission.GROUP_PERM_MANAGE))],
+    db: DbSession,
     search: Annotated[str | None, Query(description="Search permissions by title")] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> PermListResponse:
     """
     List all available permissions.
@@ -682,7 +681,7 @@ async def list_permissions(
 async def list_user_groups(
     user_id: Annotated[int, Path(description="User ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> UserGroupsResponse:
     """
     List all groups a user belongs to.
@@ -721,7 +720,7 @@ async def change_image_status(
     status_data: ImageStatusUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.IMAGE_EDIT))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ImageStatusResponse:
     """
     Change an image's status and/or locked state.
@@ -799,6 +798,8 @@ async def change_image_status(
 @router.get("/reports", response_model=UnifiedReportListResponse)
 async def list_reports(
     current_user: Annotated[Users, Depends(get_current_user)],
+    db: DbSession,
+    redis_client: RedisClient,
     report_type: Annotated[
         Literal["image", "comment", "all"],
         Query(description="Report type filter: 'image', 'comment', or 'all'"),
@@ -817,8 +818,6 @@ async def list_reports(
     ] = None,
     page: Annotated[int, Query(ge=1, description="Page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> UnifiedReportListResponse:
     """
     List reports in the triage queue.
@@ -1105,8 +1104,8 @@ async def _populate_report_resolutions(
 async def get_report(
     report_id: Annotated[int, Path(description="Report ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> ReportResponse:
     """
     Get a single image report by ID.
@@ -1200,7 +1199,7 @@ async def get_report(
 async def get_comment_report(
     report_id: Annotated[int, Path(description="Comment Report ID")],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_VIEW))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentReportListItem:
     """
     Get a single comment report by ID.
@@ -1263,8 +1262,8 @@ async def dismiss_comment_report(
     report_id: Annotated[int, Path(description="Comment Report ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
+    db: DbSession,
     request_data: CommentReportDismissRequest | None = None,
-    db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
     Dismiss a comment report without taking action.
@@ -1326,8 +1325,8 @@ async def delete_comment_via_report(
     report_id: Annotated[int, Path(description="Comment Report ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
+    db: DbSession,
     request_data: CommentReportDeleteRequest | None = None,
-    db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
     Delete the reported comment and mark the report as reviewed.
@@ -1408,9 +1407,9 @@ async def delete_comment_via_report(
 async def dismiss_report(
     report_id: Annotated[int, Path(description="Report ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
+    db: DbSession,
+    redis_client: RedisClient,
     request_data: ReportDismissRequest | None = None,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> MessageResponse:
     """
     Dismiss a report without taking action on the image.
@@ -1494,8 +1493,8 @@ async def apply_tag_suggestions(
     report_id: Annotated[int, Path(description="Report ID")],
     request_data: ApplyTagSuggestionsRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> ApplyTagSuggestionsResponse:
     """
     Apply tag suggestions from a TAG_SUGGESTIONS report.
@@ -1699,7 +1698,7 @@ async def action_report(
     action_data: ReportActionRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_MANAGE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """
     Take action on a report by changing the image status.
@@ -1788,7 +1787,7 @@ async def escalate_report(
     _: Annotated[
         None, Depends(require_all_permissions([Permission.REPORT_MANAGE, Permission.REVIEW_START]))
     ],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ReviewResponse:
     """
     Escalate a report to a full review (voting process).
@@ -1887,12 +1886,12 @@ async def escalate_report(
 @router.get("/reviews", response_model=ReviewListResponse)
 async def list_reviews(
     _: Annotated[None, Depends(require_permission(Permission.REVIEW_VIEW))],
+    db: DbSession,
     status_filter: Annotated[
         int | None, Query(alias="status", description="Filter by status (0=open, 1=closed)")
     ] = None,
     page: Annotated[int, Query(ge=1, description="Page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
-    db: AsyncSession = Depends(get_db),
 ) -> ReviewListResponse:
     """
     List review sessions.
@@ -1974,7 +1973,7 @@ async def list_reviews(
 async def get_review(
     review_id: Annotated[int, Path(description="Review ID")],
     _: Annotated[None, Depends(require_permission(Permission.REVIEW_VIEW))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ReviewDetailResponse:
     """
     Get review details including all votes.
@@ -2055,7 +2054,7 @@ async def create_review(
     review_data: ReviewCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REVIEW_START))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ReviewResponse:
     """
     Start a review directly on an image (without a report).
@@ -2135,7 +2134,7 @@ async def vote_on_review(
     vote_data: ReviewVoteRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REVIEW_VOTE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> VoteResponse:
     """
     Cast or update a vote on a review.
@@ -2217,7 +2216,7 @@ async def close_review(
     close_data: ReviewCloseRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REVIEW_CLOSE_EARLY))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ReviewResponse:
     """
     Close a review early with a specified outcome.
@@ -2321,7 +2320,7 @@ async def extend_review(
     extend_data: ReviewExtendRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.REVIEW_START))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ReviewResponse:
     """
     Extend a review deadline.
@@ -2385,6 +2384,7 @@ async def extend_review(
 @router.get("/suspensions", response_model=AdminSuspensionListResponse)
 async def list_all_suspensions(
     _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
+    db: DbSession,
     action_type: Annotated[
         Literal["warning", "suspended"] | None,
         Query(description="Filter by action type: 'warning' or 'suspended'"),
@@ -2395,7 +2395,6 @@ async def list_all_suspensions(
     ] = None,
     page: Annotated[int, Query(ge=1, description="Page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
-    db: AsyncSession = Depends(get_db),
 ) -> AdminSuspensionListResponse:
     """
     List all suspension and warning records across all users.
@@ -2526,7 +2525,7 @@ async def suspend_user(
     suspend_data: SuspendUserRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """
     Suspend or warn a user account.
@@ -2620,7 +2619,7 @@ async def reactivate_user(
     user_id: Annotated[int, Path(description="User ID to reactivate")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """
     Reactivate a suspended user account.
@@ -2680,7 +2679,7 @@ async def reactivate_user(
 async def get_user_suspensions(
     user_id: Annotated[int, Path(description="User ID")],
     _: Annotated[None, Depends(require_permission(Permission.USER_BAN))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> SuspensionListResponse:
     """
     Get suspension history for a user.

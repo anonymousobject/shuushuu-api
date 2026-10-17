@@ -7,16 +7,14 @@ import io
 import os
 
 import httpx
-import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Response, status
 from PIL import Image as PILImage
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.auth import VerifiedUser
-from app.core.database import get_db
+from app.core.database import DbSession
 from app.core.logging import get_logger
-from app.core.redis import get_redis
+from app.core.redis import RedisClient
 from app.schemas.url_import import (
     ImportSiteResponse,
     ResolvedImageOut,
@@ -119,8 +117,8 @@ def _transcode_webp_to_png(data: bytes) -> bytes:
 async def resolve_url(
     payload: UrlResolveRequest,
     current_user: VerifiedUser,
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
-    db: AsyncSession = Depends(get_db),
+    redis_client: RedisClient,
+    db: DbSession,
 ) -> UrlResolveResponse:
     """Resolve a supported external post URL to importable image candidates."""
     await check_url_resolve_rate_limit(current_user.id, redis_client)
@@ -188,7 +186,7 @@ async def resolve_url(
 async def fetch_external(
     token: str,
     current_user: VerifiedUser,
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    redis_client: RedisClient,
 ) -> Response:
     """Proxy a resolver-vetted external image to the client.
 

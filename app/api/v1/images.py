@@ -47,14 +47,20 @@ from app.config import (
     ReviewStatus,
     settings,
 )
-from app.core.auth import CurrentUser, VerifiedUser, get_current_user, get_optional_current_user
-from app.core.database import get_db, statement_timeout
+from app.core.auth import (
+    CurrentUser,
+    OptionalCurrentUser,
+    VerifiedUser,
+    get_current_user,
+    get_optional_current_user,
+)
+from app.core.database import DbSession, get_db, statement_timeout
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission, has_any_permission, has_permission
 from app.core.r2_constants import R2Location
-from app.core.redis import get_redis
+from app.core.redis import RedisClient, get_redis
 from app.core.user_loader import image_uploader_load
 from app.models import (
     AdminActions,
@@ -444,6 +450,9 @@ async def list_images(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
     # Basic filters
+    db: DbSession,
+    current_user: OptionalCurrentUser,
+    redis_client: RedisClient,
     user_id: Annotated[int | None, Query(description="Filter by uploader user ID")] = None,
     favorited_by_user_id: Annotated[
         int | None, Query(description="Filter by user who favorited the image")
@@ -556,9 +565,6 @@ async def list_images(
             "response, grouped by image id (comments map). Default false."
         ),
     ] = False,
-    db: AsyncSession = Depends(get_db),
-    current_user: Users | None = Depends(get_optional_current_user),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> ImageDetailedListResponse:
     """
     Search and list images with comprehensive filtering.
@@ -1141,9 +1147,9 @@ async def list_images(
 
 @router.get("/random", include_in_schema=True)
 async def random_images_page(
+    current_user: OptionalCurrentUser,
+    db: DbSession,
     per_page: Annotated[int | None, Query(ge=1, le=100, description="Items per page")] = None,
-    current_user: Users | None = Depends(get_optional_current_user),
-    db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     """Redirect to a random page of images.
 
@@ -1193,7 +1199,7 @@ async def random_images_page(
 async def get_recommended(
     pagination: Annotated[PaginationParams, Depends()],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> RecommendedImagesResponse:
     """
     Personalized feed: images scored against the caller's taste profile, plus
@@ -1254,9 +1260,9 @@ async def get_recommended(
 @router.get("/{image_id}", response_model=ImageDetailedResponse)
 async def get_image(
     image_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: Users | None = Depends(get_optional_current_user),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    current_user: OptionalCurrentUser,
+    redis_client: RedisClient,
 ) -> ImageDetailedResponse:
     """
     Get a single image by ID.
@@ -1480,8 +1486,8 @@ async def update_image(
     image_id: Annotated[int, Path(description="Image ID")],
     image_data: ImageUpdate,
     current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> ImageDetailedResponse:
     """
     Update image metadata (caption, miscmeta, source_url) and/or owner status.
@@ -1679,7 +1685,7 @@ async def update_image(
 
 
 @router.get("/{image_id}/tags", response_model=ImageTagsResponse)
-async def get_image_tags(image_id: int, db: AsyncSession = Depends(get_db)) -> ImageTagsResponse:
+async def get_image_tags(image_id: int, db: DbSession) -> ImageTagsResponse:
     """
     Get all tags for a specific image.
     """
@@ -1733,7 +1739,7 @@ _IMAGE_TAG_HISTORY_CAP = 5000
 async def get_image_tag_history(
     image_id: Annotated[int, Path(description="Image ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ImageTagHistoryListResponse:
     """
     Get tag history for an image.
@@ -1876,8 +1882,8 @@ async def get_image_status_history(
     image_id: Annotated[int, Path(description="Image ID")],
     pagination: Annotated[PaginationParams, Depends()],
     current_user: Annotated[Users | None, Depends(get_optional_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> ImageStatusHistoryListResponse:
     """
     Get status history for an image.
@@ -1994,7 +2000,7 @@ async def get_image_status_history(
 async def get_image_metadata_history(
     image_id: Annotated[int, Path(description="Image ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ImageMetadataHistoryListResponse:
     """
     Get the edit history of an image's miscmeta and source_url.
@@ -2053,7 +2059,7 @@ async def get_image_metadata_history(
 @router.get("/{image_id}/reposts", response_model=ImageRepostListResponse)
 async def get_image_reposts(
     image_id: Annotated[int, Path(description="Image ID")],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ImageRepostListResponse:
     """
     Get the images currently marked as reposts of this image.
@@ -2142,7 +2148,7 @@ def get_review_outcome_label(outcome: int) -> str:
 async def get_image_reviews(
     image_id: Annotated[int, Path(description="Image ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ImageReviewListResponse:
     """
     Get closed review sessions for an image.
@@ -2206,7 +2212,7 @@ async def get_image_reports(
     image_id: Annotated[int, Path(description="Image ID")],
     pagination: Annotated[PaginationParams, Depends()],
     _: Annotated[None, Depends(require_permission(Permission.REPORT_VIEW))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ReportListResponse:
     """
     Get the reports filed against an image (pending + resolved), newest first.
@@ -2272,9 +2278,7 @@ async def get_image_reports(
 
 
 @router.get("/search/by-hash/{md5_hash}", response_model=ImageHashSearchResponse)
-async def search_by_hash(
-    md5_hash: str, db: AsyncSession = Depends(get_db)
-) -> ImageHashSearchResponse:
+async def search_by_hash(md5_hash: str, db: DbSession) -> ImageHashSearchResponse:
     """
     Search for an image by MD5 hash.
 
@@ -2293,7 +2297,7 @@ async def search_by_hash(
 
 
 @router.get("/stats/summary", response_model=ImageStatsResponse)
-async def get_stats(db: AsyncSession = Depends(get_db)) -> ImageStatsResponse:
+async def get_stats(db: DbSession) -> ImageStatsResponse:
     """
     Get overall image statistics.
     """
@@ -2318,7 +2322,7 @@ async def get_image_favorites(
     image_id: int,
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[UserSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> UserListResponse:
     """
     Get all users who have favorited a specific image.
@@ -2372,7 +2376,7 @@ async def get_image_ratings_users(
     image_id: int,
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageRatingsSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ImageRatingsListResponse:
     """
     Get all users who have rated a specific image, along with their rating values.
@@ -2446,10 +2450,10 @@ async def get_image_ratings_users(
 @router.get("/{image_id}/similar", response_model=SimilarImagesResponse)
 async def get_similar_images(
     image_id: int,
+    db: DbSession,
     threshold: Annotated[
         float | None, Query(description="Minimum similarity score (0-100)", ge=0, le=100)
     ] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> SimilarImagesResponse:
     """
     Find images similar to the specified image using IQDB.
@@ -2496,7 +2500,7 @@ async def get_similar_images(
 @router.get("/bookmark/me", response_model=ImageResponse)
 async def get_bookmark_image(
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ImageResponse:
     """
     Get the user's current bookmarked image from their profile.
@@ -2521,7 +2525,7 @@ async def get_bookmark_image(
 @router.get("/bookmark/page", response_model=BookmarkPageResponse)
 async def get_bookmark_page(
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> BookmarkPageResponse:
     """
     Get the page number where the user's bookmark appears in their image list.
@@ -2653,8 +2657,8 @@ async def add_tag_to_image(
     image_id: Annotated[int, Path(description="Image ID")],
     tag_id: Annotated[int, Path(description="Tag ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> dict[str, str]:
     """
     Add a tag to an image.
@@ -2751,8 +2755,8 @@ async def remove_tag_from_image(
     image_id: Annotated[int, Path(description="Image ID")],
     tag_id: Annotated[int, Path(description="Tag ID")],
     current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> None:
     """
     Remove a tag from an image.
@@ -2828,8 +2832,8 @@ async def rate_image(
     image_id: Annotated[int, Path(description="Image ID")],
     rating: Annotated[int, Query(ge=1, le=10, description="Rating value (1-10)")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> dict[str, str | float | int]:
     """
     Rate an image (1-10 scale).
@@ -2905,7 +2909,7 @@ async def rate_image(
 async def favorite_image(
     image_id: Annotated[int, Path(description="Image ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> JSONResponse:
     """
     Favorite an image.
@@ -2991,7 +2995,7 @@ async def favorite_image(
 async def unfavorite_image(
     image_id: Annotated[int, Path(description="Image ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> dict[str, bool | int | str]:
     """
     Unfavorite an image.
@@ -3105,6 +3109,7 @@ async def upload_image(
     request: Request,
     current_user: VerifiedUser,
     file: Annotated[UploadFile, File(description="Image file to upload")],
+    db: DbSession,
     caption: Annotated[str, Form(max_length=35)] = "",
     # No Form(max_length=...): that would check the untrimmed value. The
     # shared normalizers below trim first, then apply the length limits.
@@ -3114,7 +3119,6 @@ async def upload_image(
     confirm_similar: Annotated[
         bool, Form(description="Set to true to bypass IQDB similarity check")
     ] = False,
-    db: AsyncSession = Depends(get_db),
 ) -> ImageUploadResponse | JSONResponse:
     """
     Upload a new image with metadata and tags.
@@ -3477,7 +3481,7 @@ async def report_image(
     image_id: Annotated[int, Path(description="Image ID to report")],
     report_data: ReportCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ReportResponse:
     """
     Report an image for review.

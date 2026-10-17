@@ -6,16 +6,15 @@ import re
 import uuid as uuid_mod
 from typing import Annotated, Literal
 
-import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import and_, case, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import PaginationParams
 from app.core.auth import VerifiedUser, get_current_user
-from app.core.database import get_db
+from app.core.database import DbSession
 from app.core.permissions import Permission, has_permission
-from app.core.redis import get_redis
+from app.core.redis import RedisClient
 from app.models import Privmsgs, Users
 from app.models.permissions import Groups, UserGroups
 from app.schemas.privmsg import (
@@ -67,7 +66,7 @@ def _strip_re_prefix(subject: str) -> str:
 async def send_privmsg(
     privmsg: PrivmsgCreate,
     current_user: VerifiedUser,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> PrivmsgMessage:
     """
     Create a new private message.
@@ -149,8 +148,8 @@ async def send_privmsg(
 async def get_threads(
     pagination: Annotated[PaginationParams, Depends()],
     current_user: Annotated[Users, Depends(get_current_user)],
+    db: DbSession,
     filter: Annotated[Literal["all", "unread"], Query(description="Filter threads")] = "all",
-    db: AsyncSession = Depends(get_db),
 ) -> ThreadList:
     """
     List conversation threads for the current user.
@@ -304,7 +303,7 @@ async def get_threads(
 async def get_thread_messages(
     thread_id: Annotated[str, Path(description="Thread ID")],
     current_user: VerifiedUser,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> PrivmsgMessages:
     """
     Retrieve all messages in a conversation thread.
@@ -445,7 +444,7 @@ async def get_thread_messages(
 async def leave_thread(
     thread_id: Annotated[str, Path(description="Thread ID to leave")],
     current_user: VerifiedUser,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """
     Leave a conversation thread (soft-delete all messages for the current user).
@@ -512,9 +511,9 @@ async def leave_thread(
 async def get_received_privmsgs(
     pagination: Annotated[PaginationParams, Depends()],
     current_user: Annotated[Users, Depends(get_current_user)],
+    db: DbSession,
+    redis_client: RedisClient,
     user_id: Annotated[int | None, Query(description="Filter by user ID (admin only)")] = None,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> PrivmsgMessages:
     """
     Retrieve received private messages.
@@ -601,9 +600,9 @@ async def get_received_privmsgs(
 async def get_sent_privmsgs(
     pagination: Annotated[PaginationParams, Depends()],
     current_user: Annotated[Users, Depends(get_current_user)],
+    db: DbSession,
+    redis_client: RedisClient,
     user_id: Annotated[int | None, Query(description="Filter by user ID (admin only)")] = None,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
 ) -> PrivmsgMessages:
     """
     Retrieve sent private messages.
@@ -690,7 +689,7 @@ async def get_sent_privmsgs(
 async def get_privmsg(
     privmsg_id: Annotated[int, Path(description="Privmsg ID to fetch")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> PrivmsgMessage:
     """Retrieve a single private message by id. Only sender or recipient may view it.
 
@@ -771,7 +770,7 @@ async def get_privmsg(
 async def delete_privmsg(
     privmsg_id: Annotated[int, Path(description="Privmsg ID to delete")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """Mark a private message as deleted for the requesting user.
 

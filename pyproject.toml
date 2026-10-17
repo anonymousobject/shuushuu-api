@@ -103,6 +103,7 @@ select = [
     "RUF100",  # unused noqa directive, so suppressions are dropped once fixed
     "TID251",  # banned APIs, listed under flake8-tidy-imports below
     "ARG",  # unused arguments
+    "FAST",  # FastAPI: Annotated dependencies, redundant response_model, unused path params
     # "FA",  # flake8-future-annotations (enforce modern type hints)
 ]
 ignore = [

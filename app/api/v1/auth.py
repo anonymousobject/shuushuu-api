@@ -28,7 +28,7 @@ from app.core.auth import (
     get_refresh_token_from_cookie,
     get_user_agent,
 )
-from app.core.database import get_db
+from app.core.database import DbSession, get_db
 from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.core.security import (
@@ -838,7 +838,7 @@ async def change_password(
 @router.post("/verify-email", response_model=MessageResponse)
 async def verify_email(
     token: Annotated[str, Query()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """Verify user email with token from verification link."""
     # Hash token to compare with DB
@@ -881,7 +881,7 @@ async def verify_email(
 @router.post("/resend-verification", response_model=MessageResponse)
 async def resend_verification(
     current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """Resend verification email to current user."""
     if current_user.email_verified:
@@ -923,7 +923,7 @@ async def resend_verification(
 @router.post("/forgot-password", response_model=MessageResponse)
 async def forgot_password(
     request_data: ForgotPasswordRequest,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """
     Request a password reset email.
@@ -1018,7 +1018,7 @@ async def forgot_password(
 @router.post("/reset-password", response_model=MessageResponse)
 async def reset_password(
     request_data: ResetPasswordRequest,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """
     Reset password using email token from forgot-password flow.
