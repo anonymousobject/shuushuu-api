@@ -21,6 +21,15 @@ from tests.transient_conflict import (
     _flaky_flush_nth,
 )
 
+# A rejected upload runs the handler's real db.rollback() (see
+# _discard_unfinished_upload), which under db_session's SAVEPOINT isolation
+# makes SQLAlchemy flag the outer transaction on fixture teardown. Expected
+# consequence of that path, not a defect; named explicitly so the suite's
+# output stays clean without hiding anything else.
+_ROLLBACK_SAWARNING = pytest.mark.filterwarnings(
+    "ignore:transaction already deassociated from connection:sqlalchemy.exc.SAWarning"
+)
+
 
 @pytest.fixture
 async def verified_user(db_session: AsyncSession) -> Users:
@@ -256,6 +265,7 @@ class TestUploadIQDBDuplicateDetection:
         data = response.json()
         assert data["image"]["source_url"] == "https://www.pixiv.net/artworks/138823691"
 
+    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_rejects_non_http_source_url(
         self, upload_client: AsyncClient, verified_user: Users
@@ -379,6 +389,7 @@ class TestUploadIQDBDuplicateDetection:
         assert data["image"]["miscmeta"] == miscmeta
         assert data["image"]["source_url"] == source_url
 
+    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("field", "value", "detail"),
@@ -657,6 +668,7 @@ class TestUploadSnapshotConflictRetry:
         assert response.json()["image"]["image_id"] > 0
         assert len(calls) >= 2  # failed attempt + successful retry
 
+    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_gives_up_after_bounded_retries(
         self, upload_client: AsyncClient, verified_user: Users
@@ -687,6 +699,7 @@ class TestUploadSnapshotConflictRetry:
         assert response.status_code == 500
         assert len(calls) == 3  # bounded: no infinite retry loop
 
+    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_does_not_retry_other_db_errors(
         self, upload_client: AsyncClient, verified_user: Users
@@ -887,3 +900,41 @@ class TestUploadRealStorageRoundTrip:
 
         # And the staged bytes were not left behind under an unfindable name.
         assert list((tmp_path / "fullsize").glob("staged_*")) == []
+
+    @_ROLLBACK_SAWARNING
+    @pytest.mark.asyncio
+    async def test_pixiv_downsized_rendition_is_refused_with_guidance(
+        self,
+        upload_client: AsyncClient,
+        verified_user: Users,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """A pixiv master1200 file gets a 422 that says how to get the original.
+
+        No row is created and no file is written: the filename alone decides it.
+        """
+        from sqlalchemy import select
+
+        from app.config import settings
+        from app.models.image import Images
+
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+        response = await upload_client.post(
+            "/api/v1/images/upload",
+            files={"file": ("137109272_p0_master1200.jpg", _fake_image_bytes(), "image/jpeg")},
+            data={"tag_ids": "", "source_url": "https://www.pixiv.net/en/artworks/137109272"},
+        )
+
+        assert response.status_code == 422, response.text
+        detail = response.json()["detail"]
+        assert "downsized" in detail
+        assert "Paste the pixiv post URL" in detail
+
+        rows = await db_session.execute(
+            select(Images).where(Images.original_filename == "137109272_p0_master1200.jpg")
+        )
+        assert list(rows.scalars().all()) == []
+        assert not (tmp_path / "fullsize").exists()
