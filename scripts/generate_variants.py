@@ -169,10 +169,9 @@ def get_images_needing_variants(
 def format_time(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds:.0f}s"
-    elif seconds < 3600:
+    if seconds < 3600:
         return f"{seconds / 60:.1f}m"
-    else:
-        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 3600:.1f}h"
 
 
 def main() -> None:

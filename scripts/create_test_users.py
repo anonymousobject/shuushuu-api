@@ -22,13 +22,13 @@ from typing import Any
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from sqlalchemy import select  # noqa: E402
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E402
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.config import settings  # noqa: E402
-from app.core.security import get_password_hash  # noqa: E402
-from app.models.permissions import Groups, UserGroups  # noqa: E402
-from app.models.user import Users  # noqa: E402
+from app.config import settings
+from app.core.security import get_password_hash
+from app.models.permissions import Groups, UserGroups
+from app.models.user import Users
 
 # Typed as list[dict[str, Any]] to avoid mypy issues with mixed value types
 TEST_ACCOUNTS: list[dict[str, Any]] = [

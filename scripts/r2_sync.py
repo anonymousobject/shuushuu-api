@@ -264,37 +264,36 @@ async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
                 moved += m
                 errors += e
 
-    async with r2.bulk_session():
-        async with get_async_session() as db:
-            stmt = (
-                select(Images)
-                .where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))  # type: ignore[attr-defined]
-                .execution_options(yield_per=500)
-            )
-            stream = await db.stream_scalars(stmt)
+    async with r2.bulk_session(), get_async_session() as db:
+        stmt = (
+            select(Images)
+            .where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))  # type: ignore[attr-defined]
+            .execution_options(yield_per=500)
+        )
+        stream = await db.stream_scalars(stmt)
 
-            async for image in stream:
-                images_seen += 1
-                if len(in_flight) >= max_in_flight:
-                    await drain(until=max_in_flight - 1)
-                in_flight.add(asyncio.create_task(process_image(image)))
-                if images_seen % 100 == 0:
-                    now = time.monotonic()
-                    window = now - last_tick_at
-                    recent_rate = (moved - last_tick_moved) / window if window > 0 else 0.0
-                    overall_rate = moved / (now - started_at) if now > started_at else 0.0
-                    logger.info(
-                        "split_existing_progress",
-                        images_seen=images_seen,
-                        moved=moved,
-                        errors=errors,
-                        moves_per_sec=round(recent_rate, 1),
-                        avg_moves_per_sec=round(overall_rate, 1),
-                    )
-                    last_tick_at = now
-                    last_tick_moved = moved
+        async for image in stream:
+            images_seen += 1
+            if len(in_flight) >= max_in_flight:
+                await drain(until=max_in_flight - 1)
+            in_flight.add(asyncio.create_task(process_image(image)))
+            if images_seen % 100 == 0:
+                now = time.monotonic()
+                window = now - last_tick_at
+                recent_rate = (moved - last_tick_moved) / window if window > 0 else 0.0
+                overall_rate = moved / (now - started_at) if now > started_at else 0.0
+                logger.info(
+                    "split_existing_progress",
+                    images_seen=images_seen,
+                    moved=moved,
+                    errors=errors,
+                    moves_per_sec=round(recent_rate, 1),
+                    avg_moves_per_sec=round(overall_rate, 1),
+                )
+                last_tick_at = now
+                last_tick_moved = moved
 
-            await drain(until=0)
+        await drain(until=0)
 
     logger.info(
         "split_existing_completed",

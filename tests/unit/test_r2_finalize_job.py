@@ -142,9 +142,11 @@ class TestR2FinalizeUploadJob:
         await db_session.commit()
 
         mock_r2 = AsyncMock()
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
-            with pytest.raises(Retry):
-                await r2_finalize_upload_job({"job_try": 1}, image_id=fresh_image.image_id)
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            pytest.raises(Retry),
+        ):
+            await r2_finalize_upload_job({"job_try": 1}, image_id=fresh_image.image_id)
 
         await db_session.refresh(fresh_image)
         assert fresh_image.r2_location == R2Location.NONE  # no flip on retry
@@ -166,9 +168,11 @@ class TestR2FinalizeUploadJob:
 
         mock_r2 = AsyncMock()
         mock_r2.object_exists = AsyncMock(return_value=False)
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
-            with pytest.raises(Retry):
-                await r2_finalize_upload_job({"job_try": 1}, image_id=fresh_image.image_id)
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            pytest.raises(Retry),
+        ):
+            await r2_finalize_upload_job({"job_try": 1}, image_id=fresh_image.image_id)
 
         mock_r2.upload_file.assert_not_awaited()
         await db_session.refresh(fresh_image)

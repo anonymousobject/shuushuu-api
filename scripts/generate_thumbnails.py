@@ -96,8 +96,7 @@ def process_thumbnail_worker(args: tuple[int, str, str, str, bool, bool]) -> tup
         if thumb_path.exists():
             size = thumb_path.stat().st_size
             return image_id, True, f"created ({size:,} bytes)"
-        else:
-            return image_id, False, "creation failed"
+        return image_id, False, "creation failed"
 
     except Exception as e:
         return image_id, False, f"error: {e}"
@@ -136,7 +135,7 @@ def get_images_streaming(
                     )
                     return [(r[0], r[1], r[2]) for r in result.fetchall()]
 
-                elif all_images:
+                if all_images:
                     # Stream all images in batches using keyset pagination (newest first)
                     all_results: list[tuple[int, str, str]] = []
                     last_id = 2**31  # Start high, work backwards
@@ -153,8 +152,7 @@ def get_images_streaming(
                         if not batch:
                             break
 
-                        for row in batch:
-                            all_results.append((row[0], row[1], row[2]))
+                        all_results.extend((row[0], row[1], row[2]) for row in batch)
 
                         last_id = batch[-1][0]
 
@@ -198,10 +196,9 @@ def format_time(seconds: float) -> str:
     """Format seconds into human-readable time."""
     if seconds < 60:
         return f"{seconds:.0f}s"
-    elif seconds < 3600:
+    if seconds < 3600:
         return f"{seconds / 60:.1f}m"
-    else:
-        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 3600:.1f}h"
 
 
 def generate_thumbnails(

@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 from pathlib import Path
 
@@ -153,10 +154,8 @@ def main() -> None:
             errors += 1
             # Clean up partial output if any
             if dst.exists():
-                try:
+                with contextlib.suppress(OSError):
                     dst.unlink()
-                except OSError:
-                    pass
 
     print("-" * 80)
     print(f"Created:  {created}")

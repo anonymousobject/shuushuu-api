@@ -104,21 +104,23 @@ async def test_create_variant_job_retries_on_failure():
 
     ctx = {"job_try": 1}
 
-    with patch(
-        "app.services.image_processing._create_variant",
-        side_effect=Exception("PIL error"),
+    with (
+        patch(
+            "app.services.image_processing._create_variant",
+            side_effect=Exception("PIL error"),
+        ),
+        pytest.raises(Retry),
     ):
-        with pytest.raises(Retry):
-            await create_variant_job(
-                ctx,
-                image_id=42,
-                source_path="/test/image.jpg",
-                ext="jpg",
-                storage_path="/test/storage",
-                width=2000,
-                height=1500,
-                variant_type="medium",
-            )
+        await create_variant_job(
+            ctx,
+            image_id=42,
+            source_path="/test/image.jpg",
+            ext="jpg",
+            storage_path="/test/storage",
+            width=2000,
+            height=1500,
+            variant_type="medium",
+        )
 
 
 @pytest.mark.unit

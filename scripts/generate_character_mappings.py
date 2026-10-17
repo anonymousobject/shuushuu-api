@@ -244,12 +244,10 @@ def apply_linked_only(results: list[MatchResult], linked_ids: set[int]) -> list[
 
 def load_vocab_characters(vocab_path: Path) -> list[str]:
     """Danbooru character tag names (category 4) from a model's selected_tags.csv."""
-    names: list[str] = []
     with open(vocab_path) as f:
-        for row in csv.DictReader(f):
-            if int(row["category"]) == CHARACTER_CATEGORY:
-                names.append(row["name"])
-    return names
+        return [
+            row["name"] for row in csv.DictReader(f) if int(row["category"]) == CHARACTER_CATEGORY
+        ]
 
 
 async def load_internal_characters() -> list[tuple[int, str]]:

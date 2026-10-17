@@ -14,7 +14,7 @@ from sqlmodel import SQLModel
 
 # app.main pulls in every model module (the models package __init__ misses
 # some), populating SQLModel.metadata for autogenerate.
-import app.main  # noqa: F401, E402
+import app.main  # noqa: F401
 from alembic import context
 from app.config import settings
 

@@ -142,11 +142,13 @@ async def test_dual_write_r2_failure_falls_back(
     async def _boom(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
         raise RuntimeError("simulated R2 outage")
 
-    with patch.object(install_r2.__class__, "upload_bytes", _boom):
-        with caplog.at_level(logging.WARNING):
-            payload = _png_bytes("blue")
-            upload = _make_upload("test.png", payload)
-            response = await _upload_avatar(avatar_user.user_id, upload, db_session)
+    with (
+        patch.object(install_r2.__class__, "upload_bytes", _boom),
+        caplog.at_level(logging.WARNING),
+    ):
+        payload = _png_bytes("blue")
+        upload = _make_upload("test.png", payload)
+        response = await _upload_avatar(avatar_user.user_id, upload, db_session)
 
     # Local file still saved
     assert response.avatar

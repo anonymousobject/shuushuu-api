@@ -408,8 +408,8 @@ async def get_tag_suggestion_stats(
     at least 5 suggestions.
     """
     # Aliases for readability (type: ignore needed for SQLModel column access)
-    S = ImageReportTagSuggestions  # noqa: N806
-    R = ImageReports  # noqa: N806
+    S = ImageReportTagSuggestions
+    R = ImageReports
 
     # Count suggestions by status per user
     total_col = func.count(S.suggestion_id).label("total_suggestions")  # type: ignore[arg-type]
@@ -2339,13 +2339,12 @@ async def batch_tag_operation(
             user_id=current_user.id,
             db=db,
         )
-    else:
-        return await batch_remove_tags(
-            tag_ids=request.tag_ids,
-            image_ids=request.image_ids,
-            user_id=current_user.id,
-            db=db,
-        )
+    return await batch_remove_tags(
+        tag_ids=request.tag_ids,
+        image_ids=request.image_ids,
+        user_id=current_user.id,
+        db=db,
+    )
 
 
 # =============================================================================

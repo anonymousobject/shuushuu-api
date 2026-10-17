@@ -363,10 +363,9 @@ async def login(
                 status_code=status.HTTP_423_LOCKED,
                 detail=f"Account locked due to too many failed login attempts. Try again in {remaining_minutes} minutes.",
             )
-        else:
-            # Lockout expired — reset counter so user gets fresh attempts
-            user.failed_login_attempts = 0
-            user.lockout_until = None
+        # Lockout expired — reset counter so user gets fresh attempts
+        user.failed_login_attempts = 0
+        user.lockout_until = None
 
     # Verify password
     password_valid = False

@@ -205,40 +205,42 @@ async def fetch_external(
 
     request_headers = {"User-Agent": BROWSER_USER_AGENT, **ref.headers}
     try:
-        async with _make_http_client(FETCH_TIMEOUT_SECONDS) as client:
-            async with client.stream("GET", ref.url, headers=request_headers) as upstream:
-                if upstream.status_code != 200:
+        async with (
+            _make_http_client(FETCH_TIMEOUT_SECONDS) as client,
+            client.stream("GET", ref.url, headers=request_headers) as upstream,
+        ):
+            if upstream.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Upstream returned HTTP {upstream.status_code}",
+                )
+            content_type = upstream.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Upstream did not return an image",
+                )
+            declared = upstream.headers.get("content-length")
+            if declared:
+                try:
+                    declared_size = int(declared)
+                except ValueError:
+                    declared_size = None
+                if declared_size is not None and declared_size > settings.MAX_IMAGE_SIZE:
                     raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail=f"Upstream returned HTTP {upstream.status_code}",
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail="Image exceeds the maximum upload size",
                     )
-                content_type = upstream.headers.get("content-type", "")
-                if not content_type.startswith("image/"):
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in upstream.aiter_bytes():
+                total += len(chunk)
+                if total > settings.MAX_IMAGE_SIZE:
                     raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail="Upstream did not return an image",
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail="Image exceeds the maximum upload size",
                     )
-                declared = upstream.headers.get("content-length")
-                if declared:
-                    try:
-                        declared_size = int(declared)
-                    except ValueError:
-                        declared_size = None
-                    if declared_size is not None and declared_size > settings.MAX_IMAGE_SIZE:
-                        raise HTTPException(
-                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                            detail="Image exceeds the maximum upload size",
-                        )
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in upstream.aiter_bytes():
-                    total += len(chunk)
-                    if total > settings.MAX_IMAGE_SIZE:
-                        raise HTTPException(
-                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                            detail="Image exceeds the maximum upload size",
-                        )
-                    chunks.append(chunk)
+                chunks.append(chunk)
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

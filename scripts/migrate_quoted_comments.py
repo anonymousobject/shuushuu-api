@@ -89,9 +89,8 @@ def extract_quoted_text(comment_text: str) -> str | None:
                         # Recursively extract the innermost quote
                         inner = extract_innermost_quote(content)
                         return inner if inner else content.strip()
-                    else:
-                        # No nested quotes, this is the innermost
-                        return content.strip()
+                    # No nested quotes, this is the innermost
+                    return content.strip()
                 pos = next_close + 1
 
         return None
@@ -144,12 +143,11 @@ def remove_quoted_text(comment_text: str) -> str:
         if stripped.startswith(">>") or stripped.startswith(">"):
             skipping_quotes = True
             continue
-        elif skipping_quotes and not stripped:
+        if skipping_quotes and not stripped:
             # Skip empty lines after quotes
             continue
-        else:
-            skipping_quotes = False
-            result_lines.append(line)
+        skipping_quotes = False
+        result_lines.append(line)
 
     # Join and strip leading/trailing whitespace
     return "\n".join(result_lines).strip()

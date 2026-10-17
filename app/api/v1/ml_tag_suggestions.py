@@ -234,8 +234,7 @@ async def get_ml_tag_suggestions(
     )
 
     counts = {"pending": 0, "approved": 0, "rejected": 0}
-    for status_val, count in status_counts_result:
-        counts[status_val] = count
+    counts.update(status_counts_result.tuples().all())
 
     return MlTagSuggestionsListResponse(
         image_id=image_id,
@@ -431,12 +430,11 @@ async def generate_ml_tag_suggestions(
             image_id=image_id,
             suggestions_created=suggestions_created,
         )
-    else:
-        # Queue background job
-        response.status_code = status.HTTP_202_ACCEPTED
-        job_id = await enqueue_job("generate_ml_tag_suggestions", image_id=image_id)
-        return GenerateSuggestionsResponse(
-            message="Tag suggestion generation queued",
-            image_id=image_id,
-            job_id=job_id,
-        )
+    # Queue background job
+    response.status_code = status.HTTP_202_ACCEPTED
+    job_id = await enqueue_job("generate_ml_tag_suggestions", image_id=image_id)
+    return GenerateSuggestionsResponse(
+        message="Tag suggestion generation queued",
+        image_id=image_id,
+        job_id=job_id,
+    )

@@ -30,8 +30,9 @@ class TestPublicStatuses:
     """The set of statuses that map to the public bucket."""
 
     def test_members(self):
-        assert PUBLIC_IMAGE_STATUSES_FOR_R2 == frozenset(
-            {ImageStatus.ACTIVE, ImageStatus.SPOILER, ImageStatus.REPOST}
+        assert (
+            frozenset({ImageStatus.ACTIVE, ImageStatus.SPOILER, ImageStatus.REPOST})
+            == PUBLIC_IMAGE_STATUSES_FOR_R2
         )
 
     def test_is_frozen(self):

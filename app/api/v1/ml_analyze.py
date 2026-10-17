@@ -1,5 +1,6 @@
 """Stateless upload-form tag analysis: infer + map tags for image bytes."""
 
+import contextlib
 import hashlib
 import io
 import json
@@ -104,10 +105,8 @@ async def analyze_image_tags(
             )
     finally:
         if tmp_path:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
     try:
         await redis_client.set(
@@ -165,7 +164,7 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> A
         )
 
     suggestions: list[AnalyzedTag] = []
-    for _type, rows in by_type.items():
+    for rows in by_type.values():
         rows.sort(key=lambda x: x[0], reverse=True)
         suggestions.extend(at for _conf, at in rows[: settings.ML_ANALYZE_MAX_SUGGESTIONS])
 

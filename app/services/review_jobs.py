@@ -144,14 +144,13 @@ async def _process_single_review(
         outcome = ReviewOutcome.KEEP if keep_votes > remove_votes else ReviewOutcome.REMOVE
         transition = await _close_review(db, review, outcome, "quorum_reached")
         return "closed", transition
-    elif not review.extension_used:
+    if not review.extension_used:
         # No quorum or tie, first time - extend deadline
         await _extend_review(db, review)
         return "extended", None
-    else:
-        # No quorum or tie after extension - default to keep
-        transition = await _close_review(db, review, ReviewOutcome.KEEP, "default_after_extension")
-        return "closed", transition
+    # No quorum or tie after extension - default to keep
+    transition = await _close_review(db, review, ReviewOutcome.KEEP, "default_after_extension")
+    return "closed", transition
 
 
 async def _get_vote_counts(db: AsyncSession, review_id: int) -> dict[int, int]:
