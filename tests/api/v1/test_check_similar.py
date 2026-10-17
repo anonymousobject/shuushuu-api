@@ -74,7 +74,7 @@ def _make_similar_result(image_id: int, score: float) -> SimilarImageResult:
     )
 
 
-def _mock_create_thumbnail(source_path, image_id, ext, storage_path):
+def _mock_create_thumbnail(source_path, image_id, storage_path):
     """Mock create_thumbnail that creates the expected thumb file."""
     thumbs_dir = Path(storage_path) / "thumbs"
     thumbs_dir.mkdir(parents=True, exist_ok=True)

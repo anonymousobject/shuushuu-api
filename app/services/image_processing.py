@@ -250,7 +250,7 @@ def _convert_to_srgb(img: Image.Image) -> Image.Image:
     return img
 
 
-def create_thumbnail(source_path: FilePath, image_id: int, ext: str, storage_path: str) -> None:
+def create_thumbnail(source_path: FilePath, image_id: int, storage_path: str) -> None:
     """Create thumbnail for uploaded image (ARQ task).
 
     Called by create_thumbnail_job in app/tasks/image_jobs.py.

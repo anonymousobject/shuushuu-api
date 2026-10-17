@@ -7,7 +7,7 @@ tzinfo=UTC on read. Naive datetimes are rejected on bind to avoid ambiguous
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, override
 
 from sqlalchemy import DateTime
 from sqlalchemy.types import TypeDecorator
@@ -26,6 +26,7 @@ class UtcDateTime(TypeDecorator[datetime]):
     impl = DateTime
     cache_ok = True
 
+    @override
     def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:
             return None
@@ -35,6 +36,7 @@ class UtcDateTime(TypeDecorator[datetime]):
             )
         return value.astimezone(UTC).replace(tzinfo=None)
 
+    @override
     def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:
             return None

@@ -244,7 +244,7 @@ async def check_similar_by_upload(
         validate_image_file(file, temp_path)
 
         # Generate temp thumbnail for IQDB query
-        create_thumbnail(temp_path, 0, temp_path.suffix.lstrip("."), temp_dir)
+        create_thumbnail(temp_path, 0, temp_dir)
         thumb_path = FilePath(temp_dir) / "thumbs" / "temp-0.webp"
 
         if not thumb_path.exists():
@@ -255,7 +255,7 @@ async def check_similar_by_upload(
             )
 
         # Query IQDB
-        similar_results = await check_iqdb_similarity(thumb_path, db, threshold=threshold)
+        similar_results = await check_iqdb_similarity(thumb_path, threshold=threshold)
 
         if not similar_results:
             return SimilarImagesUploadResponse(similar_images=[])
@@ -2481,7 +2481,7 @@ async def get_similar_images(
                 status_code=404,
                 detail="Image thumbnail not found - cannot perform similarity search",
             )
-        similar_results = await check_iqdb_similarity(thumb_path, db, threshold=threshold)
+        similar_results = await check_iqdb_similarity(thumb_path, threshold=threshold)
 
     # Filter out the query image itself (iqdb-rs returns it with high score).
     similar_results = [r for r in similar_results if r["image_id"] != image_id]
@@ -3221,7 +3221,7 @@ async def upload_image(
         # Check IQDB for near-duplicate images unless user confirmed
         if not confirm_similar:
             iqdb_results = await check_iqdb_similarity(
-                staged_path, db, threshold=settings.IQDB_UPLOAD_THRESHOLD
+                staged_path, threshold=settings.IQDB_UPLOAD_THRESHOLD
             )
             if iqdb_results:
                 # Hydrate IQDB results with full image data

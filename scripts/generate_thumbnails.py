@@ -88,7 +88,6 @@ def process_thumbnail_worker(args: tuple[int, str, str, str, bool, bool]) -> tup
         create_thumbnail(
             source_path=source_path,
             image_id=image_id,
-            ext=ext,
             storage_path=storage_path,
         )
 
@@ -167,7 +166,7 @@ def get_images_streaming(
     yield from results
 
 
-def get_image_count(all_images: bool = False, image_ids: list[int] | None = None) -> int:
+def get_image_count(image_ids: list[int] | None = None) -> int:
     """Get total count of images to process."""
     if image_ids:
         return len(image_ids)
@@ -227,7 +226,7 @@ def generate_thumbnails(
 
     # Get total count first
     print("\nCounting images...")
-    total_images = get_image_count(all_images=all_images, image_ids=image_ids)
+    total_images = get_image_count(image_ids=image_ids)
     print(f"Found {total_images:,} images to process")
 
     if total_images == 0:

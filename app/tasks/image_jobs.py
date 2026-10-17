@@ -48,7 +48,6 @@ async def create_thumbnail_job(
         create_thumbnail(
             source_path=FilePath(source_path),
             image_id=image_id,
-            ext=ext,
             storage_path=storage_path,
         )
 

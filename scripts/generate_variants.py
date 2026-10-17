@@ -123,7 +123,6 @@ def process_variant_worker(
 
 
 def get_images_needing_variants(
-    missing_only: bool = True,
     all_images: bool = False,
 ) -> list[tuple[int, str, str, int, int, int, int]]:
     """Fetch images that need variant generation.
@@ -216,10 +215,7 @@ def main() -> None:
     print("=" * 80)
 
     print("\nFetching image metadata...")
-    images = get_images_needing_variants(
-        missing_only=args.missing_only,
-        all_images=args.all_images,
-    )
+    images = get_images_needing_variants(all_images=args.all_images)
     print(f"Found {len(images):,} images with medium/large flags")
 
     # Build work items for both medium and large variants

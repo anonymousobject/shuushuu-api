@@ -192,9 +192,7 @@ async def find_parent_comment(
     return None
 
 
-async def migrate_quoted_comments(
-    dry_run: bool = True, batch_size: int = 5000, auto_confirm: bool = False
-) -> None:
+async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000) -> None:
     """
     Main migration function (two-pass approach for correctness).
 
@@ -441,11 +439,7 @@ if __name__ == "__main__":
 
     # Run with proper cleanup
     try:
-        asyncio.run(
-            migrate_quoted_comments(
-                dry_run=args.dry_run, batch_size=args.batch_size, auto_confirm=args.auto_confirm
-            )
-        )
+        asyncio.run(migrate_quoted_comments(dry_run=args.dry_run, batch_size=args.batch_size))
     finally:
         # Ensure all async tasks are cleaned up
         pass

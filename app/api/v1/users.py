@@ -230,9 +230,7 @@ async def update_current_user_profile(
         db, current_user_id, Permission.USER_EDIT_PROFILE, redis_client
     )
 
-    user = await _update_user_profile(
-        current_user_id, user_data, current_user_id, db, has_edit_permission
-    )
+    user = await _update_user_profile(current_user_id, user_data, db, has_edit_permission)
     return UserPrivateResponse.model_validate(user)
 
 
@@ -684,16 +682,13 @@ async def update_user_profile(
             detail="Not authorized to update this user",
         )
 
-    user = await _update_user_profile(
-        user_id, user_data, current_user.user_id, db, has_edit_permission
-    )
+    user = await _update_user_profile(user_id, user_data, db, has_edit_permission)
     return UserResponse.model_validate(user)
 
 
 async def _update_user_profile(
     user_id: int,
     user_data: UserUpdate,
-    current_user_id: int,
     db: AsyncSession,
     has_edit_permission: bool = False,
 ) -> Users:
@@ -703,7 +698,6 @@ async def _update_user_profile(
     Args:
         user_id: ID of user to update
         user_data: Update data
-        current_user_id: ID of user making the request (for email uniqueness check)
         db: Database session
         has_edit_permission: Whether the current user has USER_EDIT_PROFILE permission
 

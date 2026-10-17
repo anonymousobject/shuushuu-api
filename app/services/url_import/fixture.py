@@ -18,7 +18,8 @@ class FixtureResolver:
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None
 
-    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:
+    # Resolver protocol signature; the fixture serves local URLs and never fetches.
+    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:  # noqa: ARG002
         match = _URL_RE.match(url)
         assert match is not None
         kind = match.group(1)

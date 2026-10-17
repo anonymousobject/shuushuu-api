@@ -102,6 +102,7 @@ select = [
     "PERF",  # perflint
     "RUF100",  # unused noqa directive, so suppressions are dropped once fixed
     "TID251",  # banned APIs, listed under flake8-tidy-imports below
+    "ARG",  # unused arguments
     # "FA",  # flake8-future-annotations (enforce modern type hints)
 ]
 ignore = [
@@ -117,8 +118,9 @@ ignore = [
 "__init__.py" = ["F401"]  # unused imports
 # Test fixtures are frequently bound to a name only to keep the row alive for
 # the assertions below; the value itself is never read. Deleting the binding
-# would delete the row the test depends on.
-"tests/**" = ["F841"]
+# would delete the row the test depends on. Likewise a fixture is often
+# requested only for the rows it sets up, which ARG reads as unused.
+"tests/**" = ["F841", "ARG"]
 # A couple of test modules import helpers from sibling test modules partway
 # down the file to avoid an import cycle at module load.
 "tests/api/v1/test_user_ratings_endpoint.py" = ["E402"]
@@ -128,6 +130,12 @@ ignore = [
 # Configuring stdlib logging is the point of these two, so they need the
 # stdlib getLogger that app code is steered away from.
 "app/core/logging.py" = ["TID251"]
+# DummyR2Storage mirrors R2Storage's signatures (callers pass them by keyword)
+# and raises before reading any argument.
+"app/services/r2_storage.py" = ["ARG002"]
+# arq job signatures are a queue contract: arq's WorkerCoroutine protocol pins
+# the `ctx` name, and a kwarg already-queued jobs still send can't be dropped.
+"app/tasks/**" = ["ARG001"]
 "tests/unit/test_logging_config.py" = ["TID251"]
 
 [tool.ruff.lint.pyupgrade]

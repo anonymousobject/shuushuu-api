@@ -98,7 +98,7 @@ async def fix_image(image_id: int, *, dry_run: bool) -> FixOutcome:
             image_id, True, "would regenerate" + (" + R2 reupload" if reupload else "")
         )
 
-    await asyncio.to_thread(create_thumbnail, source, image_id, image.ext, settings.STORAGE_PATH)
+    await asyncio.to_thread(create_thumbnail, source, image_id, settings.STORAGE_PATH)
     if reupload:
         await force_reupload_image(image_id=image_id, dry_run=dry_run, only=THUMBS_ONLY)
     return FixOutcome(image_id, True, "regenerated" + (" + R2 reupload" if reupload else ""))
