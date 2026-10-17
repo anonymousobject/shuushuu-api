@@ -168,7 +168,7 @@ def _cdn_urls_for(image: Images, variants: list[str]) -> list[str]:
     return urls
 
 
-async def sync_image_status_job(
+async def sync_image_status_job(  # noqa: C901, PLR0912, PLR0915
     ctx: dict[str, Any],
     image_id: int,
     old_status: int,

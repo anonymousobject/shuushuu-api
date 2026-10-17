@@ -11,7 +11,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path as FilePath
 from typing import Annotated, Any
 
-import redis.asyncio as redis
 from fastapi import (
     APIRouter,
     Depends,
@@ -36,17 +35,17 @@ from app.api.dependencies import (
 )
 from app.config import ImageStatus, SuspensionAction, TagType, settings
 from app.core.auth import (
+    OptionalCurrentUser,
     get_client_ip,
     get_current_user,
     get_current_user_id,
-    get_optional_current_user,
 )
-from app.core.database import get_db
+from app.core.database import DbSession
 from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
 from app.core.r2_client import get_r2_storage
-from app.core.redis import get_redis
+from app.core.redis import RedisClient
 from app.core.security import RedactedStr, get_password_hash, validate_password_strength
 from app.core.user_loader import image_uploader_load
 from app.models import Favorites, ImageRatings, Images, TagLinks, Tags, Users
@@ -109,10 +108,10 @@ router = APIRouter(prefix="/users", tags=["users"])
 async def list_users(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[UserSortParams, Depends()],
+    db: DbSession,
     search: Annotated[
         str | None, Query(description="Search users by username (partial, case-insensitive match)")
     ] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> UserListResponse:
     """
     List users with pagination and optional username search.
@@ -195,8 +194,8 @@ async def list_users(
 @router.get("/me", response_model=UserPrivateResponse)
 async def get_current_user_profile(
     current_user_id: Annotated[int, Depends(get_current_user_id)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> UserPrivateResponse:
     """
     Get the profile of the currently authenticated user.
@@ -214,8 +213,8 @@ async def get_current_user_profile(
 async def update_current_user_profile(
     user_data: UserUpdate,
     current_user_id: Annotated[int, Depends(get_current_user_id)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> UserPrivateResponse:
     """
     Update the profile of the currently authenticated user.
@@ -230,9 +229,7 @@ async def update_current_user_profile(
         db, current_user_id, Permission.USER_EDIT_PROFILE, redis_client
     )
 
-    user = await _update_user_profile(
-        current_user_id, user_data, current_user_id, db, has_edit_permission
-    )
+    user = await _update_user_profile(current_user_id, user_data, db, has_edit_permission)
     return UserPrivateResponse.model_validate(user)
 
 
@@ -240,7 +237,7 @@ async def update_current_user_profile(
 async def upload_current_user_avatar(
     avatar: Annotated[UploadFile, File(description="Avatar image file")],
     current_user_id: Annotated[int, Depends(get_current_user_id)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> UserResponse:
     """
     Upload avatar for the currently authenticated user.
@@ -256,8 +253,8 @@ async def upload_user_avatar(
     user_id: Annotated[int, Path(description="User ID")],
     avatar: Annotated[UploadFile, File(description="Avatar image file")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> UserResponse:
     """
     Upload avatar for a specified user.
@@ -390,7 +387,7 @@ async def _upload_avatar(
 @router.delete("/me/avatar", response_model=UserResponse)
 async def delete_current_user_avatar(
     current_user_id: Annotated[int, Depends(get_current_user_id)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> UserResponse:
     """
     Remove avatar for the currently authenticated user.
@@ -401,7 +398,7 @@ async def delete_current_user_avatar(
 @router.get("/me/warnings", response_model=UserWarningsResponse)
 async def get_current_user_warnings(
     current_user_id: Annotated[int, Depends(get_current_user_id)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> UserWarningsResponse:
     """
     Get unacknowledged warnings and suspension notices for the current user.
@@ -428,7 +425,7 @@ async def get_current_user_warnings(
 @router.post("/me/warnings/acknowledge", response_model=AcknowledgeWarningsResponse)
 async def acknowledge_warnings(
     current_user_id: Annotated[int, Depends(get_current_user_id)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> AcknowledgeWarningsResponse:
     """
     Acknowledge all unacknowledged warnings and suspension notices.
@@ -462,7 +459,7 @@ async def acknowledge_warnings(
 @router.get("/me/taste-profile", response_model=TasteProfileResponse)
 async def get_taste_profile(
     current_user_id: Annotated[int, Depends(get_current_user_id)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TasteProfileResponse:
     """
     The logged-in user's taste profile (private, owner-only).
@@ -582,8 +579,8 @@ async def get_taste_profile(
 async def delete_user_avatar(
     user_id: Annotated[int, Path(description="User ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> UserResponse:
     """
     Remove avatar for a specified user.
@@ -658,8 +655,8 @@ async def update_user_profile(
     user_id: Annotated[int, Path(description="User ID to update")],
     user_data: UserUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> UserResponse:
     """
     Update a user's profile.
@@ -684,16 +681,13 @@ async def update_user_profile(
             detail="Not authorized to update this user",
         )
 
-    user = await _update_user_profile(
-        user_id, user_data, current_user.user_id, db, has_edit_permission
-    )
+    user = await _update_user_profile(user_id, user_data, db, has_edit_permission)
     return UserResponse.model_validate(user)
 
 
-async def _update_user_profile(
+async def _update_user_profile(  # noqa: C901
     user_id: int,
     user_data: UserUpdate,
-    current_user_id: int,
     db: AsyncSession,
     has_edit_permission: bool = False,
 ) -> Users:
@@ -703,7 +697,6 @@ async def _update_user_profile(
     Args:
         user_id: ID of user to update
         user_data: Update data
-        current_user_id: ID of user making the request (for email uniqueness check)
         db: Database session
         has_edit_permission: Whether the current user has USER_EDIT_PROFILE permission
 
@@ -803,8 +796,8 @@ async def get_user_images(
     user_id: Annotated[int, Path(description="User ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
-    current_user: Users | None = Depends(get_optional_current_user),
+    db: DbSession,
+    current_user: OptionalCurrentUser,
 ) -> ImageDetailedListResponse:
     """
     Get all images uploaded by a specific user.
@@ -874,9 +867,9 @@ async def get_user_images(
 @router.get("/{user_id}", response_model=UserProfileResponse)
 async def get_user(
     user_id: Annotated[int, Path(description="User ID")],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
-    current_user: Users | None = Depends(get_optional_current_user),
+    db: DbSession,
+    redis_client: RedisClient,
+    current_user: OptionalCurrentUser,
 ) -> UserProfileResponse:
     """
     Get user profile information.
@@ -920,8 +913,8 @@ async def get_user_favorites(
     user_id: Annotated[int, Path(description="User ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
-    current_user: Users | None = Depends(get_optional_current_user),
+    db: DbSession,
+    current_user: OptionalCurrentUser,
 ) -> ImageDetailedListResponse:
     """
     Get all images favorited by a specific user.
@@ -1095,7 +1088,7 @@ async def _favorite_character_entry(
 @router.get("/{user_id}/favorite-tags", response_model=UserFavoriteTagsResponse)
 async def get_user_favorite_tags(
     user_id: Annotated[int, Path(description="User ID")],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> UserFavoriteTagsResponse:
     """
     A user's public profile favorites, grouped and position-ordered.
@@ -1143,10 +1136,10 @@ FAVORITES_PER_CATEGORY_CAP = 20
 
 
 @router.post("/me/favorite-tags", status_code=201)
-async def add_favorite_tag(
+async def add_favorite_tag(  # noqa: C901
     body: FavoriteTagCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> FavoriteCharacterEntry | FavoriteTagEntry:
     """Add a favorite (source/artist tag by tag_id, character combo by link_id)."""
     if (body.tag_id is None) == (body.link_id is None):
@@ -1300,7 +1293,7 @@ async def add_favorite_tag(
 async def remove_favorite_tag(
     tag_id: Annotated[int, Path()],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """Remove a favorited source/artist tag."""
     result = await db.execute(
@@ -1320,7 +1313,7 @@ async def remove_favorite_tag(
 async def remove_favorite_link(
     link_id: Annotated[int, Path()],
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """Remove a favorited character combo."""
     result = await db.execute(
@@ -1340,7 +1333,7 @@ async def remove_favorite_link(
 async def reorder_favorite_tags(
     body: FavoriteOrderUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """Atomically rewrite one category's positions to match the given id order."""
     assert current_user.user_id is not None
@@ -1411,15 +1404,15 @@ async def get_user_ratings(
     user_id: Annotated[int, Path(description="User ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[UserRatingsSortParams, Depends()],
+    db: DbSession,
+    redis_client: RedisClient,
+    current_user: OptionalCurrentUser,
     min_rating: Annotated[
         int | None, Query(ge=1, le=10, description="Only ratings at or above this value")
     ] = None,
     max_rating: Annotated[
         int | None, Query(ge=1, le=10, description="Only ratings at or below this value")
     ] = None,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
-    current_user: Users | None = Depends(get_optional_current_user),
 ) -> UserRatingsListResponse:
     """
     Get all images a user has rated, with the rating they gave.
@@ -1544,8 +1537,8 @@ async def get_user_ratings(
 async def create_user(
     user_data: UserCreate,
     request: Request,
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> UserCreateResponse:
     """
     Create a new user with bot protection.

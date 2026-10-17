@@ -33,7 +33,7 @@ from app.models import Comments
 logger = get_logger(__name__)
 
 
-def extract_quoted_text(comment_text: str) -> str | None:
+def extract_quoted_text(comment_text: str) -> str | None:  # noqa: C901
     """
     Extract quoted text from comment.
     Supports two formats:
@@ -89,9 +89,8 @@ def extract_quoted_text(comment_text: str) -> str | None:
                         # Recursively extract the innermost quote
                         inner = extract_innermost_quote(content)
                         return inner if inner else content.strip()
-                    else:
-                        # No nested quotes, this is the innermost
-                        return content.strip()
+                    # No nested quotes, this is the innermost
+                    return content.strip()
                 pos = next_close + 1
 
         return None
@@ -144,12 +143,11 @@ def remove_quoted_text(comment_text: str) -> str:
         if stripped.startswith(">>") or stripped.startswith(">"):
             skipping_quotes = True
             continue
-        elif skipping_quotes and not stripped:
+        if skipping_quotes and not stripped:
             # Skip empty lines after quotes
             continue
-        else:
-            skipping_quotes = False
-            result_lines.append(line)
+        skipping_quotes = False
+        result_lines.append(line)
 
     # Join and strip leading/trailing whitespace
     return "\n".join(result_lines).strip()
@@ -194,9 +192,7 @@ async def find_parent_comment(
     return None
 
 
-async def migrate_quoted_comments(
-    dry_run: bool = True, batch_size: int = 5000, auto_confirm: bool = False
-) -> None:
+async def migrate_quoted_comments(dry_run: bool = True, batch_size: int = 5000) -> None:  # noqa: C901, PLR0912, PLR0915
     """
     Main migration function (two-pass approach for correctness).
 
@@ -443,11 +439,7 @@ if __name__ == "__main__":
 
     # Run with proper cleanup
     try:
-        asyncio.run(
-            migrate_quoted_comments(
-                dry_run=args.dry_run, batch_size=args.batch_size, auto_confirm=args.auto_confirm
-            )
-        )
+        asyncio.run(migrate_quoted_comments(dry_run=args.dry_run, batch_size=args.batch_size))
     finally:
         # Ensure all async tasks are cleaned up
         pass

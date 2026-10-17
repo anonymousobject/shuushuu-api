@@ -1,7 +1,8 @@
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Annotated, Any
 
 import redis.asyncio as redis
-from fastapi import Request
+from fastapi import Depends, Request
 
 from app.config import settings
 
@@ -37,3 +38,11 @@ async def get_redis(request: Request) -> AsyncGenerator[redis.Redis]:  # type: i
         yield client
     finally:
         await client.aclose()  # type: ignore[attr-defined]  # stub lags runtime; aclose is correct
+
+
+# Type alias for dependency injection. Redis is generic only in the types-redis
+# stubs; subscripting it at runtime raises, so FastAPI gets the bare class.
+if TYPE_CHECKING:
+    RedisClient = Annotated[redis.Redis[Any], Depends(get_redis)]
+else:
+    RedisClient = Annotated[redis.Redis, Depends(get_redis)]

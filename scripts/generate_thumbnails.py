@@ -88,7 +88,6 @@ def process_thumbnail_worker(args: tuple[int, str, str, str, bool, bool]) -> tup
         create_thumbnail(
             source_path=source_path,
             image_id=image_id,
-            ext=ext,
             storage_path=storage_path,
         )
 
@@ -96,8 +95,7 @@ def process_thumbnail_worker(args: tuple[int, str, str, str, bool, bool]) -> tup
         if thumb_path.exists():
             size = thumb_path.stat().st_size
             return image_id, True, f"created ({size:,} bytes)"
-        else:
-            return image_id, False, "creation failed"
+        return image_id, False, "creation failed"
 
     except Exception as e:
         return image_id, False, f"error: {e}"
@@ -136,7 +134,7 @@ def get_images_streaming(
                     )
                     return [(r[0], r[1], r[2]) for r in result.fetchall()]
 
-                elif all_images:
+                if all_images:
                     # Stream all images in batches using keyset pagination (newest first)
                     all_results: list[tuple[int, str, str]] = []
                     last_id = 2**31  # Start high, work backwards
@@ -153,8 +151,7 @@ def get_images_streaming(
                         if not batch:
                             break
 
-                        for row in batch:
-                            all_results.append((row[0], row[1], row[2]))
+                        all_results.extend((row[0], row[1], row[2]) for row in batch)
 
                         last_id = batch[-1][0]
 
@@ -169,7 +166,7 @@ def get_images_streaming(
     yield from results
 
 
-def get_image_count(all_images: bool = False, image_ids: list[int] | None = None) -> int:
+def get_image_count(image_ids: list[int] | None = None) -> int:
     """Get total count of images to process."""
     if image_ids:
         return len(image_ids)
@@ -198,13 +195,12 @@ def format_time(seconds: float) -> str:
     """Format seconds into human-readable time."""
     if seconds < 60:
         return f"{seconds:.0f}s"
-    elif seconds < 3600:
+    if seconds < 3600:
         return f"{seconds / 60:.1f}m"
-    else:
-        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 3600:.1f}h"
 
 
-def generate_thumbnails(
+def generate_thumbnails(  # noqa: PLR0915
     image_ids: list[int] | None = None,
     all_images: bool = False,
     dry_run: bool = False,
@@ -230,7 +226,7 @@ def generate_thumbnails(
 
     # Get total count first
     print("\nCounting images...")
-    total_images = get_image_count(all_images=all_images, image_ids=image_ids)
+    total_images = get_image_count(image_ids=image_ids)
     print(f"Found {total_images:,} images to process")
 
     if total_images == 0:

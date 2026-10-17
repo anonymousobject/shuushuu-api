@@ -28,7 +28,7 @@ from app.core.auth import (
     get_refresh_token_from_cookie,
     get_user_agent,
 )
-from app.core.database import get_db
+from app.core.database import DbSession, get_db
 from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.core.security import (
@@ -57,7 +57,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-async def _check_and_handle_suspension(
+async def _check_and_handle_suspension(  # noqa: C901, PLR0912
     user: Users,
     db: AsyncSession,
     *,
@@ -298,7 +298,7 @@ async def _create_tokens_for_user(
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(
+async def login(  # noqa: C901
     credentials: LoginRequest,
     request: Request,
     response: Response,
@@ -363,10 +363,9 @@ async def login(
                 status_code=status.HTTP_423_LOCKED,
                 detail=f"Account locked due to too many failed login attempts. Try again in {remaining_minutes} minutes.",
             )
-        else:
-            # Lockout expired — reset counter so user gets fresh attempts
-            user.failed_login_attempts = 0
-            user.lockout_until = None
+        # Lockout expired — reset counter so user gets fresh attempts
+        user.failed_login_attempts = 0
+        user.lockout_until = None
 
     # Verify password
     password_valid = False
@@ -578,7 +577,7 @@ async def _issue_access_only(
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(
+async def refresh_token(  # noqa: C901, PLR0911
     request: Request,
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -839,7 +838,7 @@ async def change_password(
 @router.post("/verify-email", response_model=MessageResponse)
 async def verify_email(
     token: Annotated[str, Query()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """Verify user email with token from verification link."""
     # Hash token to compare with DB
@@ -882,7 +881,7 @@ async def verify_email(
 @router.post("/resend-verification", response_model=MessageResponse)
 async def resend_verification(
     current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """Resend verification email to current user."""
     if current_user.email_verified:
@@ -924,7 +923,7 @@ async def resend_verification(
 @router.post("/forgot-password", response_model=MessageResponse)
 async def forgot_password(
     request_data: ForgotPasswordRequest,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """
     Request a password reset email.
@@ -1019,7 +1018,7 @@ async def forgot_password(
 @router.post("/reset-password", response_model=MessageResponse)
 async def reset_password(
     request_data: ResetPasswordRequest,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> MessageResponse:
     """
     Reset password using email token from forgot-password flow.

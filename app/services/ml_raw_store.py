@@ -84,7 +84,7 @@ async def populate_external_tags(db: AsyncSession, csv_path: Path) -> int:
     return count
 
 
-async def ingest_raw_predictions(
+async def ingest_raw_predictions(  # noqa: C901, PLR0912
     db: AsyncSession,
     records: list[dict[str, Any]],
 ) -> int:

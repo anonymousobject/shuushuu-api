@@ -14,6 +14,8 @@ run; it and the temp tables vanish with the transaction, so a mid-run failure
 leaves nothing behind.
 """
 
+import contextlib
+
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -229,7 +231,5 @@ async def refresh_user_tag_affinity(
         # releases the advisory lock and drops the temp tables so the same
         # session can run again. A healthy post-commit session tolerates
         # rollback() fine, so this is a no-op on the success path.
-        try:
+        with contextlib.suppress(Exception):
             await db.rollback()
-        except Exception:
-            pass

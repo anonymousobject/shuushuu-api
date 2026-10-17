@@ -143,7 +143,7 @@ class TestTransparencyWithIccProfile:
     """Alpha must survive the sRGB conversion an embedded ICC profile triggers."""
 
     def test_thumbnail_keeps_alpha_for_icc_tagged_png(self, test_image_rgba_with_icc, temp_storage):
-        create_thumbnail(test_image_rgba_with_icc, 99004, "png", temp_storage)
+        create_thumbnail(test_image_rgba_with_icc, 99004, temp_storage)
 
         thumb_path = Path(temp_storage) / "thumbs" / "2026-09-19-99004.webp"
         with Image.open(thumb_path) as thumb:
@@ -169,7 +169,7 @@ class TestTransparencyWithIccProfile:
         img = Image.new("RGBA", (600, 600), color=(0, 0, 0, 0))
         img.save(source_path, icc_profile=b"not an icc profile")
 
-        create_thumbnail(source_path, 99005, "png", temp_storage)
+        create_thumbnail(source_path, 99005, temp_storage)
 
         with Image.open(Path(temp_storage) / "thumbs" / "2026-09-19-99005.webp") as thumb:
             assert thumb.mode == "RGBA"
@@ -182,7 +182,7 @@ class TestPaletteTransparency:
     def test_thumbnail_keeps_alpha_for_transparent_gif(
         self, test_image_transparent_gif, temp_storage
     ):
-        create_thumbnail(test_image_transparent_gif, 99006, "gif", temp_storage)
+        create_thumbnail(test_image_transparent_gif, 99006, temp_storage)
 
         thumb_path = Path(temp_storage) / "thumbs" / "2026-10-05-99006.webp"
         with Image.open(thumb_path) as thumb:
@@ -194,7 +194,7 @@ class TestPaletteTransparency:
     def test_thumbnail_keeps_alpha_for_palette_png_with_icc(
         self, test_image_palette_png_with_icc, temp_storage
     ):
-        create_thumbnail(test_image_palette_png_with_icc, 99007, "png", temp_storage)
+        create_thumbnail(test_image_palette_png_with_icc, 99007, temp_storage)
 
         thumb_path = Path(temp_storage) / "thumbs" / "2026-10-05-99007.webp"
         with Image.open(thumb_path) as thumb:

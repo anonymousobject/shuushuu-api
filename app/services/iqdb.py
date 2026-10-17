@@ -5,7 +5,6 @@ IQDB (Image Quality Database) integration for similarity search and image indexi
 from pathlib import Path as FilePath
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -14,7 +13,7 @@ logger = get_logger(__name__)
 
 
 async def check_iqdb_similarity(
-    file_path: FilePath, db: AsyncSession, threshold: float | None = None
+    file_path: FilePath, threshold: float | None = None
 ) -> list[dict[str, int | float]]:
     """Query IQDB for similar images using REST API.
 
@@ -23,7 +22,6 @@ async def check_iqdb_similarity(
 
     Args:
         file_path: Path to image file (typically thumbnail)
-        db: Database session for querying image details
         threshold: Minimum similarity score (0-100), defaults to settings.IQDB_SIMILARITY_THRESHOLD
 
     Returns:

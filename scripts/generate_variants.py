@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.models.image import VariantStatus
 
 
-def process_variant_worker(
+def process_variant_worker(  # noqa: C901, PLR0912
     args: tuple[int, str, str, str, int, int, str, bool, bool],
 ) -> tuple[int, str, bool, str]:
     """Worker function for multiprocessing.
@@ -123,7 +123,6 @@ def process_variant_worker(
 
 
 def get_images_needing_variants(
-    missing_only: bool = True,
     all_images: bool = False,
 ) -> list[tuple[int, str, str, int, int, int, int]]:
     """Fetch images that need variant generation.
@@ -169,13 +168,12 @@ def get_images_needing_variants(
 def format_time(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds:.0f}s"
-    elif seconds < 3600:
+    if seconds < 3600:
         return f"{seconds / 60:.1f}m"
-    else:
-        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 3600:.1f}h"
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901, PLR0912, PLR0915
     parser = argparse.ArgumentParser(description="Generate medium/large variants for images")
     parser.add_argument(
         "--all",
@@ -217,10 +215,7 @@ def main() -> None:
     print("=" * 80)
 
     print("\nFetching image metadata...")
-    images = get_images_needing_variants(
-        missing_only=args.missing_only,
-        all_images=args.all_images,
-    )
+    images = get_images_needing_variants(all_images=args.all_images)
     print(f"Found {len(images):,} images with medium/large flags")
 
     # Build work items for both medium and large variants

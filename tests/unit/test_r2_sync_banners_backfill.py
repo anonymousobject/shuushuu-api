@@ -435,9 +435,11 @@ async def test_backfill_continues_on_part_upload_failure(
             raise RuntimeError("simulated banner upload failure")
         await real_upload(self, bucket=bucket, key=key, body=body, content_type=content_type)
 
-    with patch.object(install_r2.__class__, "upload_bytes", _flaky_upload):
-        with caplog.at_level(logging.WARNING):
-            report = await cmd_banners_backfill(dry_run=False)
+    with (
+        patch.object(install_r2.__class__, "upload_bytes", _flaky_upload),
+        caplog.at_level(logging.WARNING),
+    ):
+        report = await cmd_banners_backfill(dry_run=False)
 
     assert report["processed"] == 2
     assert report["flipped"] == 1

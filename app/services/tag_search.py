@@ -129,7 +129,7 @@ def _exists(subquery: str, value: YesNo) -> str:
     return f"{prefix}EXISTS ({subquery})"
 
 
-def _filter_clauses(filters: SearchFilters, params: dict[str, Any]) -> list[str]:
+def _filter_clauses(filters: SearchFilters, params: dict[str, Any]) -> list[str]:  # noqa: C901
     """WHERE predicates for `filters`, binding their values into `params`."""
     clauses: list[str] = []
     if filters.type_filter is not None:

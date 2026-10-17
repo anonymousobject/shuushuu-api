@@ -8,15 +8,14 @@ from typing import Annotated
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import asc, desc, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import CommentSortParams, PaginationParams
 from app.config import AdminActionType, ReportStatus
 from app.core.auth import get_current_user
-from app.core.database import get_db, statement_timeout
+from app.core.database import DbSession, statement_timeout
 from app.core.permissions import Permission, has_permission
-from app.core.redis import get_redis
+from app.core.redis import RedisClient, get_redis
 from app.models import Comments, Images, Users
 from app.models.admin_action import AdminActions
 from app.models.comment_report import CommentReports
@@ -46,6 +45,7 @@ async def list_comments(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[CommentSortParams, Depends()],
     # Filters
+    db: DbSession,
     image_id: Annotated[int | None, Query(description="Filter by image ID")] = None,
     image_ids: Annotated[
         str | None, Query(description="Filter by multiple image IDs (comma-separated)")
@@ -66,7 +66,6 @@ async def list_comments(
     # Date filtering
     date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
     date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> CommentListResponse:
     # TODO: Add an automatic mode that detects the most efficient method based on input?
     """
@@ -176,7 +175,7 @@ async def list_comments(
 
 
 @router.get("/{comment_id}", response_model=CommentResponse)
-async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> CommentResponse:
+async def get_comment(comment_id: int, db: DbSession) -> CommentResponse:
     """
     Get a single comment by ID.
 
@@ -202,7 +201,7 @@ async def get_image_comments(
     image_id: int,
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[CommentSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentListResponse:
     """
     Get all comments for a specific image.
@@ -261,7 +260,7 @@ async def get_user_comments(
     user_id: int,
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[CommentSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentListResponse:
     """
     Get all comments by a specific user.
@@ -315,7 +314,7 @@ async def get_user_comments(
 
 
 @router.get("/stats/summary", response_model=CommentStatsResponse)
-async def get_comment_stats(db: AsyncSession = Depends(get_db)) -> CommentStatsResponse:
+async def get_comment_stats(db: DbSession) -> CommentStatsResponse:
     """
     Get overall comment statistics.
 
@@ -355,7 +354,7 @@ async def get_comment_stats(db: AsyncSession = Depends(get_db)) -> CommentStatsR
 async def create_comment(
     body: CommentCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentResponse:
     """
     Create a new comment or reply.
@@ -436,7 +435,7 @@ async def update_comment(
     comment_id: int,
     body: CommentUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentResponse:
     """
     Edit an existing comment.
@@ -488,8 +487,8 @@ async def update_comment(
 async def delete_comment(
     comment_id: int,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> CommentResponse:
     """
     Delete a comment (soft-delete).
@@ -574,7 +573,7 @@ async def report_comment(
     report_data: CommentReportCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentReportResponse:
     """
     Report a comment for rule violations.

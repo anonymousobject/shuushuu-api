@@ -33,7 +33,7 @@ from app.services.tag_resolver import resolve_tag_relationships
 logger = get_logger(__name__)
 
 
-async def filter_redundant_suggestions(
+async def filter_redundant_suggestions(  # noqa: C901
     db: AsyncSession,
     suggestions: list[dict[str, Any]],
     existing_tag_ids: set[int],
@@ -167,15 +167,13 @@ async def fetch_parent_map(db: AsyncSession, tag_ids: set[int]) -> dict[int, int
     for _ in range(10):
         if not to_fetch:
             break
-        rows = (
-            await db.execute(
-                select(Tags.tag_id, Tags.inheritedfrom_id).where(  # type: ignore[call-overload]
-                    Tags.tag_id.in_(to_fetch)  # type: ignore[union-attr]
-                )
+        result = await db.execute(
+            select(Tags.tag_id, Tags.inheritedfrom_id).where(  # type: ignore[call-overload]
+                Tags.tag_id.in_(to_fetch)  # type: ignore[union-attr]
             )
-        ).all()
-        for tag_id, parent_id in rows:
-            parent_of[tag_id] = parent_id
+        )
+        rows = result.tuples().all()
+        parent_of.update(rows)
         to_fetch = {
             parent_id
             for _, parent_id in rows

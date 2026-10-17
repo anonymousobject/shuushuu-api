@@ -1987,7 +1987,7 @@ class TestFavoritedByUserIdFilter:
         assert data["total"] == 0
         assert data["images"] == []
 
-    async def test_filter_favorited_with_other_filters(
+    async def test_filter_favorited_with_other_filters(  # noqa: PLR0915
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """Test favorited_by_user_id filter combined with other filters."""

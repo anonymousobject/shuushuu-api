@@ -501,7 +501,7 @@ class TestUploadMLTagSuggestions:
         def _side_effect(job_name, **kwargs):
             if job_name == "generate_ml_tag_suggestions":
                 raise RuntimeError("arq unavailable")
-            return None
+            return
 
         enqueue_mock = AsyncMock(side_effect=_side_effect)
 

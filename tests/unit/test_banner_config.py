@@ -11,7 +11,7 @@ def test_banner_settings_exist_and_valid() -> None:
     settings = Settings()
 
     # BANNER_BASE_URL should be derived from IMAGE_BASE_URL
-    assert settings.BANNER_BASE_URL == f"{settings.IMAGE_BASE_URL}/images/banners"
+    assert f"{settings.IMAGE_BASE_URL}/images/banners" == settings.BANNER_BASE_URL
 
     # TTL values should be non-negative
     assert settings.BANNER_CACHE_TTL >= 0

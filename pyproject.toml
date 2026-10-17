@@ -97,26 +97,53 @@ select = [
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
+    "SIM",  # flake8-simplify
+    "RET",  # flake8-return
+    "PERF",  # perflint
+    "RUF100",  # unused noqa directive, so suppressions are dropped once fixed
+    "TID251",  # banned APIs, listed under flake8-tidy-imports below
+    "ARG",  # unused arguments
+    "FAST",  # FastAPI: Annotated dependencies, redundant response_model, unused path params
+    # Size and complexity, at the default limits. Functions already over a
+    # limit carry a `# noqa` naming it; RUF100 flags the noqa once they're not.
+    "C90",  # mccabe complexity
+    "PLR0911",  # too many return statements
+    "PLR0912",  # too many branches
+    "PLR0915",  # too many statements
     # "FA",  # flake8-future-annotations (enforce modern type hints)
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform function calls in argument defaults
-    # "C901",  # too complex
+    # A named result before `return` often reads better than an inline expression.
+    "RET504",
+    # A ternary is not always clearer than the if/else block it replaces.
+    "SIM108",
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # unused imports
 # Test fixtures are frequently bound to a name only to keep the row alive for
 # the assertions below; the value itself is never read. Deleting the binding
-# would delete the row the test depends on.
-"tests/**" = ["F841"]
+# would delete the row the test depends on. Likewise a fixture is often
+# requested only for the rows it sets up, which ARG reads as unused.
+"tests/**" = ["F841", "ARG"]
 # A couple of test modules import helpers from sibling test modules partway
 # down the file to avoid an import cycle at module load.
 "tests/api/v1/test_user_ratings_endpoint.py" = ["E402"]
 # %-formatting is the subject of these assertions, not an accident: they prove
 # a RedactedStr survives the %r path arq uses when logging job kwargs.
 "tests/unit/test_redacted_str.py" = ["UP031"]
+# Configuring stdlib logging is the point of these two, so they need the
+# stdlib getLogger that app code is steered away from.
+"app/core/logging.py" = ["TID251"]
+# DummyR2Storage mirrors R2Storage's signatures (callers pass them by keyword)
+# and raises before reading any argument.
+"app/services/r2_storage.py" = ["ARG002"]
+# arq job signatures are a queue contract: arq's WorkerCoroutine protocol pins
+# the `ctx` name, and a kwarg already-queued jobs still send can't be dropped.
+"app/tasks/**" = ["ARG001"]
+"tests/unit/test_logging_config.py" = ["TID251"]
 
 [tool.ruff.lint.pyupgrade]
 # Enforce Python 3.10+ type hints (use | instead of Optional)
@@ -126,6 +153,11 @@ keep-runtime-typing = false
 # Configure import sorting to match your project structure
 known-first-party = ["app"]
 section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# get_logger binds request_id and renders structured events; a stdlib logger
+# bypasses both.
+"logging.getLogger".msg = "Use app.core.logging.get_logger"
 
 [tool.ruff.format]
 # Ruff formatter configuration (replaces Black)

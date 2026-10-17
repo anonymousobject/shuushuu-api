@@ -106,7 +106,7 @@ async def normalize_users(db: AsyncSession, batch_size: int, dry_run: bool) -> d
     return counts
 
 
-async def normalize_privmsgs(db: AsyncSession, batch_size: int, dry_run: bool) -> dict[str, int]:
+async def normalize_privmsgs(db: AsyncSession, batch_size: int, dry_run: bool) -> dict[str, int]:  # noqa: C901
     """
     Normalize private message subjects and text.
 
@@ -228,7 +228,7 @@ async def normalize_comments(db: AsyncSession, batch_size: int, dry_run: bool) -
     return counts
 
 
-async def normalize_tags(db: AsyncSession, batch_size: int, dry_run: bool) -> dict[str, int]:
+async def normalize_tags(db: AsyncSession, batch_size: int, dry_run: bool) -> dict[str, int]:  # noqa: C901
     """
     Normalize tag titles and descriptions.
 

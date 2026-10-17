@@ -11,11 +11,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import asc, desc, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, UserSortParams
-from app.core.database import get_db
+from app.core.database import DbSession
 from app.core.user_loader import image_uploader_load
 from app.models import Favorites, Images, Users
 from app.models.permissions import UserGroups
@@ -30,7 +29,7 @@ async def get_favorite_images(
     user_id: Annotated[int, Path(description="User ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ImageListResponse:
     """
     Get all images favorited by a specific user.
@@ -84,7 +83,7 @@ async def get_image_favorites(
     image_id: Annotated[int, Path(description="Image ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[UserSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> UserListResponse:
     """
     Get all users who have favorited a specific image.

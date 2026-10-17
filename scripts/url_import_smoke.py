@@ -47,7 +47,7 @@ async def check(site: str, url: str) -> bool:
                 image.full_url,
                 headers={"User-Agent": BROWSER_USER_AGENT, **image.headers},
             )
-    except Exception as exc:  # noqa: BLE001 — smoke tool, report everything
+    except Exception as exc:
         print(f"[FAIL] {site}: {type(exc).__name__}: {exc}")
         return False
     ok = response.status_code == 200 and response.headers.get("content-type", "").startswith(

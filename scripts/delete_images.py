@@ -93,7 +93,7 @@ async def main() -> int:
                     else:
                         failed += 1
                         print(f"  fail {image_id}: {exc.status_code} {exc.detail}", file=sys.stderr)
-                except Exception as exc:  # noqa: BLE001 - report and continue the batch
+                except Exception as exc:
                     await db.rollback()
                     failed += 1
                     print(f"  fail {image_id}: {exc!r}", file=sys.stderr)

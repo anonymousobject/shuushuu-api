@@ -9,16 +9,15 @@ The per-image review router lives in ``app/api/v1/ml_tag_suggestions.py``.
 """
 
 import json
-import logging
 from typing import Annotated
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.database import get_db
+from app.core.database import DbSession
+from app.core.logging import get_logger
 from app.core.permission_deps import require_image_tag_add
 from app.core.redis import get_redis
 from app.core.user_loader import image_uploader_load
@@ -38,7 +37,7 @@ from app.schemas.ml_suggestion_queue import (
 from app.services.ml_suggestion_queue import count_pending_by_tag, list_pending_for_tag
 from app.services.ml_suggestion_review import bulk_review_suggestions
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/ml-suggestions", tags=["ml-suggestions"])
 
@@ -53,6 +52,7 @@ _WORKLIST_CACHE_TTL = 60  # seconds
 )
 async def get_suggestion_worklist(
     _user: Annotated[Users, Depends(require_image_tag_add)],
+    db: DbSession,
     type: Annotated[
         int | None,
         Query(description="Filter to tags of this type (e.g. 4 = character)"),
@@ -73,7 +73,6 @@ async def get_suggestion_worklist(
         str | None,
         Query(description="Filter to tags whose title contains this string (case-insensitive)"),
     ] = None,
-    db: AsyncSession = Depends(get_db),
     redis_client: Annotated[redis.Redis, Depends(get_redis)] = None,  # type: ignore[assignment, type-arg]
 ) -> SuggestionTagWorklistResponse:
     """Return paginated pending-suggestion counts grouped by tag, ordered by count DESC.
@@ -118,9 +117,7 @@ async def get_suggestion_worklist(
                 raw = json.loads(cached)
                 return SuggestionTagWorklistResponse(**raw)
         except Exception:
-            logger.warning(
-                "Redis get failed for worklist cache key %s; falling back to DB", cache_key
-            )
+            logger.warning("worklist_cache_read_failed", cache_key=cache_key)
 
         rows, total = await count_pending_by_tag(
             db, type_filter=type, min_confidence=min_confidence, page=page, per_page=per_page
@@ -134,7 +131,7 @@ async def get_suggestion_worklist(
                 json.dumps(response.model_dump()),
             )
         except Exception:
-            logger.warning("Redis setex failed for worklist cache key %s; ignoring", cache_key)
+            logger.warning("worklist_cache_write_failed", cache_key=cache_key)
 
         return response
 
@@ -158,13 +155,13 @@ async def get_suggestion_worklist(
 async def get_suggestions_for_tag(
     _user: Annotated[Users, Depends(require_image_tag_add)],
     tag_id: Annotated[int, Query(description="Tag to list pending suggestions for")],
+    db: DbSession,
     min_confidence: Annotated[
         float,
         Query(description="Only include suggestions at or above this confidence"),
     ] = 0.0,
     page: Annotated[int, Query(ge=1, description="1-based page number")] = 1,
     per_page: Annotated[int, Query(ge=1, le=200, description="Items per page")] = 50,
-    db: AsyncSession = Depends(get_db),
 ) -> SuggestionGridResponse:
     """Return a confidence-sorted page of pending suggestions for one tag.
 
@@ -232,7 +229,7 @@ async def get_suggestions_for_tag(
 async def review_suggestions(
     reviews: list[BulkReviewItem],
     current_user: Annotated[Users, Depends(require_image_tag_add)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> BulkReviewResult:
     """Approve or reject pending suggestions across multiple images at once.
 

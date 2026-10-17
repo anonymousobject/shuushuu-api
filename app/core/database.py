@@ -4,8 +4,9 @@ Database configuration and session management
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Annotated, Any
 
+from fastapi import Depends
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
@@ -45,7 +46,7 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
 
     Usage in FastAPI:
         @app.get("/items")
-        async def read_items(db: AsyncSession = Depends(get_db)):
+        async def read_items(db: DbSession):
             result = await db.execute(select(Item))
             return result.scalars().all()
     """
@@ -56,6 +57,10 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+# Type alias for dependency injection
+DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 def get_async_session() -> AsyncSession:

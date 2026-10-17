@@ -70,7 +70,7 @@ async def _identity_owners(db: AsyncSession) -> dict[tuple[str, str], int]:
     return {_identity_key(r.site, r.external_id): r.tag_id for r in rows.all()}
 
 
-async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:
+async def run_backfill(db: AsyncSession, *, apply: bool) -> BackfillReport:  # noqa: C901, PLR0912, PLR0915
     report = BackfillReport()
 
     # --- Source 1: parse existing link URLs in place (canonical tags only --

@@ -60,7 +60,7 @@ class BlueskyResolver:
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None
 
-    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:
+    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:  # noqa: C901
         match = _URL_RE.match(url)
         assert match is not None  # caller guarantees match()
         handle, rkey = match.group(1), match.group(2)

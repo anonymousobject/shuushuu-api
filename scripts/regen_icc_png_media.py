@@ -167,9 +167,7 @@ async def fix_image(image_id: int, *, dry_run: bool) -> FixOutcome:
             r2_note = " + R2 reupload" if settings.R2_ENABLED and synced else ""
             return FixOutcome(image_id, True, f"would regenerate{r2_note}")
 
-        await asyncio.to_thread(
-            create_thumbnail, source, image_id, image.ext, settings.STORAGE_PATH
-        )
+        await asyncio.to_thread(create_thumbnail, source, image_id, settings.STORAGE_PATH)
         statuses: dict[str, int] = {}
         for variant_type, threshold in (
             ("medium", settings.MEDIUM_EDGE),

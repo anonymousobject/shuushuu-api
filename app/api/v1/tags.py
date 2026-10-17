@@ -5,7 +5,6 @@ Tags API endpoints
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import (
     ColumnElement,
@@ -31,11 +30,11 @@ from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
 from app.config import ImageStatus, TagAuditActionType, TagType
-from app.core.auth import get_current_user, get_optional_current_user
-from app.core.database import get_db
+from app.core.auth import OptionalCurrentUser, get_current_user
+from app.core.database import DbSession, get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
-from app.core.redis import get_redis
+from app.core.redis import RedisClient
 from app.core.user_loader import image_uploader_load
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
@@ -223,7 +222,7 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int, max_depth: int = 10) 
     return [row[0] for row in result.fetchall()]
 
 
-async def validate_tag_relationships(
+async def validate_tag_relationships(  # noqa: C901
     db: AsyncSession,
     *,
     tag_id: int | None,
@@ -408,8 +407,8 @@ async def get_tag_suggestion_stats(
     at least 5 suggestions.
     """
     # Aliases for readability (type: ignore needed for SQLModel column access)
-    S = ImageReportTagSuggestions  # noqa: N806
-    R = ImageReports  # noqa: N806
+    S = ImageReportTagSuggestions
+    R = ImageReports
 
     # Count suggestions by status per user
     total_col = func.count(S.suggestion_id).label("total_suggestions")  # type: ignore[arg-type]
@@ -506,9 +505,10 @@ async def get_tag_suggestion_stats(
 
 @router.get("/", response_model=TagListResponse, include_in_schema=False)
 @router.get("", response_model=TagListResponse)
-async def list_tags(
+async def list_tags(  # noqa: C901, PLR0912, PLR0915
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[TagSortParams, Depends()],
+    db: DbSession,
     search: Annotated[str | None, Query(description="Search tags by name")] = None,
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     ids: Annotated[str | None, Query(description="Comma-separated tag IDs to fetch")] = None,
@@ -516,7 +516,6 @@ async def list_tags(
     exclude_aliases: Annotated[
         bool, Query(description="Exclude alias tags (tags that redirect to others)")
     ] = False,
-    db: AsyncSession = Depends(get_db),
 ) -> TagListResponse:
     """
     List and search tags with intelligent hybrid search.
@@ -719,6 +718,7 @@ async def get_images_by_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
+    db: DbSession,
     tag_depth: Annotated[
         int | None,
         Query(
@@ -729,7 +729,6 @@ async def get_images_by_tag(
             "Omit for full hierarchy.",
         ),
     ] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
     Get all images with a specific tag.
@@ -831,7 +830,7 @@ async def get_images_by_tag(
 async def get_characters_for_source(
     tag_id: Annotated[int, Path(description="Source tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagListResponse:
     """
     Get all character tags linked to a source tag.
@@ -936,9 +935,9 @@ def _rank_by_shared_images(entries: list[dict[str, Any]]) -> list[dict[str, Any]
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
-    current_user: Users | None = Depends(get_optional_current_user),
+    db: DbSession,
+    redis_client: RedisClient,
+    current_user: OptionalCurrentUser,
 ) -> TagWithStats:
     """
     Get a single tag by ID with usage statistics.
@@ -1151,10 +1150,10 @@ async def get_tag(
 
 
 @router.get("/{tag_id}/history", response_model=TagAuditLogListResponse)
-async def get_tag_history(
+async def get_tag_history(  # noqa: C901, PLR0912, PLR0915
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagAuditLogListResponse:
     """
     Get tag metadata change history.
@@ -1465,7 +1464,7 @@ async def _tag_usage_history_total(db: AsyncSession, tag_id: int) -> int:
 async def get_tag_usage_history(
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagHistoryListResponse:
     """
     Get tag usage history (add/remove on images).
@@ -1528,7 +1527,7 @@ async def create_tag(
     tag_data: TagCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagResponse:
     """
     Create a new tag.
@@ -1597,12 +1596,12 @@ async def create_tag(
 
 
 @router.put("/{tag_id}", response_model=TagResponse)
-async def update_tag(
+async def update_tag(  # noqa: C901, PLR0912, PLR0915
     tag_id: Annotated[int, Path(description="Tag ID")],
     tag_data: TagCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagResponse:
     """
     Update an existing tag.
@@ -2028,7 +2027,7 @@ async def update_tag(
 async def delete_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     _: Annotated[None, Depends(require_permission(Permission.TAG_DELETE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """
     Delete a tag.
@@ -2058,7 +2057,7 @@ async def add_tag_link(
     link_data: TagExternalLinkCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagExternalLinkResponse:
     """
     Add an external link to a tag.
@@ -2155,7 +2154,7 @@ async def reorder_tag_links(
     tag_id: Annotated[int, Path(description="Tag ID")],
     body: TagExternalLinkReorder,
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> list[TagExternalLinkResponse]:
     """
     Set a custom display order for a tag's external links.
@@ -2197,7 +2196,7 @@ async def delete_tag_link(
     link_id: Annotated[int, Path(description="Link ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """
     Remove an external link from a tag.
@@ -2239,7 +2238,7 @@ async def update_tag_link(
     link_update: TagExternalLinkUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagExternalLinkResponse:
     """
     Update an external link on a tag (mark dead, add archive URL).
@@ -2306,8 +2305,8 @@ async def update_tag_link(
 async def batch_tag_operation(
     request: BatchTagRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> BatchTagResponse:
     """
     Batch add or remove tags on multiple images.
@@ -2339,13 +2338,12 @@ async def batch_tag_operation(
             user_id=current_user.id,
             db=db,
         )
-    else:
-        return await batch_remove_tags(
-            tag_ids=request.tag_ids,
-            image_ids=request.image_ids,
-            user_id=current_user.id,
-            db=db,
-        )
+    return await batch_remove_tags(
+        tag_ids=request.tag_ids,
+        image_ids=request.image_ids,
+        user_id=current_user.id,
+        db=db,
+    )
 
 
 # =============================================================================
@@ -2361,7 +2359,7 @@ async def create_character_source_link(
     link_data: CharacterSourceLinkCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CharacterSourceLinkResponse:
     """Create a character-source link. Requires TAG_CREATE permission."""
     # Verify character tag exists and is type CHARACTER
@@ -2457,9 +2455,9 @@ async def create_character_source_link(
 @character_source_links_router.get("", response_model=CharacterSourceLinkListResponse)
 async def list_character_source_links(
     pagination: Annotated[PaginationParams, Depends()],
+    db: DbSession,
     character_tag_id: Annotated[int | None, Query(description="Filter by character tag ID")] = None,
     source_tag_id: Annotated[int | None, Query(description="Filter by source tag ID")] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> CharacterSourceLinkListResponse:
     """List character-source links with optional filtering."""
     query = select(CharacterSourceLinks)
@@ -2501,7 +2499,7 @@ async def delete_character_source_link(
     link_id: Annotated[int, Path(description="Link ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """Delete a character-source link. Requires TAG_CREATE permission."""
     result = await db.execute(
@@ -2529,12 +2527,12 @@ async def delete_character_source_link(
 
 
 @character_source_links_router.put("/{link_id}/picture", response_model=LinkPictureResponse)
-async def set_character_source_link_picture(
+async def set_character_source_link_picture(  # noqa: C901, PLR0915
     link_id: Annotated[int, Path(description="Link ID")],
     body: LinkPictureSet,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> LinkPictureResponse:
     """Set or replace a link's representative picture. Requires TAG_CREATE."""
     link_result = await db.execute(
@@ -2660,7 +2658,7 @@ async def delete_character_source_link_picture(
     link_id: Annotated[int, Path(description="Link ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """Remove a link's representative picture. Requires TAG_CREATE."""
     result = await db.execute(
