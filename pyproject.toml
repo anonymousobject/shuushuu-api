@@ -101,6 +101,7 @@ select = [
     "RET",  # flake8-return
     "PERF",  # perflint
     "RUF100",  # unused noqa directive, so suppressions are dropped once fixed
+    "TID251",  # banned APIs, listed under flake8-tidy-imports below
     # "FA",  # flake8-future-annotations (enforce modern type hints)
 ]
 ignore = [
@@ -124,6 +125,10 @@ ignore = [
 # %-formatting is the subject of these assertions, not an accident: they prove
 # a RedactedStr survives the %r path arq uses when logging job kwargs.
 "tests/unit/test_redacted_str.py" = ["UP031"]
+# Configuring stdlib logging is the point of these two, so they need the
+# stdlib getLogger that app code is steered away from.
+"app/core/logging.py" = ["TID251"]
+"tests/unit/test_logging_config.py" = ["TID251"]
 
 [tool.ruff.lint.pyupgrade]
 # Enforce Python 3.10+ type hints (use | instead of Optional)
@@ -133,6 +138,11 @@ keep-runtime-typing = false
 # Configure import sorting to match your project structure
 known-first-party = ["app"]
 section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# get_logger binds request_id and renders structured events; a stdlib logger
+# bypasses both.
+"logging.getLogger".msg = "Use app.core.logging.get_logger"
 
 [tool.ruff.format]
 # Ruff formatter configuration (replaces Black)

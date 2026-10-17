@@ -9,7 +9,6 @@ The per-image review router lives in ``app/api/v1/ml_tag_suggestions.py``.
 """
 
 import json
-import logging
 from typing import Annotated
 
 import redis.asyncio as redis
@@ -19,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.core.logging import get_logger
 from app.core.permission_deps import require_image_tag_add
 from app.core.redis import get_redis
 from app.core.user_loader import image_uploader_load
@@ -38,7 +38,7 @@ from app.schemas.ml_suggestion_queue import (
 from app.services.ml_suggestion_queue import count_pending_by_tag, list_pending_for_tag
 from app.services.ml_suggestion_review import bulk_review_suggestions
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/ml-suggestions", tags=["ml-suggestions"])
 
@@ -118,9 +118,7 @@ async def get_suggestion_worklist(
                 raw = json.loads(cached)
                 return SuggestionTagWorklistResponse(**raw)
         except Exception:
-            logger.warning(
-                "Redis get failed for worklist cache key %s; falling back to DB", cache_key
-            )
+            logger.warning("worklist_cache_read_failed", cache_key=cache_key)
 
         rows, total = await count_pending_by_tag(
             db, type_filter=type, min_confidence=min_confidence, page=page, per_page=per_page
@@ -134,7 +132,7 @@ async def get_suggestion_worklist(
                 json.dumps(response.model_dump()),
             )
         except Exception:
-            logger.warning("Redis setex failed for worklist cache key %s; ignoring", cache_key)
+            logger.warning("worklist_cache_write_failed", cache_key=cache_key)
 
         return response
 

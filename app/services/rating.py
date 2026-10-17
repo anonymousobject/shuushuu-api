@@ -5,7 +5,6 @@ Provides utilities for calculating and updating image rating statistics.
 """
 
 import json
-import logging
 from dataclasses import dataclass
 
 import redis.asyncio as redis
@@ -13,8 +12,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ImageRatings, Images
-
-logger = logging.getLogger(__name__)
 
 # Cache key and TTL for global rating stats (C and m values for Bayesian calc).
 # These change negligibly per individual rating so a 5-minute TTL is fine.
