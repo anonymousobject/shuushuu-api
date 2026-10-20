@@ -268,10 +268,19 @@ async def _link(db, tag, img):
     await db.commit()
 
 
+async def _clear_response_keys(redis_client):
+    # Cached anonymous feed responses would otherwise answer repeat requests before
+    # the count cache under test is consulted.
+    keys = await redis_client.keys("feed:response:*")
+    if keys:
+        await redis_client.delete(*keys)
+
+
 async def _clear_filtered_keys(redis_client):
     keys = await redis_client.keys("feed:count:filtered:*")
     if keys:
         await redis_client.delete(*keys)
+    await _clear_response_keys(redis_client)
 
 
 @pytest.mark.api
@@ -295,6 +304,8 @@ class TestFilteredCountCache:
             # A newly tagged image is NOT reflected while the cache is warm.
             img2 = await _img(db_session, owner, "f1" + "1" * 30, 1)
             await _link(db_session, tag, img2)
+            # Drop only the cached response so the count cache is what's under test.
+            await _clear_response_keys(redis_client)
             r2 = await client_real_redis.get(f"/api/v1/images/?tags={tag.tag_id}&per_page=1")
             assert r2.json()["total"] == total1
 
@@ -328,6 +339,7 @@ class TestFilteredCountCache:
             assert len(await redis_client.keys("feed:count:filtered:*")) == 2
 
             # Cached entries keep serving the right totals per filter.
+            await _clear_response_keys(redis_client)
             assert (
                 await client_real_redis.get(f"/api/v1/images/?tags={tag_a.tag_id}&per_page=1")
             ).json()["total"] == 1

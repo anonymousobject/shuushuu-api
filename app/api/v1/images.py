@@ -25,7 +25,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import ColumnElement, and_, asc, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -133,6 +133,11 @@ from app.schemas.user import (
 )
 from app.services.comments import comments_for_images
 from app.services.feed_count_cache import get_feed_counts, get_filtered_count
+from app.services.feed_response_cache import (
+    cache_feed_response,
+    feed_response_key,
+    get_cached_feed_response,
+)
 from app.services.image_metadata_history import build_metadata_history
 from app.services.image_processing import (
     create_thumbnail,
@@ -453,6 +458,7 @@ async def list_images(  # noqa: C901, PLR0912, PLR0915
     db: DbSession,
     current_user: OptionalCurrentUser,
     redis_client: RedisClient,
+    request: Request,
     user_id: Annotated[int | None, Query(description="Filter by uploader user ID")] = None,
     favorited_by_user_id: Annotated[
         int | None, Query(description="Filter by user who favorited the image")
@@ -565,7 +571,7 @@ async def list_images(  # noqa: C901, PLR0912, PLR0915
             "response, grouped by image id (comments map). Default false."
         ),
     ] = False,
-) -> ImageDetailedListResponse:
+) -> ImageDetailedListResponse | Response:
     """
     Search and list images with comprehensive filtering.
 
@@ -621,6 +627,12 @@ async def list_images(  # noqa: C901, PLR0912, PLR0915
         commentsearch = None
     if commentsearch is not None:
         reject_unindexable_comment_search(commentsearch, commentsearch_mode)
+    # Logged-out responses depend only on the query string, so serve them from cache.
+    feed_cache_key = feed_response_key(request)
+    if current_user is None:
+        cached_body = await get_cached_feed_response(redis_client, feed_cache_key)
+        if cached_body is not None:
+            return Response(content=cached_body, media_type="application/json")
     # Only the comment-text path can degrade to an unindexed scan, so only it
     # carries the bound; every other filter here is index-backed. None elsewhere
     # makes statement_timeout a no-op, leaving the fast paths untouched.
@@ -1136,13 +1148,19 @@ async def list_images(  # noqa: C901, PLR0912, PLR0915
             [img.image_id for img in images],  # type: ignore[misc]
         )
 
-    return ImageDetailedListResponse(
+    list_response = ImageDetailedListResponse(
         total=total or 0,
         page=pagination.page,
         per_page=pagination.per_page,
         images=response_items,
         comments=comments_map,
     )
+    if current_user is not None:
+        return list_response
+    # Serialize once as FastAPI would (by_alias) so hit and miss bodies are identical.
+    body = list_response.model_dump_json(by_alias=True)
+    await cache_feed_response(redis_client, feed_cache_key, body)
+    return Response(content=body, media_type="application/json")
 
 
 @router.get("/random", include_in_schema=True)
