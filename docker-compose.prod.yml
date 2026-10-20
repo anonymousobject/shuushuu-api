@@ -189,6 +189,12 @@ services:
       # Peak active backends observed under load was 4.
       - DB_POOL_SIZE=8
       - DB_MAX_OVERFLOW=4
+      # onnxruntime defaults to one intra-op thread per core in every worker,
+      # so a single /analyze call takes the whole host and starves the other
+      # workers. Capped at 2, the ceiling is 4 workers x ML_ANALYZE_CONCURRENCY
+      # (2) x 2 = 16 threads, and one inference leaves 6 cores for serving.
+      # arq-worker keeps the library default for batch throughput.
+      - ML_INTRA_OP_THREADS=2
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
