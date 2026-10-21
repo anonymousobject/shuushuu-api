@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     # cap, redis-py raises a clear ConnectionError("Too many connections")
     # instead of letting a burst open unbounded sockets (see #381).
     REDIS_MAX_CONNECTIONS: int = Field(default=64, ge=1)
+    # Timeouts (seconds) on that pool's sockets. Redis is on the LAN and answers
+    # in well under a millisecond, so these only trip when Redis is unreachable
+    # or wedged -- without them a dead host stalls each call for the kernel's
+    # ~2 min TCP connect timeout. No command on this pool blocks server-side
+    # for longer (redis_client.lock(..., blocking_timeout=5) in
+    # app/api/v1/comments.py polls with short commands).
+    REDIS_SOCKET_CONNECT_TIMEOUT: float = Field(default=0.25, gt=0)
+    REDIS_SOCKET_TIMEOUT: float = Field(default=1.0, gt=0)
 
     # Task Queue - UPDATED to support multiple options
     TASK_QUEUE_TYPE: str = Field(
