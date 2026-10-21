@@ -6,29 +6,40 @@ counts (``count(all)``, ``count(hidden)``, and ``count(repost)``) are the same f
 every viewer, so we cache them with a short TTL rather than recomputing per request.
 The cached total can lag an image create/delete/status-change by up to the TTL — a
 non-issue for a pagination counter over a million-row feed, and not worth the
-invalidation coupling.
+invalidation coupling. The cache is best-effort: a Redis error is logged and treated
+as a miss (reads) or a skipped store (writes), so the DB answers as if it didn't exist.
 """
 
 import hashlib
 from typing import Any
 
 import redis.asyncio as redis
+from redis.exceptions import RedisError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
 from app.config import ImageStatus
+from app.core.logging import get_logger
 from app.models.image import Images
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 
+logger = get_logger(__name__)
+
 # TTL-only — no per-mutation invalidation. The count can lag a create/delete/status
 # change by at most FEED_COUNT_TTL seconds; acceptable for a pagination counter.
+# Best-effort: Redis errors fall back to the DB (see _log_redis_error).
 FEED_COUNT_TTL = 60
 
 _KEY_TOTAL = "feed:count:total"
 _KEY_HIDDEN = "feed:count:hidden"
 _KEY_REPOST = "feed:count:repost"
 _FILTERED_KEY_PREFIX = "feed:count:filtered:"
+
+
+def _log_redis_error(exc: RedisError) -> None:
+    # No exc_info: during an outage every request would otherwise log a traceback.
+    logger.warning("feed_count_cache_redis_error", error=repr(exc))
 
 
 async def get_feed_counts(
@@ -43,13 +54,16 @@ async def get_feed_counts(
     The ``status == REPOST`` equality scan hits the same index, so it is equally cheap.
     """
     if redis_client is not None:
-        # Three separate .get() calls (not .mget): the test mock_redis stubs .get but not
-        # .mget, so .mget would silently miss the cache in tests.
-        cached_total = await redis_client.get(_KEY_TOTAL)
-        cached_hidden = await redis_client.get(_KEY_HIDDEN)
-        cached_repost = await redis_client.get(_KEY_REPOST)
-        if cached_total is not None and cached_hidden is not None and cached_repost is not None:
-            return int(cached_total), int(cached_hidden), int(cached_repost)
+        try:
+            # Three separate .get() calls (not .mget): the test mock_redis stubs .get but not
+            # .mget, so .mget would silently miss the cache in tests.
+            cached_total = await redis_client.get(_KEY_TOTAL)
+            cached_hidden = await redis_client.get(_KEY_HIDDEN)
+            cached_repost = await redis_client.get(_KEY_REPOST)
+            if cached_total is not None and cached_hidden is not None and cached_repost is not None:
+                return int(cached_total), int(cached_hidden), int(cached_repost)
+        except RedisError as exc:
+            _log_redis_error(exc)
 
     total = (await db.execute(select(func.count()).select_from(Images))).scalar() or 0
     hidden = (
@@ -66,9 +80,12 @@ async def get_feed_counts(
     ).scalar() or 0
 
     if redis_client is not None:
-        await redis_client.setex(_KEY_TOTAL, FEED_COUNT_TTL, total)
-        await redis_client.setex(_KEY_HIDDEN, FEED_COUNT_TTL, hidden)
-        await redis_client.setex(_KEY_REPOST, FEED_COUNT_TTL, repost)
+        try:
+            await redis_client.setex(_KEY_TOTAL, FEED_COUNT_TTL, total)
+            await redis_client.setex(_KEY_HIDDEN, FEED_COUNT_TTL, hidden)
+            await redis_client.setex(_KEY_REPOST, FEED_COUNT_TTL, repost)
+        except RedisError as exc:
+            _log_redis_error(exc)
 
     return total, hidden, repost
 
@@ -100,12 +117,18 @@ async def get_filtered_count(
     """
     key = filtered_count_key(count_query)
     if redis_client is not None:
-        cached = await redis_client.get(key)
-        if cached is not None:
-            return int(cached)
+        try:
+            cached = await redis_client.get(key)
+            if cached is not None:
+                return int(cached)
+        except RedisError as exc:
+            _log_redis_error(exc)
 
     total = (await db.execute(count_query)).scalar() or 0
 
     if redis_client is not None:
-        await redis_client.setex(key, FEED_COUNT_TTL, total)
+        try:
+            await redis_client.setex(key, FEED_COUNT_TTL, total)
+        except RedisError as exc:
+            _log_redis_error(exc)
     return total
