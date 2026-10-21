@@ -13,13 +13,17 @@ def create_redis_pool() -> redis.ConnectionPool:  # type: ignore[type-arg]
 
     Called once per process in the app lifespan (app/main.py) and stored on
     app.state.redis_pool, so every get_redis() dependency resolution shares it
-    instead of paying a TCP connect per request (see #381).
+    instead of paying a TCP connect per request (see #381). Connects and
+    commands time out quickly so an unreachable Redis fails fast instead of
+    stalling for the kernel's TCP timeout.
     """
     return redis.ConnectionPool.from_url(
         str(settings.REDIS_URL),
         encoding="utf-8",
         decode_responses=True,
         max_connections=settings.REDIS_MAX_CONNECTIONS,
+        socket_connect_timeout=settings.REDIS_SOCKET_CONNECT_TIMEOUT,
+        socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
     )
 
 

@@ -9,11 +9,16 @@ app/main.py's lifespan creates one redis.asyncio.ConnectionPool per process
 binds a lightweight client to that shared pool instead of opening its own.
 """
 
+import asyncio
+import socket
+import time
+
 import pytest
 import redis.asyncio as redis
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.config import settings
 from app.core.redis import RedisClient, create_redis_pool
@@ -114,3 +119,63 @@ class TestGetRedisDependency:
             assert await survivor.ping() is True
         finally:
             await pool.disconnect()
+
+
+@pytest.mark.unit
+class TestPoolTimeouts:
+    """A dead or wedged Redis must fail fast, not stall for the kernel's TCP timeout."""
+
+    async def test_silent_server_times_out_a_command(self, monkeypatch):
+        async def accept_and_stay_silent(reader, writer):
+            await reader.read()  # never replies; returns when the client hangs up
+            writer.close()
+
+        server = await asyncio.start_server(accept_and_stay_silent, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setattr(settings, "REDIS_URL", f"redis://127.0.0.1:{port}/0")
+        monkeypatch.setattr(settings, "REDIS_SOCKET_TIMEOUT", 0.2)
+
+        pool = create_redis_pool()
+        client = redis.Redis(connection_pool=pool)
+        try:
+            started = time.monotonic()
+            with pytest.raises(RedisTimeoutError):
+                await asyncio.wait_for(client.ping(), timeout=10)
+            assert time.monotonic() - started < 5
+        finally:
+            await client.aclose()  # type: ignore[attr-defined]
+            await pool.disconnect()
+            server.close()
+            await server.wait_closed()
+
+    async def test_unanswered_connect_times_out(self, monkeypatch):
+        # A listener with backlog 0 and no accept() loop: once its queue is full
+        # the kernel drops further SYNs, so a new connect hangs like a dead host.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(0)
+        port = listener.getsockname()[1]
+        fillers = []
+        for _ in range(3):
+            filler = socket.socket()
+            filler.setblocking(False)
+            filler.connect_ex(("127.0.0.1", port))
+            fillers.append(filler)
+        await asyncio.sleep(0.2)
+
+        monkeypatch.setattr(settings, "REDIS_URL", f"redis://127.0.0.1:{port}/0")
+        monkeypatch.setattr(settings, "REDIS_SOCKET_CONNECT_TIMEOUT", 0.2)
+
+        pool = create_redis_pool()
+        client = redis.Redis(connection_pool=pool)
+        try:
+            started = time.monotonic()
+            with pytest.raises(RedisTimeoutError):
+                await asyncio.wait_for(client.ping(), timeout=10)
+            assert time.monotonic() - started < 5
+        finally:
+            await client.aclose()  # type: ignore[attr-defined]
+            await pool.disconnect()
+            for filler in fillers:
+                filler.close()
+            listener.close()
