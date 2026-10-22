@@ -206,9 +206,16 @@ regressed.
 
 ## Retention
 
-60 days, deleted by Loki's compactor. To change:
+60 days, deleted by Loki's compactor — except the api's INFO stream
+(`{service="api", level="info"}`), which is kept 14 days. That stream is
+almost all routine `request_complete` lines and dominates disk usage; api
+WARNING/ERROR lines, including slow and failed requests, keep the full 60
+days. Other api INFO events (uploads, `login_attempt`, password-reset
+attempts) share the stream, so they are also only searchable for 14 days.
+To change:
 
-1. Edit `retention_period` in `docker/loki/loki-config.yaml`
+1. Edit `retention_period` (default) or `retention_stream` (per-stream
+   overrides) in `docker/loki/loki-config.yaml`
 2. `docker restart shuushuu-loki-prod`
 3. Commit and deploy the config change
 
