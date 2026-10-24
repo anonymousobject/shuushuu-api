@@ -19,6 +19,10 @@ services:
       -c shared_buffers=${POSTGRES_SHARED_BUFFERS:-2GB}
       -c effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}
       -c max_connections=200
+    # Parallel queries allocate dynamic shared memory in /dev/shm; Docker's
+    # 64M default fails large parallel hash joins with "could not resize
+    # shared memory segment". Usage counts against the memory limit below.
+    shm_size: 1g
     ports:
       # Published: dev is reached from other machines on
       # the local network. Prod never runs this service (stubbed with
