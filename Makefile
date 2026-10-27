@@ -68,7 +68,14 @@ COMPOSE_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml
 # --timeout 90: the new replica's healthcheck can take up to ~50s to pass
 # (start_period 20s + interval 10s x 3 retries); 90 leaves headroom above that
 # and self-documents the expected window (plugin default is only 60s).
-ROLLOUT_PROD = docker rollout --timeout 90 -f docker-compose.yml -f docker-compose.prod.yml
+#
+# --wait-after-healthy 12: keep the old replica up until every nginx worker's
+# DNS cache (resolver valid=10s in docker/nginx/nginx.conf, held up to ~11s)
+# has refreshed to include the new one. Stopping it sooner 502s any worker
+# that resolved the name just before the new replica appeared and so knows
+# only the old IP — every frontend rollout did this (2026-10), because the
+# frontend goes healthy in ~5s. Raise this if you raise valid=.
+ROLLOUT_PROD = docker rollout --timeout 90 --wait-after-healthy 12 -f docker-compose.yml -f docker-compose.prod.yml
 
 # App services that support zero-downtime rollout. api/frontend are stateless
 # and fronted by nginx, which re-resolves their service name via Docker DNS at
@@ -181,9 +188,10 @@ prod-migrate: check-env-prod
 	$(COMPOSE_PROD) run --rm --no-deps api uv run --no-project alembic upgrade head
 
 # Zero-downtime deploy: build the app image(s), then roll each service one at a
-# time. docker-rollout starts a new replica, waits for its healthcheck, then
-# drains the old one — nginx re-resolves the service name via Docker DNS, so no
-# requests are dropped. Does NOT run migrations (see prod-migrate).
+# time. docker-rollout starts a new replica, waits for its healthcheck, waits
+# out nginx's DNS cache (see ROLLOUT_PROD), then drains the old one — nginx
+# re-resolves the service name via Docker DNS, so no requests are dropped.
+# Does NOT run migrations (see prod-migrate).
 #
 # arq-worker is always built, even when ARGS narrows the rollout set: skipping
 # its rebuild is how the worker once kept running an image whose deps predated
