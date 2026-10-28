@@ -37,6 +37,16 @@ storage_config:
 
 limits_config:
   retention_period: 60d
+  # The api's INFO stream is almost entirely routine fast 2xx/3xx
+  # `request_complete` lines (~85% of all ingest since every request started
+  # logging at INFO), which at 60d would take ~40G of the host's root disk.
+  # Keep it 14d; api warnings/errors (4xx, 5xx, slow requests) and every
+  # other service keep the 60d default. Also applied by the compactor to
+  # chunks already on disk.
+  retention_stream:
+    - selector: '{service="api", level="info"}'
+      priority: 1
+      period: 14d
   ingestion_rate_mb: 16
   ingestion_burst_size_mb: 32
   max_streams_per_user: 5000

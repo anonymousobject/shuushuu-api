@@ -14,7 +14,8 @@ This approach eliminates field duplication while maintaining security boundaries
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import CheckConstraint, Column, ForeignKeyConstraint, Index, text
+from sqlalchemy.dialects.postgresql import CITEXT
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.models.types import UtcDateTime
@@ -34,7 +35,8 @@ class UserBase(SQLModel):
     """
 
     # Basic information
-    username: str = Field(max_length=30)
+    # CITEXT (ADR-0008): login and uniqueness are case-insensitive
+    username: str = Field(max_length=30, sa_type=CITEXT)
 
     # Public profile
     location: str | None = Field(default=None, max_length=100)
@@ -80,11 +82,11 @@ class Users(UserBase, table=True):
 
     __tablename__ = "users"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s below:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py). When in doubt, treat Alembic
+    # migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["bookmark"],
@@ -100,6 +102,8 @@ class Users(UserBase, table=True):
         Index("idx_user_posts", "posts"),
         Index("idx_user_image_posts", "image_posts"),
         Index("idx_user_favorites", "favorites"),
+        CheckConstraint("char_length(username) <= 30", name="ck_users_username_len"),
+        CheckConstraint("char_length(email) <= 120", name="ck_users_email_len"),
     )
 
     # Primary key
@@ -120,11 +124,11 @@ class Users(UserBase, table=True):
     # Public timestamps
     date_joined: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     )
     last_login: datetime | None = Field(
         default=None,
-        sa_column=Column(UtcDateTime, nullable=True, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=True, server_default=text("CURRENT_TIMESTAMP")),
     )
     last_active: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
 
@@ -146,7 +150,8 @@ class Users(UserBase, table=True):
     )
 
     # Contact info (privacy-sensitive)
-    email: str = Field(max_length=120)
+    # CITEXT (ADR-0008): lookups (password reset) and uniqueness are case-insensitive
+    email: str = Field(max_length=120, sa_type=CITEXT)
     email_verified: bool = Field(default=False)
     email_verification_token: str | None = Field(default=None, max_length=64)
     email_verification_sent_at: datetime | None = Field(
@@ -192,7 +197,7 @@ class Users(UserBase, table=True):
 
     # References
     forum_id: int | None = Field(default=None)
-    bookmark: int | None = Field(default=None, foreign_key="images.image_id")
+    bookmark: int | None = Field(default=None)
 
     # Relationship to UserGroups for eager loading groups
     user_groups: list[UserGroups] = Relationship(

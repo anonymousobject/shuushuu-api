@@ -284,7 +284,7 @@ class TestIQDBService:
     """Unit tests for the IQDB service functions."""
 
     @pytest.mark.asyncio
-    async def test_check_iqdb_similarity_success(self, db_session):
+    async def test_check_iqdb_similarity_success(self):
         """check_iqdb_similarity returns filtered results on success."""
         from pathlib import Path
         from unittest.mock import MagicMock
@@ -310,7 +310,7 @@ class TestIQDBService:
             mock_client_class.return_value = mock_client
 
             # Pass explicit threshold to test filtering
-            result = await check_iqdb_similarity(Path("/fake/path.jpg"), db_session, threshold=80)
+            result = await check_iqdb_similarity(Path("/fake/path.jpg"), threshold=80)
 
         # Threshold is 80, so only first two should be returned
         assert len(result) == 2
@@ -319,7 +319,7 @@ class TestIQDBService:
         assert result[1]["image_id"] == 456
 
     @pytest.mark.asyncio
-    async def test_check_iqdb_similarity_unavailable(self, db_session):
+    async def test_check_iqdb_similarity_unavailable(self):
         """Returns empty list when IQDB is unavailable."""
         from pathlib import Path
         from unittest.mock import MagicMock
@@ -339,12 +339,12 @@ class TestIQDBService:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_class.return_value = mock_client
 
-            result = await check_iqdb_similarity(Path("/fake/path.jpg"), db_session)
+            result = await check_iqdb_similarity(Path("/fake/path.jpg"))
 
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_check_iqdb_similarity_timeout(self, db_session):
+    async def test_check_iqdb_similarity_timeout(self):
         """Returns empty list on timeout."""
         from pathlib import Path
 
@@ -362,18 +362,18 @@ class TestIQDBService:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_class.return_value = mock_client
 
-            result = await check_iqdb_similarity(Path("/fake/path.jpg"), db_session)
+            result = await check_iqdb_similarity(Path("/fake/path.jpg"))
 
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_check_iqdb_similarity_file_not_found(self, db_session):
+    async def test_check_iqdb_similarity_file_not_found(self):
         """Returns empty list when image file doesn't exist."""
         from pathlib import Path
 
         from app.services.iqdb import check_iqdb_similarity
 
-        result = await check_iqdb_similarity(Path("/nonexistent/path/image.jpg"), db_session)
+        result = await check_iqdb_similarity(Path("/nonexistent/path/image.jpg"))
         assert result == []
 
 

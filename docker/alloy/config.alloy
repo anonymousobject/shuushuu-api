@@ -64,13 +64,13 @@ discovery.relabel "containers" {
     action        = "keep"
   }
 
-  // Drop the mariadb/redis busybox stubs: they exist only to keep depends_on
+  // Drop the postgres/redis busybox stubs: they exist only to keep depends_on
   // chains merging and run `sleep infinity`, so they emit no useful logs.
   // (The old name-based filter dropped them implicitly; the compose-label
   // filter above would otherwise keep them.)
   rule {
     source_labels = ["service"]
-    regex         = "mariadb|redis"
+    regex         = "postgres|redis"
     action        = "drop"
   }
 
@@ -109,7 +109,7 @@ loki.process "containers" {
 
   // Default `level` to "info" when JSON parsing didn't extract one
   // (non-structlog services like iqdb and the frontend emit plain text).
-  // Note: the mariadb/redis stubs are dropped upstream at discovery.relabel,
+  // Note: the postgres/redis stubs are dropped upstream at discovery.relabel,
   // so they never reach this pipeline.
   stage.template {
     source   = "level"

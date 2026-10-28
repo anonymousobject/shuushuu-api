@@ -14,7 +14,8 @@ This approach eliminates field duplication while maintaining security boundaries
 from datetime import UTC, datetime
 
 from pydantic import field_validator
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import CheckConstraint, Column, ForeignKeyConstraint, Index, text
+from sqlalchemy.dialects.postgresql import CITEXT
 from sqlmodel import Field, SQLModel
 
 from app.config import TagType
@@ -32,7 +33,8 @@ class TagBase(SQLModel):
     """
 
     # Basic information
-    title: str | None = Field(default=None, max_length=255)
+    # CITEXT (ADR-0008): title matching/dedupe is case-insensitive
+    title: str | None = Field(default=None, max_length=255, sa_type=CITEXT)
     desc: str | None = Field(default=None, max_length=200)
     type: int = Field(
         default=TagType.THEME,
@@ -74,11 +76,11 @@ class Tags(TagBase, table=True):
 
     __tablename__ = "tags"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s below:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py). When in doubt, treat Alembic
+    # migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["alias_of"],
@@ -107,6 +109,7 @@ class Tags(TagBase, table=True):
         Index("type_alias", "type", "alias_of"),
         Index("idx_tags_usage_count", "usage_count"),
         Index("idx_tags_title", "title"),
+        CheckConstraint("char_length(title) <= 255", name="ck_tags_title_len"),
     )
 
     # Primary key
@@ -115,7 +118,7 @@ class Tags(TagBase, table=True):
     # Public timestamp
     date_added: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     )
 
     # Usage count (number of images with this tag)
@@ -123,11 +126,11 @@ class Tags(TagBase, table=True):
     usage_count: int = Field(default=0, ge=0)
 
     # Public relationship fields
-    alias_of: int | None = Field(default=None, foreign_key="tags.tag_id")
-    inheritedfrom_id: int | None = Field(default=None, foreign_key="tags.tag_id")
+    alias_of: int | None = Field(default=None)
+    inheritedfrom_id: int | None = Field(default=None)
 
     # Internal fields
-    user_id: int | None = Field(default=None, foreign_key="users.user_id")
+    user_id: int | None = Field(default=None)
 
     # Note: Relationships are intentionally omitted.
     # Foreign keys are sufficient for queries, and omitting relationships avoids:

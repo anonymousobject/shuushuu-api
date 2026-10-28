@@ -48,7 +48,6 @@ async def create_thumbnail_job(
         create_thumbnail(
             source_path=FilePath(source_path),
             image_id=image_id,
-            ext=ext,
             storage_path=storage_path,
         )
 
@@ -225,14 +224,13 @@ async def add_to_iqdb_job(
                     exc_info=True,
                 )
             return {"success": True}
-        else:
-            logger.warning(
-                "iqdb_job_failed_status",
-                image_id=image_id,
-                status_code=response.status_code,
-            )
-            # Retry if IQDB returned error
-            raise Retry(defer=ctx["job_try"] * 10)
+        logger.warning(
+            "iqdb_job_failed_status",
+            image_id=image_id,
+            status_code=response.status_code,
+        )
+        # Retry if IQDB returned error
+        raise Retry(defer=ctx["job_try"] * 10)
 
     except httpx.RequestError as e:
         logger.error("iqdb_job_request_failed", image_id=image_id, error=str(e))

@@ -16,7 +16,7 @@ Your Alembic setup:
 - **Config location:** `pyproject.toml` ([tool.alembic] section)
 - **Script location:** `alembic/` directory
 - **Versions directory:** `alembic/versions/`
-- **Database URL:** Set dynamically in `alembic/env.py` from `settings.DATABASE_URL_SYNC`
+- **Database URL:** Set dynamically in `alembic/env.py` from `settings.DATABASE_URL`
 
 ## Step-by-Step: Creating a Migration
 
@@ -28,13 +28,13 @@ Use the `alembic revision` command to create a new migration:
 # Basic syntax
 alembic revision -m "description of change"
 
-# Example: Creating the FULLTEXT index
-alembic revision -m "add fulltext index to posts.post_text"
+# Example: Creating an index on posts.date
+alembic revision -m "add index on posts.date"
 ```
 
 This creates a new file in `alembic/versions/` with a name like:
 ```
-abc123def456_add_fulltext_index_to_posts_post_text.py
+abc123def456_add_index_on_posts_date.py
 ```
 
 The filename format is: `{revision_id}_{description}.py`
@@ -43,10 +43,10 @@ The filename format is: `{revision_id}_{description}.py`
 
 Open the generated file and add your schema changes in the `upgrade()` and `downgrade()` functions.
 
-**Example for FULLTEXT index:**
+**Example for the posts.date index:**
 
 ```python
-"""add fulltext index to posts.post_text
+"""add index on posts.date
 
 Revision ID: abc123def456
 Revises: 8d66158eb568
@@ -67,18 +67,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add FULLTEXT index to posts.post_text for faster comment searching."""
-    # Use raw SQL for MySQL-specific FULLTEXT index
-    op.execute(
-        "CREATE FULLTEXT INDEX idx_post_text_fulltext ON posts(post_text)"
-    )
+    """Add an index on posts.date."""
+    op.execute("CREATE INDEX idx_posts_date ON posts (date)")
 
 
 def downgrade() -> None:
-    """Remove FULLTEXT index from posts.post_text."""
-    op.execute(
-        "DROP INDEX idx_post_text_fulltext ON posts"
-    )
+    """Remove the index on posts.date."""
+    op.execute("DROP INDEX idx_posts_date")
 ```
 
 **Key points:**
@@ -107,7 +102,7 @@ alembic upgrade +1
 
 Expected output:
 ```
-INFO  [alembic.runtime.migration] Running upgrade 8d66158eb568 -> abc123def456, add fulltext index to posts.post_text
+INFO  [alembic.runtime.migration] Running upgrade 8d66158eb568 -> abc123def456, add index on posts.date
 ```
 
 ### Step 5: Verify the Change
@@ -115,26 +110,14 @@ INFO  [alembic.runtime.migration] Running upgrade 8d66158eb568 -> abc123def456, 
 Check that the index was created:
 
 ```bash
-# Connect to MySQL
-mysql -u your_user -p your_database
+# Connect to Postgres (dev stack)
+docker compose exec postgres psql -U shuushuu -d shuushuu
 
 # Verify the index
-SHOW INDEX FROM posts WHERE Key_name = 'idx_post_text_fulltext';
+\di idx_posts_date
 ```
 
 ## Common Migration Tasks
-
-### Creating a FULLTEXT Index
-
-```python
-def upgrade() -> None:
-    op.execute(
-        "CREATE FULLTEXT INDEX idx_column_fulltext ON table_name(column_name)"
-    )
-
-def downgrade() -> None:
-    op.execute("DROP INDEX idx_column_fulltext ON table_name")
-```
 
 ### Adding a Column
 
@@ -250,7 +233,7 @@ alembic upgrade head
 
 ### 2. Use Descriptive Names
 
-Good: `add_fulltext_index_to_posts_post_text`
+Good: `add_index_on_posts_date`
 Bad: `update_posts`, `migration_001`
 
 ### 3. Keep Migrations Small
@@ -329,53 +312,53 @@ alembic stamp head
 3. Mark the migration as complete: `alembic stamp head`
 4. Or rollback and fix the migration: `alembic downgrade -1`
 
-### FULLTEXT Index Already Exists
+### Index Already Exists
 
 **Cause:** Index was created manually or migration ran twice.
 
 **Solution:**
-```sql
--- Check if index exists
-SHOW INDEX FROM posts WHERE Key_name = 'idx_post_text_fulltext';
+```bash
+# Check if index exists
+docker compose exec postgres psql -U shuushuu -d shuushuu -c "SELECT indexname FROM pg_indexes WHERE tablename = 'posts';"
 
--- Drop it if it exists
-DROP INDEX idx_post_text_fulltext ON posts;
+# Drop it if it exists
+docker compose exec postgres psql -U shuushuu -d shuushuu -c "DROP INDEX idx_name;"
 
--- Then re-run migration
+# Then re-run migration
 ```
 
 ## Migration Workflow Example
 
-Complete workflow for adding the FULLTEXT index:
+Complete workflow for adding an index on posts.date:
 
 ```bash
 # 1. Create migration
-alembic revision -m "add fulltext index to posts.post_text"
+alembic revision -m "add index on posts.date"
 
 # 2. Edit the generated file (add upgrade/downgrade code)
 # See example above
 
 # 3. Review the migration
-cat alembic/versions/abc123def456_add_fulltext_index_to_posts_post_text.py
+cat alembic/versions/abc123def456_add_index_on_posts_date.py
 
 # 4. Test in development database
 alembic upgrade head
 
 # 5. Verify the index was created
-mysql -u user -p database -e "SHOW INDEX FROM posts WHERE Key_name = 'idx_post_text_fulltext'"
+docker compose exec postgres psql -U shuushuu -d shuushuu -c '\di idx_posts_date'
 
 # 6. Test rollback
 alembic downgrade -1
 
 # 7. Verify index was removed
-mysql -u user -p database -e "SHOW INDEX FROM posts WHERE Key_name = 'idx_post_text_fulltext'"
+docker compose exec postgres psql -U shuushuu -d shuushuu -c '\di idx_posts_date'
 
 # 8. Re-apply for final verification
 alembic upgrade head
 
 # 9. Commit the migration file to version control
-git add alembic/versions/abc123def456_add_fulltext_index_to_posts_post_text.py
-git commit -m "Add FULLTEXT index migration for comment search"
+git add alembic/versions/abc123def456_add_index_on_posts_date.py
+git commit -m "Add posts.date index migration"
 
 # 10. Deploy to production
 # On production server:

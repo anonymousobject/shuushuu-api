@@ -94,9 +94,9 @@ class TestPurgeCacheByUrls:
         with (
             caplog.at_level(logging.ERROR),
             patch("app.services.cloudflare.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(httpx.HTTPStatusError),
         ):
-            with pytest.raises(httpx.HTTPStatusError):
-                await purge_cache_by_urls(["https://cdn.example.com/x.jpg"])
+            await purge_cache_by_urls(["https://cdn.example.com/x.jpg"])
 
         assert any("r2_cdn_purge_failed" in r.message for r in caplog.records)
 
@@ -119,8 +119,8 @@ class TestPurgeCacheByUrls:
         with (
             caplog.at_level(logging.ERROR),
             patch("app.services.cloudflare.httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="success=false"),
         ):
-            with pytest.raises(RuntimeError, match="success=false"):
-                await purge_cache_by_urls(["https://cdn.example.com/x.jpg"])
+            await purge_cache_by_urls(["https://cdn.example.com/x.jpg"])
 
         assert any("r2_cdn_purge_logical_failure" in r.message for r in caplog.records)

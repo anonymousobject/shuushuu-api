@@ -209,7 +209,7 @@ class _FakeSession:
         # probabilities must align with the tag lists passed to predict()
         self._probs = np.array(probabilities, dtype=np.float32)
 
-    def run(self, outputs, feed):  # noqa: ANN001,ANN201
+    def run(self, outputs, feed):
         # predict() does session.run(["prediction"], {...})[0][0]
         return [np.array([self._probs])]
 

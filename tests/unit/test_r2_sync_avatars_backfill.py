@@ -293,11 +293,13 @@ async def test_backfill_continues_on_upload_failure(
             raise RuntimeError("simulated upload failure")
         await real_upload(self, bucket=bucket, key=key, body=body, content_type=content_type)
 
-    with patch.object(install_r2.__class__, "upload_bytes", _flaky_upload):
-        with caplog.at_level(logging.WARNING):
-            # concurrency=1 makes ordering deterministic so we know exactly
-            # which call is the 2nd (and which user lands in `failed`).
-            report = await cmd_avatars_backfill(dry_run=False, concurrency=1)
+    with (
+        patch.object(install_r2.__class__, "upload_bytes", _flaky_upload),
+        caplog.at_level(logging.WARNING),
+    ):
+        # concurrency=1 makes ordering deterministic so we know exactly
+        # which call is the 2nd (and which user lands in `failed`).
+        report = await cmd_avatars_backfill(dry_run=False, concurrency=1)
 
     assert report["uploaded"] == 2
     assert report["failed"] == 1

@@ -5,6 +5,8 @@ staged file first, permanent YYYY-MM-DD-{image_id}.{ext} name only once the row
 exists — is only checked here.
 """
 
+import logging
+import os
 from io import BytesIO
 from pathlib import Path
 
@@ -58,6 +60,27 @@ class TestStageUploadedImage:
         assert first.exists() and second.exists()
         assert first_md5 != second_md5  # neither clobbered the other
 
+    async def test_staged_bytes_are_fsynced(self, tmp_path: Path, monkeypatch):
+        """The full upload is forced to disk before staging returns.
+
+        The caller commits the image row next; without the fsync a host crash
+        inside the writeback window leaves a row pointing at a zero-byte file.
+        The spy records the file's size at fsync time, so an fsync issued
+        before the buffered write is flushed fails this too.
+        """
+        synced_sizes: list[int] = []
+        real_fsync = os.fsync
+
+        def _spy(fd: int) -> None:
+            synced_sizes.append(os.fstat(fd).st_size)
+            real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", _spy)
+
+        staged_path, _, _ = await stage_uploaded_image(_upload(), str(tmp_path))
+
+        assert synced_sizes == [staged_path.stat().st_size]
+
     async def test_rejects_a_non_image_and_leaves_nothing_behind(self, tmp_path: Path):
         """Bytes that aren't an image are refused and the staged file removed.
 
@@ -76,6 +99,41 @@ class TestStageUploadedImage:
 
         assert exc_info.value.status_code == 400
         assert list((tmp_path / "fullsize").glob("staged_*")) == []
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "137109272_p0_master1200.jpg",
+            "137109272_p3_square1200.jpg",
+            "137109272_p0_custom1200.jpg",
+            # Shapes seen on real uploads: a browser's duplicate-download
+            # suffix, a Finder copy, and an uploader's own prefix.
+            "46430881_p0_master1200 (1).jpg",
+            "42676174_p0_master1200 copy.jpg",
+            "ch46657230_p1_master1200.jpg",
+        ],
+    )
+    async def test_rejects_pixiv_downsized_rendition(
+        self, tmp_path: Path, name: str, caplog: pytest.LogCaptureFixture
+    ):
+        """Pixiv's 1200px re-compressed previews are refused before anything is written."""
+        with caplog.at_level(logging.INFO), pytest.raises(HTTPException) as exc_info:
+            await stage_uploaded_image(_upload(name=name), str(tmp_path))
+
+        assert exc_info.value.status_code == 422
+        assert "original" in exc_info.value.detail
+        assert not (tmp_path / "fullsize").exists()
+        # Logged with the filename, so false positives can be found later.
+        log_messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "pixiv_downsized_upload_refused" in log_messages
+        assert name in log_messages
+
+    @pytest.mark.parametrize("name", ["137109272_p0.jpg", "137109272_p12.png", "master1200.jpg"])
+    async def test_accepts_pixiv_original_and_lookalike_names(self, tmp_path: Path, name: str):
+        """A pixiv original ({id}_p{n}.{ext}) and names merely mentioning master1200 pass."""
+        staged_path, _, _ = await stage_uploaded_image(_upload(name=name), str(tmp_path))
+
+        assert staged_path.exists()
 
 
 @pytest.mark.unit

@@ -2,6 +2,9 @@
 Image upload helpers for rate limiting, file saving, and tag linking.
 """
 
+import asyncio
+import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
 from uuid import uuid4
@@ -17,6 +20,13 @@ from app.services.image_processing import calculate_md5, validate_image_file
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 
 logger = get_logger(__name__)
+
+# Pixiv's downsized renditions: the artwork page displays (and "Save image as"
+# saves) {id}_p{n}_master1200.jpg, and square1200/custom1200 are its thumbnail
+# crops. All are capped at 1200px and re-compressed as JPEG; the original is
+# plain {id}_p{n}.{ext}. Unanchored because real uploads carry user prefixes
+# and " (1)" / " copy" suffixes around the pixiv name.
+_PIXIV_DOWNSIZED_RE = re.compile(r"\d+_p\d+_(?:master|square|custom)1200(?!\d)")
 
 
 async def get_uploads_today(user_id: int, db: AsyncSession) -> int:
@@ -93,6 +103,18 @@ async def stage_uploaded_image(file: UploadFile, storage_path: str) -> tuple[Fil
             detail="Filename is required",
         )
 
+    if _PIXIV_DOWNSIZED_RE.search(file.filename):
+        logger.info("pixiv_downsized_upload_refused", filename=file.filename)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "This file is pixiv's downsized preview (a 1200px re-compressed JPEG), "
+                "not the original. Paste the pixiv post URL into the URL import box to "
+                "fetch the full-size original, or open the artwork on pixiv, click the "
+                "image to view it full size, and save that instead."
+            ),
+        )
+
     ext = FilePath(file.filename).suffix.lower().lstrip(".")
 
     # Create storage directories if they don't exist
@@ -109,6 +131,12 @@ async def stage_uploaded_image(file: UploadFile, storage_path: str) -> tuple[Fil
                     detail=f"File size exceeds maximum of {settings.MAX_IMAGE_SIZE} bytes",
                 )
             f.write(content)
+            # Force the bytes to disk before the caller commits the image row.
+            # The row lives on another host, so a crash here inside the
+            # writeback window would otherwise leave it pointing at a
+            # zero-byte file with the original unrecoverable.
+            f.flush()
+            await asyncio.to_thread(os.fsync, f.fileno())
 
         # Validate file is actually an image (security check)
         validate_image_file(file, staged_path)

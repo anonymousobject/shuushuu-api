@@ -77,6 +77,13 @@ ssh shuu-prod-logs
 
 Use the **Explore** tab in Grafana, datasource `Loki`.
 
+`request_complete` is now emitted for every request, not just failures: INFO
+for routine 2xx/3xx traffic, WARNING for slow requests and 4xx, ERROR for
+5xx. An unhandled exception in a route also logs `request_complete` at ERROR
+(with a traceback) before the 500 is sent to the client, so `{service="api",
+level=~"error|critical"}` below now catches API-side outages too, not just
+responses the app itself turned into a 5xx.
+
 ### Last hour of API errors
 
 ```logql
@@ -170,24 +177,20 @@ cross-reference your SMTP provider dashboard.
 ### Stuck R2 uploads / iqdb indexing (e.g. midnight-boundary filename drift)
 
 ```logql
-{service="arq-worker"} |~ "r2_finalize_retry_missing_variant|iqdb_job_thumbnail_missing"
+{service="arq-worker"} |~ "r2_finalize_retry_missing_variant|r2_finalize_retry_empty_variant|iqdb_job_thumbnail_missing"
 ```
 
-Both events fire when a worker job expects a path that doesn't exist
-on disk. Repeated retries for the same `image_id` mean the file was
+The `_missing` events fire when a worker job expects a path that doesn't
+exist on disk. Repeated retries for the same `image_id` mean the file was
 written under a different name (typically the midnight-boundary drift
 fixed in PR #218). Compare the logged `path` to the actual file with
 `ls /shuushuu/images/<variant>/*<image_id>*` on the api container.
 
-### DB connection-pool ping errors (sqlalchemy ↔ pymysql version drift)
-
-```logql
-{service="api"} |~ "ping\\(\\) missing|AsyncAdapt_aiomysql_connection.ping"
-```
-
-Catches the pymysql 1.2 / sqlalchemy aiomysql adapter incompatibility
-seen during the 5/19 incident. Any hit here means a transitive dep
-drifted past what `uv.lock` pins; rebuild from a clean lock.
+`r2_finalize_retry_empty_variant` means the file exists but is zero bytes.
+One retry is a variant still being encoded; retries that exhaust mean the
+write was lost to a host crash (PR #402). Restore the fullsize from the
+uploader's original, or regenerate the variant from the fullsize, then run
+`r2_sync.py reconcile`.
 
 ### nginx upstream connection refused (stale DNS after recreate)
 
@@ -203,9 +206,16 @@ regressed.
 
 ## Retention
 
-60 days, deleted by Loki's compactor. To change:
+60 days, deleted by Loki's compactor — except the api's INFO stream
+(`{service="api", level="info"}`), which is kept 14 days. That stream is
+almost all routine `request_complete` lines and dominates disk usage; api
+WARNING/ERROR lines, including slow and failed requests, keep the full 60
+days. Other api INFO events (uploads, `login_attempt`, password-reset
+attempts) share the stream, so they are also only searchable for 14 days.
+To change:
 
-1. Edit `retention_period` in `docker/loki/loki-config.yaml`
+1. Edit `retention_period` (default) or `retention_stream` (per-stream
+   overrides) in `docker/loki/loki-config.yaml`
 2. `docker restart shuushuu-loki-prod`
 3. Commit and deploy the config change
 

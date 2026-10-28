@@ -1,51 +1,28 @@
 """Integration tests proving recompute_thread_stats is safe under concurrency.
 
-InnoDB defaults to REPEATABLE READ (app.core.database sets no isolation
-override). A plain (non-locking) read inside a transaction is evaluated
-against that transaction's consistent snapshot, fixed at its *first* read --
-in a real request, get_current_user's SELECT, long before a route acquires
-the thread-row FOR UPDATE lock. If recompute_thread_stats's COUNT/MAX used a
-plain read, two overlapping "reply to thread" transactions could silently
-under-count posts: the second transaction's snapshot predates the first
-transaction's commit, so its COUNT misses the sibling post even though it
-correctly waits for (and acquires) the thread-row lock afterwards.
+Postgres runs READ COMMITTED (app.core.database sets no isolation override),
+so every statement sees all rows committed before it starts. After a route
+acquires the thread-row FOR UPDATE lock, recompute_thread_stats's plain
+COUNT/MAX must therefore see a sibling post committed by an overlapping
+"reply to thread" transaction, even though this transaction began (and ran
+its first read, e.g. get_current_user's SELECT) before that commit.
 
 These tests reproduce that ordering deterministically with two independent
 sessions on two independent connections -- no threads/asyncio.gather needed,
-since the whole point is snapshot *timing*, not true parallel execution:
+since the point is read *timing*, not true parallel execution:
 
 1. Session A creates the thread + opening post and commits.
-2. Session B issues a plain read (its first read), fixing its REPEATABLE READ
-   snapshot *before* session A's reply commits.
+2. Session B issues a plain read (its first read) *before* session A's reply
+   commits.
 3. Session A locks the thread (FOR UPDATE), adds a reply, recomputes, commits.
 4. Session B locks the thread (now free), adds its own reply, recomputes,
    commits.
 5. A fresh session re-reads the thread: post_count must reflect all three
-   posts (opening + both replies), not just the two session B's stale
-   snapshot could see.
-
-NOTE on innodb_snapshot_isolation (MariaDB-only, ON by default on the
-mariadb:12 image this project's dev/CI stack uses -- see
-docker-compose.yml): when ON, MariaDB refuses to let a transaction take a
-*locking* read (FOR UPDATE) on a row that was committed-over since that
-transaction's snapshot was established -- it raises ER_CHECKREAD (1020)
-instead of silently returning the newer row. That guard is real and
-independently verified (a raw two-connection pymysql script reproduces it
-outside of SQLAlchemy/the app entirely), but it fires purely because step 4
-re-locks the exact ForumThreads row step 3 already committed a change to --
-before recompute_thread_stats's own (patched-or-not) queries are ever
-reached. It reproduces identically whether the recompute_thread_stats fix is
-applied or reverted, so it cannot be what's discriminating the bug from the
-fix here. It also does not run on vanilla MySQL/InnoDB, and it isn't
-guaranteed to run in every MariaDB deployment (older versions default it
-OFF; it's a session-settable variable). Session B disables it for itself
-below so this test exercises the portable REPEATABLE-READ behavior the
-production bug report is about, rather than being a no-op that only
-ever proves MariaDB's own guard works.
+   posts (opening + both replies), not just the two B's earlier read saw.
 """
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.models.forum import ForumCategories, ForumPosts, ForumThreads
@@ -59,11 +36,10 @@ class TestRecomputeThreadStatsConcurrency:
         self, db_session: AsyncSession, engine: AsyncEngine
     ) -> None:
         """B's recompute must count A's committed reply even though B's
-        transaction snapshot predates A's commit.
+        transaction began before A's commit.
 
-        Without locking reads in recompute_thread_stats, B's plain COUNT/MAX
-        would still see its pre-A snapshot (opening post + B's own reply
-        only) and finish with post_count == 2, silently dropping A's post.
+        A recompute that missed it would finish with post_count == 2
+        (opening post + B's own reply), silently dropping A's post.
         """
         # --- Session A (db_session): category, thread, opening post ---
         category = ForumCategories(title="Concurrency Category")
@@ -93,17 +69,9 @@ class TestRecomputeThreadStatsConcurrency:
         session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         session_b = session_maker()
         try:
-            # See the module docstring: disable MariaDB's
-            # innodb_snapshot_isolation guard for this session only, so B's
-            # later FOR UPDATE (step 4) reproduces portable REPEATABLE-READ
-            # semantics (silently returns the newer row) instead of MariaDB
-            # raising ER_CHECKREAD -- which would mask the bug this test
-            # targets rather than exercise it.
-            await session_b.execute(text("SET SESSION innodb_snapshot_isolation = OFF"))
-
-            # B's first read -- this is what fixes its REPEATABLE READ
-            # snapshot, mirroring how get_current_user's SELECT fixes a real
-            # request's snapshot long before the route locks the thread row.
+            # B's first read -- this precedes A's commit, mirroring how
+            # get_current_user's SELECT runs in a real request long before the
+            # route locks the thread row.
             # Deliberately plain (non-locking); not committed/rolled back.
             await session_b.execute(select(ForumThreads).where(ForumThreads.thread_id == thread_id))
 

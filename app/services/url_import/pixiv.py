@@ -46,7 +46,7 @@ class PixivResolver:
     def match(self, url: str) -> bool:
         return _URL_RE.match(url) is not None
 
-    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:
+    async def resolve(self, url: str, client: httpx.AsyncClient) -> ResolvedPost:  # noqa: C901, PLR0912
         match = _URL_RE.match(url)
         assert match is not None  # caller guarantees match()
         illust_id = match.group(1)
@@ -71,7 +71,8 @@ class PixivResolver:
         if not (body.get("urls") or {}).get("original") and _is_login_gated(body):
             raise RestrictedContentError(
                 "This Pixiv URL is only viewable while logged in to Pixiv. "
-                "Save the image and upload it manually, or paste a mirror URL "
+                "Open the artwork on Pixiv, click the image to view it full size, "
+                "and upload that file manually, or paste a mirror URL "
                 "(danbooru, gelbooru, zerochan) if one exists."
             )
 

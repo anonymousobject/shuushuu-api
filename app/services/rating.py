@@ -5,7 +5,6 @@ Provides utilities for calculating and updating image rating statistics.
 """
 
 import json
-import logging
 from dataclasses import dataclass
 
 import redis.asyncio as redis
@@ -13,8 +12,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ImageRatings, Images
-
-logger = logging.getLogger(__name__)
 
 # Cache key and TTL for global rating stats (C and m values for Bayesian calc).
 # These change negligibly per individual rating so a 5-minute TTL is fine.
@@ -56,7 +53,11 @@ async def _get_global_rating_stats(
     # Cache miss or no Redis — query database
     avg_ratings_per_image_result = await db.execute(
         select(
-            func.count(ImageRatings.user_id) / func.count(func.distinct(ImageRatings.image_id))  # type: ignore[arg-type]
+            # NULLIF: with zero ratings this is 0/0 — NULL on MySQL but an
+            # error on Postgres. NULL falls through to the 10.0 default below
+            # on both.
+            func.count(ImageRatings.user_id)  # type: ignore[arg-type]
+            / func.nullif(func.count(func.distinct(ImageRatings.image_id)), 0)
         )
     )
     avg_ratings_per_image = float(avg_ratings_per_image_result.scalar() or 10.0)

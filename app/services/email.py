@@ -20,7 +20,7 @@ from app.models.user import Users
 logger = get_logger(__name__)
 
 
-async def send_email(
+async def send_email(  # noqa: PLR0911
     to: str | list[str],
     subject: str,
     body: str,
