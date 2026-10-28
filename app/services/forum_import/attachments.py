@@ -11,7 +11,6 @@ extension. On R2 we additionally set Content-Disposition so downloads use the
 original human-readable filename.
 """
 
-import shutil
 from pathlib import Path
 from urllib.parse import quote
 
@@ -50,8 +49,10 @@ async def rehost_attachment(
 ) -> None:
     """Store one attachment file. Idempotent-friendly (overwrite is harmless)."""
     key = _storage_key(physical_filename, real_filename)
+    # Bytes only: the backup files' metadata (an NFSv4 ACL on the source export)
+    # doesn't belong on the media store, and copying it there fails.
+    body = source_path.read_bytes()
     if settings.R2_ENABLED:
-        body = source_path.read_bytes()
         await get_r2_storage().upload_bytes(
             bucket=settings.R2_PUBLIC_BUCKET,
             key=f"{_PREFIX}/{key}",
@@ -62,4 +63,4 @@ async def rehost_attachment(
     else:
         dest = Path(settings.STORAGE_PATH) / _PREFIX / key
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, dest)
+        dest.write_bytes(body)
