@@ -166,7 +166,6 @@ def upgrade() -> None:
     op.create_index("fk_forum_thread_reads_thread_id", "forum_thread_reads", ["thread_id"])
 
     # Seed permissions (idempotent vs sync_permissions) and grant to groups.
-    # Same pattern as c0cb8f931041_add_news_permissions.py.
     for title, desc in FORUM_PERMS:
         op.execute(
             f'INSERT INTO perms (title, "desc") '
