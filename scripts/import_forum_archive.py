@@ -120,61 +120,53 @@ async def _post_attachment_links(
     return ("\n\n" + "\n".join(lines)) if lines else ""
 
 
-async def run_import(  # noqa: C901
+async def _remap_posters(
+    target: AsyncSession,
+    resolution: dict[int, PosterResolution],
+    archived_id: int,
+    stats: ImportStats,
+    dry_run: bool,
+) -> None:
+    """Re-point already-imported posts and threads at the current poster resolution."""
+    for phpbb_id, res in resolution.items():
+        uid = res.site_user_id if res.site_user_id is not None else archived_id
+        r = await target.execute(
+            text("UPDATE forum_posts SET user_id=:u WHERE legacy_poster_id=:p AND user_id<>:u"),
+            {"u": uid, "p": phpbb_id},
+        )
+        stats.remapped += r.rowcount or 0  # type: ignore[attr-defined]
+    # Re-derive each imported thread's author (opening = min post_id) and
+    # last_post_user_id (latest live post) from the remapped posts.
+    await target.execute(
+        text(
+            "UPDATE forum_threads t SET user_id = op.user_id FROM forum_posts op "
+            "WHERE op.post_id = (SELECT MIN(p.post_id) FROM forum_posts p "
+            "WHERE p.thread_id = t.thread_id) AND t.legacy_topic_id IS NOT NULL"
+        )
+    )
+    await target.execute(
+        text(
+            "UPDATE forum_threads t SET last_post_user_id = lp.user_id FROM forum_posts lp "
+            "WHERE lp.post_id = (SELECT MAX(p.post_id) FROM forum_posts p "
+            "WHERE p.thread_id = t.thread_id AND NOT p.deleted) "
+            "AND t.legacy_topic_id IS NOT NULL"
+        )
+    )
+    if dry_run:
+        await target.rollback()
+    else:
+        await target.commit()
+
+
+async def _import_forums(
     target: AsyncSession,
     phpbb_url: str,
-    legacy_url: str,
+    author_of: Callable[[int], tuple[int, str]],
     backup_files_dir: Path,
-    *,
-    only_forum_ids: set[int] | None = None,
-    dry_run: bool = False,
-    remap_only: bool = False,
-) -> ImportStats:
-    stats = ImportStats()
-    resolution = await _build_resolution(target, phpbb_url, legacy_url)
-    # NOTE: even under --dry-run this may create+commit the Archived User account
-    # (harmless, idempotent) so attribution inserts have a valid FK target.
-    archived_id = await ensure_archived_user(target)
-
-    def author_of(poster_id: int) -> tuple[int, str]:
-        res = resolution.get(poster_id)
-        if res is None:  # e.g. guest (poster_id=1) — attribute to Archived
-            return archived_id, "Guest"
-        if res.site_user_id is None:
-            return archived_id, res.legacy_username
-        return res.site_user_id, res.legacy_username
-
-    if remap_only:
-        for phpbb_id, res in resolution.items():
-            uid = res.site_user_id if res.site_user_id is not None else archived_id
-            r = await target.execute(
-                text("UPDATE forum_posts SET user_id=:u WHERE legacy_poster_id=:p AND user_id<>:u"),
-                {"u": uid, "p": phpbb_id},
-            )
-            stats.remapped += r.rowcount or 0  # type: ignore[attr-defined]
-        # Re-derive each imported thread's author (opening = min post_id) and
-        # last_post_user_id (latest live post) from the remapped posts.
-        await target.execute(
-            text(
-                "UPDATE forum_threads t SET user_id = op.user_id FROM forum_posts op "
-                "WHERE op.post_id = (SELECT MIN(p.post_id) FROM forum_posts p "
-                "WHERE p.thread_id = t.thread_id) AND t.legacy_topic_id IS NOT NULL"
-            )
-        )
-        await target.execute(
-            text(
-                "UPDATE forum_threads t SET last_post_user_id = lp.user_id FROM forum_posts lp "
-                "WHERE lp.post_id = (SELECT MAX(p.post_id) FROM forum_posts p "
-                "WHERE p.thread_id = t.thread_id AND NOT p.deleted) "
-                "AND t.legacy_topic_id IS NOT NULL"
-            )
-        )
-        if dry_run:
-            await target.rollback()
-        else:
-            await target.commit()
-        return stats
-
+    stats: ImportStats,
+    only_forum_ids: set[int] | None,
+    dry_run: bool,
+) -> None:
     phpbb = create_async_engine(phpbb_url)
     try:
         async with phpbb.connect() as pc:
@@ -214,6 +206,39 @@ async def run_import(  # noqa: C901
                     )
     finally:
         await phpbb.dispose()
+
+
+async def run_import(
+    target: AsyncSession,
+    phpbb_url: str,
+    legacy_url: str,
+    backup_files_dir: Path,
+    *,
+    only_forum_ids: set[int] | None = None,
+    dry_run: bool = False,
+    remap_only: bool = False,
+) -> ImportStats:
+    stats = ImportStats()
+    resolution = await _build_resolution(target, phpbb_url, legacy_url)
+    # NOTE: even under --dry-run this may create+commit the Archived User account
+    # (harmless, idempotent) so attribution inserts have a valid FK target.
+    archived_id = await ensure_archived_user(target)
+
+    def author_of(poster_id: int) -> tuple[int, str]:
+        res = resolution.get(poster_id)
+        if res is None:  # e.g. guest (poster_id=1) — attribute to Archived
+            return archived_id, "Guest"
+        if res.site_user_id is None:
+            return archived_id, res.legacy_username
+        return res.site_user_id, res.legacy_username
+
+    if remap_only:
+        await _remap_posters(target, resolution, archived_id, stats, dry_run)
+        return stats
+
+    await _import_forums(
+        target, phpbb_url, author_of, backup_files_dir, stats, only_forum_ids, dry_run
+    )
 
     if dry_run:
         await target.rollback()

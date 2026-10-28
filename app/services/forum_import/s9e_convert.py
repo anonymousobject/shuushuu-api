@@ -11,6 +11,7 @@ canonical attachment-link list instead.
 
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 
 # Elements whose entire subtree is the original BBCode source markup: drop them.
 _DROP_TAGS = {"s", "e", "i"}
@@ -35,33 +36,35 @@ def _inner(el: ET.Element) -> str:
     return "".join(parts)
 
 
+def _quote(el: ET.Element, inner: str) -> str:
+    author = el.get("author")
+    return f'[quote="{author}"]{inner}[/quote]' if author else f"[quote]{inner}[/quote]"
+
+
+def _url(el: ET.Element, inner: str) -> str:
+    url = el.get("url", "")
+    return f"[{inner or url}]({url})"
+
+
+# Per-tag formatters taking (element, rendered inner text).
+_FORMATTERS: dict[str, Callable[[ET.Element, str], str]] = {
+    "br": lambda _el, _inner: "\n",
+    "IMG": lambda el, _inner: f"[image]({el.get('src', '')})",
+    "ATTACHMENT": lambda _el, _inner: "",
+    "B": lambda _el, inner: f"**{inner}**",
+    "I": lambda _el, inner: f"*{inner}*",
+    "QUOTE": _quote,
+    "URL": _url,
+    "LI": lambda _el, inner: f"\n- {inner.strip()}",
+}
+
+
 def _render(el: ET.Element) -> str:
-    tag = el.tag
-    if tag in _DROP_TAGS:
+    if el.tag in _DROP_TAGS:
         return ""
-    if tag == "br":
-        return "\n"
-    if tag == "IMG":
-        return f"[image]({el.get('src', '')})"
-    if tag == "ATTACHMENT":
-        return ""
-    inner = _inner(el)
-    if tag in ("r", "t", "E", "COLOR", "SIZE", "FONT", "U", "CODE", "LIST"):
-        return inner
-    if tag == "B":
-        return f"**{inner}**"
-    if tag == "I":
-        return f"*{inner}*"
-    if tag == "QUOTE":
-        author = el.get("author")
-        return f'[quote="{author}"]{inner}[/quote]' if author else f"[quote]{inner}[/quote]"
-    if tag == "URL":
-        url = el.get("url", "")
-        return f"[{inner or url}]({url})"
-    if tag == "LI":
-        return f"\n- {inner.strip()}"
-    # Unknown element: keep its inner text (nothing silently dropped).
-    return inner
+    formatter = _FORMATTERS.get(el.tag)
+    # Passthrough and unknown elements keep their inner text (nothing silently dropped).
+    return formatter(el, _inner(el)) if formatter else _inner(el)
 
 
 def _normalize(text: str) -> str:
