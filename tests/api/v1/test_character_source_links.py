@@ -9,17 +9,22 @@ These tests cover the /api/v1/character-source-links endpoints including:
 Uses TDD approach - these tests are written before the endpoints are implemented.
 """
 
+import json
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import TagType
+from app.config import ImageStatus, TagType
 from app.core.security import get_password_hash
 from app.models.character_source_link import CharacterSourceLinks
+from app.models.image import Images
 from app.models.permissions import Perms, UserPerms
 from app.models.tag import Tags
+from app.models.tag_link import TagLinks
 from app.models.user import Users
+from app.services.character_source_counts import _cache_key
 
 # =============================================================================
 # Fixtures
@@ -987,11 +992,13 @@ class TestLinkedTagUsageCount:
         for char in data["characters"]:
             assert "usage_count" in char
 
-        # Verify sorted by usage_count descending (char1 should be first with 100)
-        assert data["characters"][0]["usage_count"] == 100
+        # Neither character shares an image with the source, so the order here
+        # is the alphabetical tiebreaker, not usage_count (see
+        # TestLinkedTagSharedImageCount for the ranking rule).
         assert data["characters"][0]["title"] == "Character A"
-        assert data["characters"][1]["usage_count"] == 50
+        assert data["characters"][0]["usage_count"] == 100
         assert data["characters"][1]["title"] == "Character B"
+        assert data["characters"][1]["usage_count"] == 50
 
     async def test_character_tag_sources_include_usage_count(
         self,
@@ -1031,11 +1038,11 @@ class TestLinkedTagUsageCount:
         for source in data["sources"]:
             assert "usage_count" in source
 
-        # Verify sorted by usage_count descending (source1 should be first with 200)
-        assert data["sources"][0]["usage_count"] == 200
+        # As above: no shared images, so this is the alphabetical tiebreaker.
         assert data["sources"][0]["title"] == "Source A"
-        assert data["sources"][1]["usage_count"] == 75
+        assert data["sources"][0]["usage_count"] == 200
         assert data["sources"][1]["title"] == "Source B"
+        assert data["sources"][1]["usage_count"] == 75
 
     async def test_aliases_include_usage_count(
         self,
@@ -1079,14 +1086,14 @@ class TestLinkedTagUsageCount:
         assert data["aliases"][1]["title"] == "Alias B"
         assert data["aliases"][1]["usage_count"] == 25
 
-    async def test_characters_sorted_by_usage_count_with_title_tiebreaker(
+    async def test_characters_with_no_shared_images_sorted_by_title(
         self,
         client: AsyncClient,
         db_session: AsyncSession,
         source_tag: Tags,
     ):
-        """Test that characters with same usage_count are sorted by title."""
-        # Create characters with same usage count
+        """Test that characters sharing no images with the source sort by title."""
+        # Same usage count, and neither is on any of the source's images
         char_b = Tags(title="Character B", type=TagType.CHARACTER, usage_count=100)
         char_a = Tags(title="Character A", type=TagType.CHARACTER, usage_count=100)
         db_session.add_all([char_b, char_a])
@@ -1111,6 +1118,229 @@ class TestLinkedTagUsageCount:
         assert response.status_code == 200
         data = response.json()
 
-        # Same usage_count, should be sorted alphabetically by title
+        # Tied at zero shared images, so sorted alphabetically by title
         assert data["characters"][0]["title"] == "Character A"
         assert data["characters"][1]["title"] == "Character B"
+
+
+# =============================================================================
+# Shared-image-count ordering
+# =============================================================================
+
+# Distinct id ranges so the seed helpers below never collide with other fixtures.
+_SIC_IMG_BASE = 971000
+
+
+async def _tag_images(
+    db: AsyncSession, tag_ids: list[int], first_image_id: int, count: int
+) -> None:
+    """Create ``count`` active images and link every tag in ``tag_ids`` to each."""
+    for offset in range(count):
+        image_id = first_image_id + offset
+        db.add(
+            Images(
+                image_id=image_id,
+                user_id=1,
+                ext="jpg",
+                status=ImageStatus.ACTIVE,
+                width=800,
+                height=600,
+            )
+        )
+    # Flush so the image rows exist before the tag_links rows referencing them.
+    await db.flush()
+    for offset in range(count):
+        for tag_id in tag_ids:
+            db.add(TagLinks(tag_id=tag_id, image_id=first_image_id + offset))
+    await db.flush()
+
+
+@pytest.mark.api
+class TestLinkedTagSharedImageCount:
+    """Linked characters/sources rank by images shared with the tag being viewed.
+
+    The old ordering used the linked tag's global usage_count, which floated
+    big-franchise characters to the top of a source they barely appear in.
+    """
+
+    async def test_characters_rank_by_images_shared_with_the_source(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        source_tag: Tags,
+    ):
+        """A character with more total images but fewer on this source ranks lower."""
+        # Sorts first by title and has the higher usage_count, so ranking it
+        # second can only come from the shared count.
+        broad = Tags(title="Aaa Broad", type=TagType.CHARACTER)
+        focused = Tags(title="Zzz Focused", type=TagType.CHARACTER)
+        db_session.add_all([broad, focused])
+        await db_session.flush()
+
+        # Broad: 3 images, 1 of them also tagged with the source.
+        await _tag_images(db_session, [broad.tag_id, source_tag.tag_id], _SIC_IMG_BASE, 1)
+        await _tag_images(db_session, [broad.tag_id], _SIC_IMG_BASE + 10, 2)
+        # Focused: 2 images, both also tagged with the source.
+        await _tag_images(db_session, [focused.tag_id, source_tag.tag_id], _SIC_IMG_BASE + 20, 2)
+
+        db_session.add_all(
+            [
+                CharacterSourceLinks(
+                    character_tag_id=broad.tag_id, source_tag_id=source_tag.tag_id
+                ),
+                CharacterSourceLinks(
+                    character_tag_id=focused.tag_id, source_tag_id=source_tag.tag_id
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}")
+        assert response.status_code == 200
+        characters = response.json()["characters"]
+
+        assert [c["title"] for c in characters] == ["Zzz Focused", "Aaa Broad"]
+        assert [c["shared_image_count"] for c in characters] == [2, 1]
+        # The global count is still reported, and still favours the loser.
+        assert [c["usage_count"] for c in characters] == [2, 3]
+
+    async def test_sources_rank_by_images_shared_with_the_character(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        character_tag: Tags,
+    ):
+        """Same rule in reverse: sources on a character page."""
+        broad = Tags(title="Aaa Broad Source", type=TagType.SOURCE)
+        focused = Tags(title="Zzz Focused Source", type=TagType.SOURCE)
+        db_session.add_all([broad, focused])
+        await db_session.flush()
+
+        await _tag_images(db_session, [broad.tag_id, character_tag.tag_id], _SIC_IMG_BASE + 100, 1)
+        await _tag_images(db_session, [broad.tag_id], _SIC_IMG_BASE + 110, 2)
+        await _tag_images(
+            db_session, [focused.tag_id, character_tag.tag_id], _SIC_IMG_BASE + 120, 2
+        )
+
+        db_session.add_all(
+            [
+                CharacterSourceLinks(
+                    character_tag_id=character_tag.tag_id, source_tag_id=broad.tag_id
+                ),
+                CharacterSourceLinks(
+                    character_tag_id=character_tag.tag_id, source_tag_id=focused.tag_id
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{character_tag.tag_id}")
+        assert response.status_code == 200
+        sources = response.json()["sources"]
+
+        assert [s["title"] for s in sources] == ["Zzz Focused Source", "Aaa Broad Source"]
+        assert [s["shared_image_count"] for s in sources] == [2, 1]
+
+    async def test_equal_shared_counts_fall_back_to_title(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        source_tag: Tags,
+    ):
+        """Characters tied on shared count are ordered alphabetically."""
+        char_b = Tags(title="Character B", type=TagType.CHARACTER)
+        char_a = Tags(title="Character A", type=TagType.CHARACTER)
+        db_session.add_all([char_b, char_a])
+        await db_session.flush()
+
+        await _tag_images(db_session, [char_a.tag_id, source_tag.tag_id], _SIC_IMG_BASE + 200, 2)
+        await _tag_images(db_session, [char_b.tag_id, source_tag.tag_id], _SIC_IMG_BASE + 210, 2)
+
+        db_session.add_all(
+            [
+                CharacterSourceLinks(
+                    character_tag_id=char_a.tag_id, source_tag_id=source_tag.tag_id
+                ),
+                CharacterSourceLinks(
+                    character_tag_id=char_b.tag_id, source_tag_id=source_tag.tag_id
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}")
+        assert response.status_code == 200
+        characters = response.json()["characters"]
+
+        assert [c["title"] for c in characters] == ["Character A", "Character B"]
+        assert [c["shared_image_count"] for c in characters] == [2, 2]
+
+    async def test_character_sharing_no_images_reports_zero(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        source_tag: Tags,
+    ):
+        """A linked character that appears on none of the source's images counts zero."""
+        char = Tags(title="Unseen Character", type=TagType.CHARACTER)
+        db_session.add(char)
+        await db_session.flush()
+        await _tag_images(db_session, [char.tag_id], _SIC_IMG_BASE + 300, 1)
+        db_session.add(
+            CharacterSourceLinks(character_tag_id=char.tag_id, source_tag_id=source_tag.tag_id)
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/tags/{source_tag.tag_id}")
+        assert response.status_code == 200
+        assert response.json()["characters"][0]["shared_image_count"] == 0
+
+    async def test_shared_counts_are_written_to_the_cache(
+        self,
+        client_real_redis: AsyncClient,
+        redis_client,
+        db_session: AsyncSession,
+        source_tag: Tags,
+    ):
+        """A cold request stores the computed count map under the source's key."""
+        char = Tags(title="Cached Character", type=TagType.CHARACTER)
+        db_session.add(char)
+        await db_session.flush()
+        await _tag_images(db_session, [char.tag_id, source_tag.tag_id], _SIC_IMG_BASE + 400, 2)
+        db_session.add(
+            CharacterSourceLinks(character_tag_id=char.tag_id, source_tag_id=source_tag.tag_id)
+        )
+        await db_session.commit()
+
+        response = await client_real_redis.get(f"/api/v1/tags/{source_tag.tag_id}")
+        assert response.status_code == 200
+        assert response.json()["characters"][0]["shared_image_count"] == 2
+
+        cached = await redis_client.get(_cache_key(source_tag.tag_id, "character"))
+        assert cached is not None
+        assert json.loads(cached) == {str(char.tag_id): 2}
+
+    async def test_cached_shared_counts_are_used_instead_of_querying(
+        self,
+        client_real_redis: AsyncClient,
+        redis_client,
+        db_session: AsyncSession,
+        source_tag: Tags,
+    ):
+        """A populated key is trusted: the response reports the cached count."""
+        char = Tags(title="Cached Character", type=TagType.CHARACTER)
+        db_session.add(char)
+        await db_session.flush()
+        # One image actually shared - the cache will claim otherwise.
+        await _tag_images(db_session, [char.tag_id, source_tag.tag_id], _SIC_IMG_BASE + 500, 1)
+        db_session.add(
+            CharacterSourceLinks(character_tag_id=char.tag_id, source_tag_id=source_tag.tag_id)
+        )
+        await db_session.commit()
+        await redis_client.set(
+            _cache_key(source_tag.tag_id, "character"), json.dumps({str(char.tag_id): 42})
+        )
+
+        response = await client_real_redis.get(f"/api/v1/tags/{source_tag.tag_id}")
+        assert response.status_code == 200
+        assert response.json()["characters"][0]["shared_image_count"] == 42

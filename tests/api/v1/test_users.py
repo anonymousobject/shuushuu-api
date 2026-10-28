@@ -278,6 +278,167 @@ class TestListUsers:
         assert "Ran" in usernames
         assert usernames[0] == "Ran"
 
+    async def test_list_users_search_literal_underscore_no_wildcard(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A literal `_` in the search term must not match arbitrary characters."""
+        test_users = [
+            ("under_score", "underscore@example.com"),
+            ("underXscore", "underxscore@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "under_score"})
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert usernames == ["under_score"]
+
+    async def test_list_users_search_literal_percent(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A literal `%` in the search term must match only usernames containing it."""
+        test_users = [
+            ("100%", "hundredpercent@example.com"),
+            ("100", "hundred@example.com"),
+            ("100abc", "hundredabc@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "100%"})
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert usernames == ["100%"]
+
+    async def test_list_users_search_bare_percent_no_match_all(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A bare `%` must not act as a wildcard matching every user."""
+        test_users = [
+            ("percentuser1", "percentuser1@example.com"),
+            ("percentuser2", "percentuser2@example.com"),
+        ]
+        for username, email in test_users:
+            user = Users(
+                username=username,
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email=email,
+                active=1,
+            )
+            db_session.add(user)
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "%"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["users"] == []
+
+    async def test_list_users_search_relevance_ordering_with_escaped_term(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Relevance ordering (exact match first, prefix next) must still work
+        when the search term contains characters that need LIKE-escaping."""
+        exact = Users(
+            username="a_b",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="exact_ab@example.com",
+            active=1,
+        )
+        prefix = Users(
+            username="a_bcdef",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="prefix_ab@example.com",
+            active=1,
+        )
+        # Would have matched under the old unescaped interpretation of "_" as
+        # a single-character wildcard, but must not match now that it's literal.
+        wildcard_decoy = Users(
+            username="aXbdecoy",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="decoy_ab@example.com",
+            active=1,
+        )
+        db_session.add_all([exact, prefix, wildcard_decoy])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "a_b"})
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert usernames[0] == "a_b"
+        assert "a_bcdef" in usernames
+        assert "aXbdecoy" not in usernames
+
+    async def test_list_users_search_backslash_escaped(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A literal backslash in the search term must be escaped first, so it
+        cannot desync from the % and _ escapes or from the wildcards this
+        endpoint appends around the term."""
+        backslash_user = Users(
+            username="back\\slash",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="backslash@example.com",
+            active=1,
+        )
+        # Without the actual backslash character, would only match if the
+        # database silently dropped the raw backslash instead of escaping it.
+        decoy = Users(
+            username="backslash",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="backslashdecoy@example.com",
+            active=1,
+        )
+        db_session.add_all([backslash_user, decoy])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/users", params={"search": "back\\slash"})
+        assert response.status_code == 200
+        data = response.json()
+        usernames = [u["username"] for u in data["users"]]
+        assert usernames == ["back\\slash"]
+
+        # A trailing backslash must not desync from the wildcard this endpoint
+        # appends after the term and must not degrade into matching everyone.
+        trailing_response = await client.get("/api/v1/users", params={"search": "abc\\"})
+        assert trailing_response.status_code == 200
+        trailing_data = trailing_response.json()
+        assert trailing_data["users"] == []
+
     async def test_list_users_search_empty_returns_all(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -328,7 +489,8 @@ class TestGetUser:
         assert "username" in data
         # maximgperday is hidden from anonymous users
         assert data.get("maximgperday") is None
-        # assert "email" in data  # Email may be omitted in public response
+        # email is hidden from anonymous users
+        assert data["email"] is None
 
     async def test_get_nonexistent_user(self, client: AsyncClient):
         """Test getting a user that doesn't exist."""
@@ -726,6 +888,54 @@ class TestUpdateUserProfile:
         )
         assert response.status_code == 200
         # response.json()["email"] not asserted: email may not be returned in the response
+
+    async def test_update_email_taken_by_several_accounts_conflicts(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Switching to an email two other accounts already share returns 409, not a 500.
+
+        Legacy PHP-era signups allowed duplicate emails, so the uniqueness
+        check has to cope with the target address matching more than one row.
+        """
+        holders = [
+            Users(
+                username=f"emailholder{index}",
+                password=get_password_hash("TestPassword123!"),
+                password_type="bcrypt",
+                salt="",
+                email="contested@example.com",
+                active=1,
+            )
+            for index in range(2)
+        ]
+        mover = Users(
+            username="emailmover",
+            password=get_password_hash("TestPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="mover@example.com",
+            active=1,
+        )
+        db_session.add_all([*holders, mover])
+        await db_session.commit()
+        await db_session.refresh(mover)
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "emailmover", "password": "TestPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = await client.patch(
+            f"/api/v1/users/{mover.user_id}",
+            json={"email": "contested@example.com"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 409
+        assert "email" in response.json()["detail"].lower()
+
+        await db_session.refresh(mover)
+        assert mover.email == "mover@example.com"
 
     async def test_self_password_change_via_patch_rejected(
         self, client: AsyncClient, db_session: AsyncSession
@@ -3076,6 +3286,110 @@ class TestMaxImgPerDayRestriction:
         assert response.status_code == 200
         assert response.json()["maximgperday"] == 15  # Default value
 
+    async def test_email_hidden_from_anonymous_users(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that email is not visible to anonymous users."""
+        user, _ = await create_test_user_with_password(
+            db_session, "emailhidanon", "emailhidanon@example.com"
+        )
+
+        response = await client.get(f"/api/v1/users/{user.user_id}")
+
+        assert response.status_code == 200
+        assert response.json()["email"] is None
+
+    async def test_email_hidden_from_other_regular_users(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that email is not visible to other regular users."""
+        target, _ = await create_test_user_with_password(
+            db_session, "emailhidtarget", "emailhidtarget@example.com"
+        )
+        viewer, viewer_password = await create_test_user_with_password(
+            db_session, "emailhidviewer", "emailhidviewer@example.com"
+        )
+        token = await login_test_user(client, viewer.username, viewer_password)
+
+        response = await client.get(
+            f"/api/v1/users/{target.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["email"] is None
+
+    async def test_email_visible_to_user_with_edit_permission(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that email is visible to users with USER_EDIT_PROFILE permission."""
+        admin, admin_password = await create_test_user_with_password(
+            db_session, "emailadmin", "emailadmin@example.com"
+        )
+        await grant_user_permission(db_session, admin.user_id, "user_edit_profile")
+        target, _ = await create_test_user_with_password(
+            db_session, "emailadmintarget", "emailadmintarget@example.com"
+        )
+        token = await login_test_user(client, admin.username, admin_password)
+
+        response = await client.get(
+            f"/api/v1/users/{target.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["email"] == "emailadmintarget@example.com"
+
+    async def test_email_visible_to_self(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that email is visible when viewing own profile via /users/{id}."""
+        user, password = await create_test_user_with_password(
+            db_session, "emailselfview", "emailselfview@example.com"
+        )
+        token = await login_test_user(client, user.username, password)
+
+        response = await client.get(
+            f"/api/v1/users/{user.user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["email"] == "emailselfview@example.com"
+
+    async def test_email_absent_from_user_list(self, client: AsyncClient, db_session: AsyncSession):
+        """Test that the list endpoint never includes an email key."""
+        await create_test_user_with_password(
+            db_session, "emaillistuser", "emaillistuser@example.com"
+        )
+
+        response = await client.get("/api/v1/users?search=emaillistuser")
+
+        assert response.status_code == 200
+        users = response.json()["users"]
+        assert len(users) == 1
+        assert "email" not in users[0]
+
+    async def test_email_absent_from_patch_response(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Test that PATCH responses never include an email key, even for editors."""
+        editor, editor_password = await create_test_user_with_password(
+            db_session, "emailpatcheditor", "emailpatcheditor@example.com"
+        )
+        await grant_user_permission(db_session, editor.user_id, "user_edit_profile")
+        target, _ = await create_test_user_with_password(
+            db_session, "emailpatchtarget", "emailpatchtarget@example.com"
+        )
+        token = await login_test_user(client, editor.username, editor_password)
+
+        response = await client.patch(
+            f"/api/v1/users/{target.user_id}",
+            json={"maximgperday": 30},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert "email" not in response.json()
+
 
 @pytest.mark.api
 class TestUserProfileEditAuthorization:
@@ -3384,11 +3698,13 @@ class TestHideRepostsSetting:
 
 
 class TestUserUpdateSnapshotConflictRetry:
-    """Concurrent PATCHes of one users row trip MariaDB ER_CHECKREAD (errno
-    1020) under innodb_snapshot_isolation — the losing transaction's UPDATE
-    meets a row version committed after its snapshot. The update must retry on
-    a fresh snapshot instead of surfacing a 500. (Observed in practice when
-    the frontend's settings auto-save fires several PATCHes back-to-back.)"""
+    """Concurrent PATCHes of one users row hit a MariaDB snapshot conflict
+    (ER_CHECKREAD), observed in practice when the frontend's settings
+    auto-save fires several PATCHes back-to-back. On Postgres, two PATCHes
+    of one row serialize on the row lock rather than deadlocking, but this
+    site keeps its retry per ADR-0004; the test injects the fabricated
+    Postgres deadlock (SQLSTATE 40P01) error to prove the retry contract
+    still holds here."""
 
     async def _make_user_and_token(self, db_session: AsyncSession) -> tuple[Users, str]:
         user = Users(
@@ -3409,7 +3725,7 @@ class TestUserUpdateSnapshotConflictRetry:
     async def test_patch_me_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient 1020 on the users UPDATE is retried and the PATCH succeeds.
+        """A transient Postgres deadlock (40P01) on the users UPDATE is retried and the PATCH succeeds.
 
         needs_commit: the retry performs a real session rollback for a fresh
         snapshot; under SAVEPOINT isolation that rollback would unwind the
@@ -3417,8 +3733,7 @@ class TestUserUpdateSnapshotConflictRetry:
         """
         from unittest.mock import patch
 
-        import pymysql
-        from sqlalchemy.exc import OperationalError
+        from tests.transient_conflict import _deadlock_error
 
         _, token = await self._make_user_and_token(db_session)
 
@@ -3428,13 +3743,7 @@ class TestUserUpdateSnapshotConflictRetry:
         async def flaky_commit(self, *args, **kwargs):
             calls.append(1)
             if len(calls) == 1:
-                raise OperationalError(
-                    "UPDATE users ...",
-                    None,
-                    pymysql.err.OperationalError(
-                        1020, "Record has changed since last read in table 'users'"
-                    ),
-                )
+                raise _deadlock_error()
             await real_commit(self, *args, **kwargs)
 
         with patch.object(AsyncSession, "commit", flaky_commit):
@@ -3453,7 +3762,7 @@ class TestUserUpdateSnapshotConflictRetry:
     async def test_patch_me_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A persistent 1020 propagates after a bounded number of attempts.
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts.
 
         needs_commit: each retry re-SELECTs the user after a real rollback;
         under SAVEPOINT isolation that rollback unwinds the fixture's user row
@@ -3461,8 +3770,9 @@ class TestUserUpdateSnapshotConflictRetry:
         """
         from unittest.mock import patch
 
-        import pymysql
-        from sqlalchemy.exc import OperationalError
+        from sqlalchemy.exc import DBAPIError
+
+        from tests.transient_conflict import _deadlock_error
 
         _, token = await self._make_user_and_token(db_session)
 
@@ -3470,17 +3780,11 @@ class TestUserUpdateSnapshotConflictRetry:
 
         async def always_conflict(self, *args, **kwargs):
             calls.append(1)
-            raise OperationalError(
-                "UPDATE users ...",
-                None,
-                pymysql.err.OperationalError(
-                    1020, "Record has changed since last read in table 'users'"
-                ),
-            )
+            raise _deadlock_error()
 
         with (
             patch.object(AsyncSession, "commit", always_conflict),
-            pytest.raises(OperationalError),
+            pytest.raises(DBAPIError),
         ):
             await client.patch(
                 "/api/v1/users/me",

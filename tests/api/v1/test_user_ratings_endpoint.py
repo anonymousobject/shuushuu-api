@@ -304,10 +304,10 @@ class TestUserRatingsFiltersAndSorting:
         This proves pagination doesn't repeat or drop rows across pages — it
         does NOT prove the `image_id` tiebreaker is doing anything: verified
         empirically (see task-4-report.md) that this test still passes with
-        the tiebreaker removed, because `image_ratings`' primary key is
-        `(user_id, image_id)`, so InnoDB's clustered-index scan for
-        `WHERE user_id = X` already returns rows in `image_id` order. The
-        tiebreaker is belt-and-braces.
+        the tiebreaker removed, because Postgres returns this small table via
+        a sequential scan in heap order, which matches ascending `image_id`
+        since the rows were inserted in that order. The tiebreaker is
+        belt-and-braces.
         """
         rater = await _make_user(db_session, "rater_stable")
         for index in range(3):

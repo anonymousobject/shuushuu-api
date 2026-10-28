@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.tag import Tags
 
 
-async def resolve_tag_relationships(
+async def resolve_tag_relationships(  # noqa: C901
     db: AsyncSession, suggestions: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """

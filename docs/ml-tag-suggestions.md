@@ -157,7 +157,6 @@ Trigger (re-)generation manually.
 
 - Model is loaded once at worker startup when `ML_TAG_SUGGESTIONS_ENABLED=true`.
 - Missing model files → worker **fails to start** (no silent degradation).
-- Meilisearch unavailability is handled gracefully (warning, not crash).
 - On shutdown, `MLTagSuggestionService.cleanup()` is called to release the ONNX
   session.
 

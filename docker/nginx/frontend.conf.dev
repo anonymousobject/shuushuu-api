@@ -84,8 +84,11 @@ server {
     }
 
     # Frontend - proxy to Vite dev server running on host (including SvelteKit routes)
+    # Port is substituted at container start (defaults to 5173) so a host running
+    # a second instance can move the dev server off the default — set
+    # FRONTEND_DEV_PORT in .env.
     location / {
-        proxy_pass http://host.docker.internal:5173;
+        proxy_pass http://host.docker.internal:${FRONTEND_DEV_PORT};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

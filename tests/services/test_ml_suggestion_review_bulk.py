@@ -422,16 +422,16 @@ class TestAncestorCleanupOnApprove:
 
 class TestBulkReviewSnapshotConflictRetry:
     """A background ml_remap run rewriting ml_tag_suggestions rows while a
-    bulk review commits over the same rows trips MariaDB ER_CHECKREAD (errno
-    1020) under innodb_snapshot_isolation. bulk_review_suggestions must retry
-    on a fresh snapshot instead of propagating the 500 (see
-    app/core/db_retry.py and app/services/ml_suggestion_review.py)."""
+    bulk review commits over the same rows can hit a Postgres deadlock
+    (SQLSTATE 40P01). bulk_review_suggestions must retry on a fresh
+    transaction instead of propagating the 500 (see app/core/db_retry.py and
+    app/services/ml_suggestion_review.py)."""
 
     @pytest.mark.needs_commit
     async def test_bulk_review_approve_retries_snapshot_conflict_and_succeeds(
         self, db_session: AsyncSession
     ):
-        """A transient 1020 on the bulk commit is retried and the approval succeeds.
+        """A transient Postgres deadlock (40P01) on the bulk commit is retried and the approval succeeds.
 
         needs_commit: the retry performs a real session rollback for a fresh
         snapshot; under the default SAVEPOINT isolation that rollback would
@@ -440,8 +440,7 @@ class TestBulkReviewSnapshotConflictRetry:
         """
         from unittest.mock import patch
 
-        import pymysql
-        from sqlalchemy.exc import OperationalError
+        from tests.transient_conflict import _deadlock_error
 
         user = await _make_user(db_session, "snapshot")
         image = await _make_image(db_session, user, "snapshot")
@@ -463,14 +462,7 @@ class TestBulkReviewSnapshotConflictRetry:
         async def flaky_commit(self, *args, **kwargs):
             calls.append(1)
             if len(calls) == 1:
-                raise OperationalError(
-                    "UPDATE ml_tag_suggestions ...",
-                    None,
-                    pymysql.err.OperationalError(
-                        1020,
-                        "Record has changed since last read in table 'ml_tag_suggestions'",
-                    ),
-                )
+                raise _deadlock_error()
             await real_commit(self, *args, **kwargs)
 
         with patch.object(AsyncSession, "commit", flaky_commit):

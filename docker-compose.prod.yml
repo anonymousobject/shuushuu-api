@@ -1,6 +1,6 @@
 # Production override — containerised nginx + certbot as TLS edge
-# Docker provides: api, arq-worker, frontend, nginx, certbot, mediawiki, meilisearch, iqdb, loki, grafana, alloy, docker-socket-proxy
-# DB tier (native, out-of-stack): mariadb + redis reached over private network; containers are busybox stubs
+# Docker provides: api, arq-worker, frontend, nginx, certbot, mediawiki, iqdb, loki, grafana, alloy, docker-socket-proxy
+# DB tier (native, out-of-stack): postgres + redis reached over private network; containers are busybox stubs
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # Config comes from the host's .env (one env per host; see .env.example)
 
@@ -14,14 +14,14 @@ services:
   # Disable local services not needed in production
   # Use entrypoint override instead of profiles to keep services "defined"
   # (profiles makes them undefined, breaking depends_on merge from base)
-  mariadb:
+  # Prod's Postgres lives natively on the DB tier, reached via DATABASE_URL.
+  # Without this stub a prod `up -d` would start a real postgres container with
+  # whatever POSTGRES_* creds the prod .env holds.
+  postgres:
     image: busybox:latest
     entrypoint: ["sleep", "infinity"]
     restart: "no"
-    # Drop the base service's 3306 host publish — production MariaDB
-    # lives natively on a separate DB tier reached over a private
-    # network. The stub exists purely to keep depends_on chains
-    # merging cleanly.
+    volumes: !override []
     ports: !override []
     healthcheck:
       test: ["CMD", "true"]
@@ -35,27 +35,20 @@ services:
     profiles: [disabled]
 
   # In production, Redis runs as a native service on the DB tier rather
-  # than as a container on the app host. Stub the service the same way
-  # mariadb is stubbed so depends_on chains keep merging cleanly without
+  # than as a container on the app host. Stub the service so
+  # depends_on chains keep merging cleanly without
   # actually running a redis container.
   redis:
     image: busybox:latest
     entrypoint: ["sleep", "infinity"]
     restart: "no"
-    # Same as mariadb — Redis is native on the DB tier. Stub keeps
+    # Redis is native on the DB tier. Stub keeps
     # depends_on merging; no need to publish 6379 on the host.
     ports: !override []
     healthcheck:
       test: ["CMD", "true"]
       interval: 5s
       retries: 1
-
-  # Meilisearch runs as an actual container in prod (unlike redis/mariadb),
-  # but only api/arq-worker should reach it over the compose default
-  # network. Drop the base service's 7700 host publish so it isn't
-  # accessible from outside the container network.
-  meilisearch:
-    ports: !override []
 
   frontend:
     # NOTE: Expects shuushuu-frontend repo at ../shuushuu-frontend (sibling directory)
@@ -117,9 +110,18 @@ services:
       # only runs in prod and its public URL is fixed. The .conf glob
       # in nginx.conf picks it up automatically.
       - ./docker/nginx/conf.d/wiki.conf:/etc/nginx/conf.d/wiki.conf:ro
+      # stub_status on :8081 for the Datadog nginx check. Same .conf glob
+      # picks it up. Published to 127.0.0.1 only — see ports below.
+      - ./docker/nginx/conf.d/stub-status.conf:/etc/nginx/conf.d/stub-status.conf:ro
       # LE certs land here via the certbot service. Read-only for nginx;
       # certbot has it RW.
       - ./docker/certbot/conf:/etc/letsencrypt:ro
+    ports:
+      # Appended to the base file's 80/443. Bound to loopback so the status
+      # endpoint is reachable by dd-agent on this host and by nothing off it;
+      # docker is the boundary rather than an nginx allow/deny on a bridge
+      # subnet that can change.
+      - "127.0.0.1:8081:8081"
     depends_on:
       - api
       - frontend
@@ -156,7 +158,21 @@ services:
     # !reset drops the base service's container_name from the merged config.
     container_name: !reset null
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
-    command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # Docker's default soft nofile limit is 1024 (containerd LimitNOFILESoft).
+    # The single uvicorn process exhausted it under scraper bursts on 2026-09-05
+    # (OSError: [Errno 24] Too many open files → nginx 502s for every request,
+    # including healthchecks and image serving). Raise the ceiling so descriptor
+    # exhaustion can't be the first thing to fail under load.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # 4 workers: the host has 8 cores and one uvicorn process saturates a
+    # single core under scraper waves (2026-09-05). --limit-concurrency caps
+    # in-flight requests per worker so a saturated worker answers 503 in
+    # milliseconds instead of queueing thousands of connections into 30 s
+    # pool timeouts and nginx 504s.
+    command: uv run --no-project uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --limit-concurrency 64
     # No host port publish: two replicas can't bind the same host port during a
     # rollout, and nginx reaches the api over the compose network (api:8000), so
     # the publish was debug-only. Use `docker compose exec api …` for host access.
@@ -166,6 +182,19 @@ services:
       - REDIS_URL=${REDIS_URL}
       - ARQ_REDIS_URL=${ARQ_REDIS_URL}
       - IQDB_HOST=iqdb
+      # Per-worker asyncpg pool. 4 workers x (8 + 4) = 48 connections per
+      # container. docker-rollout runs two api replicas during a deploy, so the
+      # worst case is 96 here plus arq-worker's default 30, which fits under
+      # Postgres max_connections=200 (raised from 100 on 2026-09-06 for this).
+      # Peak active backends observed under load was 4.
+      - DB_POOL_SIZE=8
+      - DB_MAX_OVERFLOW=4
+      # onnxruntime defaults to one intra-op thread per core in every worker,
+      # so a single /analyze call takes the whole host and starves the other
+      # workers. Capped at 2, the ceiling is 4 workers x ML_ANALYZE_CONCURRENCY
+      # (2) x 2 = 16 threads, and one inference leaves 6 cores for serving.
+      # arq-worker keeps the library default for batch throughput.
+      - ML_INTRA_OP_THREADS=2
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ${STORAGE_PATH:-/shuushuu/images}:${STORAGE_PATH:-/shuushuu/images}
@@ -178,7 +207,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    # List form replaces base depends_on entirely (removes mariadb dependency)
+    # List form adds redis; the base's postgres entries still merge
+    # in, which is why the postgres stub carries a passing healthcheck.
     depends_on:
       - redis
     restart: always
@@ -194,6 +224,12 @@ services:
     # double-run anything.
     container_name: !reset null
     user: "1003:1003"  # shuushuu user — matches storage directory ownership
+    # Same 1024 default as api; the worker opens per-job DB/Redis/httpx
+    # connections, so give it the same headroom.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports: []
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -207,15 +243,15 @@ services:
     # draining the old one. `arq --check` reads a per-container health key that
     # the worker refreshes every 15s (see WorkerSettings) — per-container so the
     # old replica's heartbeat can't vouch for a broken new one. start_period
-    # covers Meilisearch config + ML model load (~5s observed; headroom for a
-    # loaded host).
+    # covers ML model load (~5s observed; headroom for a loaded host).
     healthcheck:
       test: ["CMD", "uv", "run", "--no-project", "arq", "--check", "app.tasks.worker.WorkerSettings"]
       interval: 10s
       timeout: 10s
       retries: 3
       start_period: 30s
-    # List form replaces base depends_on entirely (removes mariadb dependency)
+    # List form adds redis; the base's postgres entries still merge
+    # in, which is why the postgres stub carries a passing healthcheck.
     depends_on:
       - redis
     restart: always
@@ -266,9 +302,16 @@ services:
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
       - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
-    # No env_file — only GRAFANA_ADMIN_PASSWORD is needed, and it is already
+      # Resolved by the pushover contact point in
+      # provisioning/alerting/contact-points.yaml, which is git-tracked and so
+      # references $PUSHOVER_* rather than carrying the values. Rendered into
+      # .env by the ansible compose_project role from vault/monitoring.yml.
+      - PUSHOVER_API_TOKEN=${PUSHOVER_API_TOKEN}
+      - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY}
+    # No env_file — only the variables enumerated above are needed, and they are
     # substituted via ${VAR} in `environment:` (sourced from .env at compose level).
     # This avoids leaking unrelated DB/Redis/etc. credentials into the Grafana container.
+    # Adding an env_file to save enumerating two lines would quietly undo that.
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -425,9 +468,6 @@ services:
 
 volumes:
   # Override generic volume names with prod-specific names for data isolation
-  mariadb_data:
-    name: mariadb_data_prod
-    driver: local
   redis_data:
     name: redis_data_prod
     driver: local

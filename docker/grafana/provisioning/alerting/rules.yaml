@@ -1,0 +1,96 @@
+# Grafana alert rules.
+#
+# Why this exists rather than a Datadog monitor: the Datadog agent ingests no
+# logs from either host (logs_enabled is unset), and its nginx check reports
+# stub_status only — connection and request counts, with no status-code
+# breakdown. Loki already has the nginx access logs. A bug served roughly 130
+# errors an hour for sixteen hours without tripping anything.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: http-errors
+    folder: Alerts
+    interval: 1m
+    rules:
+      - uid: nginx_5xx_rate
+        title: nginx 5xx errors
+        condition: threshold
+
+        # 10m, against a 5m query window. Deploys recreate the api container
+        # and produce a burst of 5xx while it is down — the fix deploy that
+        # motivated this rule generated ~43 in a few seconds on SSR routes.
+        # That burst stays visible for 5 minutes and then decays, so
+        # requiring the condition to hold for 10 rides out a deploy without
+        # suppressing a genuine sustained fault.
+        for: 10m
+
+        # Load-bearing. Zero 5xx is the healthy state, and a Loki range query
+        # matching nothing returns no series at all — which Grafana treats as
+        # NoData, not as zero. Left at the default this rule pages
+        # continuously while the site is perfectly healthy, and gets muted
+        # within a day.
+        noDataState: OK
+
+        # If the query itself breaks (Loki down, datasource misconfigured),
+        # alert rather than fail open — a silent 5xx alarm is the thing this
+        # rule exists to prevent.
+        execErrState: Alerting
+
+        annotations:
+          # Deliberately not a numbered container name: docker-rollout
+          # increments it on every deploy (already -33 -> -34), so a hardcoded
+          # one is stale by the time anyone reads the alert.
+          summary: >-
+            nginx is serving 5xx responses. Check the api logs with
+            `docker compose -f docker-compose.yml -f docker-compose.prod.yml
+            logs --tail=200 api` — tracebacks there are raw text, not
+            structlog, so level-based queries will not surface them. If the
+            burst coincides with a deploy it will decay on its own; this rule
+            waits 10m precisely so it does not page for that.
+        labels:
+          severity: warning
+
+        # Attaches the contact point to this rule directly, in preference to
+        # provisioning a root notification policy — that would replace the
+        # default tree wholesale and silently change routing for anything
+        # added later.
+        notification_settings:
+          receiver: pushover
+
+        data:
+          - refId: query
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: loki
+            model:
+              refId: query
+              queryType: instant
+              # The regexp parser, not a `|= " 500 "` substring filter: the
+              # substring form misses 502 and 503 entirely, and false-positives
+              # on any response whose byte count happens to be 500.
+              expr: >-
+                sum(count_over_time({container_name="shuushuu-nginx-prod"}
+                | regexp `" (?P<status>\d{3}) \d+ `
+                | status=~`5..` [5m]))
+
+          - refId: threshold
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: threshold
+              type: threshold
+              expression: query
+              conditions:
+                # >5 per 5m. The incident that motivated this produced ~134
+                # HTTP 500s an hour, about 11 per five-minute window — an
+                # intuitive round threshold of 20 would have sat above the
+                # real incident and never fired. 5 leaves headroom over the
+                # healthy baseline of zero while catching a fault that size
+                # comfortably.
+                - evaluator:
+                    type: gt
+                    params: [5]

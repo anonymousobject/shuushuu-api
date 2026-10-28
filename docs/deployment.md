@@ -18,10 +18,20 @@ an IP at config load.
 1. Scales `api` to two replicas — a new container (new image) starts alongside
    the running one. Neither publishes a host port, so they coexist.
 2. Waits for the new replica's healthcheck (`GET /health`) to pass.
-3. Removes the old replica. nginx's next DNS refresh drops it from rotation.
+3. Waits a further 12s (`--wait-after-healthy`) so every nginx worker's DNS
+   cache has refreshed to include the new replica.
+4. Removes the old replica. Workers still holding its IP get connection
+   refused and nginx retries on the new replica, so the client never sees it.
 
 No requests are dropped, and nginx is never restarted. The same applies to
 `frontend` (it already has a healthcheck).
+
+Step 3 matters most for `frontend`, which goes healthy in ~5s. Without the
+wait, a worker that resolved `frontend` just before the new replica started
+knows only the old IP for up to 10s; removing the old replica in that window
+502s its requests, since there is no other address to retry. Every frontend
+rollout through 2026-10 dropped requests this way. The wait must outlast
+nginx's `valid=`, so change the two together.
 
 This required (see `docker-compose.prod.yml`):
 
@@ -60,7 +70,7 @@ git -C ~/shuushuu-api pull        # and/or ~/shuushuu-frontend
 # 2. If the release includes a DB migration, apply it FIRST (see below)
 make prod-migrate
 
-# 3. Zero-downtime rollout (default rolls api + frontend)
+# 3. Zero-downtime rollout (default rolls api + frontend + arq-worker)
 make prod-deploy                  # or: make prod-deploy api  /  make prod-deploy frontend
 ```
 

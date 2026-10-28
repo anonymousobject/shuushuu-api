@@ -8,11 +8,12 @@ These tests cover the /api/v1/images endpoints including:
 """
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TagType, settings
@@ -21,7 +22,7 @@ from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.permissions import Groups, UserGroups
 from app.models.tag_history import TagHistory
 from app.services.tag_type_flags import refresh_image_tag_type_flags
-from tests.snapshot_conflict import _db_error, _flaky_flush, _snapshot_conflict_error
+from tests.transient_conflict import _db_error, _deadlock_error, _flaky_flush
 
 
 @pytest.mark.api
@@ -1986,7 +1987,7 @@ class TestFavoritedByUserIdFilter:
         assert data["total"] == 0
         assert data["images"] == []
 
-    async def test_filter_favorited_with_other_filters(
+    async def test_filter_favorited_with_other_filters(  # noqa: PLR0915
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """Test favorited_by_user_id filter combined with other filters."""
@@ -2540,7 +2541,11 @@ class TestOwnerStatusChangeSyncsMlSuggestions:
 
 @pytest.mark.api
 class TestTagUsageCount:
-    """Tests for automatic tag usage_count updates via database triggers."""
+    """Tests for automatic tag usage_count updates via database triggers.
+
+    The Postgres bootstrap (app/core/pg_triggers.py) installs the triggers
+    under test.
+    """
 
     async def test_tag_usage_count_increments_on_add(
         self,
@@ -2834,6 +2839,77 @@ class TestCommentFilters:
         data = response.json()
         assert data["total"] == 0
 
+    @pytest.mark.parametrize("sort_by", ["favorites", "last_post", "total_pixels"])
+    async def test_filter_by_commenter_with_non_id_sort(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+        sort_by: str,
+    ):
+        """Comment filters must work with sorts that are not image_id.
+
+        The commenter/commentsearch path JOINs Comments and applies DISTINCT to
+        the id subquery. Postgres requires every ORDER BY expression to appear in
+        a SELECT DISTINCT select list; MySQL does not. Sorts whose get_column()
+        resolves to image_id (image_id, date_added) hid this — every other sort
+        raised InvalidColumnReferenceError and returned 500 in production.
+        """
+        from app.models import Comments
+
+        user = Users(
+            username=f"sortcommenter_{sort_by}",
+            email=f"sc_{sort_by}@test.com",
+            password="testpass",
+            password_type="bcrypt",
+            salt="testsalt0000003",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        # Two images the user commented on, with different sort-column values so
+        # the ordering assertion below is meaningful rather than incidental.
+        low_data = sample_image_data.copy()
+        low_data.update({"filename": f"low_{sort_by}", "md5_hash": f"lo{sort_by:>014}"[:32]})
+        high_data = sample_image_data.copy()
+        high_data.update({"filename": f"high_{sort_by}", "md5_hash": f"hi{sort_by:>014}"[:32]})
+        low, high = Images(**low_data), Images(**high_data)
+        db_session.add_all([low, high])
+        await db_session.flush()
+
+        low_value, high_value = {
+            "favorites": (1, 99),
+            "last_post": (
+                datetime(2020, 1, 1, tzinfo=UTC),
+                datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            # decimal(6,3) unsigned megapixels in prod — keep inside the range.
+            "total_pixels": (Decimal("0.100"), Decimal("200.000")),
+        }[sort_by]
+        setattr(low, sort_by, low_value)
+        setattr(high, sort_by, high_value)
+
+        db_session.add_all(
+            [
+                Comments(image_id=low.image_id, user_id=user.id, post_text="a"),
+                Comments(image_id=high.image_id, user_id=user.id, post_text="b"),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/images?commenter={user.id}&sort_by={sort_by}&sort_order=DESC"
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["total"] == 2
+        # DISTINCT must not drop or duplicate rows, and the sort must be honored.
+        assert [img["filename"] for img in data["images"]] == [
+            f"high_{sort_by}",
+            f"low_{sort_by}",
+        ]
+
     async def test_filter_by_comment_text_like_search(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -2886,7 +2962,7 @@ class TestCommentFilters:
         db_session.add_all([comment1, comment2, comment3])
         await db_session.commit()
 
-        # Search for "awesome" using LIKE mode (always works, doesn't need fulltext index)
+        # Search for "awesome" using explicit LIKE mode (raw string as one ILIKE substring)
         response = await client.get("/api/v1/images?commentsearch=awesome&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()
@@ -3016,7 +3092,7 @@ class TestCommentFilters:
         assert data["total"] == 1
         assert data["images"][0]["filename"] == "img1"
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_defaults_to_all_words(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3076,7 +3152,7 @@ class TestCommentFilters:
         response = await client.get("/api/v1/images?commentsearch=happy&commentsearch_mode=bogus")
         assert response.status_code == 422
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_short_token_does_not_zero_results(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3136,14 +3212,15 @@ class TestCommentFilters:
         response = await client.get("/api/v1/images?commentsearch=ab cd")
         assert response.status_code == 400
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_allows_short_non_ascii_terms(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
         """CJK must never be refused: LIKE is the only path it has.
 
-        MariaDB has no ngram parser, so a short Japanese term is unindexable by
-        definition. Refusing it would break Japanese comment search outright.
+        A short Japanese term is served by the ILIKE substring match, not a
+        minimum-length index lookup. Refusing it would break Japanese comment
+        search outright.
         """
         from app.models import Comments
 
@@ -3176,55 +3253,7 @@ class TestCommentFilters:
         response = await client.get("/api/v1/images?commentsearch=happy bd")
         assert response.status_code == 200
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
-    async def test_commentsearch_boolean_mode_passes_operators_through(
-        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
-    ):
-        """`boolean` mode hands raw operators to MySQL rather than parsing them.
-
-        Pinned because it was the only mode with no coverage. A trailing wildcard is
-        the discriminator: MySQL expands `wombat*` to the token "wombats", whereas
-        the all_words parser strips `*` as a non-word character and searches for the
-        exact token "wombat", which does not match. So this test fails if boolean
-        mode ever falls through to the default — asserted explicitly below.
-        """
-        from app.models import Comments
-
-        user = Users(
-            username="boolmode_user",
-            email="boolmode@test.com",
-            password="testpass",
-            password_type="bcrypt",
-            salt="testsalt0000017",
-        )
-        db_session.add(user)
-        await db_session.flush()
-
-        wanted = Images(**{**sample_image_data, "user_id": user.user_id})
-        db_session.add(wanted)
-        await db_session.flush()
-        db_session.add(
-            Comments(
-                image_id=wanted.image_id,
-                user_id=user.user_id,
-                post_text="wombats appreciation thread",
-            )
-        )
-        await db_session.commit()
-
-        boolean_hit = await client.get(
-            "/api/v1/images?commentsearch=wombat*&commentsearch_mode=boolean"
-        )
-        assert boolean_hit.status_code == 200
-        assert wanted.image_id in {img["image_id"] for img in boolean_hit.json()["images"]}
-
-        # The same string under the default mode must NOT match, or the test above
-        # would pass even if boolean mode stopped being wired up at all.
-        default_miss = await client.get("/api/v1/images?commentsearch=wombat*")
-        assert default_miss.status_code == 200
-        assert wanted.image_id not in {img["image_id"] for img in default_miss.json()["images"]}
-
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_ignores_soft_deleted_comments(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
@@ -3349,11 +3378,15 @@ class TestCommentFilters:
         returned = {img["image_id"] for img in response.json()["images"]}
         assert only_deleted.image_id not in returned
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_commentsearch_stopword_does_not_zero_results(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
     ):
-        """`the` is an InnoDB stopword; `+the +cat` returns 0 rows."""
+        """On Postgres, `the` is not a stopword: `commentsearch=the cat` matches
+        every comment containing both terms. Under MariaDB fulltext, `the` was
+        an InnoDB stopword excluded by the `+the +cat` boolean-mode query,
+        which is why this case exists.
+        """
         from app.models import Comments
 
         user = Users(
@@ -3389,42 +3422,6 @@ class TestCommentFilters:
         """`@` and `)` are ERROR 1064 in boolean mode if passed through raw."""
         response = await client.get("/api/v1/images?commentsearch=happy@birthday)")
         assert response.status_code == 200
-
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
-    async def test_commentsearch_natural_mode_still_available(
-        self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
-    ):
-        """The old OR behaviour remains reachable via an explicit mode."""
-        from app.models import Comments
-
-        user = Users(
-            username="natural_user",
-            email="natural@test.com",
-            password="testpass",
-            password_type="bcrypt",
-            salt="testsalt0000013",
-        )
-        db_session.add(user)
-        await db_session.flush()
-
-        image = Images(**{**sample_image_data, "user_id": user.user_id})
-        db_session.add(image)
-        await db_session.flush()
-        db_session.add(
-            Comments(
-                image_id=image.image_id,
-                user_id=user.user_id,
-                post_text="such a happy picture",
-            )
-        )
-        await db_session.commit()
-
-        response = await client.get(
-            "/api/v1/images?commentsearch=happy birthday&commentsearch_mode=natural"
-        )
-        assert response.status_code == 200
-        returned = {img["image_id"] for img in response.json()["images"]}
-        assert image.image_id in returned
 
     async def test_commentsearch_unsearchable_query_returns_zero_rows(
         self, client: AsyncClient, db_session: AsyncSession, sample_image_data: dict
@@ -3517,7 +3514,7 @@ class TestCommentFilters:
         db_session.add_all([image1, image2])
         await db_session.flush()
 
-        # Add comments - using substring that fulltext might not find but LIKE will
+        # Add comments - "concatenation" contains "cat" as a substring, not a whole word
         comment1 = Comments(
             image_id=image1.image_id, user_id=user.id, post_text="concatenation test"
         )
@@ -3526,7 +3523,6 @@ class TestCommentFilters:
         await db_session.commit()
 
         # LIKE search: "cat" as substring should match "concatenation"
-        # Works in all environments (doesn't require FULLTEXT index)
         response = await client.get("/api/v1/images?commentsearch=cat&commentsearch_mode=like")
         assert response.status_code == 200
         data = response.json()
@@ -4496,11 +4492,12 @@ class TestRateImage:
 @pytest.mark.api
 class TestFavoriteRatingSnapshotConflictRetry:
     """favorite/unfavorite/rate do read-modify-write UPDATEs on shared
-    images/users rows, so under innodb_snapshot_isolation a concurrent commit
-    can abort them with ER_CHECKREAD (errno 1020) — a double-click is enough.
-    Each write path must retry on a fresh snapshot instead of surfacing a 500.
+    images/users rows, so concurrent updates triggered a MariaDB snapshot
+    conflict (ER_CHECKREAD) — a double-click was enough. On Postgres these
+    sites keep their retry per ADR-0004, so each write path must still retry
+    on a fresh transaction instead of surfacing a 500.
 
-    These exercise the real retry helper (app/core/db_retry.py); the 1020 is
+    These exercise the real retry helper (app/core/db_retry.py); the deadlock is
     injected into the wrapped unit's explicit flush, mirroring the upload path's
     TestUploadSnapshotConflictRetry."""
 
@@ -4512,10 +4509,10 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the favorite counter write is retried and succeeds.
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the favorite counter write is retried and succeeds.
 
-        needs_commit: the retry performs a real session rollback to obtain a
-        fresh snapshot; under the default SAVEPOINT isolation that rollback
+        needs_commit: the retry performs a real transaction rollback to obtain a
+        fresh transaction; under the default SAVEPOINT isolation that rollback
         would unwind the fixture's committed image/user rows too, which can't
         happen in production where they are durably committed.
         """
@@ -4525,7 +4522,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.refresh(image)
         initial_favorites = image.favorites
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
@@ -4550,7 +4547,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the unfavorite counter write is retried and succeeds."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the unfavorite counter write is retried and succeeds."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
@@ -4563,7 +4560,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.refresh(image)
         favorites_before = image.favorites
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.delete(
                 f"/api/v1/images/{image.image_id}/favorite"
@@ -4590,13 +4587,13 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient 1020 on the rating write is retried and the rating succeeds."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the rating write is retried and the rating succeeds."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(
                 f"/api/v1/images/{image.image_id}/rating?rating=8"
@@ -4615,7 +4612,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         db_session: AsyncSession,
         sample_image_data: dict,
     ):
-        """A persistent 1020 propagates after a bounded number of attempts.
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts.
 
         needs_commit: each retry rolls back for a fresh snapshot, so the image
         must be durably committed to survive re-fetch across attempts (as in
@@ -4626,8 +4623,8 @@ class TestFavoriteRatingSnapshotConflictRetry:
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error())
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
         assert len(calls) == 3  # bounded: no infinite retry loop
@@ -4638,14 +4635,16 @@ class TestFavoriteRatingSnapshotConflictRetry:
         db_session: AsyncSession,
         sample_image_data: dict,
     ):
-        """Non-1020 database errors propagate immediately with no retry."""
+        """Non-deadlock database errors propagate immediately with no retry."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
         await db_session.refresh(image)
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(
+            100, _db_error("23505", "duplicate key value violates unique constraint")
+        )
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image.image_id}/favorite")
 
         assert len(calls) == 1  # not retried
@@ -4654,13 +4653,13 @@ class TestFavoriteRatingSnapshotConflictRetry:
 @pytest.mark.api
 class TestTagWriteSnapshotConflictRetry:
     """Adding or removing a tag INSERTs into tag_history, whose tag_id/image_id/
-    user_id are FK columns — so InnoDB takes a locking read on each parent row.
+    user_id are FK columns — so Postgres takes a locking read on each parent row.
     The usage_count triggers on tag_links keep the parent `tags` row moving, and
-    the image_posts trigger does the same to `users`, so under
-    innodb_snapshot_isolation a concurrent tag write aborts this one with
-    ER_CHECKREAD (errno 1020). Two users tagging at the same moment is enough.
+    the image_posts trigger does the same to `users`, so concurrent tag writes
+    can trigger a Postgres deadlock (SQLSTATE 40P01). Two users tagging at the
+    same moment is enough.
 
-    Both paths must retry on a fresh snapshot instead of surfacing a 500.
+    Both paths must retry on a fresh transaction instead of surfacing a 500.
 
     Each test captures image_id/tag_id as ints before calling the endpoint: the
     app under test shares this session (conftest overrides get_db with
@@ -4676,7 +4675,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A transient 1020 during the tag add is retried and the tag lands once.
+        """A transient Postgres deadlock (SQLSTATE 40P01) during the tag add is retried and the tag lands once.
 
         needs_commit: the retry performs a real session rollback to obtain a
         fresh snapshot; under the default SAVEPOINT isolation that rollback
@@ -4698,7 +4697,7 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
@@ -4732,7 +4731,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A transient 1020 during the tag removal is retried and the link goes."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) during the tag removal is retried and the link goes."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4751,7 +4750,7 @@ class TestTagWriteSnapshotConflictRetry:
         db_session.add(TagLinks(image_id=image_id, tag_id=tag_id, user_id=sample_user.user_id))
         await db_session.commit()
 
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with flush_patch:
             response = await authenticated_client.delete(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
@@ -4783,7 +4782,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A persistent 1020 propagates after a bounded number of attempts."""
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4799,8 +4798,8 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error("tag_history"))
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert len(calls) == 3  # bounded: no infinite retry loop
@@ -4812,7 +4811,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """Non-1020 database errors propagate immediately with no retry."""
+        """Non-deadlock database errors propagate immediately with no retry."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4828,8 +4827,10 @@ class TestTagWriteSnapshotConflictRetry:
         image_id: int = image.image_id
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
-        with flush_patch, pytest.raises(OperationalError):
+        flush_patch, calls = _flaky_flush(
+            100, _db_error("23505", "duplicate key value violates unique constraint")
+        )
+        with flush_patch, pytest.raises(DBAPIError):
             await authenticated_client.post(f"/api/v1/images/{image_id}/tags/{tag_id}")
 
         assert len(calls) == 1  # not retried

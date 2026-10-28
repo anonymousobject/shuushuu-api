@@ -171,6 +171,14 @@ class TestResolve:
             with pytest.raises(RestrictedContentError, match="logged in to Pixiv"):
                 await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
 
+    async def test_login_gated_message_points_at_the_full_size_original(self):
+        """Saving from the artwork page gives the master1200 preview, which the
+        upload refuses, so the guidance must send users to the full-size view."""
+        body = _illust_body(urls=dict.fromkeys(["small", "original"]), isLoginOnly=True)
+        async with _client(body) as client:
+            with pytest.raises(RestrictedContentError, match="view it full size"):
+                await PixivResolver().resolve("https://www.pixiv.net/artworks/138823691", client)
+
     async def test_login_gated_multi_page_work_rejected_without_pages_fetch(self):
         pages_requested = []
 

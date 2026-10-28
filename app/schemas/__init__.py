@@ -42,6 +42,7 @@ from app.schemas.tag import (
 from app.schemas.user import (
     UserCreate,
     UserListResponse,
+    UserProfileResponse,
     UserResponse,
     UserUpdate,
 )
@@ -71,6 +72,7 @@ __all__ = [
     "UserBase",
     "UserCreate",
     "UserUpdate",
+    "UserProfileResponse",
     "UserResponse",
     "UserListResponse",
     # Comment schemas

@@ -1,34 +1,22 @@
 """SQLAlchemy column types for the shuushuu-api models.
 
-UtcDateTime: a DateTime variant that round-trips tz-aware datetimes through
-MariaDB's tz-naive DATETIME. Stores values as UTC (tzinfo stripped); attaches
+UtcDateTime: a DateTime variant that round-trips tz-aware datetimes through a
+tz-naive TIMESTAMP column. Stores values as UTC (tzinfo stripped); attaches
 tzinfo=UTC on read. Naive datetimes are rejected on bind to avoid ambiguous
 "is this UTC or local?" assumptions.
-
-UnsignedInt: INT UNSIGNED, matching the legacy schema's ID columns. Models must
-declare the same signedness as the migrations, or create_all-built schemas
-(schema-sync tests) fail FK creation with errno 150 (signed PK <- unsigned FK).
-
-UnsignedSmallInt: SMALLINT UNSIGNED, same rationale, for the ml_models
-dictionary table (small enough to fit SMALLINT) and its FKs.
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, override
 
 from sqlalchemy import DateTime
-from sqlalchemy.dialects.mysql import INTEGER, SMALLINT
 from sqlalchemy.types import TypeDecorator
-
-# Shared type instances, not classes — use as Column(UnsignedInt, ...); don't call them.
-UnsignedInt = INTEGER(unsigned=True)
-UnsignedSmallInt = SMALLINT(unsigned=True)
 
 
 class UtcDateTime(TypeDecorator[datetime]):
     """DATETIME column that always exposes tz-aware UTC datetimes in Python.
 
-    MariaDB's DATETIME stores no tz info. Without this decorator, reads return
+    The column stores no tz info. Without this decorator, reads return
     naive datetimes that cannot be compared with `datetime.now(UTC)` without
     raising TypeError. This decorator centralizes the convention "DB stores
     UTC, Python sees aware" so call sites never need to strip or attach
@@ -38,6 +26,7 @@ class UtcDateTime(TypeDecorator[datetime]):
     impl = DateTime
     cache_ok = True
 
+    @override
     def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:
             return None
@@ -47,6 +36,7 @@ class UtcDateTime(TypeDecorator[datetime]):
             )
         return value.astimezone(UTC).replace(tzinfo=None)
 
+    @override
     def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:
             return None

@@ -8,15 +8,14 @@ from typing import Annotated
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import asc, desc, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import CommentSortParams, PaginationParams
 from app.config import AdminActionType, ReportStatus
 from app.core.auth import get_current_user
-from app.core.database import get_db, statement_timeout
+from app.core.database import DbSession, statement_timeout
 from app.core.permissions import Permission, has_permission
-from app.core.redis import get_redis
+from app.core.redis import RedisClient, get_redis
 from app.models import Comments, Images, Users
 from app.models.admin_action import AdminActions
 from app.models.comment_report import CommentReports
@@ -30,6 +29,7 @@ from app.schemas.comment import (
 )
 from app.schemas.comment_report import CommentReportCreate, CommentReportResponse
 from app.schemas.common import UserSummary
+from app.services.comments import comment_user_eager_load
 from app.utils.comment_search import (
     COMMENT_SEARCH_TIMEOUT_SECONDS,
     apply_comment_text_search,
@@ -45,6 +45,7 @@ async def list_comments(
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[CommentSortParams, Depends()],
     # Filters
+    db: DbSession,
     image_id: Annotated[int | None, Query(description="Filter by image ID")] = None,
     image_ids: Annotated[
         str | None, Query(description="Filter by multiple image IDs (comma-separated)")
@@ -57,14 +58,14 @@ async def list_comments(
             pattern="^(all_words|natural|boolean|like)$",
             description=(
                 "Search mode: all_words (default, every term required), "
-                "natural language fulltext (any term), boolean fulltext, or LIKE"
+                "like (whole string as one substring); natural and boolean "
+                "are accepted and behave as all_words"
             ),
         ),
     ] = None,
     # Date filtering
     date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
     date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> CommentListResponse:
     # TODO: Add an automatic mode that detects the most efficient method based on input?
     """
@@ -75,23 +76,21 @@ async def list_comments(
     - Sorting by date, post_id, or update_count
     - Filter by image, user, or text search
     - Date range filtering
-    - Multiple search modes (all_words, natural fulltext, boolean fulltext, LIKE)
+    - Search modes (all_words, like; natural and boolean accepted as all_words)
 
     **Search Modes:**
-    - `all_words` (default): every term must appear. Index-backed where the
-      fulltext index can see the term, LIKE where it cannot (short words,
-      stopwords, non-ASCII). Supports `"exact phrase"` and `-excluded`. A blank
-      or whitespace-only `search_text` applies no filter at all; a non-blank
+    - `all_words` (default): every term must appear, as a case-insensitive
+      substring match. Supports `"exact phrase"` and `-excluded`. A blank or
+      whitespace-only `search_text` applies no filter at all; a non-blank
       value with nothing searchable in it (e.g. `!!!`) matches zero comments.
-    - `natural`: MySQL fulltext natural language search — matches ANY term
-    - `boolean`: MySQL fulltext boolean search with raw operators
-    - `like`: Simple pattern matching, works anywhere. Example: `?search_text=awesome`.
+    - `natural`, `boolean`: accepted for compatibility and behave as
+      `all_words`; operators such as `+` and `*` are ignored.
+    - `like`: the whole string as one substring match. Example: `?search_text=awesome`.
       `%` and `_` in the query are escaped to literals, not treated as wildcards.
 
-    **Boolean Mode Examples:**
-    - `+awesome -terrible`: Must contain "awesome", must not contain "terrible"
-    - `"exact phrase"`: Search for exact phrase
-    - `word*`: Wildcard search
+    **Search Examples:**
+    - `happy -terrible`: must contain "happy", must not contain "terrible"
+    - `"exact phrase"`: the words in that order
 
     **Examples:**
     - `/comments?image_id=123` - All comments on image 123
@@ -99,8 +98,9 @@ async def list_comments(
     - `/comments?user_id=5` - All comments by user 5
     - `/comments?search_text=happy birthday` - Comments containing BOTH words
     - `/comments?search_text=awesome&search_mode=like` - Simple search using LIKE
-    - `/comments?search_text=awesome&search_mode=natural` - Any-term match
-    - `/comments?search_text=+great -bad&search_mode=boolean` - Boolean fulltext
+    - `/comments?search_text=awesome&search_mode=natural` - behaves as all_words
+    - `/comments?search_text=+great -bad&search_mode=boolean` - behaves as
+      all_words; `+` is ignored, `-bad` still excludes
     - `/comments?date_from=2024-01-01` - Comments from 2024 onwards
     """
     # Build base query - exclude deleted comments
@@ -126,7 +126,11 @@ async def list_comments(
     searching = bool(search_text and search_text.strip())
     if searching:
         reject_unindexable_comment_search(search_text, search_mode)  # type: ignore[arg-type]
-        query = apply_comment_text_search(query, search_text, search_mode)  # type: ignore[arg-type]
+        query = apply_comment_text_search(
+            query,
+            search_text,  # type: ignore[arg-type]
+            search_mode,
+        )
     # Only the text-search path can degrade to an unindexed scan; None makes the
     # bound a no-op so plain image_ids/user_id listings are untouched.
     search_timeout = COMMENT_SEARCH_TIMEOUT_SECONDS if searching else None
@@ -155,11 +159,7 @@ async def list_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute query
     async with statement_timeout(db, search_timeout):
@@ -175,7 +175,7 @@ async def list_comments(
 
 
 @router.get("/{comment_id}", response_model=CommentResponse)
-async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> CommentResponse:
+async def get_comment(comment_id: int, db: DbSession) -> CommentResponse:
     """
     Get a single comment by ID.
 
@@ -184,11 +184,7 @@ async def get_comment(comment_id: int, db: AsyncSession = Depends(get_db)) -> Co
     """
     result = await db.execute(
         select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
+        .options(comment_user_eager_load())
         .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
         .where(Comments.deleted == False)  # type: ignore[arg-type]  # noqa: E712
     )
@@ -205,7 +201,7 @@ async def get_image_comments(
     image_id: int,
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[CommentSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentListResponse:
     """
     Get all comments for a specific image.
@@ -245,11 +241,7 @@ async def get_image_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute
     result = await db.execute(query)
@@ -268,7 +260,7 @@ async def get_user_comments(
     user_id: int,
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[CommentSortParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentListResponse:
     """
     Get all comments by a specific user.
@@ -307,11 +299,7 @@ async def get_user_comments(
     query = query.offset(pagination.offset).limit(pagination.per_page)
 
     # Eager load user and groups to avoid N+1 queries
-    query = query.options(
-        selectinload(Comments.user)  # type: ignore[arg-type]
-        .selectinload(Users.user_groups)  # type: ignore[arg-type]
-        .selectinload(UserGroups.group)  # type: ignore[arg-type]
-    )
+    query = query.options(comment_user_eager_load())
 
     # Execute
     result = await db.execute(query)
@@ -326,7 +314,7 @@ async def get_user_comments(
 
 
 @router.get("/stats/summary", response_model=CommentStatsResponse)
-async def get_comment_stats(db: AsyncSession = Depends(get_db)) -> CommentStatsResponse:
+async def get_comment_stats(db: DbSession) -> CommentStatsResponse:
     """
     Get overall comment statistics.
 
@@ -366,7 +354,7 @@ async def get_comment_stats(db: AsyncSession = Depends(get_db)) -> CommentStatsR
 async def create_comment(
     body: CommentCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentResponse:
     """
     Create a new comment or reply.
@@ -434,11 +422,7 @@ async def create_comment(
     # Re-fetch with eager loading for groups
     result = await db.execute(
         select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
+        .options(comment_user_eager_load())
         .where(Comments.post_id == comment.post_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
@@ -451,7 +435,7 @@ async def update_comment(
     comment_id: int,
     body: CommentUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentResponse:
     """
     Edit an existing comment.
@@ -492,13 +476,7 @@ async def update_comment(
 
     # Re-fetch with eager loading for groups
     result = await db.execute(
-        select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
-        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+        select(Comments).options(comment_user_eager_load()).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
 
@@ -509,8 +487,8 @@ async def update_comment(
 async def delete_comment(
     comment_id: int,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> CommentResponse:
     """
     Delete a comment (soft-delete).
@@ -582,13 +560,7 @@ async def delete_comment(
 
     # Re-fetch with eager loading for groups
     result = await db.execute(
-        select(Comments)
-        .options(
-            selectinload(Comments.user)  # type: ignore[arg-type]
-            .selectinload(Users.user_groups)  # type: ignore[arg-type]
-            .selectinload(UserGroups.group)  # type: ignore[arg-type]
-        )
-        .where(Comments.post_id == comment_id)  # type: ignore[arg-type]
+        select(Comments).options(comment_user_eager_load()).where(Comments.post_id == comment_id)  # type: ignore[arg-type]
     )
     comment = result.scalar_one()
 
@@ -601,7 +573,7 @@ async def report_comment(
     report_data: CommentReportCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CommentReportResponse:
     """
     Report a comment for rule violations.

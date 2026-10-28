@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import sys
 import time
+from collections.abc import Collection
 from pathlib import Path as FilePath
 from typing import Any
 
@@ -189,7 +190,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
+async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:  # noqa: C901, PLR0915
     """Move protected-status images' R2 objects from public to private bucket.
 
     Assumes existing R2 state is "everything in R2_PUBLIC_BUCKET" (the starting
@@ -263,37 +264,36 @@ async def split_existing(*, dry_run: bool, concurrency: int = 8) -> None:
                 moved += m
                 errors += e
 
-    async with r2.bulk_session():
-        async with get_async_session() as db:
-            stmt = (
-                select(Images)
-                .where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))  # type: ignore[attr-defined]
-                .execution_options(yield_per=500)
-            )
-            stream = await db.stream_scalars(stmt)
+    async with r2.bulk_session(), get_async_session() as db:
+        stmt = (
+            select(Images)
+            .where(Images.status.notin_(PUBLIC_IMAGE_STATUSES_FOR_R2))  # type: ignore[attr-defined]
+            .execution_options(yield_per=500)
+        )
+        stream = await db.stream_scalars(stmt)
 
-            async for image in stream:
-                images_seen += 1
-                if len(in_flight) >= max_in_flight:
-                    await drain(until=max_in_flight - 1)
-                in_flight.add(asyncio.create_task(process_image(image)))
-                if images_seen % 100 == 0:
-                    now = time.monotonic()
-                    window = now - last_tick_at
-                    recent_rate = (moved - last_tick_moved) / window if window > 0 else 0.0
-                    overall_rate = moved / (now - started_at) if now > started_at else 0.0
-                    logger.info(
-                        "split_existing_progress",
-                        images_seen=images_seen,
-                        moved=moved,
-                        errors=errors,
-                        moves_per_sec=round(recent_rate, 1),
-                        avg_moves_per_sec=round(overall_rate, 1),
-                    )
-                    last_tick_at = now
-                    last_tick_moved = moved
+        async for image in stream:
+            images_seen += 1
+            if len(in_flight) >= max_in_flight:
+                await drain(until=max_in_flight - 1)
+            in_flight.add(asyncio.create_task(process_image(image)))
+            if images_seen % 100 == 0:
+                now = time.monotonic()
+                window = now - last_tick_at
+                recent_rate = (moved - last_tick_moved) / window if window > 0 else 0.0
+                overall_rate = moved / (now - started_at) if now > started_at else 0.0
+                logger.info(
+                    "split_existing_progress",
+                    images_seen=images_seen,
+                    moved=moved,
+                    errors=errors,
+                    moves_per_sec=round(recent_rate, 1),
+                    avg_moves_per_sec=round(overall_rate, 1),
+                )
+                last_tick_at = now
+                last_tick_moved = moved
 
-            await drain(until=0)
+        await drain(until=0)
 
     logger.info(
         "split_existing_completed",
@@ -355,7 +355,7 @@ async def backfill_locations(*, batch_size: int = 1000) -> None:
     print(f"backfilled {total_flipped} rows")
 
 
-async def reconcile(*, stale_after: int) -> None:
+async def reconcile(*, stale_after: int) -> None:  # noqa: C901, PLR0912, PLR0915
     """Heal: upload missing R2 objects for unsynced rows older than `stale_after`.
 
     Idempotent: uploaded variants are re-detected via object_exists on the next
@@ -415,8 +415,17 @@ async def reconcile(*, stale_after: int) -> None:
                         )
                         all_uploaded = False
                         break
-                    if not await r2.object_exists(bucket=bucket, key=key):
-                        await r2.upload_file(bucket=bucket, key=key, path=local)
+                    if await r2.object_exists(bucket=bucket, key=key):
+                        continue
+                    if local.stat().st_size == 0:
+                        # A write lost to a host crash. upload_file would refuse
+                        # it; skip the row so one bad file can't wedge every run.
+                        logger.error(
+                            "reconcile_local_empty", image_id=image.image_id, variant=variant
+                        )
+                        all_uploaded = False
+                        break
+                    await r2.upload_file(bucket=bucket, key=key, path=local)
 
                 if all_uploaded:
                     if image.status in PUBLIC_IMAGE_STATUSES_FOR_R2:
@@ -446,7 +455,7 @@ async def reconcile(*, stale_after: int) -> None:
     print(f"reconciled {healed}/{processed} rows")
 
 
-async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -> dict[str, int]:
+async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -> dict[str, int]:  # noqa: C901, PLR0915
     """Upload local avatars to R2 and flip avatar_in_r2=True per row.
 
     Walks `users` rows where ``avatar != ''`` AND ``avatar_in_r2 = false``,
@@ -622,7 +631,7 @@ async def cmd_avatars_backfill(*, dry_run: bool = False, concurrency: int = 8) -
     }
 
 
-async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:
+async def cmd_banners_backfill(*, dry_run: bool = False) -> dict[str, int]:  # noqa: C901, PLR0915
     """Upload local banner images to R2 and flip in_r2=True per row.
 
     Walks `banners` rows where ``in_r2 = false``. For each row, collects the
@@ -812,14 +821,19 @@ async def resync_image(image_id: int) -> None:
         print(f"  {variant}: {bucket}/{key} exists={exists}")
 
 
-async def force_reupload_image(*, image_id: int, dry_run: bool) -> None:
+async def force_reupload_image(
+    *, image_id: int, dry_run: bool, only: Collection[str] | None = None
+) -> None:
     """Delete + re-upload each ready variant for one image from local files.
+
+    `only` restricts the re-upload to a subset of variant names (e.g. the
+    derived files after a regeneration), leaving the rest untouched.
 
     For healing a partially-corrupted R2 object (truncated upload that passes
     HEAD but fails GET, or a CDN-cached bad copy) where `reconcile` wouldn't
     help because `object_exists` returns true. Refuses when r2_location=NONE
-    — that's reconcile's job. Variants whose local file is missing are
-    skipped with a warning (no delete, no upload). PUBLIC bucket uploads
+    — that's reconcile's job. Variants whose local file is missing or empty
+    are skipped with a log line (no delete, no upload). PUBLIC bucket uploads
     trigger a best-effort CDN purge after re-upload.
     """
     from pathlib import Path as FilePath
@@ -845,7 +859,7 @@ async def force_reupload_image(*, image_id: int, dry_run: bool) -> None:
         if image.r2_location == R2Location.PUBLIC
         else settings.R2_PRIVATE_BUCKET
     )
-    variants = _ready_variants(image)
+    variants = [v for v in _ready_variants(image) if only is None or v in only]
     processed_keys: list[str] = []
 
     async with r2.bulk_session():
@@ -856,6 +870,15 @@ async def force_reupload_image(*, image_id: int, dry_run: bool) -> None:
             if not local.exists():
                 logger.warning(
                     "force_reupload_local_missing",
+                    image_id=image_id,
+                    variant=variant,
+                )
+                continue
+            if local.stat().st_size == 0:
+                # A write lost to a host crash: the R2 object may be the only
+                # good copy left, so don't delete it to make way for nothing.
+                logger.error(
+                    "force_reupload_local_empty",
                     image_id=image_id,
                     variant=variant,
                 )
@@ -882,7 +905,7 @@ async def force_reupload_image(*, image_id: int, dry_run: bool) -> None:
     print(f"{verb} {len(processed_keys)} variants for image {image_id}")
 
 
-async def verify(
+async def verify(  # noqa: C901, PLR0912, PLR0915
     *,
     sample: int | None = None,
     since_id: int | None = None,
@@ -1168,13 +1191,12 @@ async def _dispatch(args: argparse.Namespace) -> int:
     try:
         return await _run(args)
     finally:
-        # Close pooled DB connections while the event loop is still running;
-        # otherwise aiomysql's Connection.__del__ fires during interpreter
-        # shutdown and tries to schedule work on a closed loop.
+        # Dispose the engine so pooled connections close before interpreter
+        # shutdown, while the event loop is still running.
         await engine.dispose()
 
 
-async def _run(args: argparse.Namespace) -> int:
+async def _run(args: argparse.Namespace) -> int:  # noqa: C901
     if args.command == "split-existing":
         await split_existing(dry_run=args.dry_run, concurrency=args.concurrency)
     elif args.command == "backfill-locations":

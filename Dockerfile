@@ -9,21 +9,16 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /usr/local/bin/
 # Set working directory
 WORKDIR /app
 
-# aiomysql calls getpass.getuser() at import time; Python 3.13+ raises OSError
-# when running as a numeric UID without a /etc/passwd entry
-ENV USER=app
-
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
-    default-libmysqlclient-dev \
     pkg-config \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy lock + manifest first so the dep layer caches independently of source
 # changes. Using uv.lock (via `--frozen`) is what keeps rebuilds reproducible:
-# a stray transitive bump (e.g. pymysql 1.1.x → 1.2.0) can't sneak in without
+# a stray transitive bump (e.g. a driver minor bump) can't sneak in without
 # an explicit `uv lock` regenerate, which would also fail CI if it broke.
 COPY pyproject.toml uv.lock ./
 
