@@ -1,26 +1,22 @@
 """add_forum_tables
 
-Revision ID: f565e631d8c2
-Revises: 12bf25199415
+Revision ID: 0006_add_forum_tables
+Revises: 0005_image_metadata_history
 Create Date: 2026-07-07 06:39:25.595816
 
-Forum timestamps use DATETIME(6) (microsecond precision): unread tracking
-compares last_read_at < last_post_at, and second-precision DATETIME cannot
-order events that land within the same wall-clock second.
+Unread tracking compares last_read_at < last_post_at, so it relies on
+sub-second ordering of timestamps (Postgres TIMESTAMP is microsecond).
 """
-from typing import Sequence
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
 
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import mysql
-
 
 # revision identifiers, used by Alembic.
-revision: str = 'f565e631d8c2'
-# Re-pointed from 25cad69549de onto main's head (12bf25199415, user_tag_affinity)
-# when the forum stack was rebased onto main, so the migration graph stays linear
-# and single-headed (the forum and taste-profile tables are independent).
-down_revision: str | Sequence[str] | None = '0a2bc955ec55'
+revision: str = "0006_add_forum_tables"
+down_revision: str | Sequence[str] | None = "0005_image_metadata_history"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -42,37 +38,35 @@ GROUP_GRANTS = {
 def upgrade() -> None:
     op.create_table(
         "forum_categories",
-        sa.Column(
-            "category_id", mysql.INTEGER(unsigned=True), autoincrement=True, nullable=False
-        ),
+        sa.Column("category_id", sa.Integer(), nullable=False),
         sa.Column("title", sa.String(100), nullable=False),
         sa.Column("description", sa.String(500), nullable=True),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("sort_order", sa.Integer(), nullable=False),
         sa.Column("view_perm", sa.String(64), nullable=True),
         sa.Column("thread_create_perm", sa.String(64), nullable=True),
         sa.Column("reply_perm", sa.String(64), nullable=True),
         sa.PrimaryKeyConstraint("category_id"),
+        sa.UniqueConstraint("title"),
     )
-    op.create_index("uq_forum_categories_title", "forum_categories", ["title"], unique=True)
 
     op.create_table(
         "forum_threads",
-        sa.Column("thread_id", mysql.INTEGER(unsigned=True), autoincrement=True, nullable=False),
-        sa.Column("category_id", mysql.INTEGER(unsigned=True), nullable=False),
+        sa.Column("thread_id", sa.Integer(), nullable=False),
+        sa.Column("category_id", sa.Integer(), nullable=False),
         sa.Column("title", sa.String(255), nullable=False),
-        sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column(
             "date",
-            mysql.DATETIME(fsp=6),
-            server_default=sa.text("current_timestamp(6)"),
+            sa.DateTime(),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
-        sa.Column("pinned", sa.Boolean(), nullable=False, server_default="0"),
-        sa.Column("locked", sa.Boolean(), nullable=False, server_default="0"),
-        sa.Column("deleted", sa.Boolean(), nullable=False, server_default="0"),
-        sa.Column("post_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("last_post_at", mysql.DATETIME(fsp=6), nullable=True),
-        sa.Column("last_post_user_id", mysql.INTEGER(unsigned=True), nullable=True),
+        sa.Column("pinned", sa.Boolean(), nullable=False),
+        sa.Column("locked", sa.Boolean(), nullable=False),
+        sa.Column("deleted", sa.Boolean(), nullable=False),
+        sa.Column("post_count", sa.Integer(), nullable=False),
+        sa.Column("last_post_at", sa.DateTime(), nullable=True),
+        sa.Column("last_post_user_id", sa.Integer(), nullable=True),
         sa.PrimaryKeyConstraint("thread_id"),
         sa.ForeignKeyConstraint(
             ["category_id"],
@@ -100,28 +94,26 @@ def upgrade() -> None:
         "idx_forum_threads_list", "forum_threads", ["category_id", "pinned", "last_post_at"]
     )
     op.create_index("fk_forum_threads_user_id", "forum_threads", ["user_id"])
-    op.create_index(
-        "fk_forum_threads_last_post_user_id", "forum_threads", ["last_post_user_id"]
-    )
+    op.create_index("fk_forum_threads_last_post_user_id", "forum_threads", ["last_post_user_id"])
     op.create_index("ix_forum_threads_deleted", "forum_threads", ["deleted"])
 
     op.create_table(
         "forum_posts",
-        sa.Column("post_id", mysql.INTEGER(unsigned=True), autoincrement=True, nullable=False),
-        sa.Column("thread_id", mysql.INTEGER(unsigned=True), nullable=False),
-        sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
+        sa.Column("post_id", sa.Integer(), nullable=False),
+        sa.Column("thread_id", sa.Integer(), nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("post_text", sa.Text(), nullable=False),
         sa.Column(
             "date",
-            mysql.DATETIME(fsp=6),
-            server_default=sa.text("current_timestamp(6)"),
+            sa.DateTime(),
+            server_default=sa.text("clock_timestamp()"),
             nullable=False,
         ),
-        sa.Column("deleted", sa.Boolean(), nullable=False, server_default="0"),
-        sa.Column("update_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("ip", sa.String(45), nullable=False, server_default=""),
-        sa.Column("last_updated", mysql.DATETIME(fsp=6), nullable=True),
-        sa.Column("last_updated_user_id", mysql.INTEGER(unsigned=True), nullable=True),
+        sa.Column("deleted", sa.Boolean(), nullable=False),
+        sa.Column("update_count", sa.Integer(), nullable=False),
+        sa.Column("ip", sa.String(45), nullable=False),
+        sa.Column("last_updated", sa.DateTime(), nullable=True),
+        sa.Column("last_updated_user_id", sa.Integer(), nullable=True),
         sa.PrimaryKeyConstraint("post_id"),
         sa.ForeignKeyConstraint(
             ["thread_id"],
@@ -147,16 +139,14 @@ def upgrade() -> None:
     )
     op.create_index("idx_forum_posts_thread_date", "forum_posts", ["thread_id", "date"])
     op.create_index("fk_forum_posts_user_id", "forum_posts", ["user_id"])
-    op.create_index(
-        "fk_forum_posts_last_updated_user_id", "forum_posts", ["last_updated_user_id"]
-    )
+    op.create_index("fk_forum_posts_last_updated_user_id", "forum_posts", ["last_updated_user_id"])
     op.create_index("ix_forum_posts_deleted", "forum_posts", ["deleted"])
 
     op.create_table(
         "forum_thread_reads",
-        sa.Column("user_id", mysql.INTEGER(unsigned=True), nullable=False),
-        sa.Column("thread_id", mysql.INTEGER(unsigned=True), nullable=False),
-        sa.Column("last_read_at", mysql.DATETIME(fsp=6), nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("thread_id", sa.Integer(), nullable=False),
+        sa.Column("last_read_at", sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint("user_id", "thread_id"),
         sa.ForeignKeyConstraint(
             ["user_id"],
@@ -179,32 +169,31 @@ def upgrade() -> None:
     # Same pattern as c0cb8f931041_add_news_permissions.py.
     for title, desc in FORUM_PERMS:
         op.execute(
-            f"INSERT INTO perms (title, `desc`) "
-            f"SELECT '{title}', '{desc}' FROM DUAL "
+            f'INSERT INTO perms (title, "desc") '
+            f"SELECT '{title}', '{desc}' "
             f"WHERE NOT EXISTS (SELECT 1 FROM perms WHERE title = '{title}')"
         )
 
     for title, groups in GROUP_GRANTS.items():
         group_list = ", ".join(f"'{g}'" for g in groups)
         op.execute(f"""
-            INSERT IGNORE INTO group_perms (group_id, perm_id, permvalue)
+            INSERT INTO group_perms (group_id, perm_id, permvalue)
             SELECT g.group_id, (SELECT MIN(perm_id) FROM perms WHERE title = '{title}'), 1
-            FROM `groups` g
+            FROM groups g
             WHERE g.title IN ({group_list})
+            ON CONFLICT (group_id, perm_id) DO NOTHING
         """)
 
 
 def downgrade() -> None:
     for title, _ in FORUM_PERMS:
         op.execute(f"""
-            DELETE gp FROM group_perms gp
-            JOIN perms p ON gp.perm_id = p.perm_id
-            WHERE p.title = '{title}'
+            DELETE FROM group_perms
+            WHERE perm_id IN (SELECT perm_id FROM perms WHERE title = '{title}')
         """)
         op.execute(f"""
-            DELETE up FROM user_perms up
-            JOIN perms p ON up.perm_id = p.perm_id
-            WHERE p.title = '{title}'
+            DELETE FROM user_perms
+            WHERE perm_id IN (SELECT perm_id FROM perms WHERE title = '{title}')
         """)
         op.execute(f"DELETE FROM perms WHERE title = '{title}'")
 

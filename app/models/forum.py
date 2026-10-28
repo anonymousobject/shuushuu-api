@@ -71,7 +71,7 @@ class ForumThreads(SQLModel, table=True):
     title: str = Field(max_length=255)
     user_id: int
     date: datetime = Field(
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     )
     pinned: bool = Field(default=False)
     locked: bool = Field(default=False)
@@ -121,8 +121,11 @@ class ForumPosts(SQLModel, table=True):
     thread_id: int
     user_id: int
     post_text: str = Field(default="", sa_column=Column(Text, nullable=False))
+    # clock_timestamp(), not CURRENT_TIMESTAMP: Postgres freezes the latter at
+    # transaction start, and unread tracking orders post.date against the
+    # reader's wall-clock last_read_at.
     date: datetime = Field(
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()"))
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("clock_timestamp()"))
     )
 
     # Soft-delete flag
