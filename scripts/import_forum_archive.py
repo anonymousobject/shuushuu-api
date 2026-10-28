@@ -13,8 +13,9 @@ scratch MariaDB first (databases shuushuuphpbb3 and php_shuu), then:
         scripts/import_forum_archive.py [--dry-run] [--remap] \
         [--phpbb-url URL] [--site-url URL]
 
---dry-run writes nothing (no rows, no attachment copies or uploads) but still
-counts attachments and reports missing files.
+--dry-run writes no forum rows and copies or uploads no attachments, but still
+counts attachments and reports missing files. It does create the Archived User
+account if absent (see run_import).
 """
 
 import argparse
