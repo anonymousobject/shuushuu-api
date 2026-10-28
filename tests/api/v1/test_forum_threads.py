@@ -389,6 +389,27 @@ class TestDeleteThread:
         )
         assert response.status_code == 403
 
+    async def test_author_cannot_delete_locked_thread(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, author_token
+    ):
+        public_thread.locked = True
+        await db_session.commit()
+        response = await client.delete(
+            f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(author_token)
+        )
+        assert response.status_code == 403
+        assert "locked" in response.json()["detail"].lower()
+
+    async def test_moderator_deletes_locked_thread(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, staff_token
+    ):
+        public_thread.locked = True
+        await db_session.commit()
+        response = await client.delete(
+            f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(staff_token)
+        )
+        assert response.status_code == 204
+
     async def test_moderator_deletes_thread_with_replies(
         self, client: AsyncClient, db_session: AsyncSession, public_thread, staff_token
     ):

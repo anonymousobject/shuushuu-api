@@ -1,7 +1,7 @@
 """Forum API endpoints: categories, threads, posts."""
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -13,7 +13,7 @@ from app.api.dependencies import PaginationParams
 from app.core.archived_user import get_archived_user_id
 from app.core.auth import CurrentUser, OptionalCurrentUser
 from app.core.database import get_db
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.permission_cache import get_cached_user_permissions
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
@@ -592,6 +592,9 @@ async def delete_thread(
             raise HTTPException(
                 status_code=403, detail="Only the author or a moderator can delete this thread"
             )
+        if thread.locked:
+            # Matches the post paths: a locked thread blocks its author too.
+            raise HTTPException(status_code=403, detail="Thread is locked")
         if thread.post_count > 1:
             raise HTTPException(
                 status_code=403,
@@ -621,20 +624,20 @@ async def create_post(
     assert current_user.user_id is not None
     perms = await _effective_perms(db, redis_client, current_user)
     is_moderator = Permission.FORUM_MODERATE.value in perms
-    # Capture as primitives: a snapshot-conflict retry rolls back the
+    # Capture as primitives: a transient-conflict retry rolls back the
     # transaction, expiring ORM instances (including current_user).
     user_id = current_user.user_id
     client_ip = request.client.host if request.client else ""
 
     # Anti-spam rate limit (moderators exempt). Kept outside the retried unit
-    # below so a snapshot-conflict retry does not double-count the attempt.
+    # below so a transient-conflict retry does not double-count the attempt.
     if not is_moderator:
         await check_forum_create_rate_limit(user_id, redis_client)
 
-    # Lock the thread row and recompute its stats as one retryable unit: under
-    # innodb_snapshot_isolation the locking read can abort with ER_CHECKREAD
-    # (1020) when a concurrent request commits to the same thread/post rows, so
-    # re-fetch on a fresh snapshot instead of 500ing (see app/core/db_retry.py).
+    # Lock the thread row and recompute its stats as one retryable unit: two
+    # requests locking the same thread/post rows in opposite orders can
+    # deadlock (40P01), so re-fetch inside the unit and replay it on a fresh
+    # transaction instead of 500ing (ADR-0004, app/core/db_retry.py).
     async def _apply() -> ForumPosts:
         result = await db.execute(
             select(ForumThreads)
@@ -672,10 +675,26 @@ async def create_post(
         await db.commit()
         return post
 
-    post = await retry_on_snapshot_conflict(db, _apply, what="forum_create_post")
+    post = await retry_on_transient_conflict(db, _apply, what="forum_create_post")
 
     summaries = await build_user_summaries(db, {user_id})
     return _post_response(post, summaries[user_id], is_moderator)
+
+
+def _apply_post_edit(
+    post: ForumPosts, updates: dict[str, Any], user_id: int, is_moderator: bool
+) -> None:
+    """Validate and apply a post_text edit, recording the edit metadata."""
+    if not (is_moderator or post.user_id == user_id):
+        raise HTTPException(
+            status_code=403, detail="Only the author or a moderator can edit this post"
+        )
+    if updates.get("deleted", post.deleted):
+        raise HTTPException(status_code=400, detail="Restore the post before editing it")
+    post.post_text = updates["post_text"]
+    post.update_count += 1
+    post.last_updated = datetime.now(UTC)
+    post.last_updated_user_id = user_id
 
 
 @router.patch("/posts/{post_id}", response_model=ForumPostResponse)
@@ -694,9 +713,9 @@ async def update_post(
     user_id = current_user.user_id
     updates = body.model_dump(exclude_unset=True)
 
-    # Lock the thread row and recompute its stats as one retryable unit; the
-    # locking read can abort with a snapshot conflict (1020) under concurrency,
-    # so re-fetch post + thread on a fresh snapshot (see app/core/db_retry.py).
+    # Lock the thread row and recompute its stats as one retryable unit; a
+    # deadlock (40P01) under concurrency is replayed on a fresh transaction,
+    # so post + thread are re-fetched inside it (ADR-0004, app/core/db_retry.py).
     async def _apply() -> ForumPosts:
         post = await db.get(ForumPosts, post_id)
         if post is None:
@@ -708,7 +727,9 @@ async def update_post(
         )
         thread = result.scalar_one()
         if thread.deleted and not is_moderator:
-            raise HTTPException(status_code=404, detail="Thread not found")
+            # Same body as a missing post, so a soft-deleted parent is not an
+            # existence oracle.
+            raise HTTPException(status_code=404, detail="Post not found")
         await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
         if thread.locked and not is_moderator:
             # A locked thread blocks the owner's own edit/soft-delete too,
@@ -718,17 +739,7 @@ async def update_post(
         if "deleted" in updates and not is_moderator:
             raise HTTPException(status_code=403, detail="FORUM_MODERATE permission required")
         if "post_text" in updates:
-            if not (is_moderator or post.user_id == user_id):
-                raise HTTPException(
-                    status_code=403, detail="Only the author or a moderator can edit this post"
-                )
-            will_be_deleted = updates.get("deleted", post.deleted)
-            if will_be_deleted:
-                raise HTTPException(status_code=400, detail="Restore the post before editing it")
-            post.post_text = updates["post_text"]
-            post.update_count += 1
-            post.last_updated = datetime.now(UTC)
-            post.last_updated_user_id = user_id
+            _apply_post_edit(post, updates, user_id, is_moderator)
         if "deleted" in updates:
             if updates["deleted"] and post.post_id == await _first_post_id(
                 db, thread.thread_id or 0
@@ -742,7 +753,7 @@ async def update_post(
         await db.commit()
         return post
 
-    post = await retry_on_snapshot_conflict(db, _apply, what="forum_update_post")
+    post = await retry_on_transient_conflict(db, _apply, what="forum_update_post")
 
     summaries = await build_user_summaries(db, {post.user_id})
     return _post_response(post, summaries[post.user_id], is_moderator)
@@ -762,9 +773,9 @@ async def delete_post(
     is_moderator = Permission.FORUM_MODERATE.value in perms
     user_id = current_user.user_id
 
-    # Lock the thread row and recompute its stats as one retryable unit; the
-    # locking read can abort with a snapshot conflict (1020) under concurrency,
-    # so re-fetch post + thread on a fresh snapshot (see app/core/db_retry.py).
+    # Lock the thread row and recompute its stats as one retryable unit; a
+    # deadlock (40P01) under concurrency is replayed on a fresh transaction,
+    # so post + thread are re-fetched inside it (ADR-0004, app/core/db_retry.py).
     async def _apply() -> None:
         post = await db.get(ForumPosts, post_id)
         if post is None or (post.deleted and not is_moderator):
@@ -776,7 +787,9 @@ async def delete_post(
         )
         thread = result.scalar_one()
         if thread.deleted and not is_moderator:
-            raise HTTPException(status_code=404, detail="Thread not found")
+            # Same body as a missing post, so a soft-deleted parent is not an
+            # existence oracle.
+            raise HTTPException(status_code=404, detail="Post not found")
         await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
         if thread.locked and not is_moderator:
             # A locked thread blocks the owner's own soft-delete too, matching
@@ -796,7 +809,7 @@ async def delete_post(
         await recompute_thread_stats(db, thread)
         await db.commit()
 
-    await retry_on_snapshot_conflict(db, _apply, what="forum_delete_post")
+    await retry_on_transient_conflict(db, _apply, what="forum_delete_post")
 
 
 # ===== Legacy phpBB URL redirects & post permalinks =====

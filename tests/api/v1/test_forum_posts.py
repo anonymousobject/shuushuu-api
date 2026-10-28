@@ -2,37 +2,25 @@
 
 from unittest.mock import patch
 
-import pymysql
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import Permission
 from app.models.forum import ForumCategories, ForumPosts, ForumThreads
 from tests.api.v1.conftest import make_thread
+from tests.transient_conflict import _db_error, _deadlock_error
 
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _db_error(errno: int, message: str) -> OperationalError:
-    """Build the sqlalchemy error the aiomysql/pymysql driver raises for `errno`."""
-    return OperationalError(
-        "SELECT ... FOR UPDATE", None, pymysql.err.OperationalError(errno, message)
-    )
-
-
-def _snapshot_conflict_error() -> OperationalError:
-    """The error MariaDB raises under innodb_snapshot_isolation (ER_CHECKREAD)."""
-    return _db_error(1020, "Record has changed since last read in table 'forum_threads'")
-
-
-def _flaky_locking_read(fail_times: int, error: OperationalError):
+def _flaky_locking_read(fail_times: int, error: DBAPIError):
     """Patch AsyncSession.execute to raise `error` the first `fail_times` times
-    it runs a locking (FOR UPDATE) statement — the exact site MariaDB aborts
-    with ER_CHECKREAD (1020) under innodb_snapshot_isolation. Non-locking
+    it runs a locking (FOR UPDATE) statement — the site where a deadlock (40P01)
+    between concurrent writers surfaces. Non-locking
     statements (and db.get, which does not go through AsyncSession.execute) pass
     through untouched. Returns (patch_ctx, calls) where calls records each
     intercepted locking read."""
@@ -201,6 +189,25 @@ class TestCreatePost:
             )
             assert missing.status_code == gated.status_code == 404
             assert missing.json() == gated.json()
+
+    async def test_missing_and_soft_deleted_parent_post_mutation_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token
+    ):
+        # A post whose parent thread was soft-deleted must look exactly like a
+        # post that never existed to a non-moderator (no existence oracle).
+        post = ForumPosts(thread_id=public_thread.thread_id, user_id=1, post_text="reply")
+        db_session.add(post)
+        public_thread.deleted = True
+        await db_session.commit()
+        await db_session.refresh(post)
+        for method, kwargs in (("patch", {"json": {"post_text": "x"}}), ("delete", {})):
+            req = getattr(client, method)
+            missing = await req("/api/v1/forum/posts/999999", headers=_auth(user_token), **kwargs)
+            deleted_parent = await req(
+                f"/api/v1/forum/posts/{post.post_id}", headers=_auth(user_token), **kwargs
+            )
+            assert missing.status_code == deleted_parent.status_code == 404
+            assert missing.content == deleted_parent.content
 
     async def test_reply_gated_403(self, client: AsyncClient, db_session: AsyncSession, user_token):
         # Public view, staff-only replies (a read-only announcements pattern)
@@ -415,19 +422,18 @@ class TestDeletePost:
         assert mod_resp.status_code == 204
 
 
-class TestForumSnapshotConflictRetry:
+class TestForumTransientConflictRetry:
     """create_post/update_post/delete_post lock the thread row (FOR UPDATE) and
-    recompute denormalized stats. Under innodb_snapshot_isolation a concurrent
-    commit to the same thread/post rows aborts that locking read with
-    ER_CHECKREAD (errno 1020). Each write path must retry on a fresh snapshot
-    instead of surfacing a 500. The 1020 is injected into the locking read
-    itself — the real conflict site — via _flaky_locking_read, exercising the
-    real retry helper (app/core/db_retry.py).
+    recompute denormalized stats. A concurrent writer can deadlock them
+    (40P01); each write path must replay its unit on a fresh transaction
+    (ADR-0004) instead of surfacing a 500. The error is injected into the
+    locking read itself via _flaky_locking_read, exercising the real retry
+    helper (app/core/db_retry.py).
 
-    needs_commit: the retry performs a real session rollback to obtain a fresh
-    snapshot; under the default SAVEPOINT test isolation that rollback would
-    unwind the committed thread/user fixtures too, which cannot happen in
-    production where they are durably committed."""
+    needs_commit: the retry performs a real session rollback; under the default
+    SAVEPOINT test isolation that rollback would unwind the committed
+    thread/user fixtures too, which cannot happen in production where they are
+    durably committed."""
 
     async def _create_reply(self, client: AsyncClient, thread_id: int, token: str) -> dict:
         r = await client.post(
@@ -439,10 +445,10 @@ class TestForumSnapshotConflictRetry:
         return r.json()
 
     @pytest.mark.needs_commit
-    async def test_reply_retries_snapshot_conflict_and_succeeds(
+    async def test_reply_retries_deadlock_and_succeeds(
         self, client: AsyncClient, public_thread, user_token
     ):
-        read_patch, calls = _flaky_locking_read(1, _snapshot_conflict_error())
+        read_patch, calls = _flaky_locking_read(1, _deadlock_error())
         with read_patch:
             response = await client.post(
                 f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
@@ -460,8 +466,8 @@ class TestForumSnapshotConflictRetry:
     async def test_reply_gives_up_after_bounded_retries(
         self, client: AsyncClient, public_thread, user_token
     ):
-        read_patch, calls = _flaky_locking_read(100, _snapshot_conflict_error())
-        with read_patch, pytest.raises(OperationalError):
+        read_patch, calls = _flaky_locking_read(100, _deadlock_error())
+        with read_patch, pytest.raises(DBAPIError):
             await client.post(
                 f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
                 json={"post_text": "hi"},
@@ -472,21 +478,23 @@ class TestForumSnapshotConflictRetry:
     async def test_reply_does_not_retry_other_db_errors(
         self, client: AsyncClient, public_thread, user_token
     ):
-        read_patch, calls = _flaky_locking_read(100, _db_error(1213, "Deadlock found"))
-        with read_patch, pytest.raises(OperationalError):
+        read_patch, calls = _flaky_locking_read(
+            100, _db_error("55P03", "could not obtain lock on row")
+        )
+        with read_patch, pytest.raises(DBAPIError):
             await client.post(
                 f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
                 json={"post_text": "hi"},
                 headers=_auth(user_token),
             )
-        assert len(calls) == 1  # non-1020 error is not retried
+        assert len(calls) == 1  # lock_not_available is deliberately not retried (ADR-0004)
 
     @pytest.mark.needs_commit
-    async def test_edit_post_retries_snapshot_conflict_and_succeeds(
+    async def test_edit_post_retries_deadlock_and_succeeds(
         self, client: AsyncClient, public_thread, user_token
     ):
         post = await self._create_reply(client, public_thread.thread_id, user_token)
-        read_patch, calls = _flaky_locking_read(1, _snapshot_conflict_error())
+        read_patch, calls = _flaky_locking_read(1, _deadlock_error())
         with read_patch:
             response = await client.patch(
                 f"/api/v1/forum/posts/{post['post_id']}",
@@ -498,11 +506,11 @@ class TestForumSnapshotConflictRetry:
         assert len(calls) >= 2
 
     @pytest.mark.needs_commit
-    async def test_delete_post_retries_snapshot_conflict_and_succeeds(
+    async def test_delete_post_retries_deadlock_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token
     ):
         post = await self._create_reply(client, public_thread.thread_id, user_token)
-        read_patch, calls = _flaky_locking_read(1, _snapshot_conflict_error())
+        read_patch, calls = _flaky_locking_read(1, _deadlock_error())
         with read_patch:
             response = await client.delete(
                 f"/api/v1/forum/posts/{post['post_id']}",
