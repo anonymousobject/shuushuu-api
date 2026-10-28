@@ -1,5 +1,6 @@
 """Stateless upload-form tag analysis: infer + map tags for image bytes."""
 
+import contextlib
 import hashlib
 import io
 import json
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.auth import VerifiedUser
-from app.core.database import get_db
+from app.core.database import DbSession
 from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.models.tag import Tags
@@ -60,7 +61,7 @@ async def analyze_image_tags(
     current_user: VerifiedUser,
     file: Annotated[UploadFile, File(description="Image file to analyze")],
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> AnalyzeTagsResponse:
     if not settings.ML_TAG_SUGGESTIONS_ENABLED:
         raise HTTPException(
@@ -104,10 +105,8 @@ async def analyze_image_tags(
             )
     finally:
         if tmp_path:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
     try:
         await redis_client.set(
@@ -165,7 +164,7 @@ async def _resolve_to_response(db: AsyncSession, raw: list[dict[str, Any]]) -> A
         )
 
     suggestions: list[AnalyzedTag] = []
-    for _type, rows in by_type.items():
+    for rows in by_type.values():
         rows.sort(key=lambda x: x[0], reverse=True)
         suggestions.extend(at for _conf, at in rows[: settings.ML_ANALYZE_MAX_SUGGESTIONS])
 

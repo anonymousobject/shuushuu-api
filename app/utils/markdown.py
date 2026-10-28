@@ -56,7 +56,7 @@ def is_safe_url(url: str) -> bool:
         return False
 
 
-def parse_markdown(text: str) -> str:
+def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
     """
     Parse safe Markdown subset to HTML.
 

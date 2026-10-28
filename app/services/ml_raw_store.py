@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -84,7 +84,7 @@ async def populate_external_tags(db: AsyncSession, csv_path: Path) -> int:
     return count
 
 
-async def ingest_raw_predictions(
+async def ingest_raw_predictions(  # noqa: C901, PLR0912
     db: AsyncSession,
     records: list[dict[str, Any]],
 ) -> int:
@@ -99,7 +99,7 @@ async def ingest_raw_predictions(
     3. Collects ``(image_id, model_id, external_tag_id, confidence)`` rows,
        skipping predictions whose ``external_tag`` is not in the dictionary.
     4. Bulk-inserts in batches of up to :data:`_BATCH_SIZE` rows using
-       ``INSERT IGNORE`` so re-running is idempotent.  The sum of
+       ``INSERT … ON CONFLICT DO NOTHING`` so re-running is idempotent.  The sum of
        ``rowcount`` values across batches is returned; this equals 0 on a
        pure re-run because existing composite-PK rows are silently skipped.
 
@@ -186,11 +186,11 @@ async def ingest_raw_predictions(
             sample=sorted(unknown_model_sample),
         )
 
-    # --- 4. Bulk INSERT IGNORE in batches ---
+    # --- 4. Bulk INSERT ... ON CONFLICT DO NOTHING in batches ---
     total_inserted = 0
     for start in range(0, len(rows), _BATCH_SIZE):
         batch = rows[start : start + _BATCH_SIZE]
-        stmt = mysql_insert(MlRawPredictions).values(batch).prefix_with("IGNORE")
+        stmt = pg_insert(MlRawPredictions).values(batch).on_conflict_do_nothing()
         res = await db.execute(stmt)
         total_inserted += res.rowcount  # type: ignore[attr-defined]
 

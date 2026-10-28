@@ -8,12 +8,13 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
-from PIL import Image
+from PIL import Image, ImageCms
 
 from app.config import settings
 from app.services.image_processing import (
     create_large_variant,
     create_medium_variant,
+    create_thumbnail,
     validate_image_file,
 )
 
@@ -61,6 +62,72 @@ def temp_storage():
 
 
 @pytest.fixture
+def test_image_rgba_with_icc():
+    """A transparent PNG tagged with an embedded ICC profile.
+
+    Mirrors what Clip Studio / Photoshop / pixiv originals look like: fully
+    transparent pixels carry a non-white colour underneath (black here), so
+    dropping the alpha channel exposes it as a blob behind the subject.
+    Sized to exceed MEDIUM_EDGE so variant generation also runs.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "2026-09-19-99004.png"
+        img = Image.new("RGBA", (1600, 1600), color=(0, 0, 0, 0))
+        img.paste((200, 50, 50, 255), (400, 400, 1200, 1200))
+        srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        img.save(path, icc_profile=srgb)
+        yield path
+
+
+@pytest.fixture
+def test_image_transparent_gif():
+    """An animated palette GIF whose transparent index maps to magenta.
+
+    Old GIF tooling picks a garish colour nobody will use as the transparent
+    index (image 1003779 uses #FF00FF). Pillow opens the first frame in mode
+    "P", so a bare convert("RGB") discards the transparency and paints every
+    transparent pixel with that colour. Sized to exceed MEDIUM_EDGE so variant
+    generation also runs.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "2026-10-05-99006.gif"
+        palette = [255, 0, 255, 200, 50, 50, 50, 50, 200] + [0] * (256 * 3 - 9)
+        frames = []
+        for colour_index in (1, 2):
+            frame = Image.new("P", (1600, 1600))
+            frame.putpalette(palette)
+            frame.paste(colour_index, (400, 400, 1200, 1200))
+            frames.append(frame)
+        frames[0].save(
+            path,
+            save_all=True,
+            append_images=frames[1:],
+            transparency=0,
+            duration=80,
+            loop=0,
+            disposal=2,
+        )
+        yield path
+
+
+@pytest.fixture
+def test_image_palette_png_with_icc():
+    """A palette PNG (pngquant-style) with a transparent index and an ICC profile.
+
+    Colour management can't run on mode "P", so the palette must be unpacked
+    before the sRGB conversion or the fallback path drops the transparency.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "2026-10-05-99007.png"
+        img = Image.new("P", (600, 600))
+        img.putpalette([255, 0, 255, 200, 50, 50] + [0] * (256 * 3 - 6))
+        img.paste(1, (150, 150, 450, 450))
+        srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        img.save(path, transparency=0, icc_profile=srgb)
+        yield path
+
+
+@pytest.fixture
 def test_image_highly_compressed():
     """Create a temporary highly compressed small image for size validation tests."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -70,6 +137,81 @@ def test_image_highly_compressed():
         img = Image.new("RGB", (100, 100), color="red")
         img.save(path, quality=1)  # Extremely low quality
         yield path
+
+
+class TestTransparencyWithIccProfile:
+    """Alpha must survive the sRGB conversion an embedded ICC profile triggers."""
+
+    def test_thumbnail_keeps_alpha_for_icc_tagged_png(self, test_image_rgba_with_icc, temp_storage):
+        create_thumbnail(test_image_rgba_with_icc, 99004, temp_storage)
+
+        thumb_path = Path(temp_storage) / "thumbs" / "2026-09-19-99004.webp"
+        with Image.open(thumb_path) as thumb:
+            assert thumb.mode == "RGBA"
+            assert thumb.getpixel((0, 0))[3] == 0
+
+    def test_medium_variant_keeps_alpha_for_icc_tagged_png(
+        self, test_image_rgba_with_icc, temp_storage
+    ):
+        result = create_medium_variant(
+            test_image_rgba_with_icc, 99004, "png", temp_storage, 1600, 1600
+        )
+        assert result is True
+
+        variant_path = Path(temp_storage) / "medium" / "2026-09-19-99004.png"
+        with Image.open(variant_path) as variant:
+            assert variant.mode == "RGBA"
+            assert variant.getpixel((0, 0)) == (0, 0, 0, 0)
+
+    def test_thumbnail_keeps_alpha_when_icc_profile_is_unreadable(self, temp_storage):
+        """A garbage profile must degrade to 'skip colour management', not 'drop alpha'."""
+        source_path = Path(temp_storage) / "2026-09-19-99005.png"
+        img = Image.new("RGBA", (600, 600), color=(0, 0, 0, 0))
+        img.save(source_path, icc_profile=b"not an icc profile")
+
+        create_thumbnail(source_path, 99005, temp_storage)
+
+        with Image.open(Path(temp_storage) / "thumbs" / "2026-09-19-99005.webp") as thumb:
+            assert thumb.mode == "RGBA"
+            assert thumb.getpixel((0, 0))[3] == 0
+
+
+class TestPaletteTransparency:
+    """Palette-indexed transparency (GIF, pngquant PNG) must not become the index's colour."""
+
+    def test_thumbnail_keeps_alpha_for_transparent_gif(
+        self, test_image_transparent_gif, temp_storage
+    ):
+        create_thumbnail(test_image_transparent_gif, 99006, temp_storage)
+
+        thumb_path = Path(temp_storage) / "thumbs" / "2026-10-05-99006.webp"
+        with Image.open(thumb_path) as thumb:
+            assert thumb.mode == "RGBA"
+            assert thumb.getpixel((0, 0))[3] == 0
+            # The subject must still be opaque: guards against "everything transparent"
+            assert thumb.getpixel((250, 250))[3] == 255
+
+    def test_thumbnail_keeps_alpha_for_palette_png_with_icc(
+        self, test_image_palette_png_with_icc, temp_storage
+    ):
+        create_thumbnail(test_image_palette_png_with_icc, 99007, temp_storage)
+
+        thumb_path = Path(temp_storage) / "thumbs" / "2026-10-05-99007.webp"
+        with Image.open(thumb_path) as thumb:
+            assert thumb.mode == "RGBA"
+            assert thumb.getpixel((0, 0))[3] == 0
+
+    def test_medium_variant_keeps_transparency_for_gif(
+        self, test_image_transparent_gif, temp_storage
+    ):
+        result = create_medium_variant(
+            test_image_transparent_gif, 99006, "gif", temp_storage, 1600, 1600
+        )
+        assert result is True
+
+        variant_path = Path(temp_storage) / "medium" / "2026-10-05-99006.gif"
+        with Image.open(variant_path) as variant:
+            assert variant.convert("RGBA").getpixel((0, 0))[3] == 0
 
 
 class TestCreateMediumVariant:

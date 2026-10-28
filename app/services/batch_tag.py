@@ -4,7 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.db_retry import retry_on_transient_conflict
 from app.core.logging import get_logger
 from app.models.image import Images
 from app.models.tag import Tags
@@ -16,13 +16,12 @@ from app.schemas.tag import (
     BatchTagSkippedItem,
 )
 from app.services.ml_suggestion_review import approve_pending_suggestions_for_links
-from app.services.search import sync_tags_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
 
 logger = get_logger(__name__)
 
 
-async def batch_add_tags(
+async def batch_add_tags(  # noqa: C901
     tag_ids: list[int],
     image_ids: list[int],
     user_id: int,
@@ -36,9 +35,11 @@ async def batch_add_tags(
 
     # The TagLinks/TagHistory INSERTs take locking reads on their FK parents
     # (tags, images, users) and the usage_count trigger on tag_links keeps those
-    # parent rows moving, so under innodb_snapshot_isolation a concurrent tag
-    # write aborts this batch with ER_CHECKREAD (1020). Retry the whole
-    # fetch-through-commit unit on a fresh snapshot (see app/core/db_retry.py).
+    # parent rows moving. This opted into the retry after a MariaDB snapshot
+    # conflict (ER_CHECKREAD) before the Postgres cutover; kept per ADR-0004,
+    # where the transient error is now a deadlock (SQLSTATE 40P01). Retry the
+    # whole fetch-through-commit unit on a fresh snapshot (see
+    # app/core/db_retry.py).
     # The accumulators are built inside the unit: reusing lists from a failed
     # attempt would report every pair once per attempt.
     async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:
@@ -164,21 +165,12 @@ async def batch_add_tags(
 
         return added, skipped
 
-    added, skipped = await retry_on_snapshot_conflict(db, _apply, what="batch_tag_add")
-
-    # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
-    # Non-DB side effect: stays outside the retried unit so it never repeats.
-    affected_tag_ids = {item.tag_id for item in added}
-    if affected_tag_ids:
-        tag_results = await db.execute(
-            select(Tags).where(Tags.tag_id.in_(affected_tag_ids))  # type: ignore[union-attr]
-        )
-        await sync_tags_to_search(list(tag_results.scalars().all()), db=db)
+    added, skipped = await retry_on_transient_conflict(db, _apply, what="batch_tag_add")
 
     return BatchTagResponse(added=added, skipped=skipped)
 
 
-async def batch_remove_tags(
+async def batch_remove_tags(  # noqa: C901
     tag_ids: list[int],
     image_ids: list[int],
     user_id: int,
@@ -195,7 +187,7 @@ async def batch_remove_tags(
     # the parent `tags` rows moving. Retry the whole fetch-through-commit unit
     # on a fresh snapshot (see app/core/db_retry.py). The accumulators are built
     # inside the unit so a retry cannot report a pair once per attempt.
-    async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:
+    async def _apply() -> tuple[list[BatchTagResultItem], list[BatchTagSkippedItem]]:  # noqa: C901
         removed: list[BatchTagResultItem] = []
         skipped: list[BatchTagSkippedItem] = []
 
@@ -321,15 +313,6 @@ async def batch_remove_tags(
 
         return removed, skipped
 
-    removed, skipped = await retry_on_snapshot_conflict(db, _apply, what="batch_tag_remove")
-
-    # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
-    # Non-DB side effect: stays outside the retried unit so it never repeats.
-    affected_tag_ids = {item.tag_id for item in removed}
-    if affected_tag_ids:
-        tag_results = await db.execute(
-            select(Tags).where(Tags.tag_id.in_(affected_tag_ids))  # type: ignore[union-attr]
-        )
-        await sync_tags_to_search(list(tag_results.scalars().all()), db=db)
+    removed, skipped = await retry_on_transient_conflict(db, _apply, what="batch_tag_remove")
 
     return BatchTagResponse(removed=removed, skipped=skipped)

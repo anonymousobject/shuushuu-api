@@ -143,10 +143,7 @@ def _check_lockfile_freshness(logger: Any) -> None:
 
 async def startup(ctx: dict[str, Any]) -> None:
     """Worker startup - initialize any shared resources."""
-    from meilisearch_python_sdk import AsyncClient as MeilisearchClient
-
     from app.core.logging import get_logger
-    from app.services.search import SearchService, configure_tags_index, set_search_service
 
     logger = get_logger(__name__)
     logger.info("arq_worker_starting", redis_url=settings.ARQ_REDIS_URL)
@@ -156,30 +153,6 @@ async def startup(ctx: dict[str, Any]) -> None:
     # deps were added to uv.lock but the image wasn't rebuilt — the worker
     # would crash-loop on the first missing import.
     _check_lockfile_freshness(logger)
-
-    # Initialize Meilisearch search service so worker tasks calling
-    # sync_tag_to_search / sync_tags_to_search actually sync (rather than
-    # silently no-opping on the module-level None default). Mirrors the
-    # FastAPI lifespan in app/main.py and degrades gracefully if Meilisearch
-    # is unreachable — the worker should still process non-search jobs.
-    client: MeilisearchClient | None = None
-    try:
-        client = MeilisearchClient(
-            url=settings.MEILISEARCH_URL,
-            api_key=settings.MEILISEARCH_API_KEY,
-        )
-        await configure_tags_index(client)
-        set_search_service(SearchService(client))
-        ctx["meilisearch_client"] = client
-        logger.info("meilisearch_initialized", url=settings.MEILISEARCH_URL)
-    except Exception:
-        if client is not None:
-            await client.aclose()
-        logger.warning(
-            "meilisearch_unavailable",
-            url=settings.MEILISEARCH_URL,
-            exc_info=True,
-        )
 
     # Load the ML tagging model once per worker when the feature is enabled.
     # Deliberately NOT wrapped in try/except: if the flag is on but model
@@ -197,13 +170,8 @@ async def startup(ctx: dict[str, Any]) -> None:
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Worker shutdown - cleanup resources."""
     from app.core.logging import get_logger
-    from app.services.search import set_search_service
 
     logger = get_logger(__name__)
-    set_search_service(None)
-    client = ctx.get("meilisearch_client")
-    if client is not None:
-        await client.aclose()
     if "ml_service" in ctx:
         await ctx["ml_service"].cleanup()
     logger.info("arq_worker_shutdown")

@@ -51,7 +51,7 @@ class TestListTags:
         assert data["total"] >= 5
         assert "tags" in data
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_search_tags(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags by name."""
         # Create tags with different names
@@ -71,9 +71,10 @@ class TestListTags:
     async def test_search_tags_with_periods(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags containing periods like 'C.C.'.
 
-        MySQL fulltext treats periods as word delimiters, so "C.C." becomes tokens
-        "C" and "C" which are both below the minimum token size. The search should
-        fall back to LIKE prefix matching for such terms.
+        Postgres matches this with a case-insensitive substring match per word,
+        so "C.C." matches by that literal substring. Under MariaDB fulltext,
+        "C.C." became tokens "C" and "C", both below the minimum token size,
+        which is why this case exists.
         """
         # Create tags with periods in the name
         tag1 = Tags(title="C.C.", desc="Code Geass character", type=TagType.CHARACTER)
@@ -96,9 +97,10 @@ class TestListTags:
     async def test_search_tags_with_hyphens(self, client: AsyncClient, db_session: AsyncSession):
         """Test searching tags containing hyphens like 'Deep-Blue Series'.
 
-        MySQL fulltext treats hyphens as word delimiters, so "Deep-Blue" becomes
-        tokens "Deep" and "Blue". The search must tokenize the query the same way
-        so that "deep-blue" matches.
+        Postgres matches this with a case-insensitive substring match per word;
+        search.split() splits on whitespace only, so "deep-blue" stays one
+        ILIKE '%deep-blue%' substring. Under MariaDB fulltext, "Deep-Blue"
+        became tokens "Deep" and "Blue", which is why this case exists.
         """
         tag1 = Tags(title="Deep-Blue Series", desc="A series", type=TagType.THEME)
         tag2 = Tags(title="Unrelated Tag", desc="Other", type=TagType.THEME)
@@ -632,7 +634,7 @@ class TestTagListSorting:
         response = await client.get("/api/v1/tags?sort_by=usage_count&sort_order=asc")
         assert response.status_code == 200
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_explicit_sort_by_overrides_search_relevance(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -655,7 +657,7 @@ class TestTagListSorting:
         assert matching[0]["title"] == "match partial"
         assert matching[1]["title"] == "match"
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_search_without_sort_by_uses_relevance(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -827,7 +829,7 @@ class TestAliasOfName:
                 assert tag["alias_of_name"] == "sakura kinomoto"
                 assert tag["is_alias"] is True
 
-    @pytest.mark.needs_commit  # FULLTEXT search requires committed data
+    @pytest.mark.needs_commit  # needs_commit: search runs against committed rows
     async def test_alias_of_name_with_search(self, client: AsyncClient, db_session: AsyncSession):
         """Test that alias_of_name works correctly with full-text search."""
         # Create original tag
@@ -906,13 +908,13 @@ class TestAliasOfName:
 
 
 @pytest.mark.api
-@pytest.mark.needs_commit  # FULLTEXT search requires committed data
+@pytest.mark.needs_commit  # needs_commit: search runs against committed rows
 class TestFuzzyTagSearch:
     """Tests for fuzzy/full-text search on tags.
 
     Tests the hybrid search strategy:
     - Short queries (< 3 chars): LIKE prefix matching
-    - Long queries (>= 3 chars): FULLTEXT word-order independent matching
+    - Long queries (>= 3 chars): ILIKE per-word AND matching, word-order independent
 
     This solves the Japanese character name problem:
     Searching "sakura kinomoto" should find "kinomoto sakura".
@@ -964,7 +966,7 @@ class TestFuzzyTagSearch:
         await db_session.commit()
 
         # Search for "sakura kinomoto" (3+ chars, multiple words)
-        # Uses FULLTEXT with +sakura* +kinomoto* (AND logic - both words required)
+        # Uses ILIKE '%sakura%' AND ILIKE '%kinomoto%' (both words required)
         # So it matches tags with BOTH "sakura" AND "kinomoto", regardless of order
         # But NOT "sakura mitsuki" since it lacks "kinomoto"
         response = await client.get("/api/v1/tags?search=sakura%20kinomoto")
@@ -986,8 +988,10 @@ class TestFuzzyTagSearch:
     ):
         """Test that full-text search requires whole words (not partial word matches).
 
-        Note: MariaDB/MySQL FULLTEXT has minimum word length (usually 3-4 chars) and
-        only matches complete words, not arbitrary substrings.
+        Postgres matches via a case-insensitive substring match per word, so
+        there is no minimum word length. Under MariaDB, fulltext had a minimum
+        word length (usually 3-4 chars) and only matched complete words, not
+        arbitrary substrings, which is why this case exists.
         """
         # Create test tags with full words
         tag1 = Tags(title="school uniform", type=TagType.THEME)
@@ -1000,11 +1004,10 @@ class TestFuzzyTagSearch:
         response = await client.get("/api/v1/tags?search=school")
         assert response.status_code == 200
         data = response.json()
-        # FULLTEXT matches complete words, so "school" should find:
-        # - "school uniform" (contains word "school")
-        # - "schoolgirl" (contains word "schoolgirl", not "school")
-        # - "scholar" (may or may not match depending on word stemming)
-        # In BOOLEAN mode, it's more strict - just ensure we get some results
+        # ILIKE '%school%' matches "school" as a substring, so "school" should find:
+        # - "school uniform" (contains the substring "school")
+        # - "schoolgirl" (also contains the substring "school")
+        # - "scholar" does not match (no "school" substring)
         assert data["total"] >= 1  # At least "school uniform"
         titles = {tag["title"] for tag in data["tags"]}
         assert "school uniform" in titles
@@ -1025,8 +1028,9 @@ class TestFuzzyTagSearch:
         assert response.status_code == 200
         data = response.json()
 
-        # FULLTEXT should find "cat ears" (exact word "cat")
-        # May or may not find "category" depending on word stemming in BOOLEAN mode
+        # ILIKE '%cat%' finds "cat ears" (contains the substring "cat")
+        # It also matches "category tags" (contains the substring "cat"),
+        # since ILIKE has no word-boundary concept
         assert data["total"] >= 1
         assert data["tags"][0]["title"] == "cat ears"  # Exact match should be first
 
@@ -1079,11 +1083,10 @@ class TestFuzzyTagSearch:
     async def test_search_with_stopwords(self, client: AsyncClient, db_session: AsyncSession):
         """Test that search works correctly when query contains stopwords like 'The'.
 
-        This addresses a bug where searching for "The Forgotten" would fail because
-        "the" is a MySQL/MariaDB fulltext stopword. When combined with the `+` required
-        operator, the entire query would fail.
-
-        The fix filters out stopwords and short terms before building the fulltext query.
+        Postgres's case-insensitive substring match has no stopword concept, so
+        "The Forgotten" matches directly on both words. Under MariaDB fulltext,
+        "the" was a stopword, and combined with the `+` required operator the
+        entire query would fail, which is why this case exists.
         """
         # Create tags with "The" in the title
         tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
@@ -1101,18 +1104,18 @@ class TestFuzzyTagSearch:
         assert data["total"] >= 1, "Search for 'The Forgotten' should return results"
         titles = {tag["title"] for tag in data["tags"]}
         assert "The Forgotten Field" in titles, "Should find 'The Forgotten Field'"
-        # Should NOT include "Forgotten Dreams" (lacks "The" if we're being strict about matching)
-        # Actually after fix, we filter out "The" as a stopword, so "Forgotten" is what's searched
-        # This means "Forgotten Dreams" might also be returned - that's acceptable
+        # Should NOT include "Forgotten Dreams": ILIKE per-word AND requires both
+        # "The" and "Forgotten" as substrings, and "Forgotten Dreams" lacks "The"
 
     async def test_search_with_short_terms(self, client: AsyncClient, db_session: AsyncSession):
         """Test that search works when query contains very short terms (< 3 chars).
 
-        MySQL/MariaDB fulltext has a minimum token size (default 3). Terms shorter
-        than this are ignored in fulltext search, which can cause issues when combined
-        with the `+` required operator.
-
-        Example: Searching "The F" would fail because "F" is below min token size.
+        Postgres's case-insensitive substring match has no per-word minimum
+        length, so short terms like "F" still match directly. Under MariaDB
+        fulltext, a minimum token size (default 3) meant short terms were
+        ignored, and combined with the `+` required operator this could fail
+        the whole query -- e.g. "The F" would return zero rows because "F" was
+        below the minimum token size -- which is why this case exists.
         """
         # Create tags
         tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
@@ -1159,10 +1162,12 @@ class TestFuzzyTagSearch:
     async def test_search_with_fulltext_special_characters(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """Test that fulltext boolean operators are stripped from search terms.
+        """Test that fulltext boolean operator characters are matched literally.
 
-        MySQL fulltext BOOLEAN MODE uses characters like +, -, *, ~, ", (), <, >, @
-        as operators. Without sanitization, searching for "C++" would create
+        Postgres's substring match treats all characters literally, including
+        operator punctuation, so no boolean sanitization is needed. Under
+        MariaDB fulltext BOOLEAN MODE, characters like +, -, *, ~, ", (), <, >,
+        @ were operators, and without sanitization, searching for "C++" would create
         "+C++*" which interprets the extra + as operators.
         """
         # Create tags with special characters
@@ -1171,39 +1176,15 @@ class TestFuzzyTagSearch:
         db_session.add_all([tag1, tag2])
         await db_session.commit()
 
-        # Search for "C++" - the ++ should be stripped, searching for just "C"
-        # which is too short (< 3 chars), so it falls back to LIKE
+        # Search for "C++" - no stripping happens; the whole token "C++" is one
+        # ILIKE '%C++%' substring match
         response = await client.get("/api/v1/tags?search=C%2B%2B")  # URL encoded C++
         assert response.status_code == 200
         data = response.json()
 
         # Should not crash and should return some results
-        # After stripping ++, "C" is too short, falls back to LIKE "C++%"
+        # ILIKE '%C++%' matches "C++ Programming"
         assert data["total"] >= 1
-
-    async def test_search_with_obfuscated_stopwords(
-        self, client: AsyncClient, db_session: AsyncSession
-    ):
-        """Test that stopwords are detected after sanitization.
-
-        A term like "+the+" should be recognized as stopword "the" after
-        stripping the special characters, not pass through as a non-stopword.
-        """
-        # Create tag
-        tag1 = Tags(title="The Forgotten Field", type=TagType.CHARACTER)
-        db_session.add_all([tag1])
-        await db_session.commit()
-
-        # Search for "+the+ Forgotten" - "+the+" should become "the" (stopword)
-        # and be filtered out, leaving just "Forgotten" for fulltext search
-        response = await client.get("/api/v1/tags?search=%2Bthe%2B%20Forgotten")
-        assert response.status_code == 200
-        data = response.json()
-
-        # Should find results since "Forgotten" is a valid search term
-        assert data["total"] >= 1
-        titles = {tag["title"] for tag in data["tags"]}
-        assert "The Forgotten Field" in titles
 
     async def test_hybrid_search_with_filters(self, client: AsyncClient, db_session: AsyncSession):
         """Test that fuzzy search works with other filters (type, exclude_aliases, etc)."""
@@ -1239,9 +1220,11 @@ class TestFuzzyTagSearch:
     ):
         """Test that searching for terms containing underscores works correctly.
 
-        MySQL/MariaDB InnoDB FULLTEXT treats underscore as a word character (not a
-        delimiter), so 'yano_0o0' is indexed as a single token. Our Python-side
-        tokenizer must match this behavior to produce valid FULLTEXT queries.
+        Postgres's substring match escapes underscore for LIKE (it would
+        otherwise match any single character as a wildcard), so 'yano_0o0'
+        matches literally. Under MariaDB InnoDB fulltext, underscore was a
+        word character, not a delimiter, so 'yano_0o0' was indexed as a single
+        token, which is why this case exists.
         """
         tag = Tags(title="Yano (yano_0o0)", type=TagType.CHARACTER)
         db_session.add(tag)
@@ -4187,6 +4170,109 @@ class TestUpdateTag:
         await db_session.refresh(tag_p)
         assert tag_p.type == TagType.ARTIST
 
+    async def test_type_cascade_blocked_while_alias_linked_as_character(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Issue #348: A's type change cascades to incoming alias P, but if P
+        (not A) holds a character-source link as the character side, the
+        cascade must not silently orphan it. The API refuses to create a link
+        on an alias, so the row is inserted directly, mirroring the legacy
+        data the issue describes."""
+        access_token = await self._admin_token(client, db_session, "admincascadeguardchar")
+
+        tag_a = Tags(title="Cascade Guard Char A", desc="", type=TagType.CHARACTER)
+        source_tag = Tags(title="Cascade Guard Char Source", desc="", type=TagType.SOURCE)
+        db_session.add_all([tag_a, source_tag])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(source_tag)
+
+        tag_p = Tags(
+            title="Cascade Guard Char P",
+            desc="",
+            type=TagType.CHARACTER,
+            alias_of=tag_a.tag_id,
+        )
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        db_session.add(
+            CharacterSourceLinks(character_tag_id=tag_p.tag_id, source_tag_id=source_tag.tag_id)
+        )
+        await db_session.commit()
+
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "Cascade Guard Char A", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "character-source link" in detail
+        assert "Cascade Guard Char P" in detail
+        assert "Cascade Guard Char Source" in detail
+
+        # Neither tag's type moved, and the link survives untouched
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_p)
+        assert tag_a.type == TagType.CHARACTER
+        assert tag_p.type == TagType.CHARACTER
+        links_result = await db_session.execute(
+            select(CharacterSourceLinks).where(
+                CharacterSourceLinks.character_tag_id == tag_p.tag_id
+            )
+        )
+        assert len(links_result.scalars().all()) == 1
+
+    async def test_type_cascade_blocked_while_alias_linked_as_source(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Mirror case: alias P holds the link on the source side."""
+        access_token = await self._admin_token(client, db_session, "admincascadeguardsource")
+
+        tag_a = Tags(title="Cascade Guard Source A", desc="", type=TagType.SOURCE)
+        char_tag = Tags(title="Cascade Guard Source Char", desc="", type=TagType.CHARACTER)
+        db_session.add_all([tag_a, char_tag])
+        await db_session.commit()
+        await db_session.refresh(tag_a)
+        await db_session.refresh(char_tag)
+
+        tag_p = Tags(
+            title="Cascade Guard Source P",
+            desc="",
+            type=TagType.SOURCE,
+            alias_of=tag_a.tag_id,
+        )
+        db_session.add(tag_p)
+        await db_session.commit()
+        await db_session.refresh(tag_p)
+
+        db_session.add(
+            CharacterSourceLinks(character_tag_id=char_tag.tag_id, source_tag_id=tag_p.tag_id)
+        )
+        await db_session.commit()
+
+        response = await client.put(
+            f"/api/v1/tags/{tag_a.tag_id}",
+            json={"title": "Cascade Guard Source A", "type": TagType.THEME},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "character-source link" in detail
+        assert "Cascade Guard Source P" in detail
+        assert "Cascade Guard Source Char" in detail
+
+        await db_session.refresh(tag_a)
+        await db_session.refresh(tag_p)
+        assert tag_a.type == TagType.SOURCE
+        assert tag_p.type == TagType.SOURCE
+        links_result = await db_session.execute(
+            select(CharacterSourceLinks).where(CharacterSourceLinks.source_tag_id == tag_p.tag_id)
+        )
+        assert len(links_result.scalars().all()) == 1
+
     async def test_changing_type_and_alias_together_cascades_both(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -4967,6 +5053,510 @@ class TestAddTagLink:
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == 403
+
+    async def test_pixiv_link_populates_identity(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Adding a pixiv profile URL parses site/external_id onto the link."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminidentity",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminidentity@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="identity artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminidentity", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Add a pixiv profile link
+        link_data = {"url": "https://www.pixiv.net/users/21412050"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["site"] == "pixiv"
+        assert body["external_id"] == "21412050"
+
+    async def test_non_identity_link_leaves_identity_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A URL no parser recognizes stores NULL site/external_id."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminnoident",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminnoident@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="non identity tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminnoident", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Add a non-identity link
+        link_data = {"url": "https://example.com/gallery"}
+        response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json=link_data,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["site"] is None
+        assert body["external_id"] is None
+
+    async def test_duplicate_identity_on_other_tag_is_409(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The same pixiv ID cannot be claimed by a second artist tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindupident",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindupident@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create two tags
+        tag = Tags(title="first artist tag", desc="Test artist", type=TagType.ARTIST)
+        other_tag = Tags(title="second artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        db_session.add(other_tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        await db_session.refresh(other_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindupident", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # First tag claims the ID
+        first_response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/users/21412050"},
+            headers=headers,
+        )
+        assert first_response.status_code == 201
+
+        # Second tag tries the same ID via a different URL form
+        response = await client.post(
+            f"/api/v1/tags/{other_tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/member.php?id=21412050"},
+            headers=headers,
+        )
+        assert response.status_code == 409
+        assert "21412050" in response.json()["detail"]
+        assert tag.title in response.json()["detail"]
+        # Pinned in the site's display case -- consistent with search's
+        # matched_identity labels ("Pixiv 21412267"), not the raw lowercase
+        # site column.
+        assert "Pixiv ID 21412050" in response.json()["detail"]
+
+    async def test_duplicate_identity_case_variant_on_other_tag_is_409(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """The duplicate-identity guard matches case-insensitively (ADR-0008:
+        `site`/`external_id` are citext). Real pixiv ids are digit-only so this can't
+        happen through today's parser, but a future alphanumeric site's ids
+        could collide on case, and the guard is a DB comparison -- it must
+        hold regardless of what the parser produces. Only `parse_identity_url`
+        is stubbed (to hand back a case-variant identity for made-up URLs);
+        `resolve_identity`'s real DB query is exactly what's under test."""
+        from unittest.mock import patch
+
+        from app.services.artist_identity import ArtistIdentity
+
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="admindupcase",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="admindupcase@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create two tags
+        tag = Tags(title="case variant artist tag", desc="Test artist", type=TagType.ARTIST)
+        other_tag = Tags(title="case variant artist tag 2", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        db_session.add(other_tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+        await db_session.refresh(other_tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admindupcase", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        first_url = "https://example.com/artist/AbC123"
+        second_url = "https://example.com/artist/abc123"
+        identities = {
+            first_url: ArtistIdentity(site="pixiv", external_id="AbC123"),
+            second_url: ArtistIdentity(site="pixiv", external_id="abc123"),
+        }
+
+        with patch("app.api.v1.tags.parse_identity_url", side_effect=identities.get):
+            # First tag claims the identity as originally cased.
+            first_response = await client.post(
+                f"/api/v1/tags/{tag.tag_id}/links",
+                json={"url": first_url},
+                headers=headers,
+            )
+            assert first_response.status_code == 201
+
+            # Second tag tries a lowercase variant of the same external_id.
+            response = await client.post(
+                f"/api/v1/tags/{other_tag.tag_id}/links",
+                json={"url": second_url},
+                headers=headers,
+            )
+        assert response.status_code == 409
+        assert tag.title in response.json()["detail"]
+
+    async def test_second_url_form_for_same_tag_leaves_identity_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A second URL form of an identity the SAME tag already owns (e.g. the
+        legacy member.php form alongside the modern /users/ form) is stored as a
+        plain archival link with NULL site/external_id. Mods deliberately keep
+        both forms on one tag for archive reasons, and a future UNIQUE(site,
+        external_id) index requires identity to live on only one link row per
+        tag. The first link's identity must be untouched."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminaltform",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaltform@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create tag
+        tag = Tags(title="alt form artist tag", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(tag)
+        await db_session.commit()
+        await db_session.refresh(tag)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaltform", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # First link claims the identity
+        first_response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/users/21412050"},
+            headers=headers,
+        )
+        assert first_response.status_code == 201
+        first_body = first_response.json()
+        assert first_body["site"] == "pixiv"
+        assert first_body["external_id"] == "21412050"
+
+        # Second URL form of the SAME identity, on the SAME tag
+        second_response = await client.post(
+            f"/api/v1/tags/{tag.tag_id}/links",
+            json={"url": "https://www.pixiv.net/member.php?id=21412050"},
+            headers=headers,
+        )
+        assert second_response.status_code == 201
+        second_body = second_response.json()
+        assert second_body["site"] is None
+        assert second_body["external_id"] is None
+
+        # The first link's identity is unchanged
+        first_link_result = await db_session.execute(
+            select(TagExternalLinks).where(
+                TagExternalLinks.link_id == first_body["link_id"]  # type: ignore[arg-type]
+            )
+        )
+        first_link = first_link_result.scalar_one()
+        assert first_link.site == "pixiv"
+        assert first_link.external_id == "21412050"
+
+    async def test_add_identity_link_to_alias_tag_is_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Identity must live on the canonical tag -- an alias tag can't claim
+        a pixiv ID even though it's a normal (non-canonical) artist tag."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminaliasident",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaliasident@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create canonical artist tag and an alias pointing at it
+        canonical = Tags(title="canonical artist", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(
+            title="alias artist",
+            desc="Test artist alias",
+            type=TagType.ARTIST,
+            alias_of=canonical.tag_id,
+        )
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaliasident", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Try to add a pixiv profile link to the ALIAS tag
+        response = await client.post(
+            f"/api/v1/tags/{alias.tag_id}/links",
+            json={"url": "https://www.pixiv.net/users/21412050"},
+            headers=headers,
+        )
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert canonical.title in detail
+        assert "canonical tag" in detail
+
+        # No link row was created for the alias
+        links_result = await db_session.execute(
+            select(TagExternalLinks).where(
+                TagExternalLinks.tag_id == alias.tag_id  # type: ignore[arg-type]
+            )
+        )
+        assert links_result.scalars().all() == []
+
+    async def test_add_non_identity_link_to_alias_tag_still_works(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """A URL that doesn't parse as an identity keeps working on an alias
+        tag -- the guard only blocks identity-bearing URLs."""
+        # Create TAG_UPDATE permission
+        perm = Perms(title="tag_update", desc="Update tags")
+        db_session.add(perm)
+        await db_session.commit()
+        await db_session.refresh(perm)
+
+        # Create admin user
+        admin = Users(
+            username="adminaliasnonident",
+            password=get_password_hash("AdminPassword123!"),
+            password_type="bcrypt",
+            salt="",
+            email="adminaliasnonident@example.com",
+            active=1,
+            admin=1,
+        )
+        db_session.add(admin)
+        await db_session.commit()
+        await db_session.refresh(admin)
+
+        # Grant TAG_UPDATE permission
+        user_perm = UserPerms(
+            user_id=admin.user_id,
+            perm_id=perm.perm_id,
+            permvalue=1,
+        )
+        db_session.add(user_perm)
+        await db_session.commit()
+
+        # Create canonical artist tag and an alias pointing at it
+        canonical = Tags(title="canonical artist two", desc="Test artist", type=TagType.ARTIST)
+        db_session.add(canonical)
+        await db_session.commit()
+        await db_session.refresh(canonical)
+
+        alias = Tags(
+            title="alias artist two",
+            desc="Test artist alias",
+            type=TagType.ARTIST,
+            alias_of=canonical.tag_id,
+        )
+        db_session.add(alias)
+        await db_session.commit()
+        await db_session.refresh(alias)
+
+        # Login as admin
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "adminaliasnonident", "password": "AdminPassword123!"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Add a non-identity link to the ALIAS tag
+        response = await client.post(
+            f"/api/v1/tags/{alias.tag_id}/links",
+            json={"url": "https://example.com/some-page"},
+            headers=headers,
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["url"] == "https://example.com/some-page"
+        assert body["site"] is None
+        assert body["external_id"] is None
 
 
 @pytest.mark.api

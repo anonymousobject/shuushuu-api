@@ -52,7 +52,7 @@ async def enqueue_r2_sync_on_status_change(
     )
 
 
-async def change_image_status(
+async def change_image_status(  # noqa: C901, PLR0912
     db: AsyncSession,
     image: Images,
     actor: Users | None,

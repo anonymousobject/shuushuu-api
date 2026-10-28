@@ -27,7 +27,7 @@ request_id_ctx: ContextVar[str | None] = ContextVar("request_id", default=None)
 user_id_ctx: ContextVar[int | None] = ContextVar("user_id", default=None)
 
 
-def add_context_info(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
+def add_context_info(_logger: Any, _method_name: str, event_dict: EventDict) -> EventDict:
     """Add contextual information to log records."""
     # Add request ID if available
     request_id = request_id_ctx.get(None)

@@ -3,6 +3,7 @@
 Handles Redis caching of randomly selected banners with theme and size filtering.
 """
 
+import contextlib
 import random
 from typing import Any, cast
 
@@ -60,7 +61,7 @@ def _compute_ttl_seconds() -> int:
     return ttl
 
 
-async def get_current_banner(
+async def get_current_banner(  # noqa: C901, PLR0912
     theme: str,
     size: str,
     db: AsyncSession,
@@ -241,10 +242,9 @@ async def get_user_preferences(
         banner = await db.get(Banners, pin_row.banner_id)
         banner_response = None
         if banner:
-            try:
+            # Skip banners with invalid layout (e.g. partial three-part)
+            with contextlib.suppress(Exception):
                 banner_response = BannerResponse.model_validate(banner)
-            except Exception:
-                pass  # Skip banners with invalid layout (e.g. partial three-part)
         pins.append(
             BannerPinResponse(
                 size=pin_row.size,

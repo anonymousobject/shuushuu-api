@@ -223,7 +223,7 @@ async def _process_one(
             return image_id, f"unhandled:{type(e).__name__}: {e}"
 
 
-async def populate_iqdb(
+async def populate_iqdb(  # noqa: C901, PLR0912, PLR0915
     batch_size: int = 100,
     concurrency: int = 50,
     dry_run: bool = False,

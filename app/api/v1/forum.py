@@ -256,7 +256,6 @@ async def list_categories(
 )
 async def create_category(
     body: ForumCategoryCreate,
-    current_user: CurrentUser,
     db: DbDep,
     _: Annotated[None, Depends(require_permission(Permission.FORUM_CATEGORY_MANAGE))],
 ) -> ForumCategoryResponse:
@@ -273,7 +272,6 @@ async def create_category(
 async def update_category(
     category_id: int,
     body: ForumCategoryUpdate,
-    current_user: CurrentUser,
     db: DbDep,
     _: Annotated[None, Depends(require_permission(Permission.FORUM_CATEGORY_MANAGE))],
 ) -> ForumCategoryResponse:
@@ -295,7 +293,6 @@ async def update_category(
 @router.delete("/categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_category(
     category_id: int,
-    current_user: CurrentUser,
     db: DbDep,
     _: Annotated[None, Depends(require_permission(Permission.FORUM_CATEGORY_MANAGE))],
 ) -> None:

@@ -60,14 +60,16 @@ class TestSyncImageStatusJob:
         await db_session.refresh(img)
 
         mock_r2 = AsyncMock()
-        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
-            with pytest.raises(Retry):
-                await sync_image_status_job(
-                    {},
-                    image_id=img.image_id,
-                    old_status=ImageStatus.ACTIVE,
-                    new_status=ImageStatus.REVIEW,
-                )
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            pytest.raises(Retry),
+        ):
+            await sync_image_status_job(
+                {},
+                image_id=img.image_id,
+                old_status=ImageStatus.ACTIVE,
+                new_status=ImageStatus.REVIEW,
+            )
         mock_r2.copy_object.assert_not_awaited()
         mock_r2.delete_object.assert_not_awaited()
 
