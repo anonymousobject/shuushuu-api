@@ -41,4 +41,4 @@ async def test_forum_permissions_in_enum():
     assert Permission.FORUM_ACCESS_TAGGER.value == "forum_access_tagger"
     assert Permission.FORUM_MODERATE.value == "forum_moderate"
     assert Permission.FORUM_CATEGORY_MANAGE.value == "forum_category_manage"
-    assert FORUM_ACCESS_PERMISSIONS == {"forum_access_staff", "forum_access_tagger"}
+    assert {"forum_access_staff", "forum_access_tagger"} == FORUM_ACCESS_PERMISSIONS
