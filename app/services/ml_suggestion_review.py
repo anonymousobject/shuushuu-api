@@ -2,9 +2,9 @@
 
 Approving a suggestion mirrors the canonical tag-add path (images.py /
 batch_tag.py / the admin report-suggestion approval flow): it creates a
-TagLink on the canonical tag, records a TagHistory add row, refreshes the
-image's denormalized tag-type flags, and syncs the affected tags to
-Meilisearch after commit. Rejecting only updates the suggestion row.
+TagLink on the canonical tag, records a TagHistory add row, and refreshes the
+image's denormalized tag-type flags. Rejecting only updates the suggestion
+row.
 """
 
 from collections import defaultdict
@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db_retry import retry_on_snapshot_conflict
+from app.core.db_retry import retry_on_transient_conflict
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.tag_history import TagHistory
@@ -26,7 +26,6 @@ from app.schemas.ml_tag_suggestion import (
     ReviewSuggestionsResponse,
 )
 from app.services.ml_suggestion_pipeline import fetch_parent_map
-from app.services.search import sync_tags_to_search
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 
 
@@ -131,12 +130,12 @@ async def delete_pending_ancestor_suggestions(
     return doomed_ids
 
 
-async def _apply_reviews_for_image(
+async def _apply_reviews_for_image(  # noqa: C901
     db: AsyncSession,
     image_id: int,
     items: list[ReviewSuggestionRequest],
     user_id: int,
-) -> tuple[set[int], list[int]]:
+) -> list[int]:
     """Apply approve/reject decisions for all suggestions on a single image.
 
     Performs:
@@ -144,11 +143,10 @@ async def _apply_reviews_for_image(
     - set status / reviewed_at / reviewed_by_user_id on each suggestion row
     - refresh_image_tag_type_flags(db, image_id) when any TagLink was created
 
-    Does NOT call db.commit() and does NOT call sync_tags_to_search.
-    Returns (created_link_tag_ids, removed_suggestion_ids): the set of
-    canonical tag_ids for which a new TagLink was created, and the
-    suggestion_ids of any PENDING ancestor suggestions cascade-deleted as a
-    result (empty when no TagLink was created).
+    Does NOT call db.commit().
+    Returns removed_suggestion_ids: the suggestion_ids of any PENDING
+    ancestor suggestions cascade-deleted as a result of a newly created
+    TagLink (empty when no TagLink was created).
     """
     suggestion_ids = [item.suggestion_id for item in items]
     suggestions_result = await db.execute(
@@ -234,7 +232,7 @@ async def _apply_reviews_for_image(
     if created_link_tag_ids:
         await refresh_image_tag_type_flags(db, image_id)
 
-    return created_link_tag_ids, removed_suggestion_ids
+    return removed_suggestion_ids
 
 
 async def review_ml_tag_suggestions(
@@ -253,15 +251,17 @@ async def review_ml_tag_suggestions(
     suggestion_ids = [item.suggestion_id for item in request.suggestions]
 
     # A concurrent ml_remap run (or another reviewer) can rewrite these same
-    # suggestion rows between our fetch and our commit, tripping MariaDB
-    # ER_CHECKREAD (1020) under innodb_snapshot_isolation (see
-    # app/core/db_retry.py). Retry the whole fetch-through-commit unit on a
-    # fresh snapshot. Re-running _apply() after a rollback is idempotent-safe
+    # suggestion rows between our fetch and our commit. This opted into the
+    # retry after a MariaDB snapshot conflict (ER_CHECKREAD) before the
+    # Postgres cutover; kept per ADR-0004, where the transient error is now a
+    # deadlock (SQLSTATE 40P01) (see app/core/db_retry.py). Retry the whole
+    # fetch-through-commit unit on a fresh snapshot. Re-running _apply() after
+    # a rollback is idempotent-safe
     # by construction: the fresh fetch re-reads current suggestion statuses,
     # so changes already committed by the other writer are visible under the
     # new snapshot (no double-apply), and a suggestion the other writer
     # removed simply falls through to the missing-suggestion errors path.
-    async def _apply() -> tuple[int, int, list[str], set[int], list[int]]:
+    async def _apply() -> tuple[int, int, list[str], list[int]]:
         suggestions_result = await db.execute(
             select(MlTagSuggestions).where(
                 MlTagSuggestions.suggestion_id.in_(suggestion_ids),  # type: ignore[union-attr]
@@ -288,29 +288,18 @@ async def review_ml_tag_suggestions(
                 elif review_item.action == "reject":
                     rejected_count += 1
 
-        created, removed_suggestion_ids = await _apply_reviews_for_image(
-            db, image_id, found_items, user_id
-        )
+        removed_suggestion_ids = await _apply_reviews_for_image(db, image_id, found_items, user_id)
 
         await db.commit()
 
-        return approved_count, rejected_count, errors, created, removed_suggestion_ids
+        return approved_count, rejected_count, errors, removed_suggestion_ids
 
     (
         approved_count,
         rejected_count,
         errors,
-        created,
         removed_suggestion_ids,
-    ) = await retry_on_snapshot_conflict(db, _apply, what="ml_review_apply")
-
-    # Sync affected tags to Meilisearch (usage_count updated by DB trigger).
-    # Non-DB side effect: stays outside the retried unit so it never repeats.
-    if created:
-        tag_results = await db.execute(
-            select(Tags).where(Tags.tag_id.in_(created))  # type: ignore[union-attr]
-        )
-        await sync_tags_to_search(list(tag_results.scalars().all()), db=db)
+    ) = await retry_on_transient_conflict(db, _apply, what="ml_review_apply")
 
     return ReviewSuggestionsResponse(
         approved=approved_count,
@@ -331,8 +320,7 @@ async def bulk_review_suggestions(
     by image_id, then calls _apply_reviews_for_image once per distinct image.
     Missing suggestion_ids go to errors without aborting valid ones.
 
-    Emits a single db.commit() and a single batched sync_tags_to_search over
-    all created TagLinks — never N commits or N syncs.
+    Emits a single db.commit() over all created TagLinks — never N commits.
     """
     suggestion_ids = [r["suggestion_id"] for r in reviews]
 
@@ -345,7 +333,7 @@ async def bulk_review_suggestions(
     # the other writer are visible under the new snapshot (no double-apply),
     # and rows the other writer removed simply fall through to the
     # missing-suggestion errors path.
-    async def _apply() -> tuple[int, int, list[str], set[int], list[int]]:
+    async def _apply() -> tuple[int, int, list[str], list[int]]:
         suggestions_result = await db.execute(
             select(MlTagSuggestions).where(
                 MlTagSuggestions.suggestion_id.in_(suggestion_ids)  # type: ignore[union-attr]
@@ -376,15 +364,11 @@ async def bulk_review_suggestions(
             elif action == "reject":
                 rejected_count += 1
 
-        # Process each image's suggestions; accumulate created tag_ids and
-        # cascade-deleted ancestor suggestion_ids.
-        all_created_tag_ids: set[int] = set()
+        # Process each image's suggestions; accumulate cascade-deleted
+        # ancestor suggestion_ids.
         all_removed_suggestion_ids: list[int] = []
         for image_id, items in items_by_image.items():
-            created, removed_suggestion_ids = await _apply_reviews_for_image(
-                db, image_id, items, user_id
-            )
-            all_created_tag_ids |= created
+            removed_suggestion_ids = await _apply_reviews_for_image(db, image_id, items, user_id)
             all_removed_suggestion_ids.extend(removed_suggestion_ids)
 
         # Single commit spanning all images.
@@ -394,7 +378,6 @@ async def bulk_review_suggestions(
             approved_count,
             rejected_count,
             errors,
-            all_created_tag_ids,
             all_removed_suggestion_ids,
         )
 
@@ -402,17 +385,8 @@ async def bulk_review_suggestions(
         approved_count,
         rejected_count,
         errors,
-        all_created_tag_ids,
         all_removed_suggestion_ids,
-    ) = await retry_on_snapshot_conflict(db, _apply, what="ml_review_bulk_apply")
-
-    # Single batched search-sync over the union of created tag_ids.
-    # Non-DB side effect: stays outside the retried unit so it never repeats.
-    if all_created_tag_ids:
-        tag_results = await db.execute(
-            select(Tags).where(Tags.tag_id.in_(all_created_tag_ids))  # type: ignore[union-attr]
-        )
-        await sync_tags_to_search(list(tag_results.scalars().all()), db=db)
+    ) = await retry_on_transient_conflict(db, _apply, what="ml_review_bulk_apply")
 
     return ReviewSuggestionsResponse(
         approved=approved_count,

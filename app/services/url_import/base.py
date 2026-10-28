@@ -2,7 +2,7 @@
 
 Resolvers pattern-match an external post URL, extract an ID, and construct
 their own requests against pinned hostnames — user-provided URLs are never
-fetched directly (see docs/plans/2026-07-06-url-import-design.md).
+fetched directly (see <shuushuu-frontend-repo>/docs/plans/2026-Q3/2026-07-06-url-import-design.md).
 """
 
 from dataclasses import dataclass, field

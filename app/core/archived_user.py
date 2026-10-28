@@ -6,7 +6,7 @@ import stay untouched (and so the test harness, which rebuilds an empty users
 table, never collides with it).
 """
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import Users
@@ -31,18 +31,21 @@ async def get_archived_user_id(db: AsyncSession) -> int | None:
 async def ensure_archived_user(db: AsyncSession) -> int:
     """Create the Archived User if absent (idempotent); return its user_id. Commits.
 
-    gender is NOT NULL without a default; '' is an existing valid value.
+    Inserted through the model, not raw SQL: most users columns are NOT NULL
+    with only Python-side defaults. The account is inactive (cannot log in).
     """
     existing = await get_archived_user_id(db)
     if existing is None:
-        await db.execute(
-            text(
-                "INSERT INTO users (username, password, password_type, salt, email, active, "
-                "admin, gender, date_joined) "
-                "SELECT :u, '!', 'bcrypt', '!', 'archived@localhost', 0, 0, '', NOW() FROM DUAL "
-                "WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = :u)"
-            ),
-            {"u": ARCHIVED_USERNAME},
+        db.add(
+            Users(
+                username=ARCHIVED_USERNAME,
+                password="!",
+                password_type="bcrypt",
+                salt="!",
+                email="archived@localhost",
+                active=0,
+                admin=0,
+            )
         )
         await db.commit()
         existing = await get_archived_user_id(db)

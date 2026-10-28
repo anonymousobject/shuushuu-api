@@ -48,7 +48,7 @@ def test_default_vocab_tracks_configured_model():
     """DEFAULT_VOCAB must point at the currently-configured model's vocab, not a
     hardcoded model name — otherwise a --vocab-less run silently uses the wrong
     vocabulary once the production model changes (see settings.ML_MODEL_NAME)."""
-    assert DEFAULT_VOCAB == Path(f"ml_models/{settings.ML_MODEL_NAME}/selected_tags.csv")
+    assert Path(f"ml_models/{settings.ML_MODEL_NAME}/selected_tags.csv") == DEFAULT_VOCAB
 
 
 def test_strip_qualifier():

@@ -4,7 +4,6 @@ Background jobs for the review system.
 Provides scheduled tasks for processing review deadlines.
 """
 
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -18,13 +17,14 @@ from app.config import (
     ReviewStatus,
     settings,
 )
+from app.core.logging import get_logger
 from app.models.admin_action import AdminActions
 from app.models.image import Images
 from app.models.image_review import ImageReviews
 from app.models.review_vote import ReviewVotes
 from app.services.image_status import change_image_status
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 async def check_review_deadlines(db: AsyncSession) -> dict[str, Any]:
@@ -74,7 +74,7 @@ async def check_review_deadlines(db: AsyncSession) -> dict[str, Any]:
     result = await db.execute(stmt)
     reviews = result.scalars().all()
 
-    logger.info(f"Found {len(reviews)} expired reviews to process")
+    logger.info("expired_reviews_found", count=len(reviews))
 
     for review in reviews:
         try:
@@ -96,14 +96,18 @@ async def check_review_deadlines(db: AsyncSession) -> dict[str, Any]:
                 }
             )
             logger.error(
-                f"Failed to process review {review.review_id}: {e}",
+                "review_processing_failed",
+                review_id=review.review_id,
+                error=str(e),
                 exc_info=True,
             )
 
     logger.info(
-        f"check_review_deadlines complete: "
-        f"processed={results['processed']}, closed={results['closed']}, "
-        f"extended={results['extended']}, errors={results['errors']}"
+        "check_review_deadlines_complete",
+        processed=results["processed"],
+        closed=results["closed"],
+        extended=results["extended"],
+        errors=results["errors"],
     )
 
     return results
@@ -135,8 +139,13 @@ async def _process_single_review(
     is_tie = keep_votes == remove_votes
 
     logger.debug(
-        f"Review {review.review_id}: keep={keep_votes}, remove={remove_votes}, "
-        f"quorum={has_quorum}, tie={is_tie}, extension_used={review.extension_used}"
+        "review_votes_tallied",
+        review_id=review.review_id,
+        keep=keep_votes,
+        remove=remove_votes,
+        quorum=has_quorum,
+        tie=is_tie,
+        extension_used=review.extension_used,
     )
 
     if has_quorum and not is_tie:
@@ -144,14 +153,13 @@ async def _process_single_review(
         outcome = ReviewOutcome.KEEP if keep_votes > remove_votes else ReviewOutcome.REMOVE
         transition = await _close_review(db, review, outcome, "quorum_reached")
         return "closed", transition
-    elif not review.extension_used:
+    if not review.extension_used:
         # No quorum or tie, first time - extend deadline
         await _extend_review(db, review)
         return "extended", None
-    else:
-        # No quorum or tie after extension - default to keep
-        transition = await _close_review(db, review, ReviewOutcome.KEEP, "default_after_extension")
-        return "closed", transition
+    # No quorum or tie after extension - default to keep
+    transition = await _close_review(db, review, ReviewOutcome.KEEP, "default_after_extension")
+    return "closed", transition
 
 
 async def _get_vote_counts(db: AsyncSession, review_id: int) -> dict[int, int]:
@@ -230,8 +238,10 @@ async def _close_review(
         transition = (review.image_id, old_status, new_status)
 
     logger.info(
-        f"Closed review {review.review_id} with outcome "
-        f"{'KEEP' if outcome == ReviewOutcome.KEEP else 'REMOVE'} (reason: {reason})"
+        "review_closed",
+        review_id=review.review_id,
+        outcome="KEEP" if outcome == ReviewOutcome.KEEP else "REMOVE",
+        reason=reason,
     )
 
     return transition
@@ -269,8 +279,10 @@ async def _extend_review(db: AsyncSession, review: ImageReviews) -> None:
     db.add(action)
 
     logger.info(
-        f"Extended review {review.review_id} deadline by {extension_days} days "
-        f"to {new_deadline.isoformat()}"
+        "review_extended",
+        review_id=review.review_id,
+        extension_days=extension_days,
+        new_deadline=new_deadline.isoformat(),
     )
 
 

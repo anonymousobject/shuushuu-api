@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.core.auth import CurrentUser
-from app.core.database import get_db
+from app.core.database import DbSession
 from app.core.logging import get_logger
 from app.core.permissions import Permission, has_permission
 from app.core.redis import get_redis
@@ -82,11 +82,11 @@ async def _get_image_checking_access(
 async def get_ml_tag_suggestions(
     image_id: int,
     current_user: CurrentUser,
+    db: DbSession,
     status_filter: Annotated[
         Literal["pending", "approved", "rejected"] | None,
         Query(alias="status", description="Filter by suggestion status"),
     ] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> MlTagSuggestionsListResponse:
     """
     Get ML-generated tag suggestions for an image.
@@ -234,8 +234,7 @@ async def get_ml_tag_suggestions(
     )
 
     counts = {"pending": 0, "approved": 0, "rejected": 0}
-    for status_val, count in status_counts_result:
-        counts[status_val] = count
+    counts.update(status_counts_result.tuples().all())
 
     return MlTagSuggestionsListResponse(
         image_id=image_id,
@@ -256,7 +255,7 @@ async def review_ml_tag_suggestions(
     image_id: int,
     request: ReviewSuggestionsRequest,
     current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> ReviewSuggestionsResponse:
     """
     Approve or reject ML tag suggestions in batch.
@@ -339,11 +338,11 @@ async def generate_ml_tag_suggestions(
     response: Response,
     current_user: CurrentUser,
     redis_client: Annotated[redis.Redis, Depends(get_redis)],  # type: ignore[type-arg]
+    db: DbSession,
     sync: Annotated[
         bool,
         Query(description="Run synchronously instead of queueing background job"),
     ] = False,
-    db: AsyncSession = Depends(get_db),
 ) -> GenerateSuggestionsResponse:
     """
     Trigger ML tag suggestion generation for an existing image.
@@ -431,12 +430,11 @@ async def generate_ml_tag_suggestions(
             image_id=image_id,
             suggestions_created=suggestions_created,
         )
-    else:
-        # Queue background job
-        response.status_code = status.HTTP_202_ACCEPTED
-        job_id = await enqueue_job("generate_ml_tag_suggestions", image_id=image_id)
-        return GenerateSuggestionsResponse(
-            message="Tag suggestion generation queued",
-            image_id=image_id,
-            job_id=job_id,
-        )
+    # Queue background job
+    response.status_code = status.HTTP_202_ACCEPTED
+    job_id = await enqueue_job("generate_ml_tag_suggestions", image_id=image_id)
+    return GenerateSuggestionsResponse(
+        message="Tag suggestion generation queued",
+        image_id=image_id,
+        job_id=job_id,
+    )

@@ -5,11 +5,11 @@ Tags API endpoints
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import (
     ColumnElement,
     Integer,
+    Numeric,
     asc,
     case,
     cast,
@@ -30,11 +30,11 @@ from sqlalchemy.orm import aliased, selectinload
 
 from app.api.dependencies import ImageSortParams, PaginationParams, TagSortParams
 from app.config import ImageStatus, TagAuditActionType, TagType
-from app.core.auth import get_current_user, get_optional_current_user
-from app.core.database import get_db
+from app.core.auth import OptionalCurrentUser, get_current_user
+from app.core.database import DbSession, get_db
 from app.core.permission_deps import require_permission
 from app.core.permissions import Permission
-from app.core.redis import get_redis
+from app.core.redis import RedisClient
 from app.core.user_loader import image_uploader_load
 from app.models import Images, TagExternalLinks, TagLinks, Tags, Users
 from app.models.character_source_link import CharacterSourceLinks
@@ -72,9 +72,11 @@ from app.schemas.tag import (
     TagWithStats,
 )
 from app.schemas.tag_suggestion_stats import TagSuggestionStatsResponse, TagSuggestionUserStats
+from app.services.artist_identity import parse_identity_url, resolve_identity, site_display_name
+from app.services.character_source_counts import get_shared_image_counts
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
-from app.services.search import sync_tag_delete_to_search, sync_tag_to_search
 from app.services.tag_type_flags import refresh_images_tag_type_flags
+from app.utils.like_escape import escape_like_pattern
 
 SUGGESTION_STATS_MIN_THRESHOLD = 5
 
@@ -126,8 +128,8 @@ async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalL
 
     Custom-positioned links come first (by `position`); the rest fall back to the
     default — shuu-wiki links first, then by `date_added`. `position IS NULL` sorts
-    last (MySQL puts NULLs first in ASC, so order by the null-ness flag to push the
-    un-positioned links after the positioned ones).
+    last (order by the null-ness flag so NULLs sort last regardless of the
+    backend's default).
     """
     result = await db.execute(
         select(TagExternalLinks)
@@ -147,105 +149,6 @@ async def _ordered_tag_links(tag_id: int, db: AsyncSession) -> list[TagExternalL
 character_source_links_router = APIRouter(
     prefix="/character-source-links", tags=["character-source-links"]
 )
-
-# MySQL/MariaDB default fulltext stopwords that cause search failures when used with `+` (required) operator
-# Source: INFORMATION_SCHEMA.INNODB_FT_DEFAULT_STOPWORD
-FULLTEXT_STOPWORDS = frozenset(
-    {
-        "a",
-        "about",
-        "an",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "com",
-        "de",
-        "en",
-        "for",
-        "from",
-        "how",
-        "i",
-        "in",
-        "is",
-        "it",
-        "la",
-        "of",
-        "on",
-        "or",
-        "that",
-        "the",
-        "this",
-        "to",
-        "was",
-        "what",
-        "when",
-        "where",
-        "who",
-        "will",
-        "with",
-        "und",
-        "www",
-    }
-)
-
-# Minimum token size for InnoDB fulltext (innodb_ft_min_token_size default is 3)
-FULLTEXT_MIN_TOKEN_SIZE = 3
-
-# MySQL fulltext boolean operators that need to be stripped from search terms
-# These characters have special meaning in BOOLEAN MODE and could cause unexpected behavior
-# e.g., "C++" would create "+C++*" which interprets the extra + as operators
-FULLTEXT_SPECIAL_CHARS = frozenset('+-~*"()><@')
-
-# Characters that MySQL/MariaDB InnoDB fulltext parser typically treats as word delimiters.
-# This is an approximation of default tokenization behavior in BOOLEAN MODE, used only for
-# local validation to determine if a search term will produce valid tokens.
-#
-# Derived from testing against default InnoDB FULLTEXT indexes on MariaDB with utf8mb4.
-# Actual delimiters may vary by server version, storage engine, charset, collation, or
-# custom fulltext parser configuration. If any change, verify against current behavior.
-#
-# These split terms into separate tokens, which may result in tokens too short for fulltext.
-# e.g., "C.C." becomes ["C", "C"] which are both below min token size.
-FULLTEXT_WORD_DELIMITERS = frozenset(" \n\t;:!?.'\"`()[]{}|&/\\,-=~")
-
-# Pre-computed translation table for efficient delimiter replacement (used by str.translate)
-_DELIMITER_TRANS_TABLE = str.maketrans(dict.fromkeys(FULLTEXT_WORD_DELIMITERS, " "))
-
-
-def _escape_like_pattern(value: str) -> str:
-    """Escape special LIKE pattern characters (% and _) in a search value."""
-    return value.replace("%", r"\%").replace("_", r"\_")
-
-
-def _sanitize_fulltext_term(term: str) -> str:
-    """Remove MySQL fulltext boolean operators from a search term."""
-    return "".join(char for char in term if char not in FULLTEXT_SPECIAL_CHARS)
-
-
-def _get_fulltext_tokens(term: str) -> list[str]:
-    """
-    Simulate MySQL fulltext tokenization of a term.
-
-    MySQL splits on word delimiters, so "C.C." becomes ["C", "C"].
-    This helps determine if a term will actually produce searchable tokens.
-    """
-    # Replace all delimiters with spaces using pre-computed translation table, then split
-    return term.translate(_DELIMITER_TRANS_TABLE).split()
-
-
-def _has_valid_fulltext_tokens(term: str) -> bool:
-    """
-    Check if a term will produce at least one valid fulltext token.
-
-    A token is valid if it's >= FULLTEXT_MIN_TOKEN_SIZE after tokenization.
-    e.g., "C.C." -> False (tokens are "C", "C", both < 3)
-    e.g., "sakura" -> True (token is "sakura", >= 3)
-    """
-    tokens = _get_fulltext_tokens(term)
-    return any(len(t) >= FULLTEXT_MIN_TOKEN_SIZE for t in tokens)
-
 
 # TODO: Create tag proposal/review system. Let users petition for new tags, and allow admins to review and approve them.
 
@@ -319,7 +222,7 @@ async def get_tag_hierarchy(db: AsyncSession, tag_id: int, max_depth: int = 10) 
     return [row[0] for row in result.fetchall()]
 
 
-async def validate_tag_relationships(
+async def validate_tag_relationships(  # noqa: C901
     db: AsyncSession,
     *,
     tag_id: int | None,
@@ -433,7 +336,7 @@ def _linked_tag_sample(titles: list[str]) -> str:
 
 
 async def validate_character_source_links_for_type(
-    db: AsyncSession, *, tag_id: int, new_type: int
+    db: AsyncSession, *, tag_id: int, new_type: int, subject: str = "this tag"
 ) -> None:
     """Reject a type change that would orphan the tag's character-source links.
 
@@ -443,6 +346,11 @@ async def validate_character_source_links_for_type(
     behind as orphans: invisible on its own page, still listed on the
     counterpart's. Blocking keeps the link (and its picture crop) intact and
     puts the delete in the moderator's hands.
+
+    `subject` names the tag being checked in the error message -- the default
+    reads naturally when `tag_id` is the tag under edit; callers checking a
+    tag on the edited tag's behalf (e.g. an incoming alias about to inherit
+    its type) should pass something like "its alias '<title>'" instead.
 
     Raises HTTPException(400) on validation failure.
     """
@@ -458,7 +366,7 @@ async def validate_character_source_links_for_type(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Cannot change tag type: this tag is linked as a character to "
+                    f"Cannot change tag type: {subject} is linked as a character to "
                     f"{len(source_titles)} source tag(s): {_linked_tag_sample(source_titles)}. "
                     f"Remove the character-source link(s) first."
                 ),
@@ -476,7 +384,7 @@ async def validate_character_source_links_for_type(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Cannot change tag type: this tag is linked as a source to "
+                    f"Cannot change tag type: {subject} is linked as a source to "
                     f"{len(character_titles)} character tag(s): "
                     f"{_linked_tag_sample(character_titles)}. "
                     f"Remove the character-source link(s) first."
@@ -499,8 +407,8 @@ async def get_tag_suggestion_stats(
     at least 5 suggestions.
     """
     # Aliases for readability (type: ignore needed for SQLModel column access)
-    S = ImageReportTagSuggestions  # noqa: N806
-    R = ImageReports  # noqa: N806
+    S = ImageReportTagSuggestions
+    R = ImageReports
 
     # Count suggestions by status per user
     total_col = func.count(S.suggestion_id).label("total_suggestions")  # type: ignore[arg-type]
@@ -522,7 +430,14 @@ async def get_tag_suggestion_stats(
     # Acceptance rate: accepted / (accepted + rejected), null if no decided suggestions
     decided_col = accepted_col + rejected_col
     acceptance_rate_col = case(
-        (decided_col > 0, func.round(accepted_col * 100.0 / decided_col, 1)),
+        # cast to Numeric: the float literal makes the expression double
+        # precision, and Postgres has no round(double precision, int) —
+        # two-arg round needs numeric. MariaDB read it as DECIMAL(10,4),
+        # same rounding either way.
+        (
+            decided_col > 0,
+            func.round(cast(accepted_col * 100.0 / decided_col, Numeric(10, 4)), 1),
+        ),
         else_=None,
     ).label("acceptance_rate")
 
@@ -590,9 +505,10 @@ async def get_tag_suggestion_stats(
 
 @router.get("/", response_model=TagListResponse, include_in_schema=False)
 @router.get("", response_model=TagListResponse)
-async def list_tags(
+async def list_tags(  # noqa: C901, PLR0912, PLR0915
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[TagSortParams, Depends()],
+    db: DbSession,
     search: Annotated[str | None, Query(description="Search tags by name")] = None,
     type_id: Annotated[int | None, Query(description="Filter by tag type", alias="type")] = None,
     ids: Annotated[str | None, Query(description="Comma-separated tag IDs to fetch")] = None,
@@ -600,7 +516,6 @@ async def list_tags(
     exclude_aliases: Annotated[
         bool, Query(description="Exclude alias tags (tags that redirect to others)")
     ] = False,
-    db: AsyncSession = Depends(get_db),
 ) -> TagListResponse:
     """
     List and search tags with intelligent hybrid search.
@@ -617,9 +532,10 @@ async def list_tags(
 
     Uses a hybrid approach for optimal UX:
     - **Short queries (< 3 chars)**: Prefix matching (e.g., "sa" finds "sakura kinomoto")
-    - **Long queries (≥ 3 chars)**: Full-text search (word-order independent)
+    - **Long queries (≥ 3 chars)**: every word must appear as a case-insensitive
+      substring (word-order independent)
 
-    The full-text search solves the Japanese character name problem:
+    Matching per word solves the Japanese character name problem:
     Searching "sakura kinomoto" will find tags with "kinomoto sakura" in any word order.
 
     When filtering by IDs, invalid (non-numeric) IDs are reported in the response
@@ -668,72 +584,20 @@ async def list_tags(
         else:
             # All IDs were invalid - return empty result
             query = query.where(False)  # type: ignore[arg-type]
-    # Track whether we're using fulltext search and what query string
-    fulltext_query_str: str | None = None
-
     if search:
-        # Hybrid search strategy:
-        # - Queries < 3 chars: Use LIKE (autocomplete, prefix matching)
-        # - Queries >= 3 chars: Use FULLTEXT MATCH with wildcard expansion (word-order independent + partial words)
-        #
-        # This handles both:
-        # 1. Japanese name problem: "sakura kinomoto" finds "kinomoto sakura" (word-order independence)
-        # 2. Partial word matching: "thig" finds "thighs" (wildcard expansion)
+        # Hybrid: queries under 3 chars are a prefix match (autocomplete);
+        # longer ones AND a case-insensitive contains-match per word, which
+        # keeps word order independent ("sakura kinomoto" finds "kinomoto
+        # sakura") and matches partial words ("thig" finds "thighs").
         if len(search) < 3:
-            # Short query: prefix match with LIKE (e.g., "sa" -> "sakura")
             # Escape LIKE special characters to prevent unintended wildcard matching
-            escaped_search = _escape_like_pattern(search)
-            query = query.where(Tags.title.like(f"{escaped_search}%"))  # type: ignore[union-attr]
+            escaped_search = escape_like_pattern(search)
+            query = query.where(Tags.title.ilike(f"{escaped_search}%"))  # type: ignore[union-attr]
         else:
-            # Long query: word-order independent full-text search with wildcard expansion
-            # Split search into words and add wildcard to each word to match partial terms
-            # e.g., "sakura kinomoto" -> "+sakura* +kinomoto*"
-            #
-            # IMPORTANT: Filter out stopwords and short terms to prevent search failures.
-            # MySQL/MariaDB fulltext treats words like "the", "a", "of" as stopwords.
-            # When combined with `+` (required), the entire query fails if a stopword is required.
-            # Also, terms shorter than innodb_ft_min_token_size (default 3) are ignored.
-            # Additionally, strip special fulltext boolean operators from terms to prevent
-            # unexpected behavior (e.g., "C++" becoming "+C++*" with extra operators).
-            search_terms = search.split()
-            # Tokenize and sanitize terms to match MySQL/MariaDB fulltext behavior.
-            # First split on word delimiters (hyphens, periods, etc.) the same way
-            # MySQL does, then strip boolean operators from each token. This ensures
-            # "deep-blue" becomes tokens ["deep", "blue"] matching how the indexed
-            # data is tokenized.
-            #
-            # Filter out stopwords and tokens below minimum size to prevent query
-            # failures (required stopwords cause the entire BOOLEAN MODE query to fail).
-            valid_terms = []
-            for term in search_terms:
-                # Tokenize FIRST (split on delimiters like -, ., etc.) to match
-                # how MySQL tokenizes indexed data, THEN sanitize each token
-                # (strip boolean operators). Order matters: "-" is both a delimiter
-                # and a boolean operator, so tokenizing first preserves the split.
-                tokens = _get_fulltext_tokens(term)
-                for token in tokens:
-                    sanitized = _sanitize_fulltext_term(token)
-                    if not sanitized:
-                        continue
-                    if sanitized.lower() in FULLTEXT_STOPWORDS:
-                        continue
-                    if len(sanitized) >= FULLTEXT_MIN_TOKEN_SIZE:
-                        valid_terms.append(sanitized)
-
-            if valid_terms:
-                # Build fulltext query with valid terms only
-                fulltext_query_str = " ".join(f"+{term}*" for term in valid_terms)
+            for word in search.split():
                 query = query.where(
-                    text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE)").bindparams(
-                        search=fulltext_query_str
-                    )
+                    Tags.title.ilike(f"%{escape_like_pattern(word)}%")  # type: ignore[union-attr]
                 )
-            else:
-                # All terms were stopwords or too short - fall back to LIKE prefix search
-                # This handles edge cases like searching for "The" or "A" or "The A"
-                # Escape LIKE special characters to prevent unintended wildcard matching
-                escaped_search = _escape_like_pattern(search)
-                query = query.where(Tags.title.like(f"{escaped_search}%"))  # type: ignore[union-attr]
     if type_id is not None:
         query = query.where(Tags.type == type_id)  # type: ignore[arg-type]
     if parent_tag_id is not None:
@@ -798,31 +662,19 @@ async def list_tags(
         sort_column = sort_column_map[sorting.sort_by]
         query = query.order_by(sort_func(sort_column), sort_func(Tags.tag_id))  # type: ignore[arg-type]
     elif search:
-        # No explicit sort_by + search: use relevance ranking
-        if len(search) < 3 or not fulltext_query_str:
-            # Short query or fallback to LIKE (prefix match): prioritize exact and starts-with
-            query = query.order_by(
-                case(
-                    (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
-                    (
-                        func.lower(Tags.title).like(f"{search.lower()}%"),
-                        1,
-                    ),  # Starts with (case-insensitive)
-                    else_=2,  # Contains (middle/end)
-                ),
-                func.lower(Tags.title),  # Alphabetical within each priority group
-            )
-        else:
-            # Long query (full-text): prioritize exact matches, then sort by relevance
-            query = query.order_by(
-                case(
-                    (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
-                    else_=1,  # Non-exact matches
-                ),
-                text("MATCH (tags.title) AGAINST (:search IN BOOLEAN MODE) DESC"),
-                desc(Tags.usage_count),  # type: ignore[arg-type]  # Most popular tags first
-                func.lower(Tags.title),  # Tertiary sort: alphabetical (case-insensitive)
-            ).params(search=fulltext_query_str)
+        # No explicit sort_by + search: relevance ranking — exact match first,
+        # then prefix matches, then the rest; alphabetical within each group.
+        query = query.order_by(
+            case(
+                (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
+                (
+                    func.lower(Tags.title).like(f"{search.lower()}%"),
+                    1,
+                ),  # Starts with (case-insensitive)
+                else_=2,  # Contains (middle/end)
+            ),
+            func.lower(Tags.title),  # Alphabetical within each priority group
+        )
     else:
         # No search, no explicit sort_by: default to usage_count, honoring
         # sort_order. Only reachable with exclude_aliases (aliases-visible
@@ -866,6 +718,7 @@ async def get_images_by_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
+    db: DbSession,
     tag_depth: Annotated[
         int | None,
         Query(
@@ -876,7 +729,6 @@ async def get_images_by_tag(
             "Omit for full hierarchy.",
         ),
     ] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> ImageListResponse:
     """
     Get all images with a specific tag.
@@ -978,7 +830,7 @@ async def get_images_by_tag(
 async def get_characters_for_source(
     tag_id: Annotated[int, Path(description="Source tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagListResponse:
     """
     Get all character tags linked to a source tag.
@@ -1030,7 +882,7 @@ async def get_characters_for_source(
     )
 
 
-def _linked_tag_entry(row: Any) -> dict[str, Any]:
+def _linked_tag_entry(row: Any, shared_counts: dict[int, int]) -> dict[str, Any]:
     """Build a LinkedTagWithPicture dict from a get_tag relationship row."""
     (
         tag_id,
@@ -1053,6 +905,8 @@ def _linked_tag_entry(row: Any) -> dict[str, Any]:
         "type": tag_type,
         "usage_count": usage_count,
         "link_id": link_id,
+        # Absent from the map means the two tags never co-occur.
+        "shared_image_count": shared_counts.get(tag_id, 0),
     }
     # Re-checked at read time: an image deactivated after being chosen must
     # not leak through the embed — the card falls back to its placeholder.
@@ -1068,11 +922,22 @@ def _linked_tag_entry(row: Any) -> dict[str, Any]:
     return entry
 
 
+def _rank_by_shared_images(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order linked-tag entries by shared image count, most first.
+
+    The caller's query already ordered them by title, and Python's sort is
+    stable, so title remains the tiebreaker without repeating the collation
+    here.
+    """
+    return sorted(entries, key=lambda entry: -entry["shared_image_count"])
+
+
 @router.get("/{tag_id}", response_model=TagWithStats)
 async def get_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
-    db: AsyncSession = Depends(get_db),
-    current_user: Users | None = Depends(get_optional_current_user),
+    db: DbSession,
+    redis_client: RedisClient,
+    current_user: OptionalCurrentUser,
 ) -> TagWithStats:
     """
     Get a single tag by ID with usage statistics.
@@ -1193,8 +1058,8 @@ async def get_tag(
     characters: list[dict[str, Any]] = []
 
     if tag.type == TagType.CHARACTER:
-        # Get all sources linked to this character
-        # Sorted by usage_count descending with title as tiebreaker
+        # Get all sources linked to this character, ranked by how many images
+        # carry both tags (see _rank_by_shared_images) with title as tiebreaker
         sources_result = await db.execute(
             select(  # type: ignore[call-overload]
                 Tags.tag_id,
@@ -1221,13 +1086,16 @@ async def get_tag(
             )
             .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.character_tag_id == tag_id)
-            .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
+            .order_by(Tags.title)
         )
-        sources = [_linked_tag_entry(row) for row in sources_result.all()]
+        shared_counts = await get_shared_image_counts(db, tag_id, "source", redis_client)
+        sources = _rank_by_shared_images(
+            [_linked_tag_entry(row, shared_counts) for row in sources_result.all()]
+        )
 
     elif tag.type == TagType.SOURCE:
-        # Get all characters linked to this source
-        # Sorted by usage_count descending with title as tiebreaker
+        # Get all characters linked to this source, ranked by how many images
+        # carry both tags (see _rank_by_shared_images) with title as tiebreaker
         characters_result = await db.execute(
             select(  # type: ignore[call-overload]
                 Tags.tag_id,
@@ -1254,9 +1122,12 @@ async def get_tag(
             )
             .outerjoin(Images, Images.image_id == CharacterSourceLinkPictures.image_id)
             .where(CharacterSourceLinks.source_tag_id == tag_id)
-            .order_by(desc(Tags.usage_count), Tags.title)  # type: ignore[arg-type]
+            .order_by(Tags.title)
         )
-        characters = [_linked_tag_entry(row) for row in characters_result.all()]
+        shared_counts = await get_shared_image_counts(db, tag_id, "character", redis_client)
+        characters = _rank_by_shared_images(
+            [_linked_tag_entry(row, shared_counts) for row in characters_result.all()]
+        )
 
     return TagWithStats(
         tag_id=tag.tag_id or 0,
@@ -1279,10 +1150,10 @@ async def get_tag(
 
 
 @router.get("/{tag_id}/history", response_model=TagAuditLogListResponse)
-async def get_tag_history(
+async def get_tag_history(  # noqa: C901, PLR0912, PLR0915
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagAuditLogListResponse:
     """
     Get tag metadata change history.
@@ -1311,7 +1182,7 @@ async def get_tag_history(
             # Relationships pointed AT this tag. The alias_set/parent_set row
             # lives on the other tag, so without these a canonical tag never
             # learns that something was aliased to it. All four columns carry
-            # MariaDB's auto-created FK indexes.
+            # the FK indexes.
             | (TagAuditLog.old_alias_of == tag_id)
             | (TagAuditLog.new_alias_of == tag_id)
             | (TagAuditLog.old_parent_id == tag_id)
@@ -1515,10 +1386,10 @@ def _tag_usage_history_union(tag_id: int, offset: int, per_page: int) -> Any:
     spaces that could otherwise collide.
 
     Each branch pushes its own ORDER BY + LIMIT (offset + per_page) *before*
-    the union — required, not an optimization. MariaDB materializes a UNION
-    ALL as a derived table, so an outer-only ORDER BY filesorts the full
-    merged set (728k rows for the hottest tag) regardless of indexes. With the
-    pushdown, each branch reads its top rows in index order off
+    the union. This shape was chosen when MariaDB materialized the union
+    before filtering, so an outer-only ORDER BY filesorted the full merged
+    set (728k rows for the hottest tag) regardless of indexes; it is kept as
+    is. With the pushdown, each branch reads its top rows in index order off
     idx_tag_links_tag_date / idx_tag_history_tag_date. This is lossless: the
     global top (offset + per_page) rows are necessarily contained in each
     branch's own top (offset + per_page) rows.
@@ -1569,8 +1440,9 @@ async def _tag_usage_history_total(db: AsyncSession, tag_id: int) -> int:
     """Total usage-history events for a tag: sum of two plain COUNTs.
 
     Deliberately not COUNT(*) over the union subquery — measured ~10x slower
-    (815ms vs 80ms on the hottest tag) because MariaDB materializes the union
-    into a temp table before it can count it.
+    (815ms vs 80ms on the hottest tag). This shape was chosen when MariaDB
+    materialized the union into a temp table before it could count it; it is
+    kept as is.
     """
     link_total = (
         await db.execute(
@@ -1592,7 +1464,7 @@ async def _tag_usage_history_total(db: AsyncSession, tag_id: int) -> int:
 async def get_tag_usage_history(
     tag_id: Annotated[int, Path(description="Tag ID")],
     pagination: Annotated[PaginationParams, Depends()],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagHistoryListResponse:
     """
     Get tag usage history (add/remove on images).
@@ -1655,7 +1527,7 @@ async def create_tag(
     tag_data: TagCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagResponse:
     """
     Create a new tag.
@@ -1720,18 +1592,16 @@ async def create_tag(
     await db.commit()
     await db.refresh(new_tag)
 
-    await sync_tag_to_search(new_tag, db=db)
-
     return TagResponse.model_validate(new_tag)
 
 
 @router.put("/{tag_id}", response_model=TagResponse)
-async def update_tag(
+async def update_tag(  # noqa: C901, PLR0912, PLR0915
     tag_id: Annotated[int, Path(description="Tag ID")],
     tag_data: TagCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagResponse:
     """
     Update an existing tag.
@@ -1804,6 +1674,23 @@ async def update_tag(
 
         await validate_character_source_links_for_type(db, tag_id=tag_id, new_type=new_type)
 
+        # A type change cascades to incoming aliases (see below), so an
+        # alias holding a character-source link of its own must clear the
+        # same guard -- otherwise the cascade would silently orphan it.
+        incoming_aliases_result = await db.execute(
+            select(Tags.tag_id, Tags.title).where(  # type: ignore[call-overload]
+                Tags.alias_of == tag_id,
+                Tags.tag_id != tag_id,
+            )
+        )
+        for alias_tag_id, alias_title in incoming_aliases_result.all():
+            await validate_character_source_links_for_type(
+                db,
+                tag_id=alias_tag_id,
+                new_type=new_type,
+                subject=f"its alias '{alias_title}'",
+            )
+
     # Update fields
     for key, value in update_data.items():
         setattr(tag, key, value)
@@ -1834,7 +1721,6 @@ async def update_tag(
         db.add(audit_entry)
 
     # Check for type change
-    type_cascaded_alias_ids: list[int | None] = []
     if tag.type != original_type:
         audit_entry = TagAuditLog(
             tag_id=tag_id,
@@ -1874,7 +1760,6 @@ async def update_tag(
             )
             cascade_alias.type = tag.type
             db.add(cascade_alias)
-        type_cascaded_alias_ids = [alias.tag_id for alias in type_cascade_aliases]
 
     # Check for alias change
     if tag.alias_of != original_alias_of:
@@ -1961,7 +1846,6 @@ async def update_tag(
             db.add(audit_entry)
 
     # Migrate tag_links when alias is set
-    reparented_alias_ids: list[int | None] = []
     if tag.alias_of is not None and tag.alias_of != original_alias_of:
         canonical_id = tag.alias_of
 
@@ -2110,7 +1994,6 @@ async def update_tag(
             )
         )
         incoming_aliases = incoming_aliases_result.scalars().all()
-        reparented_alias_ids = [incoming_alias.tag_id for incoming_alias in incoming_aliases]
         for incoming_alias in incoming_aliases:
             db.add(
                 TagAuditLog(
@@ -2137,29 +2020,6 @@ async def update_tag(
     await db.commit()
     await db.refresh(tag)
 
-    await sync_tag_to_search(tag, db=db)
-
-    # If alias was set and tag_links migrated, also sync the canonical tag
-    # (its usage_count changed)
-    if tag.alias_of is not None and tag.alias_of != original_alias_of:
-        canonical_result = await db.execute(
-            select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
-        )
-        canonical_tag = canonical_result.scalar_one_or_none()
-        if canonical_tag:
-            await sync_tag_to_search(canonical_tag, db=db)
-
-    # Re-pointed and type-cascaded incoming aliases also need re-syncing: their
-    # indexed canonical tag / type changed. A combined type+alias request can
-    # cascade the same alias into both sets, so dedupe before syncing.
-    cascaded_alias_ids = set(reparented_alias_ids) | set(type_cascaded_alias_ids)
-    if cascaded_alias_ids:
-        cascaded_result = await db.execute(
-            select(Tags).where(Tags.tag_id.in_(cascaded_alias_ids))  # type: ignore[union-attr]
-        )
-        for cascaded_alias in cascaded_result.scalars().all():
-            await sync_tag_to_search(cascaded_alias, db=db)
-
     return TagResponse.model_validate(tag)
 
 
@@ -2167,7 +2027,7 @@ async def update_tag(
 async def delete_tag(
     tag_id: Annotated[int, Path(description="Tag ID")],
     _: Annotated[None, Depends(require_permission(Permission.TAG_DELETE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """
     Delete a tag.
@@ -2190,8 +2050,6 @@ async def delete_tag(
     await refresh_images_tag_type_flags(db, affected_image_ids)
     await db.commit()
 
-    await sync_tag_delete_to_search(tag_id)
-
 
 @router.post("/{tag_id}/links", response_model=TagExternalLinkResponse, status_code=201)
 async def add_tag_link(
@@ -2199,7 +2057,7 @@ async def add_tag_link(
     link_data: TagExternalLinkCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagExternalLinkResponse:
     """
     Add an external link to a tag.
@@ -2207,6 +2065,8 @@ async def add_tag_link(
     Requires TAG_UPDATE permission.
     Returns 404 if tag doesn't exist.
     Returns 409 if URL already exists for this tag.
+    Returns 409 if the URL parses to an identity and the tag is an alias --
+    identity must live on the canonical tag.
     """
     # Verify tag exists
     tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
@@ -2218,6 +2078,44 @@ async def add_tag_link(
     # below the current minimum, so it sits above any existing wiki links too); other
     # links keep NULL position and fall to the end via the default ordering.
     new_link = TagExternalLinks(tag_id=tag_id, url=link_data.url)
+    identity = parse_identity_url(link_data.url)
+    if identity is not None and tag.alias_of is not None:
+        canonical_result = await db.execute(
+            select(Tags).where(Tags.tag_id == tag.alias_of)  # type: ignore[arg-type]
+        )
+        canonical = canonical_result.scalar_one_or_none()
+        canonical_name = (
+            f"'{canonical.title}' (id {canonical.tag_id})"
+            if canonical is not None
+            else f"id {tag.alias_of}"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{tag.title}' is an alias of {canonical_name}; add the "
+                f"{site_display_name(identity.site)} link to the canonical tag instead"
+            ),
+        )
+    if identity is not None:
+        claimed_by = await resolve_identity(db, identity)
+        if claimed_by is not None and claimed_by.tag_id != tag_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{site_display_name(identity.site)} ID {identity.external_id} "
+                    f"already belongs to tag '{claimed_by.title}' (id {claimed_by.tag_id})"
+                ),
+            )
+        # Only populate site/external_id when this tag doesn't already own the
+        # identity. Mods deliberately keep multiple URL forms of the same
+        # account on one tag (x.com + twitter.com; legacy member.php + modern
+        # /users/) for archive reasons -- a future UNIQUE(site, external_id)
+        # index requires identity to live on only one link row per tag, so an
+        # alternate form for an identity this tag already owns is stored as a
+        # plain archival URL instead.
+        if claimed_by is None:
+            new_link.site = identity.site
+            new_link.external_id = identity.external_id
     if _is_shuu_wiki_url(link_data.url):
         min_pos = (
             await db.execute(
@@ -2246,11 +2144,6 @@ async def add_tag_link(
         await db.rollback()
         raise HTTPException(status_code=409, detail="URL already exists for this tag") from None
 
-    # Refresh tag: commit expires its attributes, and sync_tag_to_search reads
-    # alias_of — a lazy load there would raise MissingGreenlet (silently
-    # swallowed) and the new external URL would never reach Meilisearch.
-    await db.refresh(tag)
-    await sync_tag_to_search(tag, db=db)
     return TagExternalLinkResponse.model_validate(new_link)
 
 
@@ -2261,7 +2154,7 @@ async def reorder_tag_links(
     tag_id: Annotated[int, Path(description="Tag ID")],
     body: TagExternalLinkReorder,
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> list[TagExternalLinkResponse]:
     """
     Set a custom display order for a tag's external links.
@@ -2303,7 +2196,7 @@ async def delete_tag_link(
     link_id: Annotated[int, Path(description="Link ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """
     Remove an external link from a tag.
@@ -2337,12 +2230,6 @@ async def delete_tag_link(
     await db.delete(link)
     await db.commit()
 
-    # Re-sync tag to update external_urls in search index
-    tag_result = await db.execute(select(Tags).where(Tags.tag_id == tag_id))  # type: ignore[arg-type]
-    tag = tag_result.scalar_one_or_none()
-    if tag:
-        await sync_tag_to_search(tag, db=db)
-
 
 @router.patch("/{tag_id}/links/{link_id}", response_model=TagExternalLinkResponse)
 async def update_tag_link(
@@ -2351,7 +2238,7 @@ async def update_tag_link(
     link_update: TagExternalLinkUpdate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_UPDATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> TagExternalLinkResponse:
     """
     Update an external link on a tag (mark dead, add archive URL).
@@ -2418,8 +2305,8 @@ async def update_tag_link(
 async def batch_tag_operation(
     request: BatchTagRequest,
     current_user: Annotated[Users, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    db: DbSession,
+    redis_client: RedisClient,
 ) -> BatchTagResponse:
     """
     Batch add or remove tags on multiple images.
@@ -2451,13 +2338,12 @@ async def batch_tag_operation(
             user_id=current_user.id,
             db=db,
         )
-    else:
-        return await batch_remove_tags(
-            tag_ids=request.tag_ids,
-            image_ids=request.image_ids,
-            user_id=current_user.id,
-            db=db,
-        )
+    return await batch_remove_tags(
+        tag_ids=request.tag_ids,
+        image_ids=request.image_ids,
+        user_id=current_user.id,
+        db=db,
+    )
 
 
 # =============================================================================
@@ -2473,7 +2359,7 @@ async def create_character_source_link(
     link_data: CharacterSourceLinkCreate,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> CharacterSourceLinkResponse:
     """Create a character-source link. Requires TAG_CREATE permission."""
     # Verify character tag exists and is type CHARACTER
@@ -2569,9 +2455,9 @@ async def create_character_source_link(
 @character_source_links_router.get("", response_model=CharacterSourceLinkListResponse)
 async def list_character_source_links(
     pagination: Annotated[PaginationParams, Depends()],
+    db: DbSession,
     character_tag_id: Annotated[int | None, Query(description="Filter by character tag ID")] = None,
     source_tag_id: Annotated[int | None, Query(description="Filter by source tag ID")] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> CharacterSourceLinkListResponse:
     """List character-source links with optional filtering."""
     query = select(CharacterSourceLinks)
@@ -2613,7 +2499,7 @@ async def delete_character_source_link(
     link_id: Annotated[int, Path(description="Link ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """Delete a character-source link. Requires TAG_CREATE permission."""
     result = await db.execute(
@@ -2641,12 +2527,12 @@ async def delete_character_source_link(
 
 
 @character_source_links_router.put("/{link_id}/picture", response_model=LinkPictureResponse)
-async def set_character_source_link_picture(
+async def set_character_source_link_picture(  # noqa: C901, PLR0915
     link_id: Annotated[int, Path(description="Link ID")],
     body: LinkPictureSet,
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> LinkPictureResponse:
     """Set or replace a link's representative picture. Requires TAG_CREATE."""
     link_result = await db.execute(
@@ -2772,7 +2658,7 @@ async def delete_character_source_link_picture(
     link_id: Annotated[int, Path(description="Link ID")],
     current_user: Annotated[Users, Depends(get_current_user)],
     _: Annotated[None, Depends(require_permission(Permission.TAG_CREATE))],
-    db: AsyncSession = Depends(get_db),
+    db: DbSession,
 ) -> None:
     """Remove a link's representative picture. Requires TAG_CREATE."""
     result = await db.execute(

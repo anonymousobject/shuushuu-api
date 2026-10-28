@@ -4,7 +4,9 @@ Database configuration and session management
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated, Any
 
+from fastapi import Depends
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
@@ -14,6 +16,9 @@ from app.config import settings
 # Create declarative base for models
 Base = declarative_base()
 
+# Ensure all connections use UTC timezone for consistent datetime handling.
+_connect_args: dict[str, Any] = {"server_settings": {"timezone": "UTC"}}
+
 # Create async engine
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -21,9 +26,8 @@ engine = create_async_engine(
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_pre_ping=True,  # Verify connections before using
-    pool_recycle=3600,  # Recycle connections every hour (MariaDB wait_timeout is 8 hours)
-    # Ensure all connections use UTC timezone for consistent datetime handling
-    connect_args={"init_command": "SET time_zone = '+00:00'"},
+    pool_recycle=3600,  # Recycle connections every hour
+    connect_args=_connect_args,
 )
 
 # Create async session factory
@@ -42,7 +46,7 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
 
     Usage in FastAPI:
         @app.get("/items")
-        async def read_items(db: AsyncSession = Depends(get_db)):
+        async def read_items(db: DbSession):
             result = await db.execute(select(Item))
             return result.scalars().all()
     """
@@ -53,6 +57,10 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+# Type alias for dependency injection
+DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 def get_async_session() -> AsyncSession:
@@ -75,9 +83,9 @@ async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIte
 
     A circuit breaker for query plans that go wrong, not a performance policy:
     the limit should sit well clear of the slowest legitimate query so it never
-    fires on real traffic. MariaDB's `max_statement_time` is per *statement*, so
-    a request issuing several still has a total ceiling of the limit times the
-    statement count.
+    fires on real traffic. `statement_timeout` is per *statement*, so a request
+    issuing several still has a total ceiling of the limit times the statement
+    count.
 
     Restoring on exit is not optional. Connections are pooled and returned to the
     pool without resetting session variables, so a limit left set would silently
@@ -91,10 +99,11 @@ async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIte
         yield
         return
 
-    # float() coerces the value: SET does not take bind parameters, so this is
-    # interpolated, and the coercion is what keeps that safe.
-    await db.execute(sql_text(f"SET SESSION max_statement_time = {float(seconds)}"))
+    # int() coerces the value: SET does not take bind parameters, so this is
+    # interpolated, and the coercion is what keeps that safe. Postgres takes
+    # milliseconds; DEFAULT restores the session's configured value.
+    await db.execute(sql_text(f"SET statement_timeout = {int(seconds * 1000)}"))
     try:
         yield
     finally:
-        await db.execute(sql_text("SET SESSION max_statement_time = DEFAULT"))
+        await db.execute(sql_text("SET statement_timeout = DEFAULT"))

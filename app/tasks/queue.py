@@ -69,9 +69,8 @@ async def enqueue_job(
         if job:
             logger.debug("job_enqueued", function=function_name, job_id=job.job_id, kwargs=kwargs)
             return job.job_id
-        else:
-            logger.warning("job_enqueue_failed", function=function_name, kwargs=kwargs)
-            return None
+        logger.warning("job_enqueue_failed", function=function_name, kwargs=kwargs)
+        return None
 
     except Exception as e:
         logger.error(

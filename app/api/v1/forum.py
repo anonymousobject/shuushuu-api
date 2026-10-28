@@ -276,7 +276,6 @@ async def list_categories(
 )
 async def create_category(
     body: ForumCategoryCreate,
-    current_user: CurrentUser,
     db: DbDep,
     _: Annotated[None, Depends(require_permission(Permission.FORUM_CATEGORY_MANAGE))],
 ) -> ForumCategoryResponse:
@@ -293,7 +292,6 @@ async def create_category(
 async def update_category(
     category_id: int,
     body: ForumCategoryUpdate,
-    current_user: CurrentUser,
     db: DbDep,
     _: Annotated[None, Depends(require_permission(Permission.FORUM_CATEGORY_MANAGE))],
 ) -> ForumCategoryResponse:
@@ -315,7 +313,6 @@ async def update_category(
 @router.delete("/categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_category(
     category_id: int,
-    current_user: CurrentUser,
     db: DbDep,
     _: Annotated[None, Depends(require_permission(Permission.FORUM_CATEGORY_MANAGE))],
 ) -> None:
@@ -837,9 +834,8 @@ async def legacy_viewtopic(
     redis_client: RedisDep,  # type: ignore[type-arg]
     current_user: OptionalCurrentUser,
     t: Annotated[int, Query(description="Legacy phpBB topic id")],
-    f: Annotated[int | None, Query(description="Legacy forum id (ignored)")] = None,
 ) -> RedirectResponse:
-    """301 an old forums/viewtopic.php?f=…&t=… to the new thread page."""
+    """301 an old forums/viewtopic.php?f=…&t=… to the new thread page (f is ignored)."""
     perms = await _effective_perms(db, redis_client, current_user)
     result = await db.execute(
         select(ForumThreads).where(ForumThreads.legacy_topic_id == t)  # type: ignore[arg-type]

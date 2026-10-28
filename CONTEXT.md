@@ -23,3 +23,13 @@ _Avoid_: auto-approval, implicit approval (both imply a human actor)
 **Superseded review**:
 An open review closed with no verdict of its own because a moderator settled the image's status by hand while the vote was running. Outcome `SUPERSEDED`; only the status-change hook sets it, never `/reviews/{id}/close`.
 _Avoid_: cancelled (nothing was undone — the votes cast stay on record), keep/remove (those name a verdict the review never reached)
+
+### Artist identity
+
+**Identity**:
+The external account an artist tag stands for, stored as `(site, external_id)` on the `tag_external_links` row that carries the profile URL and parsed from that URL on write (`app/services/artist_identity.py`; pixiv only so far). It lives on the canonical tag only and has exactly one owner — a second tag claiming it gets a 409 naming the first. See ADR-0013.
+_Avoid_: pixiv alias / pixiv tag (the legacy `Pixiv N` alias-tag convention, which coexists but is text with no key behind it), artist ID (reads as the tag's own id)
+
+**Identity owner**:
+The canonical artist tag whose link row holds an identity. An alias tag is never an owner: the write path refuses identity links on aliases, the backfill reports them as anomalies, and aliasing a tag moves its links to the canonical.
+_Avoid_: claimed tag (the anomaly report uses "claimed" for the *skipped* second claimant, not the owner)

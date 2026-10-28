@@ -13,7 +13,8 @@ This approach eliminates field duplication while maintaining security boundaries
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import CheckConstraint, Column, ForeignKeyConstraint, Index, text
+from sqlalchemy.dialects.postgresql import CITEXT
 from sqlmodel import Field, SQLModel
 
 from app.models.types import UtcDateTime
@@ -46,11 +47,11 @@ class TagExternalLinks(TagExternalLinkBase, table=True):
 
     __tablename__ = "tag_external_links"
 
-    # NOTE: __table_args__ is partially redundant with Field(foreign_key=...) declarations below.
-    # However, it's kept for explicit CASCADE behavior and named constraints that SQLModel's
-    # Field() cannot express. Be aware: if using Alembic migrations to manage schema changes,
-    # these definitions may drift from the actual database structure over time. When in doubt,
-    # treat Alembic migrations as the source of truth for production schema.
+    # FKs are declared here ONLY — never add foreign_key= to the Field()s below:
+    # that emits a second, unnamed constraint whose implicit NO ACTION vetoes the
+    # ON DELETE rule declared here (PR #370; guarded by
+    # tests/integration/test_fk_constraint_names.py). When in doubt, treat Alembic
+    # migrations as the source of truth for production schema.
     __table_args__ = (
         ForeignKeyConstraint(
             ["tag_id"],
@@ -59,25 +60,39 @@ class TagExternalLinks(TagExternalLinkBase, table=True):
             onupdate="CASCADE",
             name="fk_tag_external_links_tag_id",
         ),
-        Index("idx_tag_id", "tag_id"),
+        Index("tag_external_links_idx_tag_id", "tag_id"),
         Index("unique_tag_url", "tag_id", "url", unique=True),
+        Index("idx_tag_external_links_site_external_id", "site", "external_id"),
+        CheckConstraint("char_length(site) <= 32", name="ck_tag_external_links_site_len"),
+        CheckConstraint(
+            "char_length(external_id) <= 128", name="ck_tag_external_links_external_id_len"
+        ),
     )
 
     # Primary key
     link_id: int | None = Field(default=None, primary_key=True)
 
     # Foreign key
-    tag_id: int = Field(foreign_key="tags.tag_id", index=True)
+    tag_id: int = Field(index=True)
 
     # Timestamp
     date_added: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(UtcDateTime, nullable=False, server_default=text("current_timestamp()")),
+        sa_column=Column(UtcDateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     )
 
     # Dead link tracking
     dead_at: datetime | None = Field(default=None, sa_column=Column(UtcDateTime, nullable=True))
     archive_url: str | None = Field(default=None, max_length=2000)
+
+    # Structured identity parsed from url by app/services/artist_identity.py.
+    # NULL for URLs no registered parser recognizes. The unique guard on
+    # (site, external_id) is added by a later migration, after backfill
+    # conflicts are hand-resolved (see the design doc).
+    # CITEXT (ADR-0008): identity lookups and the future uniqueness guard are
+    # case-insensitive.
+    site: str | None = Field(default=None, max_length=32, sa_type=CITEXT)
+    external_id: str | None = Field(default=None, max_length=128, sa_type=CITEXT)
 
     # Custom per-tag display order. NULL = not custom-ordered; the read query then
     # falls back to a computed default (shuu-wiki links first, then by date_added).

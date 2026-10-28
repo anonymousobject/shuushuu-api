@@ -1,25 +1,27 @@
 """URL-import endpoints: resolve external post URLs and proxy vetted image fetches.
 
-Design: docs/plans/2026-07-06-url-import-design.md (frontend repo).
+Design: <shuushuu-frontend-repo>/docs/plans/2026-Q3/2026-07-06-url-import-design.md
 """
 
 import io
 import os
 
 import httpx
-import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Response, status
 from PIL import Image as PILImage
 
 from app.config import settings
 from app.core.auth import VerifiedUser
-from app.core.redis import get_redis
+from app.core.database import DbSession
+from app.core.logging import get_logger
+from app.core.redis import RedisClient
 from app.schemas.url_import import (
     ImportSiteResponse,
     ResolvedImageOut,
     UrlResolveRequest,
     UrlResolveResponse,
 )
+from app.services.artist_identity import SITE_PIXIV, ArtistIdentity, resolve_identity
 from app.services.rate_limit import check_external_fetch_rate_limit, check_url_resolve_rate_limit
 from app.services.url_import import (
     BROWSER_USER_AGENT,
@@ -31,6 +33,8 @@ from app.services.url_import import (
     supported_sites,
 )
 from app.services.url_import.tokens import InvalidTokenError, mint_token, verify_token
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/images", tags=["url-import"])
 
@@ -113,7 +117,8 @@ def _transcode_webp_to_png(data: bytes) -> bytes:
 async def resolve_url(
     payload: UrlResolveRequest,
     current_user: VerifiedUser,
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    redis_client: RedisClient,
+    db: DbSession,
 ) -> UrlResolveResponse:
     """Resolve a supported external post URL to importable image candidates."""
     await check_url_resolve_rate_limit(current_user.id, redis_client)
@@ -132,11 +137,37 @@ async def resolve_url(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except UpstreamError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    artist_tag_id: int | None = None
+    artist_tag_title: str | None = None
+    if post.artist_id and post.site == SITE_PIXIV:
+        # Best-effort: a DB hiccup here must not fail an import whose resolver
+        # step already succeeded -- degrade to null tag fields instead.
+        try:
+            artist_tag = await resolve_identity(
+                db, ArtistIdentity(site=SITE_PIXIV, external_id=post.artist_id)
+            )
+        except Exception:
+            # A failed statement poisons the session's implicit transaction;
+            # roll back so get_db's post-yield commit doesn't also fail.
+            await db.rollback()
+            artist_tag = None
+            logger.warning(
+                "artist_tag_lookup_failed",
+                site=SITE_PIXIV,
+                external_id=post.artist_id,
+                exc_info=True,
+            )
+        if artist_tag is not None:
+            artist_tag_id = artist_tag.tag_id
+            artist_tag_title = artist_tag.title
     return UrlResolveResponse(
         site=post.site,
         canonical_url=post.canonical_url,
         title=post.title,
         artist_name=post.artist_name,
+        artist_id=post.artist_id,
+        artist_tag_id=artist_tag_id,
+        artist_tag_title=artist_tag_title,
         images=[
             ResolvedImageOut(
                 token=mint_token(image.full_url, image.headers),
@@ -152,10 +183,10 @@ async def resolve_url(
 
 
 @router.get("/fetch-external")
-async def fetch_external(
+async def fetch_external(  # noqa: C901
     token: str,
     current_user: VerifiedUser,
-    redis_client: redis.Redis = Depends(get_redis),  # type: ignore[type-arg]
+    redis_client: RedisClient,
 ) -> Response:
     """Proxy a resolver-vetted external image to the client.
 
@@ -172,40 +203,42 @@ async def fetch_external(
 
     request_headers = {"User-Agent": BROWSER_USER_AGENT, **ref.headers}
     try:
-        async with _make_http_client(FETCH_TIMEOUT_SECONDS) as client:
-            async with client.stream("GET", ref.url, headers=request_headers) as upstream:
-                if upstream.status_code != 200:
+        async with (
+            _make_http_client(FETCH_TIMEOUT_SECONDS) as client,
+            client.stream("GET", ref.url, headers=request_headers) as upstream,
+        ):
+            if upstream.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Upstream returned HTTP {upstream.status_code}",
+                )
+            content_type = upstream.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Upstream did not return an image",
+                )
+            declared = upstream.headers.get("content-length")
+            if declared:
+                try:
+                    declared_size = int(declared)
+                except ValueError:
+                    declared_size = None
+                if declared_size is not None and declared_size > settings.MAX_IMAGE_SIZE:
                     raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail=f"Upstream returned HTTP {upstream.status_code}",
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail="Image exceeds the maximum upload size",
                     )
-                content_type = upstream.headers.get("content-type", "")
-                if not content_type.startswith("image/"):
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in upstream.aiter_bytes():
+                total += len(chunk)
+                if total > settings.MAX_IMAGE_SIZE:
                     raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail="Upstream did not return an image",
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail="Image exceeds the maximum upload size",
                     )
-                declared = upstream.headers.get("content-length")
-                if declared:
-                    try:
-                        declared_size = int(declared)
-                    except ValueError:
-                        declared_size = None
-                    if declared_size is not None and declared_size > settings.MAX_IMAGE_SIZE:
-                        raise HTTPException(
-                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                            detail="Image exceeds the maximum upload size",
-                        )
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in upstream.aiter_bytes():
-                    total += len(chunk)
-                    if total > settings.MAX_IMAGE_SIZE:
-                        raise HTTPException(
-                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                            detail="Image exceeds the maximum upload size",
-                        )
-                    chunks.append(chunk)
+                chunks.append(chunk)
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

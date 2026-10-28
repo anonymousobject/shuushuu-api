@@ -14,11 +14,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import create_access_token
 from app.models.user import Users
 from app.schemas.image import SimilarImageResult
-from tests.snapshot_conflict import (
+from tests.transient_conflict import (
     _db_error,
+    _deadlock_error,
     _flaky_flush,
     _flaky_flush_nth,
-    _snapshot_conflict_error,
+)
+
+# A rejected upload runs the handler's real db.rollback() (see
+# _discard_unfinished_upload), which under db_session's SAVEPOINT isolation
+# makes SQLAlchemy flag the outer transaction on fixture teardown. Expected
+# consequence of that path, not a defect; named explicitly so the suite's
+# output stays clean without hiding anything else.
+_ROLLBACK_SAWARNING = pytest.mark.filterwarnings(
+    "ignore:transaction already deassociated from connection:sqlalchemy.exc.SAWarning"
 )
 
 
@@ -256,6 +265,7 @@ class TestUploadIQDBDuplicateDetection:
         data = response.json()
         assert data["image"]["source_url"] == "https://www.pixiv.net/artworks/138823691"
 
+    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_rejects_non_http_source_url(
         self, upload_client: AsyncClient, verified_user: Users
@@ -269,6 +279,7 @@ class TestUploadIQDBDuplicateDetection:
             )
 
         assert response.status_code == 422, response.text
+        assert response.json()["detail"] == "source_url must start with http:// or https://"
 
     @pytest.mark.asyncio
     async def test_upload_whitespace_source_url_normalizes_to_none(
@@ -294,6 +305,121 @@ class TestUploadIQDBDuplicateDetection:
         assert response.status_code == 201, response.text
         data = response.json()
         assert data["image"]["source_url"] is None
+
+    @pytest.mark.asyncio
+    async def test_upload_whitespace_miscmeta_normalizes_to_none(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Upload with whitespace-only miscmeta normalizes it to None."""
+        with (
+            _mock_upload_storage("abc123unique7"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "miscmeta": "   "},
+            )
+
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["image"]["miscmeta"] is None
+
+    @pytest.mark.asyncio
+    async def test_upload_padded_miscmeta_stores_trimmed(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Upload with a padded miscmeta stores it trimmed."""
+        with (
+            _mock_upload_storage("abc123unique8"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", "miscmeta": "  pixiv: 12345  "},
+            )
+
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["image"]["miscmeta"] == "pixiv: 12345"
+
+    @pytest.mark.asyncio
+    async def test_upload_padded_values_at_the_limit_are_trimmed_then_accepted(
+        self, upload_client: AsyncClient, verified_user: Users
+    ):
+        """Padding never counts against a length limit — same rule as PATCH."""
+        miscmeta = "a" * 255
+        prefix = "https://example.com/"
+        source_url = prefix + "b" * (2000 - len(prefix))
+        with (
+            _mock_upload_storage("abc123unique9"),
+            patch(
+                "app.api.v1.images.check_iqdb_similarity",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("app.api.v1.images.get_image_dimensions", return_value=(100, 100)),
+            patch("app.api.v1.images.enqueue_job", new_callable=AsyncMock),
+        ):
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={
+                    "tag_ids": "",
+                    "miscmeta": f" {miscmeta}\n",
+                    "source_url": f"  {source_url}  ",
+                },
+            )
+
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["image"]["miscmeta"] == miscmeta
+        assert data["image"]["source_url"] == source_url
+
+    @_ROLLBACK_SAWARNING
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "value", "detail"),
+        [
+            ("miscmeta", "a" * 256, "miscmeta must be at most 255 characters"),
+            (
+                "source_url",
+                "https://example.com/" + "b" * 1981,
+                "source_url must be at most 2000 characters",
+            ),
+        ],
+    )
+    async def test_upload_rejects_values_over_the_limit_after_trimming(
+        self,
+        upload_client: AsyncClient,
+        verified_user: Users,
+        field: str,
+        value: str,
+        detail: str,
+    ):
+        """Upload rejects a value whose trimmed form is over the limit with a 422."""
+        with _mock_upload_storage():
+            response = await upload_client.post(
+                "/api/v1/images/upload",
+                files={"file": ("test.jpg", _fake_image_bytes(), "image/jpeg")},
+                data={"tag_ids": "", field: value},
+            )
+
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"] == detail
 
 
 class TestUploadMLTagSuggestions:
@@ -386,7 +512,7 @@ class TestUploadMLTagSuggestions:
         def _side_effect(job_name, **kwargs):
             if job_name == "generate_ml_tag_suggestions":
                 raise RuntimeError("arq unavailable")
-            return None
+            return
 
         enqueue_mock = AsyncMock(side_effect=_side_effect)
 
@@ -502,19 +628,17 @@ async def test_images_source_url_roundtrip(db_session: AsyncSession):
 
 
 class TestUploadSnapshotConflictRetry:
-    """Concurrent uploads trip MariaDB ER_CHECKREAD (errno 1020) on the temp-row
-    INSERT: with innodb_snapshot_isolation=ON, a locking insert that meets index
-    entries committed after this transaction's snapshot aborts instead of
-    proceeding, and every in-flight upload writes identical placeholder values
-    into the same index positions. The upload route must retry on a fresh
-    snapshot instead of surfacing a 500."""
+    """Concurrent uploads hit a MariaDB snapshot conflict (ER_CHECKREAD) on the
+    temp-row INSERT before the Postgres cutover. On Postgres this site keeps its
+    retry per ADR-0004; the test injects the fabricated Postgres deadlock
+    (SQLSTATE 40P01) error to prove the retry contract still holds here."""
 
     @pytest.mark.asyncio
     @pytest.mark.needs_commit
     async def test_upload_retries_snapshot_conflict_and_succeeds(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """A transient 1020 on the temp-row INSERT is retried and the upload succeeds.
+        """A transient Postgres deadlock (40P01) on the temp-row INSERT is retried and the upload succeeds.
 
         needs_commit: the retry performs a real session rollback to obtain a
         fresh snapshot; under the default SAVEPOINT isolation that rollback
@@ -522,7 +646,7 @@ class TestUploadSnapshotConflictRetry:
         INSERT), which can't happen in production where the user is durably
         committed.
         """
-        flush_patch, calls = _flaky_flush(1, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with (
             _mock_upload_storage("snapshotretry1"),
             patch(
@@ -544,17 +668,18 @@ class TestUploadSnapshotConflictRetry:
         assert response.json()["image"]["image_id"] > 0
         assert len(calls) >= 2  # failed attempt + successful retry
 
+    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_gives_up_after_bounded_retries(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """A persistent 1020 gives up after a bounded number of attempts.
+        """A persistent Postgres deadlock (SQLSTATE 40P01) gives up after a bounded number of attempts.
 
         The exhausted error surfaces as the route's own 500 rather than a raw
-        OperationalError: the retried unit sits inside upload's try/except, so
+        DBAPIError: the retried unit sits inside upload's try/except, so
         the failure also rolls back and unlinks the staged file.
         """
-        flush_patch, calls = _flaky_flush(100, _snapshot_conflict_error())
+        flush_patch, calls = _flaky_flush(100, _deadlock_error())
         with (
             _mock_upload_storage("snapshotretry2"),
             patch(
@@ -574,12 +699,15 @@ class TestUploadSnapshotConflictRetry:
         assert response.status_code == 500
         assert len(calls) == 3  # bounded: no infinite retry loop
 
+    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_does_not_retry_other_db_errors(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """Non-1020 database errors fail immediately with no retry."""
-        flush_patch, calls = _flaky_flush(100, _db_error(1213, "Deadlock found"))
+        """Database errors outside the transient set fail immediately with no retry."""
+        flush_patch, calls = _flaky_flush(
+            100, _db_error("23505", "duplicate key value violates unique constraint")
+        )
         with (
             _mock_upload_storage("snapshotretry3"),
             patch(
@@ -602,14 +730,11 @@ class TestUploadSnapshotConflictRetry:
 
 @pytest.mark.api
 class TestUploadTagLinkSnapshotConflictRetry:
-    """The upload's tag-link write is exposed to ER_CHECKREAD too, and for
-    longer than the temp-row INSERT: tag_links/tag_history INSERTs take locking
-    reads on their FK parents, and the usage_count trigger on tag_links keeps
-    the parent `tags` row moving whenever anyone else tags that tag.
-
-    The conflict is aimed at the second explicit flush (the tag-link write)
-    rather than the first (which mints the image_id), so this fails on any
-    implementation that only retries the id-minting INSERT.
+    """The upload's tag-link write is exposed to a Postgres deadlock (SQLSTATE 40P01) too:
+    tag_links/tag_history INSERTs take locking writes that can conflict with concurrent
+    updates from other users tagging the same tags. The conflict is aimed at the second
+    explicit flush (the tag-link write) rather than the first (which mints the image_id),
+    so this fails on any implementation that only retries the id-minting INSERT.
     """
 
     @pytest.mark.asyncio
@@ -620,7 +745,7 @@ class TestUploadTagLinkSnapshotConflictRetry:
         verified_user: Users,
         db_session: AsyncSession,
     ):
-        """A transient 1020 on the tag-link write is retried and the upload succeeds."""
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the tag-link write is retried and the upload succeeds."""
         from sqlalchemy import select
 
         from app.models.image import Images
@@ -633,7 +758,7 @@ class TestUploadTagLinkSnapshotConflictRetry:
         await db_session.refresh(tag)
         tag_id: int = tag.tag_id
 
-        flush_patch, calls = _flaky_flush_nth(2, _snapshot_conflict_error("tag_history"))
+        flush_patch, calls = _flaky_flush_nth(2, _deadlock_error())
         with (
             _mock_upload_storage("tagsnapshotretry1"),
             patch(
@@ -775,3 +900,41 @@ class TestUploadRealStorageRoundTrip:
 
         # And the staged bytes were not left behind under an unfindable name.
         assert list((tmp_path / "fullsize").glob("staged_*")) == []
+
+    @_ROLLBACK_SAWARNING
+    @pytest.mark.asyncio
+    async def test_pixiv_downsized_rendition_is_refused_with_guidance(
+        self,
+        upload_client: AsyncClient,
+        verified_user: Users,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """A pixiv master1200 file gets a 422 that says how to get the original.
+
+        No row is created and no file is written: the filename alone decides it.
+        """
+        from sqlalchemy import select
+
+        from app.config import settings
+        from app.models.image import Images
+
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+
+        response = await upload_client.post(
+            "/api/v1/images/upload",
+            files={"file": ("137109272_p0_master1200.jpg", _fake_image_bytes(), "image/jpeg")},
+            data={"tag_ids": "", "source_url": "https://www.pixiv.net/en/artworks/137109272"},
+        )
+
+        assert response.status_code == 422, response.text
+        detail = response.json()["detail"]
+        assert "downsized" in detail
+        assert "Paste the pixiv post URL" in detail
+
+        rows = await db_session.execute(
+            select(Images).where(Images.original_filename == "137109272_p0_master1200.jpg")
+        )
+        assert list(rows.scalars().all()) == []
+        assert not (tmp_path / "fullsize").exists()

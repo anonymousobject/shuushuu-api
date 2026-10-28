@@ -8,23 +8,6 @@ from app.config import settings
 from app.tasks.worker import WorkerSettings, shutdown, startup
 
 
-@pytest.fixture
-def _no_meilisearch():
-    """Make the meilisearch startup block degrade gracefully without a server.
-
-    Main's worker startup initializes meilisearch first; it is wrapped in a
-    try/except that logs a warning and continues when meilisearch is
-    unreachable. Patching the client constructor to raise reproduces that
-    "unavailable" path deterministically (no network), so these lifecycle
-    tests can focus on the ML wiring.
-    """
-    with patch(
-        "meilisearch_python_sdk.AsyncClient",
-        side_effect=RuntimeError("meilisearch unavailable (test)"),
-    ):
-        yield
-
-
 @pytest.mark.unit
 class TestWorkerConfiguration:
     """Job registration in WorkerSettings.functions."""
@@ -62,7 +45,7 @@ class TestWorkerConfiguration:
 class TestWorkerLifecycle:
     """Startup/shutdown ML service wiring, gated by the feature flag."""
 
-    async def test_startup_skips_ml_service_when_flag_off(self, _no_meilisearch, monkeypatch):
+    async def test_startup_skips_ml_service_when_flag_off(self, monkeypatch):
         monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", False)
         ctx: dict = {}
 
@@ -70,7 +53,7 @@ class TestWorkerLifecycle:
 
         assert "ml_service" not in ctx
 
-    async def test_startup_loads_ml_service_when_flag_on(self, _no_meilisearch, monkeypatch):
+    async def test_startup_loads_ml_service_when_flag_on(self, monkeypatch):
         monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
         ctx: dict = {}
 
@@ -82,9 +65,7 @@ class TestWorkerLifecycle:
         assert ctx.get("ml_service") is fake_service
         fake_service.load_models.assert_awaited_once()
 
-    async def test_startup_raises_when_flag_on_and_model_files_missing(
-        self, _no_meilisearch, monkeypatch, tmp_path
-    ):
+    async def test_startup_raises_when_flag_on_and_model_files_missing(self, monkeypatch, tmp_path):
         """Flag on but model files absent → worker must fail to start."""
         monkeypatch.setattr(settings, "ML_TAG_SUGGESTIONS_ENABLED", True)
         # Point at an empty dir so the real load_models() finds no model files.

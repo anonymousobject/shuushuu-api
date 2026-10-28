@@ -76,6 +76,18 @@ account keeps its identity, flagged dead), and meilisearch indexing.
 Unique index on `(site, external_id)`. Adding a link whose parsed identity
 already belongs to another tag returns a 409 naming that artist.
 
+**Decided (2026-08-25): identity columns are case-insensitive** (`ci_string`
+per ADR-0008 — citext on Postgres, default collation on MariaDB). Without
+this, Postgres would treat case-variant handles as distinct identities and
+the duplicate guard would silently stop firing for any future non-numeric
+site (twitter/bsky). In-memory backfill keying folds case to match.
+
+**Decided (2026-09-07): identity lives on the canonical tag only.** Adding a
+link that parses to an identity on an alias tag returns a 409 naming the
+canonical. The backfill already assigns alias-derived identities to the
+canonical, the exact search layer should never surface an alias as an
+identity owner, and the future UNIQUE index assumes one owner per identity.
+
 **Decided (2026-08-01): hard unique.** Genuinely shared accounts
 (duos/circles posting under one pixiv account) are rare enough to handle
 manually — merge the tags or drop the link — and the DB-level guarantee is

@@ -20,7 +20,6 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | Plan | State | Notes |
 | --- | --- | --- |
 | [forum API](2026-Q3/2026-07-06-forum-api-impl.md) | not implemented | No forum router, models, or schemas exist. Spec lives on the frontend repo's unmerged `feat/forum` branch. |
-| [external artist identity](2026-Q3/2026-08-01-external-artist-identity-impl.md) | not implemented | No `artist_identity` service, backfill, or routes exist. |
 <!-- exceptions:end -->
 
 
@@ -28,6 +27,18 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 
 | Date | Effort | Docs |
 | --- | --- | --- |
+| 2026-09-24 | Image Info Editing (API) Implementation Plan | [impl](2026-Q3/2026-09-24-image-info-editing-impl.md) |
+| 2026-09-12 | Tag List Filters (API) Implementation Plan | [impl](2026-Q3/2026-09-12-tag-list-filters-impl.md) |
+| 2026-09-11 | Postgres tag search replaces Meilisearch | [design](2026-Q3/2026-09-11-postgres-tag-search-design.md) · [impl](2026-Q3/2026-09-11-postgres-tag-search-impl.md) |
+| 2026-09-10 | MariaDB retirement — design | [design](2026-Q3/2026-09-10-mariadb-retirement-design.md) · [impl](2026-Q3/2026-09-10-mariadb-retirement-impl.md) |
+| 2026-08-21 | Postgres cutover runbook — plan | [impl](2026-Q3/2026-08-21-pg-cutover-runbook-impl.md) |
+| 2026-08-21 | Postgres counter triggers — design | [design](2026-Q3/2026-08-21-pg-counter-triggers-design.md) |
+| 2026-08-21 | Prod-shaped Postgres compose topology — plan | [impl](2026-Q3/2026-08-21-pg-compose-topology-impl.md) |
+| 2026-08-21 | Alembic Postgres baseline — design | [design](2026-Q3/2026-08-21-alembic-pg-baseline-design.md) · [impl](2026-Q3/2026-08-21-alembic-pg-baseline-impl.md) |
+| 2026-08-20 | Tests on Postgres — design | [design](2026-Q3/2026-08-20-tests-on-postgres-design.md) · [impl](2026-Q3/2026-08-20-tests-on-postgres-impl.md) |
+| 2026-08-20 | Postgres Proof-of-Concept Implementation Plan | [impl](2026-Q3/2026-08-20-postgres-poc-impl.md) |
+| 2026-08-18 | For You v2: favorites as a live input + daily rotation | [design](2026-Q3/2026-08-18-for-you-favorites-rotation-design.md) · [impl](2026-Q3/2026-08-18-for-you-favorites-rotation-impl.md) |
+| 2026-08-17 | Bundled feed comments (`include_comments` on the images list) | [design](2026-Q3/2026-08-17-bundled-feed-comments-design.md) · [impl](2026-Q3/2026-08-17-bundled-feed-comments-impl.md) |
 | 2026-08-01 | External Artist Identity (pixiv IDs without alias tags) | [design](2026-Q3/2026-08-01-external-artist-identity-design.md) · [impl](2026-Q3/2026-08-01-external-artist-identity-impl.md) |
 | 2026-07-30 | Include upload-time tags in tag & user history | [notes](2026-Q3/2026-07-30-tag-history-fix.md) |
 | 2026-07-26 | Seifuku → School Uniform Flip & Reparent Rollout Plan | [impl](2026-Q3/2026-07-26-school-uniform-flip-impl.md) |
@@ -106,4 +117,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-62 efforts, 91 documents.
+74 efforts, 109 documents.

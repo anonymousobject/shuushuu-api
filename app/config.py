@@ -1,5 +1,5 @@
 """
-Application Configuration - MariaDB Version
+Application Configuration
 Uses Pydantic Settings for environment-based configuration
 """
 
@@ -14,7 +14,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore",  # Ignore extra env vars like MARIADB_* used by docker-compose
+        extra="ignore",  # Ignore extra env vars like POSTGRES_* used by docker-compose
     )
 
     # Application
@@ -43,10 +43,8 @@ class Settings(BaseSettings):
     )
     ALLOWED_HOSTS: str | list[str] = Field(default=["*"])
 
-    # MariaDB Database - UPDATED!
-    DATABASE_URL: str = "YOU MUST SET A VALID MARIADB DATABASE URL"
-    # Sync URL for Alembic migrations
-    DATABASE_URL_SYNC: str = "YOU MUST SET A VALID MARIADB SYNC DATABASE URL"
+    # Database (Postgres, asyncpg)
+    DATABASE_URL: str = "YOU MUST SET A VALID DATABASE URL"
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_ECHO: bool = False
@@ -54,10 +52,21 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
     CACHE_TTL: int = 300  # 5 minutes
-
-    # Meilisearch
-    MEILISEARCH_URL: str = Field(default="http://localhost:7700")
-    MEILISEARCH_API_KEY: str | None = Field(default=None)
+    # Cap on the shared per-process redis.asyncio.ConnectionPool (created once
+    # in the app lifespan, see app/core/redis.py). 64 matches --limit-concurrency
+    # in docker-compose.prod.yml: a fully loaded worker can't ask Redis for more
+    # connections than uvicorn will let it run requests concurrently. Beyond the
+    # cap, redis-py raises a clear ConnectionError("Too many connections")
+    # instead of letting a burst open unbounded sockets (see #381).
+    REDIS_MAX_CONNECTIONS: int = Field(default=64, ge=1)
+    # Timeouts (seconds) on that pool's sockets. Redis is on the LAN and answers
+    # in well under a millisecond, so these only trip when Redis is unreachable
+    # or wedged -- without them a dead host stalls each call for the kernel's
+    # ~2 min TCP connect timeout. No command on this pool blocks server-side
+    # for longer (redis_client.lock(..., blocking_timeout=5) in
+    # app/api/v1/comments.py polls with short commands).
+    REDIS_SOCKET_CONNECT_TIMEOUT: float = Field(default=0.25, gt=0)
+    REDIS_SOCKET_TIMEOUT: float = Field(default=1.0, gt=0)
 
     # Task Queue - UPDATED to support multiple options
     TASK_QUEUE_TYPE: str = Field(
@@ -244,7 +253,7 @@ class Settings(BaseSettings):
     )
     REGISTRATION_RATE_WINDOW_HOURS: int = Field(default=1, description="Rate limit window in hours")
 
-    # URL Import (see docs/plans/2026-07-06-url-import-design.md in the frontend repo)
+    # URL Import (see <shuushuu-frontend-repo>/docs/plans/2026-Q3/2026-07-06-url-import-design.md)
     URL_RESOLVE_RATE_PER_MINUTE: int = 5
     URL_RESOLVE_GLOBAL_RATE_PER_MINUTE: int = 60
     EXTERNAL_FETCH_RATE_PER_MINUTE: int = 40
@@ -280,9 +289,9 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
-    # Requests slower than this (ms) are logged at INFO even when they succeed;
-    # faster successful requests drop to DEBUG so routine traffic doesn't flood
-    # the aggregated logs. See RequestLoggingMiddleware in app/main.py.
+    # Requests slower than this (ms) are logged at WARNING even when they
+    # succeed, so they stand out from the INFO baseline every other request
+    # logs at. See _log_level_for in app/main.py.
     SLOW_REQUEST_LOG_MS: float = 1000.0
 
     # Review System
@@ -329,6 +338,14 @@ class Settings(BaseSettings):
     TASTE_TOP_TAGS: int = Field(default=30, ge=1)  # positive tags used for candidate generation
     TASTE_CANDIDATE_CAP: int = Field(default=3000, ge=1)  # max candidate images scored per request
     TASTE_FEED_POOL: int = Field(default=500, ge=1)  # max scored feed depth (pagination cap)
+    TASTE_SCORE_POOL: int = Field(default=1500, ge=1)  # scored depth the daily sample draws from
+    TASTE_FAV_SHARE: float = Field(
+        default=0.33, ge=0.0, le=1.0
+    )  # per-slot probability of drawing from the favorites pool
+    TASTE_FAV_PER_FAVORITE_CAP: int = Field(default=100, ge=1)  # recent matches per favorite
+    TASTE_SAMPLE_DECAY: float = Field(
+        default=0.997, gt=0.0, le=1.0
+    )  # per-rank weight decay of the affinity sample; 1.0 = uniform over the pool
     TASTE_DISPLAY_MIN_LIFT: float = Field(
         default=1.5, ge=0.0
     )  # analytics display floor; keeps popularity-only tags (e.g. "long hair") out
@@ -544,6 +561,15 @@ class TagAuditActionType:
     LINK_DEAD_MARKED = "link_dead_marked"
     LINK_DEAD_CLEARED = "link_dead_cleared"
     LINK_ARCHIVE_CHANGED = "link_archive_changed"
+
+
+class ImageMetadataField:
+    """Image fields whose edits image_metadata_history records."""
+
+    MISCMETA = "miscmeta"
+    SOURCE_URL = "source_url"
+
+    ALL = (MISCMETA, SOURCE_URL)
 
 
 class TagType:
