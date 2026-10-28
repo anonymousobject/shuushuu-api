@@ -1,5 +1,6 @@
 """End-to-end import of one phpBB forum into the forum tables (real source DBs)."""
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -10,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.archived_user import get_archived_user_id
 from app.models.forum import ForumCategories, ForumPosts, ForumThreads
 
+# The sources are MariaDB; the app itself is Postgres-only and does not depend on
+# aiomysql. Run these as `uv run --with aiomysql pytest ...` (see
+# scripts/import_forum_archive.py); without it the module skips at collection.
+aiomysql = pytest.importorskip("aiomysql")
+
 pytestmark = pytest.mark.forum_import
 
 ROOT = os.environ.get("MARIADB_ROOT_PASSWORD", "root_password")
@@ -19,11 +25,24 @@ BACKUP = Path("/sakura/backups/forums-2026-02-20/files")
 GAMING_FORUM_ID = 16  # small: 3 topics / 15 posts
 
 
+async def _phpbb_db_answers() -> bool:
+    try:
+        conn = await aiomysql.connect(
+            host="localhost", port=3306, user="root", password=ROOT, db="shuushuuphpbb3"
+        )
+    except Exception:
+        return False
+    conn.close()
+    return True
+
+
 def _sources_available() -> bool:
-    return BACKUP.exists()
+    return BACKUP.exists() and asyncio.run(_phpbb_db_answers())
 
 
-@pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
+@pytest.mark.skipif(
+    not _sources_available(), reason="phpBB backup files or source MariaDB not available"
+)
 async def test_import_one_forum(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
 
@@ -78,7 +97,9 @@ async def test_import_one_forum(db_session: AsyncSession, monkeypatch, tmp_path)
             assert p.legacy_username
 
 
-@pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
+@pytest.mark.skipif(
+    not _sources_available(), reason="phpBB backup files or source MariaDB not available"
+)
 async def test_import_is_idempotent(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
 
@@ -93,7 +114,10 @@ async def test_import_is_idempotent(db_session: AsyncSession, monkeypatch, tmp_p
     assert total1 == total2  # re-run created nothing new
 
 
-@pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
+@pytest.mark.needs_commit  # dry-run does a real rollback; see test_remap_dry_run_does_not_persist
+@pytest.mark.skipif(
+    not _sources_available(), reason="phpBB backup files or source MariaDB not available"
+)
 async def test_dry_run_writes_nothing(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
 
@@ -101,7 +125,7 @@ async def test_dry_run_writes_nothing(db_session: AsyncSession, monkeypatch, tmp
     monkeypatch.setattr(settings, "R2_ENABLED", False)
     from scripts.import_forum_archive import run_import
 
-    await run_import(
+    dry_stats = await run_import(
         db_session,
         PHPBB_URL,
         LEGACY_URL,
@@ -109,6 +133,10 @@ async def test_dry_run_writes_nothing(db_session: AsyncSession, monkeypatch, tmp
         only_forum_ids={GAMING_FORUM_ID},
         dry_run=True,
     )
+
+    # No attachment copy either, but they are still counted for the report.
+    assert not (tmp_path / "forum-archive").exists()
+    assert dry_stats.attachments > 0
 
     # Nothing persisted: the Archived User row may exist (needed so dry-run
     # inserts don't FK-fail), but the forum tables themselves must be empty.
@@ -123,8 +151,17 @@ async def test_dry_run_writes_nothing(db_session: AsyncSession, monkeypatch, tmp
     assert thread_count == 0
     assert post_count == 0
 
+    # A real run reports the same attachments and does write the files.
+    real_stats = await run_import(
+        db_session, PHPBB_URL, LEGACY_URL, BACKUP, only_forum_ids={GAMING_FORUM_ID}
+    )
+    assert real_stats.attachments == dry_stats.attachments
+    assert (tmp_path / "forum-archive").exists()
 
-@pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
+
+@pytest.mark.skipif(
+    not _sources_available(), reason="phpBB backup files or source MariaDB not available"
+)
 async def test_remap_recovers_thread_author(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
 
@@ -185,7 +222,9 @@ async def test_remap_recovers_thread_author(db_session: AsyncSession, monkeypatc
     assert thread.user_id == opening_post.user_id
 
 
-@pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
+@pytest.mark.skipif(
+    not _sources_available(), reason="phpBB backup files or source MariaDB not available"
+)
 async def test_empty_forum_keeps_category(db_session: AsyncSession, monkeypatch, tmp_path):
     from app.config import settings
 
@@ -211,7 +250,9 @@ async def test_empty_forum_keeps_category(db_session: AsyncSession, monkeypatch,
 
 
 @pytest.mark.needs_commit
-@pytest.mark.skipif(not _sources_available(), reason="phpBB backup files not present")
+@pytest.mark.skipif(
+    not _sources_available(), reason="phpBB backup files or source MariaDB not available"
+)
 async def test_remap_dry_run_does_not_persist(db_session: AsyncSession, monkeypatch, tmp_path):
     # Needs real commit/rollback semantics: the default savepoint fixture emulates
     # commits with nested SAVEPOINTs, which can't distinguish a real in-run

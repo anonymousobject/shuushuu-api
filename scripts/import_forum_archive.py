@@ -5,9 +5,16 @@ php_shuu dump. Converts s9e post XML to markdown, resolves posters to current
 accounts, rehosts attachments, and inserts categories/threads/posts as locked,
 tier-gated threads. Idempotent via legacy_* unique keys.
 
-Usage:
-    uv run python -m scripts.import_forum_archive [--dry-run] [--remap] \
+The sources are MariaDB dumps; the app is Postgres-only and does not depend on
+aiomysql, so the driver is pulled in for the run only. Restore the dumps into a
+scratch MariaDB first (databases shuushuuphpbb3 and php_shuu), then:
+
+    MARIADB_ROOT_PASSWORD=... uv run --with aiomysql python \
+        scripts/import_forum_archive.py [--dry-run] [--remap] \
         [--phpbb-url URL] [--site-url URL]
+
+--dry-run writes nothing (no rows, no attachment copies or uploads) but still
+counts attachments and reports missing files.
 """
 
 import argparse
@@ -89,7 +96,7 @@ async def _build_resolution(
 
 
 async def _post_attachment_links(
-    pc: AsyncConnection, post_id: int, backup_dir: Path, stats: ImportStats
+    pc: AsyncConnection, post_id: int, backup_dir: Path, stats: ImportStats, dry_run: bool
 ) -> str:
     rows = list(
         await pc.execute(
@@ -104,7 +111,8 @@ async def _post_attachment_links(
     for physical, real, mime in rows:
         src = backup_dir / physical
         if src.exists():
-            await rehost_attachment(physical, real, src, mime or "application/octet-stream")
+            if not dry_run:
+                await rehost_attachment(physical, real, src, mime or "application/octet-stream")
             lines.append(f"\U0001f4ce [{real}]({forum_attachment_url(physical, real)})")
             stats.attachments += 1
         else:
@@ -112,7 +120,7 @@ async def _post_attachment_links(
     return ("\n\n" + "\n".join(lines)) if lines else ""
 
 
-async def run_import(
+async def run_import(  # noqa: C901
     target: AsyncSession,
     phpbb_url: str,
     legacy_url: str,
@@ -148,18 +156,17 @@ async def run_import(
         # last_post_user_id (latest live post) from the remapped posts.
         await target.execute(
             text(
-                "UPDATE forum_threads t JOIN forum_posts op "
-                "ON op.post_id = (SELECT MIN(p.post_id) FROM forum_posts p "
-                "WHERE p.thread_id = t.thread_id) "
-                "SET t.user_id = op.user_id WHERE t.legacy_topic_id IS NOT NULL"
+                "UPDATE forum_threads t SET user_id = op.user_id FROM forum_posts op "
+                "WHERE op.post_id = (SELECT MIN(p.post_id) FROM forum_posts p "
+                "WHERE p.thread_id = t.thread_id) AND t.legacy_topic_id IS NOT NULL"
             )
         )
         await target.execute(
             text(
-                "UPDATE forum_threads t JOIN forum_posts lp "
-                "ON lp.post_id = (SELECT MAX(p.post_id) FROM forum_posts p "
-                "WHERE p.thread_id = t.thread_id AND p.deleted = 0) "
-                "SET t.last_post_user_id = lp.user_id WHERE t.legacy_topic_id IS NOT NULL"
+                "UPDATE forum_threads t SET last_post_user_id = lp.user_id FROM forum_posts lp "
+                "WHERE lp.post_id = (SELECT MAX(p.post_id) FROM forum_posts p "
+                "WHERE p.thread_id = t.thread_id AND NOT p.deleted) "
+                "AND t.legacy_topic_id IS NOT NULL"
             )
         )
         if dry_run:
@@ -306,7 +313,7 @@ async def _import_topic(
     for post_id, poster_id, ptime, ptext in posts:
         uid, legacy_name = author_of(int(poster_id))
         body = s9e_to_markdown(ptext or "")
-        body += await _post_attachment_links(pc, int(post_id), backup_dir, stats)
+        body += await _post_attachment_links(pc, int(post_id), backup_dir, stats, dry_run)
         pdate = datetime.fromtimestamp(int(ptime), UTC)
         target.add(
             ForumPosts(
