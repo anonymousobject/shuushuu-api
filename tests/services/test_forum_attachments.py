@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from app.config import settings
 from app.services.forum_import.attachments import forum_attachment_url, rehost_attachment
 
@@ -36,6 +40,24 @@ async def test_rehost_local_copies_file_with_extension(monkeypatch, tmp_path):
     await rehost_attachment("phys_key", "picture.jpeg", src, "image/jpeg")
     dest = tmp_path / "forum-archive" / "phys_key.jpeg"
     assert dest.read_bytes() == b"hello"
+
+
+async def test_rehost_local_does_not_carry_source_xattrs(monkeypatch, tmp_path):
+    """Only the bytes are rehosted. The backup files sit on an NFS export and
+    carry a system.nfs4_acl xattr; copying it onto the media export failed with
+    EIO, which shutil.copy2 does not tolerate."""
+    monkeypatch.setattr(settings, "R2_ENABLED", False)
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"hello")
+    try:
+        os.setxattr(src, "user.origin", b"backup")
+    except OSError as e:
+        pytest.skip(f"tmp_path filesystem has no user xattrs: {e}")
+    await rehost_attachment("phys_key", "picture.jpeg", src, "image/jpeg")
+    dest = tmp_path / "forum-archive" / "phys_key.jpeg"
+    assert dest.read_bytes() == b"hello"
+    assert os.listxattr(dest) == []
 
 
 async def test_rehost_r2_sets_extension_key_and_disposition(monkeypatch, tmp_path):
