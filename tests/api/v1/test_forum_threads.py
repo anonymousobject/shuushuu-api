@@ -1,5 +1,7 @@
 """Tests for forum thread endpoints."""
 
+from datetime import UTC, datetime, timedelta
+
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,6 +99,48 @@ class TestListThreads:
         assert listed["unread"] is False
         # A new reply by someone else makes it unread again
         await _add_reply(db_session, public_thread, user_id=2)
+        listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
+        assert listed["unread"] is True
+
+    async def test_reading_clears_unread_when_db_clock_runs_ahead(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_category,
+        public_thread,
+        user_token,
+    ):
+        """Post dates come from the DB host's clock, which can run ahead of the
+        API host's; reading the thread must still mark it read."""
+        public_thread.last_post_at = datetime.now(UTC) + timedelta(minutes=5)
+        await db_session.commit()
+        url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
+        await client.get(
+            f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(user_token)
+        )
+        listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
+        assert listed["unread"] is False
+
+    async def test_reply_newer_than_what_was_read_is_unread_even_if_older_than_now(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_category,
+        public_thread,
+        user_token,
+    ):
+        """A reply dated after the newest post the reader saw must stay unread,
+        even when it predates the API host's clock: the DB clock runs behind, or
+        the reply committed while the thread was being read."""
+        public_thread.last_post_at = datetime.now(UTC) - timedelta(minutes=10)
+        await db_session.commit()
+        url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
+        await client.get(
+            f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(user_token)
+        )
+        reply = await _add_reply(db_session, public_thread, user_id=2)
+        reply.date = public_thread.last_post_at = datetime.now(UTC) - timedelta(minutes=5)
+        await db_session.commit()
         listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
         assert listed["unread"] is True
 

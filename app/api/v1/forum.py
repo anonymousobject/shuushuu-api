@@ -488,8 +488,15 @@ async def get_thread(
         user_ids.add(thread.last_post_user_id)
     summaries = await build_user_summaries(db, user_ids)
 
-    if current_user is not None and current_user.user_id is not None:
-        await upsert_thread_read(db, current_user.user_id, thread_id, datetime.now(UTC))
+    # Read up to the newest post this request saw, on the DB's clock (post dates
+    # are clock_timestamp()). Stamping the API host's "now" instead would mark a
+    # reply read if that clock runs ahead, or if the reply committed mid-request.
+    if (
+        current_user is not None
+        and current_user.user_id is not None
+        and thread.last_post_at is not None
+    ):
+        await upsert_thread_read(db, current_user.user_id, thread_id, thread.last_post_at)
         await db.commit()
 
     archived_user_id = await get_archived_user_id(db)
