@@ -28,12 +28,23 @@ def s9e_to_markdown(xml: str) -> str:
     return _normalize(_render(root))
 
 
+# s9e keeps the user's own newline characters as text nodes *and* adds markup for them:
+# every <br/> is followed by a literal "\n", and list markup sits on lines of its own.
+# Rendering both would double each break, so the markup defers to the text.
+_LINE_START_TAGS = {"LIST", "LI"}
+
+
 def _inner(el: ET.Element) -> str:
-    parts = [el.text or ""]
+    text = el.text or ""
     for child in el:
-        parts.append(_render(child))
-        parts.append(child.tail or "")
-    return "".join(parts)
+        if child.tag in _LINE_START_TAGS and text and not text.endswith("\n"):
+            text += "\n"
+        text += _render(child)
+        tail = child.tail or ""
+        if child.tag == "br" and tail.startswith("\n"):
+            tail = tail[1:]
+        text += tail
+    return text
 
 
 def _quote(el: ET.Element, inner: str) -> str:
@@ -55,7 +66,8 @@ _FORMATTERS: dict[str, Callable[[ET.Element, str], str]] = {
     "I": lambda _el, inner: f"*{inner}*",
     "QUOTE": _quote,
     "URL": _url,
-    "LI": lambda _el, inner: f"\n- {inner.strip()}",
+    "LIST": lambda _el, inner: inner.strip("\n"),
+    "LI": lambda _el, inner: f"- {inner.strip()}",
 }
 
 
