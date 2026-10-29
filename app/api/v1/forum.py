@@ -120,11 +120,16 @@ def _thread_summary(
 
 
 def _post_response(
-    post: ForumPosts, user: UserSummary, is_moderator: bool, archived_user_id: int | None = None
+    post: ForumPosts,
+    summaries: dict[int, UserSummary],
+    is_moderator: bool,
+    archived_user_id: int | None = None,
 ) -> ForumPostResponse:
     """Build a post response; tombstoned posts have their text blanked for
     callers without FORUM_MODERATE. Imported posts attributed to the Archived
-    User display their original (legacy) poster name."""
+    User display their original (legacy) poster name. `summaries` must cover
+    the post's author and its last editor."""
+    user = summaries[post.user_id]
     if archived_user_id is not None and post.user_id == archived_user_id and post.legacy_username:
         user = user.model_copy(update={"username": post.legacy_username})
     return ForumPostResponse(
@@ -138,6 +143,9 @@ def _post_response(
         last_updated=post.last_updated,
         last_updated_user_id=post.last_updated_user_id,
         user=user,
+        last_updated_user=(
+            summaries.get(post.last_updated_user_id) if post.last_updated_user_id else None
+        ),
     )
 
 
@@ -524,6 +532,7 @@ async def get_thread(
     )
 
     user_ids = {p.user_id for p in posts} | {thread.user_id}
+    user_ids |= {p.last_updated_user_id for p in posts if p.last_updated_user_id}
     if thread.last_post_user_id:
         user_ids.add(thread.last_post_user_id)
     summaries = await build_user_summaries(db, user_ids)
@@ -561,9 +570,7 @@ async def get_thread(
         total=total,
         page=pagination.page,
         per_page=pagination.per_page,
-        posts=[
-            _post_response(p, summaries[p.user_id], is_moderator, archived_user_id) for p in posts
-        ],
+        posts=[_post_response(p, summaries, is_moderator, archived_user_id) for p in posts],
     )
 
 
@@ -729,7 +736,7 @@ async def create_post(
     post = await retry_on_transient_conflict(db, _apply, what="forum_create_post")
 
     summaries = await build_user_summaries(db, {user_id})
-    return _post_response(post, summaries[user_id], is_moderator)
+    return _post_response(post, summaries, is_moderator)
 
 
 def _apply_post_edit(
@@ -806,8 +813,9 @@ async def update_post(
 
     post = await retry_on_transient_conflict(db, _apply, what="forum_update_post")
 
-    summaries = await build_user_summaries(db, {post.user_id})
-    return _post_response(post, summaries[post.user_id], is_moderator)
+    editor_ids = {post.last_updated_user_id} if post.last_updated_user_id else set()
+    summaries = await build_user_summaries(db, {post.user_id} | editor_ids)
+    return _post_response(post, summaries, is_moderator)
 
 
 @router.delete("/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)

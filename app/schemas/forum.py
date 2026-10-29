@@ -213,6 +213,9 @@ class ForumPostResponse(BaseModel):
     last_updated: UTCDatetimeOptional = None
     last_updated_user_id: int | None = None
     user: UserSummary
+    # Who made the last edit, so a moderator's edit reads differently from the
+    # author's own. None if never edited, or if the editor's account is gone.
+    last_updated_user: UserSummary | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
