@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.forum import ForumPosts
@@ -25,6 +26,16 @@ async def _add_reply(db_session, thread, user_id=2, text="A reply") -> ForumPost
     thread.last_post_user_id = user_id
     await db_session.commit()
     return post
+
+
+async def _shift_thread_clock(db_session, thread, offset: timedelta) -> None:
+    """Date the opening post and last_post_at at now + offset, as a DB clock that
+    is ahead/behind the API's would (last_post_at tracks the newest post's date)."""
+    opening = (
+        await db_session.execute(select(ForumPosts).where(ForumPosts.thread_id == thread.thread_id))
+    ).scalar_one()
+    opening.date = thread.last_post_at = datetime.now(UTC) + offset
+    await db_session.commit()
 
 
 class TestListThreads:
@@ -126,6 +137,32 @@ class TestListThreads:
         listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
         assert listed["unread"] is True
 
+    async def test_reading_an_earlier_page_leaves_later_replies_unread(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_category,
+        public_thread,
+        user_token,
+    ):
+        await _add_reply(db_session, public_thread, user_id=2)
+        await _add_reply(db_session, public_thread, user_id=2)
+        url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
+        thread_url = f"/api/v1/forum/threads/{public_thread.thread_id}"
+
+        await client.get(f"{thread_url}?page=1&per_page=2", headers=_auth(user_token))
+        listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
+        assert listed["unread"] is True
+
+        await client.get(f"{thread_url}?page=2&per_page=2", headers=_auth(user_token))
+        listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
+        assert listed["unread"] is False
+
+        # Re-viewing an earlier page never moves the mark back.
+        await client.get(f"{thread_url}?page=1&per_page=2", headers=_auth(user_token))
+        listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
+        assert listed["unread"] is False
+
     async def test_reading_clears_unread_when_db_clock_runs_ahead(
         self,
         client: AsyncClient,
@@ -136,8 +173,7 @@ class TestListThreads:
     ):
         """Post dates come from the DB host's clock, which can run ahead of the
         API host's; reading the thread must still mark it read."""
-        public_thread.last_post_at = datetime.now(UTC) + timedelta(minutes=5)
-        await db_session.commit()
+        await _shift_thread_clock(db_session, public_thread, timedelta(minutes=5))
         url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
         await client.get(
             f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(user_token)
@@ -156,8 +192,7 @@ class TestListThreads:
         """A reply dated after the newest post the reader saw must stay unread,
         even when it predates the API host's clock: the DB clock runs behind, or
         the reply committed while the thread was being read."""
-        public_thread.last_post_at = datetime.now(UTC) - timedelta(minutes=10)
-        await db_session.commit()
+        await _shift_thread_clock(db_session, public_thread, -timedelta(minutes=10))
         url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
         await client.get(
             f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(user_token)

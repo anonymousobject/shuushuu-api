@@ -453,8 +453,8 @@ async def get_thread(
     redis_client: RedisDep,  # type: ignore[type-arg]
     current_user: OptionalCurrentUser,
 ) -> ForumThreadDetailResponse:
-    """Thread meta + one page of posts (chronological). Marks the thread read
-    for authenticated callers."""
+    """Thread meta + one page of posts (chronological). Marks the thread read, up
+    to the newest post on the returned page, for authenticated callers."""
     perms = await _effective_perms(db, redis_client, current_user)
     is_moderator = Permission.FORUM_MODERATE.value in perms
 
@@ -489,16 +489,15 @@ async def get_thread(
         user_ids.add(thread.last_post_user_id)
     summaries = await build_user_summaries(db, user_ids)
 
-    # Mark the thread read up to its newest post as loaded by this request (whatever
-    # page was fetched), on the DB's clock (post dates are clock_timestamp()). Stamping
-    # the API host's "now" instead would mark a reply read if that clock runs ahead,
-    # or if the reply committed mid-request.
-    if (
-        current_user is not None
-        and current_user.user_id is not None
-        and thread.last_post_at is not None
-    ):
-        await upsert_thread_read(db, current_user.user_id, thread_id, thread.last_post_at)
+    # Mark the thread read up to the newest post on the page returned (tombstones
+    # included, they were displayed), so a reply on a later page stays unread. Uses
+    # the post's own date, from the DB's clock (clock_timestamp()): stamping the API
+    # host's "now" instead would mark a reply read if that clock runs ahead, or if
+    # the reply committed mid-request. An empty page leaves the mark alone.
+    if current_user is not None and current_user.user_id is not None and posts:
+        await upsert_thread_read(
+            db, current_user.user_id, thread_id, max(post.date for post in posts)
+        )
         await db.commit()
 
     archived_user_id = await get_archived_user_id(db)
