@@ -245,16 +245,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Forum post permalink: /forum/posts/{id} → thread + page + anchor.
-    location ~ "^/forum/posts/[0-9]+/?$" {
-        set $api_upstream api:8000;
-        rewrite "^/forum/posts/([0-9]+)/?$" /api/v1/forum/posts/$1/redirect break;
-        proxy_pass http://$api_upstream;
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
     # Frontend - proxy to SvelteKit SSR server (production build in Docker)
     location / {
         set $frontend_upstream frontend:3000;

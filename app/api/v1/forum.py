@@ -967,7 +967,8 @@ async def post_permalink(
     current_user: OptionalCurrentUser,
 ) -> RedirectResponse:
     """301 a stable /forum/posts/{post_id} permalink to the post's thread, page,
-    and anchor."""
+    and anchor. The frontend's /forum/posts/[post_id] route calls this and
+    passes the redirect on."""
     perms = await _effective_perms(db, redis_client, current_user)
     post = await db.get(ForumPosts, post_id)
     if post is None:
