@@ -25,6 +25,8 @@ from app.schemas.common import UserSummary
 from app.schemas.forum import (
     ForumCategoryCreate,
     ForumCategoryListResponse,
+    ForumCategoryManageListResponse,
+    ForumCategoryManageResponse,
     ForumCategoryResponse,
     ForumCategoryUpdate,
     ForumPostCreate,
@@ -139,6 +141,19 @@ def _post_response(
     )
 
 
+def _category_settings(category: ForumCategories) -> dict[str, Any]:
+    """The ForumCategorySettings fields of every category response."""
+    return {
+        "category_id": category.category_id or 0,  # guaranteed to exist after flush/refresh
+        "title": category.title,
+        "description": category.description,
+        "sort_order": category.sort_order,
+        "view_perm": category.view_perm,
+        "thread_create_perm": category.thread_create_perm,
+        "reply_perm": category.reply_perm,
+    }
+
+
 def _category_response(
     category: ForumCategories,
     *,
@@ -152,13 +167,7 @@ def _category_response(
     can_reply: bool = False,
 ) -> ForumCategoryResponse:
     return ForumCategoryResponse(
-        category_id=category.category_id or 0,  # guaranteed to exist after flush/refresh
-        title=category.title,
-        description=category.description,
-        sort_order=category.sort_order,
-        view_perm=category.view_perm,
-        thread_create_perm=category.thread_create_perm,
-        reply_perm=category.reply_perm,
+        **_category_settings(category),
         thread_count=thread_count,
         post_count=post_count,
         last_post_at=last_post_at,
@@ -188,6 +197,16 @@ async def _check_duplicate_title(
 # ===== Categories =====
 
 
+async def _categories_in_order(db: AsyncSession) -> list[ForumCategories]:
+    result = await db.execute(
+        select(ForumCategories).order_by(
+            ForumCategories.sort_order,  # type: ignore[arg-type]
+            ForumCategories.category_id,  # type: ignore[arg-type]
+        )
+    )
+    return list(result.scalars().all())
+
+
 @router.get("/categories", response_model=ForumCategoryListResponse)
 async def list_categories(
     db: DbDep,
@@ -196,13 +215,7 @@ async def list_categories(
 ) -> ForumCategoryListResponse:
     """List categories the caller may view, with stats and capabilities."""
     perms = await _effective_perms(db, redis_client, current_user)
-    result = await db.execute(
-        select(ForumCategories).order_by(
-            ForumCategories.sort_order,  # type: ignore[arg-type]
-            ForumCategories.category_id,  # type: ignore[arg-type]
-        )
-    )
-    categories = [c for c in result.scalars().all() if can_access(perms, c.view_perm)]
+    categories = [c for c in await _categories_in_order(db) if can_access(perms, c.view_perm)]
 
     # Thread/post counts per category (live threads only)
     stats_rows = await db.execute(
@@ -269,6 +282,32 @@ async def list_categories(
             )
         )
     return ForumCategoryListResponse(categories=entries)
+
+
+@router.get("/categories/manage", response_model=ForumCategoryManageListResponse)
+async def list_categories_for_management(
+    db: DbDep,
+    _: Annotated[None, Depends(require_permission(Permission.FORUM_CATEGORY_MANAGE))],
+) -> ForumCategoryManageListResponse:
+    """Every category, whatever its view gate, for the category admin page.
+    Requires FORUM_CATEGORY_MANAGE: the access tiers gate reading the forum, not
+    managing it, so a manager without them still needs to see every category."""
+    counts_result = await db.execute(
+        select(  # type: ignore[call-overload]
+            ForumThreads.category_id, ForumThreads.deleted, func.count()
+        ).group_by(ForumThreads.category_id, ForumThreads.deleted)
+    )
+    counts = {(category_id, deleted): n for category_id, deleted, n in counts_result.all()}
+    return ForumCategoryManageListResponse(
+        categories=[
+            ForumCategoryManageResponse(
+                **_category_settings(c),
+                thread_count=counts.get((c.category_id, False), 0),
+                deleted_thread_count=counts.get((c.category_id, True), 0),
+            )
+            for c in await _categories_in_order(db)
+        ]
+    )
 
 
 @router.post(
