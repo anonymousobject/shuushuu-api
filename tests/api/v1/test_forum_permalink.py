@@ -73,3 +73,37 @@ class TestPostPermalink:
         opening = await _opening_post(db_session, thread)
         r = await client.get(f"/api/v1/forum/posts/{opening.post_id}/redirect")
         assert r.status_code == 404
+
+    async def test_missing_and_gated_post_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category
+    ):
+        # A gated-but-existing post and a missing one must be indistinguishable
+        # to an anonymous caller (no existence oracle for gated post ids).
+        thread = await make_thread(db_session, staff_category, title="Secret")
+        opening = await _opening_post(db_session, thread)
+        missing_resp = await client.get("/api/v1/forum/posts/999999/redirect")
+        gated_resp = await client.get(f"/api/v1/forum/posts/{opening.post_id}/redirect")
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()
+
+    async def test_deleted_thread_post_404_for_users_301_for_mods(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_category,
+        user_token,
+        staff_token,
+    ):
+        thread = await make_thread(db_session, public_category, title="Removed")
+        thread.deleted = True
+        await db_session.commit()
+        opening = await _opening_post(db_session, thread)
+        url = f"/api/v1/forum/posts/{opening.post_id}/redirect"
+        missing = await client.get(
+            "/api/v1/forum/posts/999999/redirect", headers={"Authorization": f"Bearer {user_token}"}
+        )
+        hidden = await client.get(url, headers={"Authorization": f"Bearer {user_token}"})
+        assert missing.status_code == hidden.status_code == 404
+        assert missing.json() == hidden.json()
+        mod = await client.get(url, headers={"Authorization": f"Bearer {staff_token}"})
+        assert mod.status_code == 301

@@ -86,3 +86,51 @@ def test_malformed_falls_back_to_stripped_text():
 
 def test_empty():
     assert s9e_to_markdown("") == ""
+
+
+def test_br_followed_by_source_newline_is_one_break():
+    # s9e keeps the user's own "\n" after every <br/>; it must not double.
+    xml = (
+        "<r>I voted for number 3, but i liked 9/10, 12/13 and 16 alot too....<br/>\n"
+        "why are you making this so hard, they are all so damn cute  <E>](*,)</E> <br/>\n"
+        "Good job =D&gt;</r>"
+    )
+    assert s9e_to_markdown(xml) == (
+        "I voted for number 3, but i liked 9/10, 12/13 and 16 alot too....\n"
+        "why are you making this so hard, they are all so damn cute  ](*,) \n"
+        "Good job =D>"
+    )
+
+
+def test_list_items_do_not_double_source_newlines():
+    xml = (
+        "<r>nominates:\n<LIST><s>[list]</s>\n"
+        "<LI><s>[*]</s>Kagemaru</LI>\n<LI><s>[*]</s>Amfest</LI>\n"
+        "<LI><s>[*]</s>Smithy</LI><e>[/list]</e></LIST>\n\n"
+        "They seem to have been around shuushuu for the longest time. Sempaiis!!!</r>"
+    )
+    assert s9e_to_markdown(xml) == (
+        "nominates:\n- Kagemaru\n- Amfest\n- Smithy\n\n"
+        "They seem to have been around shuushuu for the longest time. Sempaiis!!!"
+    )
+
+
+def test_list_without_preceding_newline_starts_on_its_own_line():
+    xml = "<r>intro<LIST><s>[list]</s><LI><s>[*]</s>a</LI><LI><s>[*]</s>b</LI></LIST></r>"
+    assert s9e_to_markdown(xml) == "intro\n- a\n- b"
+
+
+def test_quote_with_br_and_source_newlines():
+    xml = (
+        '<r><QUOTE author="DG"><s>[quote="DG"]</s>I voted for number 3, but i liked 9/10, '
+        "12/13 and 16 alot too....<br/>\n"
+        "why are you making this so hard, they are all so damn cute  <E>](*,)</E> <br/>\n"
+        "Good job =D&gt;<e>[/quote]</e></QUOTE>\n\n"
+        "yeah tell me about it, i was torn between drake and fett for a while.</r>"
+    )
+    assert s9e_to_markdown(xml) == (
+        '[quote="DG"]I voted for number 3, but i liked 9/10, 12/13 and 16 alot too....\n'
+        "why are you making this so hard, they are all so damn cute  ](*,) \n"
+        "Good job =D>[/quote]\n\n"
+        "yeah tell me about it, i was torn between drake and fett for a while."
+    )
