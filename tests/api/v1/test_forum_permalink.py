@@ -33,8 +33,8 @@ class TestPostPermalink:
     ):
         opening = await _opening_post(db_session, public_thread)
         r = await client.get(f"/api/v1/forum/posts/{opening.post_id}/redirect")
-        # Temporary: the page moves if earlier posts are hard-deleted, and a
-        # browser would keep following a cached 301 to the old one
+        # A 302, not a 301: the page moves if earlier posts are hard-deleted,
+        # and a browser would keep following a cached 301 to the old one
         assert r.status_code == 302
         assert (
             r.headers["location"]
