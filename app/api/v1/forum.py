@@ -542,7 +542,9 @@ async def update_thread(
     perms = await _effective_perms(db, redis_client, current_user)
     is_moderator = Permission.FORUM_MODERATE.value in perms
 
-    thread = await db.get(ForumThreads, thread_id)
+    # Row lock: the locked check on an author's edit below must not race a
+    # moderator locking the thread (that update takes this same lock).
+    thread = await db.get(ForumThreads, thread_id, with_for_update=True)
     if thread is None or (thread.deleted and not is_moderator):
         raise HTTPException(status_code=404, detail="Thread not found")
     await _visible_category(db, thread.category_id, perms, not_found_detail="Thread not found")
@@ -590,7 +592,9 @@ async def delete_thread(
     perms = await _effective_perms(db, redis_client, current_user)
     is_moderator = Permission.FORUM_MODERATE.value in perms
 
-    thread = await db.get(ForumThreads, thread_id)
+    # Row lock: the post_count/locked checks below must not race a reply
+    # committing (create_post holds this same lock).
+    thread = await db.get(ForumThreads, thread_id, with_for_update=True)
     if thread is None or (thread.deleted and not is_moderator):
         raise HTTPException(status_code=404, detail="Thread not found")
     await _visible_category(db, thread.category_id, perms, not_found_detail="Thread not found")
