@@ -25,6 +25,8 @@ from app.schemas.common import UserSummary
 from app.schemas.forum import (
     ForumCategoryCreate,
     ForumCategoryListResponse,
+    ForumCategoryManageListResponse,
+    ForumCategoryManageResponse,
     ForumCategoryResponse,
     ForumCategoryUpdate,
     ForumPostCreate,
@@ -118,11 +120,16 @@ def _thread_summary(
 
 
 def _post_response(
-    post: ForumPosts, user: UserSummary, is_moderator: bool, archived_user_id: int | None = None
+    post: ForumPosts,
+    summaries: dict[int, UserSummary],
+    is_moderator: bool,
+    archived_user_id: int | None = None,
 ) -> ForumPostResponse:
     """Build a post response; tombstoned posts have their text blanked for
     callers without FORUM_MODERATE. Imported posts attributed to the Archived
-    User display their original (legacy) poster name."""
+    User display their original (legacy) poster name. `summaries` must cover
+    the post's author and its last editor."""
+    user = summaries[post.user_id]
     if archived_user_id is not None and post.user_id == archived_user_id and post.legacy_username:
         user = user.model_copy(update={"username": post.legacy_username})
     return ForumPostResponse(
@@ -136,7 +143,23 @@ def _post_response(
         last_updated=post.last_updated,
         last_updated_user_id=post.last_updated_user_id,
         user=user,
+        last_updated_user=(
+            summaries.get(post.last_updated_user_id) if post.last_updated_user_id else None
+        ),
     )
+
+
+def _category_settings(category: ForumCategories) -> dict[str, Any]:
+    """The ForumCategorySettings fields of every category response."""
+    return {
+        "category_id": category.category_id or 0,  # guaranteed to exist after flush/refresh
+        "title": category.title,
+        "description": category.description,
+        "sort_order": category.sort_order,
+        "view_perm": category.view_perm,
+        "thread_create_perm": category.thread_create_perm,
+        "reply_perm": category.reply_perm,
+    }
 
 
 def _category_response(
@@ -152,13 +175,7 @@ def _category_response(
     can_reply: bool = False,
 ) -> ForumCategoryResponse:
     return ForumCategoryResponse(
-        category_id=category.category_id or 0,  # guaranteed to exist after flush/refresh
-        title=category.title,
-        description=category.description,
-        sort_order=category.sort_order,
-        view_perm=category.view_perm,
-        thread_create_perm=category.thread_create_perm,
-        reply_perm=category.reply_perm,
+        **_category_settings(category),
         thread_count=thread_count,
         post_count=post_count,
         last_post_at=last_post_at,
@@ -188,6 +205,16 @@ async def _check_duplicate_title(
 # ===== Categories =====
 
 
+async def _categories_in_order(db: AsyncSession) -> list[ForumCategories]:
+    result = await db.execute(
+        select(ForumCategories).order_by(
+            ForumCategories.sort_order,  # type: ignore[arg-type]
+            ForumCategories.category_id,  # type: ignore[arg-type]
+        )
+    )
+    return list(result.scalars().all())
+
+
 @router.get("/categories", response_model=ForumCategoryListResponse)
 async def list_categories(
     db: DbDep,
@@ -196,13 +223,7 @@ async def list_categories(
 ) -> ForumCategoryListResponse:
     """List categories the caller may view, with stats and capabilities."""
     perms = await _effective_perms(db, redis_client, current_user)
-    result = await db.execute(
-        select(ForumCategories).order_by(
-            ForumCategories.sort_order,  # type: ignore[arg-type]
-            ForumCategories.category_id,  # type: ignore[arg-type]
-        )
-    )
-    categories = [c for c in result.scalars().all() if can_access(perms, c.view_perm)]
+    categories = [c for c in await _categories_in_order(db) if can_access(perms, c.view_perm)]
 
     # Thread/post counts per category (live threads only)
     stats_rows = await db.execute(
@@ -269,6 +290,32 @@ async def list_categories(
             )
         )
     return ForumCategoryListResponse(categories=entries)
+
+
+@router.get("/categories/manage", response_model=ForumCategoryManageListResponse)
+async def list_categories_for_management(
+    db: DbDep,
+    _: Annotated[None, Depends(require_permission(Permission.FORUM_CATEGORY_MANAGE))],
+) -> ForumCategoryManageListResponse:
+    """Every category, whatever its view gate, for the category admin page.
+    Requires FORUM_CATEGORY_MANAGE: the access tiers gate reading the forum, not
+    managing it, so a manager without them still needs to see every category."""
+    counts_result = await db.execute(
+        select(  # type: ignore[call-overload]
+            ForumThreads.category_id, ForumThreads.deleted, func.count()
+        ).group_by(ForumThreads.category_id, ForumThreads.deleted)
+    )
+    counts = {(category_id, deleted): n for category_id, deleted, n in counts_result.all()}
+    return ForumCategoryManageListResponse(
+        categories=[
+            ForumCategoryManageResponse(
+                **_category_settings(c),
+                thread_count=counts.get((c.category_id, False), 0),
+                deleted_thread_count=counts.get((c.category_id, True), 0),
+            )
+            for c in await _categories_in_order(db)
+        ]
+    )
 
 
 @router.post(
@@ -485,6 +532,7 @@ async def get_thread(
     )
 
     user_ids = {p.user_id for p in posts} | {thread.user_id}
+    user_ids |= {p.last_updated_user_id for p in posts if p.last_updated_user_id}
     if thread.last_post_user_id:
         user_ids.add(thread.last_post_user_id)
     summaries = await build_user_summaries(db, user_ids)
@@ -522,9 +570,7 @@ async def get_thread(
         total=total,
         page=pagination.page,
         per_page=pagination.per_page,
-        posts=[
-            _post_response(p, summaries[p.user_id], is_moderator, archived_user_id) for p in posts
-        ],
+        posts=[_post_response(p, summaries, is_moderator, archived_user_id) for p in posts],
     )
 
 
@@ -690,7 +736,7 @@ async def create_post(
     post = await retry_on_transient_conflict(db, _apply, what="forum_create_post")
 
     summaries = await build_user_summaries(db, {user_id})
-    return _post_response(post, summaries[user_id], is_moderator)
+    return _post_response(post, summaries, is_moderator)
 
 
 def _apply_post_edit(
@@ -767,8 +813,9 @@ async def update_post(
 
     post = await retry_on_transient_conflict(db, _apply, what="forum_update_post")
 
-    summaries = await build_user_summaries(db, {post.user_id})
-    return _post_response(post, summaries[post.user_id], is_moderator)
+    editor_ids = {post.last_updated_user_id} if post.last_updated_user_id else set()
+    summaries = await build_user_summaries(db, {post.user_id} | editor_ids)
+    return _post_response(post, summaries, is_moderator)
 
 
 @router.delete("/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -928,7 +975,8 @@ async def post_permalink(
     current_user: OptionalCurrentUser,
 ) -> RedirectResponse:
     """301 a stable /forum/posts/{post_id} permalink to the post's thread, page,
-    and anchor."""
+    and anchor. The frontend's /forum/posts/[post_id] route calls this and
+    passes the redirect on."""
     perms = await _effective_perms(db, redis_client, current_user)
     post = await db.get(ForumPosts, post_id)
     if post is None:

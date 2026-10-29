@@ -85,6 +85,61 @@ class TestListCategories:
         assert staff["can_reply"] is True
 
 
+class TestListCategoriesForManagement:
+    """GET /api/v1/forum/categories/manage"""
+
+    async def test_requires_auth(self, client: AsyncClient):
+        response = await client.get("/api/v1/forum/categories/manage")
+        assert response.status_code == 401
+
+    async def test_requires_permission(self, client: AsyncClient, user_token):
+        response = await client.get("/api/v1/forum/categories/manage", headers=_auth(user_token))
+        assert response.status_code == 403
+
+    async def test_lists_categories_the_manager_cannot_view(
+        self,
+        client: AsyncClient,
+        public_category,
+        staff_category,
+        tagger_category,
+        category_manager_token,
+    ):
+        # The manager holds no access tier, so the public list hides two of these.
+        response = await client.get(
+            "/api/v1/forum/categories/manage", headers=_auth(category_manager_token)
+        )
+        assert response.status_code == 200
+        titles = [c["title"] for c in response.json()["categories"]]
+        assert set(titles) == {"Site Discussion", "Mod Board", "Tagger Board"}
+
+    async def test_ordered_by_sort_order(
+        self, client: AsyncClient, public_category, announce_category, category_manager_token
+    ):
+        response = await client.get(
+            "/api/v1/forum/categories/manage", headers=_auth(category_manager_token)
+        )
+        titles = [c["title"] for c in response.json()["categories"]]
+        assert titles == ["Announcements", "Site Discussion"]  # sort_order 0 before 1
+
+    async def test_counts_soft_deleted_threads_apart(
+        self, client: AsyncClient, db_session: AsyncSession, public_category, category_manager_token
+    ):
+        # A soft-deleted thread still blocks deleting the category, so the admin
+        # page needs to see it even though thread_count leaves it out.
+        await make_thread(db_session, public_category, title="Live")
+        deleted = await make_thread(db_session, public_category, title="Deleted")
+        deleted.deleted = True
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/forum/categories/manage", headers=_auth(category_manager_token)
+        )
+        category = response.json()["categories"][0]
+        assert category["thread_count"] == 1
+        assert category["deleted_thread_count"] == 1
+        assert category["view_perm"] == public_category.view_perm
+
+
 class TestCreateCategory:
     """POST /api/v1/forum/categories"""
 

@@ -70,8 +70,8 @@ class ForumCategoryUpdate(BaseModel):
         return v.strip() if isinstance(v, str) else v
 
 
-class ForumCategoryResponse(BaseModel):
-    """Category with stats and caller capabilities."""
+class ForumCategorySettings(BaseModel):
+    """A category's own fields, shared by every category response."""
 
     category_id: int
     title: str
@@ -80,6 +80,11 @@ class ForumCategoryResponse(BaseModel):
     view_perm: str | None = None
     thread_create_perm: str | None = None
     reply_perm: str | None = None
+
+
+class ForumCategoryResponse(ForumCategorySettings):
+    """Category with stats and caller capabilities."""
+
     thread_count: int = 0
     post_count: int = 0
     last_post_at: UTCDatetimeOptional = None
@@ -92,6 +97,19 @@ class ForumCategoryResponse(BaseModel):
 
 class ForumCategoryListResponse(BaseModel):
     categories: list[ForumCategoryResponse]
+
+
+class ForumCategoryManageResponse(ForumCategorySettings):
+    """A category on the category admin page (FORUM_CATEGORY_MANAGE)."""
+
+    thread_count: int = 0
+    # Soft-deleted threads, which thread_count leaves out: they still block
+    # deleting the category.
+    deleted_thread_count: int = 0
+
+
+class ForumCategoryManageListResponse(BaseModel):
+    categories: list[ForumCategoryManageResponse]
 
 
 # ===== Threads =====
@@ -195,6 +213,9 @@ class ForumPostResponse(BaseModel):
     last_updated: UTCDatetimeOptional = None
     last_updated_user_id: int | None = None
     user: UserSummary
+    # Who made the last edit, so a moderator's edit reads differently from the
+    # author's own. None if never edited, or if the editor's account is gone.
+    last_updated_user: UserSummary | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

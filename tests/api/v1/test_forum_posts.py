@@ -251,6 +251,7 @@ class TestUpdatePost:
         assert data["update_count"] == 1
         assert data["last_updated"] is not None
         assert data["last_updated_user_id"] == 3
+        assert data["last_updated_user"]["user_id"] == 3
 
     @pytest.mark.parametrize("field", ["post_text", "deleted"])
     async def test_explicit_null_422(
@@ -286,6 +287,26 @@ class TestUpdatePost:
         )
         assert response.status_code == 200
         assert response.json()["last_updated_user_id"] == 2
+        assert response.json()["last_updated_user"]["user_id"] == 2
+
+    async def test_thread_names_each_posts_editor(
+        self, client: AsyncClient, public_thread, user_token, staff_token
+    ):
+        """The thread page shows who edited a post, so a moderator's edit reads
+        differently from the author's own."""
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        await client.patch(
+            f"/api/v1/forum/posts/{post['post_id']}",
+            json={"post_text": "moderated"},
+            headers=_auth(staff_token),
+        )
+
+        response = await client.get(f"/api/v1/forum/threads/{public_thread.thread_id}")
+        posts = {p["post_id"]: p for p in response.json()["posts"]}
+        assert posts[post["post_id"]]["last_updated_user"]["user_id"] == 2
+        opening = response.json()["posts"][0]
+        assert opening["update_count"] == 0
+        assert opening["last_updated_user"] is None
 
     async def test_deleted_post_edit_400(
         self, client: AsyncClient, public_thread, user_token, staff_token
