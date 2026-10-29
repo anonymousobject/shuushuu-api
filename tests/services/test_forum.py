@@ -110,3 +110,21 @@ class TestUpsertThreadRead:
         )
         row = result.scalars().first()
         assert row.last_read_at.day == 2
+
+    async def test_older_mark_does_not_move_read_position_backwards(self, db_session: AsyncSession):
+        thread = await _make_thread_with_posts(db_session)
+        thread_id = thread.thread_id
+        older = datetime(2026, 7, 1, tzinfo=UTC)
+        newer = datetime(2026, 7, 2, tzinfo=UTC)
+
+        await upsert_thread_read(db_session, 1, thread_id, newer)
+        await upsert_thread_read(db_session, 1, thread_id, older)
+        await db_session.commit()
+        db_session.expire_all()
+
+        result = await db_session.execute(
+            select(ForumThreadReads).where(
+                ForumThreadReads.user_id == 1, ForumThreadReads.thread_id == thread_id
+            )
+        )
+        assert result.scalars().one().last_read_at.day == 2

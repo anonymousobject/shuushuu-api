@@ -489,9 +489,10 @@ async def get_thread(
         user_ids.add(thread.last_post_user_id)
     summaries = await build_user_summaries(db, user_ids)
 
-    # Read up to the newest post this request saw, on the DB's clock (post dates
-    # are clock_timestamp()). Stamping the API host's "now" instead would mark a
-    # reply read if that clock runs ahead, or if the reply committed mid-request.
+    # Mark the thread read up to its newest post as loaded by this request (whatever
+    # page was fetched), on the DB's clock (post dates are clock_timestamp()). Stamping
+    # the API host's "now" instead would mark a reply read if that clock runs ahead,
+    # or if the reply committed mid-request.
     if (
         current_user is not None
         and current_user.user_id is not None

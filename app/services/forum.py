@@ -53,11 +53,17 @@ async def recompute_thread_stats(db: AsyncSession, thread: ForumThreads) -> None
 async def upsert_thread_read(
     db: AsyncSession, user_id: int, thread_id: int, read_at: datetime
 ) -> None:
-    """Record that user has seen the thread as of read_at. Caller commits."""
+    """Record that user has seen the thread as of read_at. Caller commits.
+
+    The mark never moves backwards: a slower request carrying an older read_at
+    must not overwrite a newer one."""
     stmt = pg_insert(ForumThreadReads).values(
         user_id=user_id, thread_id=thread_id, last_read_at=read_at
     )
     stmt = stmt.on_conflict_do_update(
-        index_elements=["user_id", "thread_id"], set_={"last_read_at": stmt.excluded.last_read_at}
+        index_elements=["user_id", "thread_id"],
+        set_={
+            "last_read_at": func.greatest(ForumThreadReads.last_read_at, stmt.excluded.last_read_at)
+        },
     )
     await db.execute(stmt)
