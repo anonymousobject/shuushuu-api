@@ -122,8 +122,9 @@ class ForumPosts(SQLModel, table=True):
     user_id: int
     post_text: str = Field(default="", sa_column=Column(Text, nullable=False))
     # clock_timestamp(), not CURRENT_TIMESTAMP: Postgres freezes the latter at
-    # transaction start, and unread tracking orders post.date against the
-    # reader's wall-clock last_read_at.
+    # transaction start, so a reply that waited on the thread row lock could be
+    # dated before the reply it waited behind, and a reader already marked read
+    # up to that one would never see it as unread.
     date: datetime = Field(
         sa_column=Column(UtcDateTime, nullable=False, server_default=text("clock_timestamp()"))
     )
