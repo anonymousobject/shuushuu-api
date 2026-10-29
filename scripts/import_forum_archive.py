@@ -86,14 +86,14 @@ async def _build_resolution(
         await phpbb.dispose()
         await legacy.dispose()
 
-    rows = await target.execute(text("SELECT user_id, LOWER(email) FROM users"))
+    rows = await target.execute(text("SELECT user_id, username, LOWER(email) FROM users"))
     target_user_ids: set[int] = set()
-    target_email_to_id: dict[str, int] = {}
-    for uid, email in rows:
+    target_accounts_by_email: dict[str, list[tuple[int, str]]] = {}
+    for uid, username, email in rows:
         target_user_ids.add(int(uid))
         if email:
-            target_email_to_id[email.strip()] = int(uid)
-    return resolve_posters(posters, forum_id_map, target_user_ids, target_email_to_id)
+            target_accounts_by_email.setdefault(email.strip(), []).append((int(uid), username))
+    return resolve_posters(posters, forum_id_map, target_user_ids, target_accounts_by_email)
 
 
 async def _post_attachment_links(

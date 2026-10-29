@@ -19,7 +19,6 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 <!-- exceptions:start -->
 | Plan | State | Notes |
 | --- | --- | --- |
-| [forum API](2026-Q3/2026-07-06-forum-api-impl.md) | not implemented | No forum router, models, or schemas exist. Spec lives on the frontend repo's unmerged `feat/forum` branch. |
 <!-- exceptions:end -->
 
 
