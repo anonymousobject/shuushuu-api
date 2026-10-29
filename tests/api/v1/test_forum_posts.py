@@ -252,6 +252,18 @@ class TestUpdatePost:
         assert data["last_updated"] is not None
         assert data["last_updated_user_id"] == 3
 
+    @pytest.mark.parametrize("field", ["post_text", "deleted"])
+    async def test_explicit_null_422(
+        self, client: AsyncClient, public_thread, user_token, staff_token, field
+    ):
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        response = await client.patch(
+            f"/api/v1/forum/posts/{post['post_id']}",
+            json={field: None},
+            headers=_auth(staff_token),
+        )
+        assert response.status_code == 422
+
     async def test_non_owner_cannot_edit(
         self, client: AsyncClient, public_thread, user_token, author_token
     ):

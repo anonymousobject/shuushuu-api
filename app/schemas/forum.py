@@ -17,6 +17,14 @@ def _validate_access_perm(v: str | None) -> str | None:
     return v
 
 
+def _reject_null(v: object) -> object:
+    """Update schemas default fields to None so omitted means unchanged, but the routes
+    apply exclude_unset dumps: an explicit null would be written to a NOT NULL column."""
+    if v is None:
+        raise ValueError("must not be null")
+    return v
+
+
 # ===== Categories =====
 
 
@@ -54,6 +62,7 @@ class ForumCategoryUpdate(BaseModel):
     _check_perms = field_validator("view_perm", "thread_create_perm", "reply_perm")(
         _validate_access_perm
     )
+    _not_null = field_validator("title", "sort_order", mode="before")(_reject_null)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -111,6 +120,10 @@ class ForumThreadUpdate(BaseModel):
     category_id: int | None = None
     deleted: bool | None = None
 
+    _not_null = field_validator(
+        "title", "pinned", "locked", "category_id", "deleted", mode="before"
+    )(_reject_null)
+
     @field_validator("title", mode="before")
     @classmethod
     def strip_title(cls, v: object) -> object:
@@ -159,6 +172,8 @@ class ForumPostUpdate(BaseModel):
 
     post_text: str | None = Field(default=None, min_length=1)
     deleted: bool | None = None
+
+    _not_null = field_validator("post_text", "deleted", mode="before")(_reject_null)
 
     @field_validator("post_text", mode="before")
     @classmethod

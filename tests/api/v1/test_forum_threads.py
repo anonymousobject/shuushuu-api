@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -375,6 +376,15 @@ class TestUpdateThread:
         )
         assert mod_resp.status_code == 200
         assert mod_resp.json()["title"] == "Mod rename"
+
+    @pytest.mark.parametrize("field", ["title", "pinned", "locked", "category_id", "deleted"])
+    async def test_explicit_null_422(self, client: AsyncClient, public_thread, staff_token, field):
+        response = await client.patch(
+            f"/api/v1/forum/threads/{public_thread.thread_id}",
+            json={field: None},
+            headers=_auth(staff_token),
+        )
+        assert response.status_code == 422
 
     async def test_moderator_moves_thread(
         self, client: AsyncClient, public_thread, announce_category, staff_token
