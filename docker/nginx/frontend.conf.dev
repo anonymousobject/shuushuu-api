@@ -83,6 +83,43 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    # Forum-archive attachments (imported phpBB forum) - dev serves from local FS;
+    # test/prod serve these from R2 via the CDN instead.
+    location /images/forum-archive/ {
+        alias ${STORAGE_PATH}/forum-archive/;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # --- Legacy URL redirects (forum URLs feature) ---
+    location = /image.php {
+        if ($arg_image_id) { return 301 /images/$arg_image_id; }
+        return 404;
+    }
+    location ~ "^/profile/([0-9]+)/?$" { return 301 /users/$1; }
+    location = /profile.php {
+        if ($arg_user_id) { return 301 /users/$arg_user_id; }
+        return 404;
+    }
+    location = /forums/viewforum.php {
+        rewrite ^ /api/v1/forum/legacy/viewforum break;
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location = /forums/viewtopic.php {
+        rewrite ^ /api/v1/forum/legacy/viewtopic break;
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location ~ "^/forum/posts/[0-9]+/?$" {
+        rewrite "^/forum/posts/([0-9]+)/?$" /api/v1/forum/posts/$1/redirect break;
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
     # Frontend - proxy to Vite dev server running on host (including SvelteKit routes)
     # Port is substituted at container start (defaults to 5173) so a host running
     # a second instance can move the dev server off the default — set

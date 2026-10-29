@@ -7,11 +7,14 @@ selecting Users directly. image_uploader_load() composes it with a
 column-restricted load for the common case of an image's uploader summary.
 """
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Load, load_only, selectinload
 
 from app.models.image import Images
 from app.models.permissions import UserGroups
 from app.models.user import Users
+from app.schemas.common import UserSummary
 
 # Canonical eager-load for a user's groups, so the User.groups property (and
 # UserSummary.groups) resolve without a lazy load. Single source of truth for
@@ -44,3 +47,24 @@ def image_uploader_load() -> Load:
         ),
         *USER_WITH_GROUPS_OPTIONS,
     )
+
+
+async def build_user_summaries(db: AsyncSession, user_ids: set[int]) -> dict[int, UserSummary]:
+    """Batch-fetch Users with groups and build UserSummary objects by user_id."""
+    if not user_ids:
+        return {}
+    result = await db.execute(
+        select(Users).options(*USER_WITH_GROUPS_OPTIONS).where(Users.user_id.in_(user_ids))  # type: ignore[union-attr]
+    )
+    users = result.scalars().all()
+    return {
+        user.id: UserSummary(
+            user_id=user.id,
+            username=user.username,
+            avatar=user.avatar,
+            avatar_in_r2=user.avatar_in_r2,
+            user_title=user.user_title,
+            groups=user.groups,
+        )
+        for user in users
+    }
