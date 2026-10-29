@@ -854,19 +854,58 @@ async def legacy_viewforum(
     )
 
 
+async def _post_location(db: AsyncSession, perms: set[str], post: ForumPosts) -> RedirectResponse:
+    """301 to a post's thread, page, and anchor. Page math matches get_thread's
+    pagination: posts ordered by post_id, FORUM_POSTS_PER_PAGE per page, deleted
+    posts counted (they render inline as tombstones)."""
+    thread = await db.get(ForumThreads, post.thread_id)
+    if thread is None:  # FK guarantees a parent thread; guard defensively anyway.
+        raise HTTPException(status_code=404, detail="Post not found")
+    # 404 (identical to the missing-post 404 callers raise) if the destination
+    # category is gated and not visible to the caller, so gated post ids can't be
+    # enumerated by the differing detail string.
+    await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
+    rank = (
+        await db.execute(
+            select(func.count())
+            .select_from(ForumPosts)
+            .where(ForumPosts.thread_id == post.thread_id)  # type: ignore[arg-type]
+            .where(ForumPosts.post_id < post.post_id)  # type: ignore[arg-type, operator]
+        )
+    ).scalar() or 0
+    page = rank // FORUM_POSTS_PER_PAGE + 1
+    return RedirectResponse(
+        url=f"/forum/threads/{thread.thread_id}?page={page}#post-{post.post_id}",
+        status_code=status.HTTP_301_MOVED_PERMANENTLY,
+    )
+
+
 @router.get("/legacy/viewtopic", include_in_schema=False)
 async def legacy_viewtopic(
     db: DbDep,
     redis_client: RedisDep,  # type: ignore[type-arg]
     current_user: OptionalCurrentUser,
-    t: Annotated[int, Query(description="Legacy phpBB topic id")],
+    t: Annotated[int | None, Query(description="Legacy phpBB topic id")] = None,
+    p: Annotated[int | None, Query(description="Legacy phpBB post id")] = None,
 ) -> RedirectResponse:
-    """301 an old forums/viewtopic.php?f=…&t=… to the new thread page (f is ignored)."""
+    """301 an old forums/viewtopic.php?f=…&t=… (or ?p=…) to the new thread page (f is
+    ignored). p wins over t, as in phpBB, and lands on the page holding the post.
+    Unknown ids, or neither, are 404 (never 422: these URLs come from old links)."""
     perms = await _effective_perms(db, redis_client, current_user)
-    result = await db.execute(
+    if p is not None:
+        post_result = await db.execute(
+            select(ForumPosts).where(ForumPosts.legacy_post_id == p)  # type: ignore[arg-type]
+        )
+        post = post_result.scalars().first()
+        if post is None:
+            raise HTTPException(status_code=404, detail="Post not found")
+        return await _post_location(db, perms, post)
+    if t is None:  # neither id: also avoids matching every NULL legacy_topic_id
+        raise HTTPException(status_code=404, detail="Topic not found")
+    thread_result = await db.execute(
         select(ForumThreads).where(ForumThreads.legacy_topic_id == t)  # type: ignore[arg-type]
     )
-    thread = result.scalars().first()
+    thread = thread_result.scalars().first()
     if thread is None:
         raise HTTPException(status_code=404, detail="Topic not found")
     # 404 (identical to the missing-topic 404 above) if the destination category
@@ -887,30 +926,9 @@ async def post_permalink(
     current_user: OptionalCurrentUser,
 ) -> RedirectResponse:
     """301 a stable /forum/posts/{post_id} permalink to the post's thread, page,
-    and anchor. Page math matches get_thread's pagination: posts ordered by
-    post_id, FORUM_POSTS_PER_PAGE per page, deleted posts counted (they render
-    inline as tombstones)."""
+    and anchor."""
     perms = await _effective_perms(db, redis_client, current_user)
     post = await db.get(ForumPosts, post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
-    thread = await db.get(ForumThreads, post.thread_id)
-    if thread is None:  # FK guarantees a parent thread; guard defensively anyway.
-        raise HTTPException(status_code=404, detail="Post not found")
-    # 404 (identical to the missing-post 404 above) if the destination category
-    # is gated and not visible to the caller, so gated post ids can't be
-    # enumerated by the differing detail string.
-    await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
-    rank = (
-        await db.execute(
-            select(func.count())
-            .select_from(ForumPosts)
-            .where(ForumPosts.thread_id == post.thread_id)  # type: ignore[arg-type]
-            .where(ForumPosts.post_id < post_id)  # type: ignore[arg-type, operator]
-        )
-    ).scalar() or 0
-    page = rank // FORUM_POSTS_PER_PAGE + 1
-    return RedirectResponse(
-        url=f"/forum/threads/{thread.thread_id}?page={page}#post-{post_id}",
-        status_code=status.HTTP_301_MOVED_PERMANENTLY,
-    )
+    return await _post_location(db, perms, post)

@@ -4,6 +4,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.api.v1.conftest import make_thread
+from tests.api.v1.test_forum_permalink import _add_reply, _opening_post
 
 
 def _auth(token: str) -> dict:
@@ -88,5 +89,52 @@ class TestViewtopicRedirect:
         await db_session.commit()
         missing_resp = await client.get("/api/v1/forum/legacy/viewtopic?t=999999")
         gated_resp = await client.get("/api/v1/forum/legacy/viewtopic?t=4242")
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()
+
+    async def test_post_id_alone_redirects_to_post_page(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread
+    ):
+        # phpBB's standard post link is viewtopic.php?p=N#pN, with no t.
+        replies = [await _add_reply(db_session, public_thread, f"r{i}") for i in range(20)]
+        replies[19].legacy_post_id = 777  # 21st post overall -> page 2
+        await db_session.commit()
+        r = await client.get("/api/v1/forum/legacy/viewtopic?p=777")
+        assert r.status_code == 301
+        assert r.headers["location"] == (
+            f"/forum/threads/{public_thread.thread_id}?page=2#post-{replies[19].post_id}"
+        )
+
+    async def test_post_id_takes_precedence_over_topic_id(
+        self, client: AsyncClient, db_session: AsyncSession, public_category, public_thread
+    ):
+        other = await make_thread(db_session, public_category, title="Other")
+        other.legacy_topic_id = 9
+        opening = await _opening_post(db_session, public_thread)
+        opening.legacy_post_id = 10
+        await db_session.commit()
+        r = await client.get("/api/v1/forum/legacy/viewtopic?t=9&p=10")
+        assert r.status_code == 301
+        assert r.headers["location"] == (
+            f"/forum/threads/{public_thread.thread_id}?page=1#post-{opening.post_id}"
+        )
+
+    async def test_unknown_post_404(self, client: AsyncClient):
+        r = await client.get("/api/v1/forum/legacy/viewtopic?p=999999")
+        assert r.status_code == 404
+
+    async def test_neither_topic_nor_post_404(self, client: AsyncClient):
+        r = await client.get("/api/v1/forum/legacy/viewtopic")
+        assert r.status_code == 404
+
+    async def test_missing_and_gated_post_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category
+    ):
+        thread = await make_thread(db_session, staff_category, title="Secret")
+        opening = await _opening_post(db_session, thread)
+        opening.legacy_post_id = 4343
+        await db_session.commit()
+        missing_resp = await client.get("/api/v1/forum/legacy/viewtopic?p=999999")
+        gated_resp = await client.get("/api/v1/forum/legacy/viewtopic?p=4343")
         assert missing_resp.status_code == gated_resp.status_code == 404
         assert missing_resp.json() == gated_resp.json()
