@@ -57,13 +57,14 @@ def _local_path(image: Images, variant: str) -> FilePath:
     return FilePath(settings.STORAGE_PATH) / variant / f"{image.filename}.{ext}"
 
 
-async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str, Any]:
+async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str, Any]:  # noqa: C901
     """First-time sync of a newly uploaded image to R2.
 
     - Reads current image row to pick the right bucket based on status.
     - Verifies all expected variant files exist on disk; retries if any are missing.
     - Uploads every expected variant to the chosen bucket.
     - Atomically flips r2_location to PUBLIC or PRIVATE.
+    - On PUBLIC, purges the variants' CDN URLs (best-effort).
 
     No-ops when R2 is disabled or the image is already synced.
     """
@@ -151,6 +152,16 @@ async def r2_finalize_upload_job(ctx: dict[str, Any], image_id: int) -> dict[str
             )
             return {"skipped": "concurrent_update"}
 
+    # A GET for a CDN URL before its object existed (URLs are guessable from
+    # the filename) can leave R2's 404 cached at the edge. The zone's cache
+    # rule no-stores 404s; this purge covers the case where that rule changes.
+    if new_location == R2Location.PUBLIC:
+        await _purge_cdn_best_effort(
+            _cdn_urls_for(image, variants),
+            image_id=image_id,
+            failure_event="r2_cdn_purge_failed_post_finalize",
+        )
+
     logger.info(
         "r2_finalize_succeeded",
         image_id=image_id,
@@ -166,6 +177,18 @@ def _cdn_urls_for(image: Images, variants: list[str]) -> list[str]:
         key = _variant_key(image, variant)
         urls.append(f"{settings.R2_PUBLIC_CDN_URL}/{key}")
     return urls
+
+
+async def _purge_cdn_best_effort(urls: list[str], *, image_id: int, failure_event: str) -> None:
+    """Purge CDN URLs, logging a failure instead of raising.
+
+    Every caller has already committed its R2 + DB change; raising would make
+    arq retry a job whose real work is done.
+    """
+    try:
+        await purge_cache_by_urls(urls)
+    except Exception as e:
+        logger.error(failure_event, image_id=image_id, error=str(e))
 
 
 async def sync_image_status_job(  # noqa: C901, PLR0912, PLR0915
@@ -302,15 +325,11 @@ async def sync_image_status_job(  # noqa: C901, PLR0912, PLR0915
     # Include already_at_dst variants: on replay the prior run may have died
     # before purging, so redo it (purge is idempotent).
     if dst_location == R2Location.PRIVATE and effective_variants:
-        try:
-            await purge_cache_by_urls(_cdn_urls_for(image, effective_variants))
-        except Exception as e:
-            logger.error(
-                "r2_cdn_purge_failed_post_transition",
-                image_id=image_id,
-                error=str(e),
-            )
-            # Don't re-raise — the bucket move already committed.
+        await _purge_cdn_best_effort(
+            _cdn_urls_for(image, effective_variants),
+            image_id=image_id,
+            failure_event="r2_cdn_purge_failed_post_transition",
+        )
 
     logger.info(
         "r2_status_transition_completed",
@@ -361,14 +380,10 @@ async def r2_delete_image_job(
         logger.info("r2_object_deleted", image_id=image_id, bucket=bucket, key=key)
 
     if r2_location == R2Location.PUBLIC:
-        urls = [f"{settings.R2_PUBLIC_CDN_URL}/{k}" for k in keys]
-        try:
-            await purge_cache_by_urls(urls)
-        except Exception as e:
-            logger.error(
-                "r2_cdn_purge_failed_post_delete",
-                image_id=image_id,
-                error=str(e),
-            )
+        await _purge_cdn_best_effort(
+            [f"{settings.R2_PUBLIC_CDN_URL}/{k}" for k in keys],
+            image_id=image_id,
+            failure_event="r2_cdn_purge_failed_post_delete",
+        )
 
     return {"deleted_keys": keys}

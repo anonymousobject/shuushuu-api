@@ -24,6 +24,14 @@ def _mock_session_cm(db_session):
     return mock_cm
 
 
+def _write_local_variants(storage_path):
+    """Create the fullsize + thumbs files the finalizer expects for fresh_image."""
+    (storage_path / "fullsize").mkdir()
+    (storage_path / "thumbs").mkdir()
+    (storage_path / "fullsize" / "2026-04-17-42.jpg").write_bytes(b"x")
+    (storage_path / "thumbs" / "2026-04-17-42.webp").write_bytes(b"x")
+
+
 @pytest.fixture
 async def fresh_image(db_session):
     img = Images(
@@ -51,6 +59,12 @@ class TestR2FinalizeUploadJob:
             return_value=_mock_session_cm(db_session),
         ):
             yield
+
+    @pytest.fixture(autouse=True)
+    def mock_purge(self):
+        """Stub the Cloudflare purge — prod's .env holds a live zone token."""
+        with patch("app.tasks.r2_jobs.purge_cache_by_urls", new_callable=AsyncMock) as mock:
+            yield mock
 
     async def test_uploads_two_variants_and_flips_public(
         self, fresh_image, db_session, monkeypatch, tmp_path
@@ -177,6 +191,72 @@ class TestR2FinalizeUploadJob:
         mock_r2.upload_file.assert_not_awaited()
         await db_session.refresh(fresh_image)
         assert fresh_image.r2_location == R2Location.NONE
+
+    async def test_purges_cdn_after_public_finalize(
+        self, fresh_image, monkeypatch, tmp_path, mock_purge
+    ):
+        """A GET for the CDN URL before the objects exist caches R2's 404 at
+        the edge, and nothing else would evict it once the image goes public."""
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(settings, "R2_PUBLIC_CDN_URL", "https://cdn.example.com")
+        _write_local_variants(tmp_path)
+
+        mock_r2 = AsyncMock()
+        mock_r2.object_exists = AsyncMock(return_value=False)
+        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
+            await r2_finalize_upload_job({}, image_id=fresh_image.image_id)
+
+        mock_purge.assert_awaited_once()
+        assert set(mock_purge.await_args.args[0]) == {
+            "https://cdn.example.com/fullsize/2026-04-17-42.jpg",
+            "https://cdn.example.com/thumbs/2026-04-17-42.webp",
+        }
+
+    async def test_private_finalize_does_not_purge(
+        self, fresh_image, db_session, monkeypatch, tmp_path, mock_purge
+    ):
+        """The CDN fronts only the public bucket, so a private finalize has
+        nothing at the edge to refresh."""
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+        _write_local_variants(tmp_path)
+        fresh_image.status = ImageStatus.REVIEW
+        await db_session.commit()
+
+        mock_r2 = AsyncMock()
+        mock_r2.object_exists = AsyncMock(return_value=False)
+        with patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2):
+            await r2_finalize_upload_job({}, image_id=fresh_image.image_id)
+
+        mock_purge.assert_not_awaited()
+
+    async def test_purge_failure_does_not_undo_finalize(
+        self, fresh_image, db_session, monkeypatch, tmp_path, mock_purge, caplog
+    ):
+        """The objects are uploaded and the flip committed; a purge failure is
+        logged, not raised, so arq doesn't retry a finalize that already won."""
+        import logging
+
+        monkeypatch.setattr(settings, "R2_ENABLED", True)
+        monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
+        _write_local_variants(tmp_path)
+        mock_purge.side_effect = RuntimeError("cloudflare down")
+
+        mock_r2 = AsyncMock()
+        mock_r2.object_exists = AsyncMock(return_value=False)
+        with (
+            patch("app.tasks.r2_jobs.get_r2_storage", return_value=mock_r2),
+            caplog.at_level(logging.ERROR),
+        ):
+            result = await r2_finalize_upload_job({}, image_id=fresh_image.image_id)
+
+        assert result == {"r2_location": int(R2Location.PUBLIC)}
+        await db_session.refresh(fresh_image)
+        assert fresh_image.r2_location == R2Location.PUBLIC
+        log_messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "r2_cdn_purge_failed_post_finalize" in log_messages
+        assert "cloudflare down" in log_messages
 
     async def test_no_op_when_r2_disabled(self, fresh_image, monkeypatch):
         monkeypatch.setattr(settings, "R2_ENABLED", False)

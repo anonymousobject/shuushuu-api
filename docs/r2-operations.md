@@ -22,10 +22,13 @@ This file is the short reference for operators.
 Cloudflare credentials are **optional** for R2 storage itself.
 `purge_cache_by_urls` raises when they're missing, so:
 
-- **Automatic purges** (post-transition and post-delete in
-  `sync_image_status_job` / `r2_delete_image_job`) catch and log the
-  raise as `r2_cdn_purge_failed_*` — best-effort. Objects will sit in
-  Cloudflare edge cache until they expire naturally.
+- **Automatic purges** (post-finalize, post-transition and post-delete in
+  `r2_finalize_upload_job` / `sync_image_status_job` /
+  `r2_delete_image_job`) catch and log the raise as
+  `r2_cdn_purge_failed_*` — best-effort. Objects will sit in Cloudflare
+  edge cache until they expire naturally. The post-finalize purge runs on
+  every public upload, so an environment with R2 on and no Cloudflare
+  credentials logs one `r2_cdn_purge_failed_post_finalize` per upload.
 - **Manual `r2_sync.py purge-cache`** does **not** catch: running it
   without `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID` set will error.
 
