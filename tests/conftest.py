@@ -87,6 +87,7 @@ def pytest_configure(config):
         "needs_commit: marks tests that require real database commits. "
         "These tests use truncate-based cleanup instead of transaction rollback.",
     )
+    config.addinivalue_line("markers", "forum_import: import tests needing the restored phpBB DBs")
 
 
 def pytest_collection_modifyitems(config, items):

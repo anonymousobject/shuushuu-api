@@ -2,7 +2,9 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.forum import ForumPosts
@@ -24,6 +26,16 @@ async def _add_reply(db_session, thread, user_id=2, text="A reply") -> ForumPost
     thread.last_post_user_id = user_id
     await db_session.commit()
     return post
+
+
+async def _shift_thread_clock(db_session, thread, offset: timedelta) -> None:
+    """Date the opening post and last_post_at at now + offset, as a DB clock that
+    is ahead/behind the API's would (last_post_at tracks the newest post's date)."""
+    opening = (
+        await db_session.execute(select(ForumPosts).where(ForumPosts.thread_id == thread.thread_id))
+    ).scalar_one()
+    opening.date = thread.last_post_at = datetime.now(UTC) + offset
+    await db_session.commit()
 
 
 class TestListThreads:
@@ -66,6 +78,29 @@ class TestListThreads:
         assert titles[0] == "Oldest"  # pinned wins over recency
         assert titles[1] == "Newest"
 
+    async def test_tied_activity_ordered_by_thread_id_desc_across_pages(
+        self, client: AsyncClient, db_session: AsyncSession, public_category
+    ):
+        # Imported phpBB dates have 1-second resolution, so last_post_at ties are real:
+        # without a final tiebreaker OFFSET pages can repeat or drop rows.
+        tied_at = datetime(2020, 1, 1, tzinfo=UTC)
+        threads = [await make_thread(db_session, public_category, title=f"T{i}") for i in range(3)]
+        # Touch the rows middle, first, last so heap order is neither id order nor its reverse.
+        for thread in (threads[1], threads[0], threads[2]):
+            thread.last_post_at = tied_at
+            await db_session.commit()
+        expected = [t.thread_id for t in sorted(threads, key=lambda t: -t.thread_id)]
+
+        url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
+        full = (await client.get(url)).json()["threads"]
+        assert [t["thread_id"] for t in full] == expected
+
+        paged = []
+        for page in (1, 2, 3):
+            body = (await client.get(url, params={"page": page, "per_page": 1})).json()
+            paged += [t["thread_id"] for t in body["threads"]]
+        assert paged == expected
+
     async def test_excludes_deleted(
         self, client: AsyncClient, db_session: AsyncSession, public_category, public_thread
     ):
@@ -102,6 +137,32 @@ class TestListThreads:
         listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
         assert listed["unread"] is True
 
+    async def test_reading_an_earlier_page_leaves_later_replies_unread(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_category,
+        public_thread,
+        user_token,
+    ):
+        await _add_reply(db_session, public_thread, user_id=2)
+        await _add_reply(db_session, public_thread, user_id=2)
+        url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
+        thread_url = f"/api/v1/forum/threads/{public_thread.thread_id}"
+
+        await client.get(f"{thread_url}?page=1&per_page=2", headers=_auth(user_token))
+        listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
+        assert listed["unread"] is True
+
+        await client.get(f"{thread_url}?page=2&per_page=2", headers=_auth(user_token))
+        listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
+        assert listed["unread"] is False
+
+        # Re-viewing an earlier page never moves the mark back.
+        await client.get(f"{thread_url}?page=1&per_page=2", headers=_auth(user_token))
+        listed = (await client.get(url, headers=_auth(user_token))).json()["threads"][0]
+        assert listed["unread"] is False
+
     async def test_reading_clears_unread_when_db_clock_runs_ahead(
         self,
         client: AsyncClient,
@@ -112,8 +173,7 @@ class TestListThreads:
     ):
         """Post dates come from the DB host's clock, which can run ahead of the
         API host's; reading the thread must still mark it read."""
-        public_thread.last_post_at = datetime.now(UTC) + timedelta(minutes=5)
-        await db_session.commit()
+        await _shift_thread_clock(db_session, public_thread, timedelta(minutes=5))
         url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
         await client.get(
             f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(user_token)
@@ -132,8 +192,7 @@ class TestListThreads:
         """A reply dated after the newest post the reader saw must stay unread,
         even when it predates the API host's clock: the DB clock runs behind, or
         the reply committed while the thread was being read."""
-        public_thread.last_post_at = datetime.now(UTC) - timedelta(minutes=10)
-        await db_session.commit()
+        await _shift_thread_clock(db_session, public_thread, -timedelta(minutes=10))
         url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
         await client.get(
             f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(user_token)
@@ -230,6 +289,34 @@ class TestGetThread:
         )
         assert response.status_code == 404
 
+    async def test_missing_and_gated_thread_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category
+    ):
+        # An anonymous caller must not distinguish a gated-but-existing thread
+        # from a missing one: both 404s must be byte-identical (no existence
+        # oracle for enumerating gated thread ids).
+        gated = await make_thread(db_session, staff_category, title="Secret")
+        missing_resp = await client.get("/api/v1/forum/threads/999999")
+        gated_resp = await client.get(f"/api/v1/forum/threads/{gated.thread_id}")
+        assert missing_resp.status_code == gated_resp.status_code == 404
+        assert missing_resp.json() == gated_resp.json()
+
+    async def test_missing_and_gated_thread_mutation_return_identical_404(
+        self, client: AsyncClient, db_session: AsyncSession, staff_category, user_token
+    ):
+        # The same non-existence-oracle guarantee must hold on the authenticated
+        # mutation endpoints: PATCH/DELETE of a gated-but-existing thread must be
+        # byte-identical to that of a missing thread (no enumeration of gated ids).
+        gated = await make_thread(db_session, staff_category, title="Secret")
+        for method, kwargs in (("patch", {"json": {"title": "x"}}), ("delete", {})):
+            req = getattr(client, method)
+            missing = await req("/api/v1/forum/threads/999999", headers=_auth(user_token), **kwargs)
+            gated_resp = await req(
+                f"/api/v1/forum/threads/{gated.thread_id}", headers=_auth(user_token), **kwargs
+            )
+            assert missing.status_code == gated_resp.status_code == 404
+            assert missing.json() == gated_resp.json()
+
     async def test_deleted_thread_404_for_users_200_for_mods(
         self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token, staff_token
     ):
@@ -319,17 +406,43 @@ class TestUpdateThread:
         assert data["pinned"] is True
         assert data["locked"] is True
 
-    async def test_locked_thread_title_still_editable(
-        self, client: AsyncClient, db_session: AsyncSession, public_thread, author_token
+    async def test_locked_thread_blocks_author_title_edit_but_not_moderator(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_thread,
+        author_token,
+        staff_token,
     ):
+        # A lock must block the author's title rename too — otherwise the thread
+        # author could still mutate a locked thread. Moderators may still rename.
         public_thread.locked = True
         await db_session.commit()
-        response = await client.patch(
+
+        author_resp = await client.patch(
             f"/api/v1/forum/threads/{public_thread.thread_id}",
-            json={"title": "Still editable"},
+            json={"title": "Sneaky rename"},
             headers=_auth(author_token),
         )
-        assert response.status_code == 200
+        assert author_resp.status_code == 403
+        assert "locked" in author_resp.json()["detail"].lower()
+
+        mod_resp = await client.patch(
+            f"/api/v1/forum/threads/{public_thread.thread_id}",
+            json={"title": "Mod rename"},
+            headers=_auth(staff_token),
+        )
+        assert mod_resp.status_code == 200
+        assert mod_resp.json()["title"] == "Mod rename"
+
+    @pytest.mark.parametrize("field", ["title", "pinned", "locked", "category_id", "deleted"])
+    async def test_explicit_null_422(self, client: AsyncClient, public_thread, staff_token, field):
+        response = await client.patch(
+            f"/api/v1/forum/threads/{public_thread.thread_id}",
+            json={field: None},
+            headers=_auth(staff_token),
+        )
+        assert response.status_code == 422
 
     async def test_moderator_moves_thread(
         self, client: AsyncClient, public_thread, announce_category, staff_token
@@ -387,6 +500,27 @@ class TestDeleteThread:
             f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(author_token)
         )
         assert response.status_code == 403
+
+    async def test_author_cannot_delete_locked_thread(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, author_token
+    ):
+        public_thread.locked = True
+        await db_session.commit()
+        response = await client.delete(
+            f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(author_token)
+        )
+        assert response.status_code == 403
+        assert "locked" in response.json()["detail"].lower()
+
+    async def test_moderator_deletes_locked_thread(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, staff_token
+    ):
+        public_thread.locked = True
+        await db_session.commit()
+        response = await client.delete(
+            f"/api/v1/forum/threads/{public_thread.thread_id}", headers=_auth(staff_token)
+        )
+        assert response.status_code == 204
 
     async def test_moderator_deletes_thread_with_replies(
         self, client: AsyncClient, db_session: AsyncSession, public_thread, staff_token

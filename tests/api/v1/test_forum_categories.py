@@ -1,5 +1,6 @@
 """Tests for forum category endpoints."""
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -159,6 +160,28 @@ class TestUpdateCategory:
         assert data["title"] == "Renamed"
         assert data["view_perm"] == "forum_access_staff"
         assert data["description"] == "General site talk"  # unchanged
+
+    @pytest.mark.parametrize("field", ["title", "sort_order"])
+    async def test_explicit_null_on_required_field_422(
+        self, client: AsyncClient, public_category, category_manager_token, field
+    ):
+        response = await client.patch(
+            f"/api/v1/forum/categories/{public_category.category_id}",
+            json={field: None},
+            headers=_auth(category_manager_token),
+        )
+        assert response.status_code == 422
+
+    async def test_explicit_null_clears_nullable_description(
+        self, client: AsyncClient, public_category, category_manager_token
+    ):
+        response = await client.patch(
+            f"/api/v1/forum/categories/{public_category.category_id}",
+            json={"description": None},
+            headers=_auth(category_manager_token),
+        )
+        assert response.status_code == 200
+        assert response.json()["description"] is None
 
     async def test_not_found(self, client: AsyncClient, category_manager_token):
         response = await client.patch(

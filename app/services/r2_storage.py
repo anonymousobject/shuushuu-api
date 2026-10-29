@@ -89,20 +89,33 @@ class R2Storage:
         async with self._acquire_client() as s3:
             await s3.upload_file(str(path), bucket, key)
 
-    async def upload_bytes(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
+    async def upload_bytes(
+        self,
+        bucket: str,
+        key: str,
+        body: bytes,
+        content_type: str,
+        content_disposition: str | None = None,
+    ) -> None:
         """Upload an in-memory bytes payload with an explicit Content-Type.
 
         Content-Type is mandatory because R2 stores `application/octet-stream`
         when none is set, which can break inline image rendering under strict
-        CSP / X-Content-Type-Options: nosniff.
+        CSP / X-Content-Type-Options: nosniff. An optional Content-Disposition
+        controls the download filename / inline-vs-attachment behavior.
 
         Refuses an empty body for the same reason `upload_file` refuses an
         empty file: avatars and banners are read from local disk too.
         """
         if not body:
             raise ValueError(f"Refusing to upload empty body to {bucket}/{key}")
+        extra = {}
+        if content_disposition is not None:
+            extra["ContentDisposition"] = content_disposition
         async with self._acquire_client() as s3:
-            await s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType=content_type)
+            await s3.put_object(
+                Bucket=bucket, Key=key, Body=body, ContentType=content_type, **extra
+            )
 
     async def copy_object(self, src_bucket: str, dst_bucket: str, key: str) -> None:
         """Copy an object between buckets, preserving the key."""
@@ -161,7 +174,14 @@ class DummyR2Storage:
     async def upload_file(self, bucket: str, key: str, path: Path) -> None:
         raise RuntimeError(self._ERR)
 
-    async def upload_bytes(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
+    async def upload_bytes(
+        self,
+        bucket: str,
+        key: str,
+        body: bytes,
+        content_type: str,
+        content_disposition: str | None = None,
+    ) -> None:
         raise RuntimeError(self._ERR)
 
     async def copy_object(self, src_bucket: str, dst_bucket: str, key: str) -> None:
