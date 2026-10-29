@@ -359,6 +359,7 @@ async def list_threads(
         base.order_by(
             ForumThreads.pinned.desc(),  # type: ignore[attr-defined]
             ForumThreads.last_post_at.desc(),  # type: ignore[union-attr]
+            ForumThreads.thread_id.desc(),  # type: ignore[union-attr]
         )
         .offset(pagination.offset)
         .limit(pagination.per_page)

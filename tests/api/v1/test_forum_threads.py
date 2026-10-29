@@ -67,6 +67,29 @@ class TestListThreads:
         assert titles[0] == "Oldest"  # pinned wins over recency
         assert titles[1] == "Newest"
 
+    async def test_tied_activity_ordered_by_thread_id_desc_across_pages(
+        self, client: AsyncClient, db_session: AsyncSession, public_category
+    ):
+        # Imported phpBB dates have 1-second resolution, so last_post_at ties are real:
+        # without a final tiebreaker OFFSET pages can repeat or drop rows.
+        tied_at = datetime(2020, 1, 1, tzinfo=UTC)
+        threads = [await make_thread(db_session, public_category, title=f"T{i}") for i in range(3)]
+        # Touch the rows middle, first, last so heap order is neither id order nor its reverse.
+        for thread in (threads[1], threads[0], threads[2]):
+            thread.last_post_at = tied_at
+            await db_session.commit()
+        expected = [t.thread_id for t in sorted(threads, key=lambda t: -t.thread_id)]
+
+        url = f"/api/v1/forum/categories/{public_category.category_id}/threads"
+        full = (await client.get(url)).json()["threads"]
+        assert [t["thread_id"] for t in full] == expected
+
+        paged = []
+        for page in (1, 2, 3):
+            body = (await client.get(url, params={"page": page, "per_page": 1})).json()
+            paged += [t["thread_id"] for t in body["threads"]]
+        assert paged == expected
+
     async def test_excludes_deleted(
         self, client: AsyncClient, db_session: AsyncSession, public_category, public_thread
     ):
