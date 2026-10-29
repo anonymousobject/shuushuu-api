@@ -24,7 +24,7 @@ since the point is read *timing*, not true parallel execution:
 import asyncio
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -115,7 +115,11 @@ class TestRecomputeThreadStatsConcurrency:
 
 
 async def _wait_until_a_session_blocks_on_a_lock(engine: AsyncEngine) -> None:
-    """Poll pg_stat_activity until some backend waits on a row lock."""
+    """Poll pg_stat_activity until some backend waits on a row lock.
+
+    Each poll ends its transaction: Postgres snapshots the list of backends at a
+    transaction's first read of pg_stat_activity, so a request whose connection
+    opens after the first poll would never appear."""
     async with engine.connect() as connection:
         for _ in range(100):
             result = await connection.execute(
@@ -126,6 +130,7 @@ async def _wait_until_a_session_blocks_on_a_lock(engine: AsyncEngine) -> None:
             )
             if result.scalar_one() > 0:
                 return
+            await connection.rollback()
             await asyncio.sleep(0.05)
     raise AssertionError("request never blocked on the thread row lock")
 
@@ -156,6 +161,7 @@ class TestAuthorDeleteVsConcurrentReply:
 
         session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         replier = session_maker()
+        delete_task: asyncio.Task[Response] | None = None
         try:
             result = await replier.execute(
                 select(ForumThreads).where(ForumThreads.thread_id == thread_id).with_for_update()
@@ -176,6 +182,10 @@ class TestAuthorDeleteVsConcurrentReply:
             response = await delete_task
         finally:
             await replier.close()
+            if delete_task is not None:
+                # Closing the replier released the lock: let a request still waiting
+                # finish before teardown reuses the shared session's connection.
+                await asyncio.wait({delete_task})
 
         assert response.status_code == 403
         async with session_maker() as fresh:
