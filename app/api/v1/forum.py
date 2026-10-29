@@ -858,7 +858,9 @@ async def _post_location(db: AsyncSession, perms: set[str], post: ForumPosts) ->
     pagination: posts ordered by post_id, FORUM_POSTS_PER_PAGE per page, deleted
     posts counted (they render inline as tombstones)."""
     thread = await db.get(ForumThreads, post.thread_id)
-    if thread is None:  # FK guarantees a parent thread; guard defensively anyway.
+    # FK guarantees a parent thread; guard defensively anyway. A deleted thread is
+    # a 404 to non-moderators, as in get_thread (a deleted post still resolves).
+    if thread is None or (thread.deleted and Permission.FORUM_MODERATE.value not in perms):
         raise HTTPException(status_code=404, detail="Post not found")
     # 404 (identical to the missing-post 404 callers raise) if the destination
     # category is gated and not visible to the caller, so gated post ids can't be
@@ -905,7 +907,8 @@ async def legacy_viewtopic(
         select(ForumThreads).where(ForumThreads.legacy_topic_id == t)  # type: ignore[arg-type]
     )
     thread = thread_result.scalars().first()
-    if thread is None:
+    # A deleted thread is a 404 to non-moderators, as in get_thread.
+    if thread is None or (thread.deleted and Permission.FORUM_MODERATE.value not in perms):
         raise HTTPException(status_code=404, detail="Topic not found")
     # 404 (identical to the missing-topic 404 above) if the destination category
     # is gated and not visible to the caller, so gated topic ids can't be

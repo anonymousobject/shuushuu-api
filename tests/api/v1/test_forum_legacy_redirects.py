@@ -138,3 +138,49 @@ class TestViewtopicRedirect:
         gated_resp = await client.get("/api/v1/forum/legacy/viewtopic?p=4343")
         assert missing_resp.status_code == gated_resp.status_code == 404
         assert missing_resp.json() == gated_resp.json()
+
+
+class TestViewtopicDeletedThread:
+    """A soft-deleted thread is as invisible to non-moderators as a missing one."""
+
+    async def test_topic_404_for_users_301_for_mods(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_category,
+        user_token,
+        staff_token,
+    ):
+        thread = await make_thread(db_session, public_category, title="Removed")
+        thread.legacy_topic_id = 55
+        thread.deleted = True
+        await db_session.commit()
+        missing = await client.get("/api/v1/forum/legacy/viewtopic?t=999999")
+        anon = await client.get("/api/v1/forum/legacy/viewtopic?t=55")
+        user = await client.get("/api/v1/forum/legacy/viewtopic?t=55", headers=_auth(user_token))
+        assert missing.status_code == anon.status_code == user.status_code == 404
+        assert missing.json() == anon.json() == user.json()
+        mod = await client.get("/api/v1/forum/legacy/viewtopic?t=55", headers=_auth(staff_token))
+        assert mod.status_code == 301
+
+    async def test_post_in_deleted_thread_404_for_users_301_for_mods(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        public_category,
+        user_token,
+        staff_token,
+    ):
+        thread = await make_thread(db_session, public_category, title="Removed")
+        opening = await _opening_post(db_session, thread)
+        opening.legacy_post_id = 5656
+        thread.deleted = True
+        await db_session.commit()
+        missing = await client.get(
+            "/api/v1/forum/legacy/viewtopic?p=999999", headers=_auth(user_token)
+        )
+        user = await client.get("/api/v1/forum/legacy/viewtopic?p=5656", headers=_auth(user_token))
+        assert missing.status_code == user.status_code == 404
+        assert missing.json() == user.json()
+        mod = await client.get("/api/v1/forum/legacy/viewtopic?p=5656", headers=_auth(staff_token))
+        assert mod.status_code == 301
