@@ -33,7 +33,9 @@ class TestPostPermalink:
     ):
         opening = await _opening_post(db_session, public_thread)
         r = await client.get(f"/api/v1/forum/posts/{opening.post_id}/redirect")
-        assert r.status_code == 301
+        # Temporary: the page moves if earlier posts are hard-deleted, and a
+        # browser would keep following a cached 301 to the old one
+        assert r.status_code == 302
         assert (
             r.headers["location"]
             == f"/forum/threads/{public_thread.thread_id}?page=1#post-{opening.post_id}"
@@ -63,7 +65,7 @@ class TestPostPermalink:
         reply.deleted = True
         await db_session.commit()
         r = await client.get(f"/api/v1/forum/posts/{reply.post_id}/redirect")
-        assert r.status_code == 301
+        assert r.status_code == 302
         assert f"#post-{reply.post_id}" in r.headers["location"]
 
     async def test_gated_thread_post_hidden_from_anon_404(
@@ -86,7 +88,7 @@ class TestPostPermalink:
         assert missing_resp.status_code == gated_resp.status_code == 404
         assert missing_resp.json() == gated_resp.json()
 
-    async def test_deleted_thread_post_404_for_users_301_for_mods(
+    async def test_deleted_thread_post_404_for_users_302_for_mods(
         self,
         client: AsyncClient,
         db_session: AsyncSession,
@@ -106,4 +108,4 @@ class TestPostPermalink:
         assert missing.status_code == hidden.status_code == 404
         assert missing.json() == hidden.json()
         mod = await client.get(url, headers={"Authorization": f"Bearer {staff_token}"})
-        assert mod.status_code == 301
+        assert mod.status_code == 302
