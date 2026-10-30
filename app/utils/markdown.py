@@ -56,6 +56,23 @@ def is_safe_url(url: str) -> bool:
         return False
 
 
+def _sub_innermost_first(pattern: re.Pattern[str], replacement: str, text: str) -> str:
+    """
+    Replace every match of a tempered-token tag pattern, pass after pass.
+
+    Each pass replaces the innermost tags, exposing the next level of nesting
+    to the following pass. Stops when a pass changes nothing, or after 10
+    passes so pathological nesting can't loop for long.
+    """
+    max_iterations = 10
+    for _ in range(max_iterations):
+        new_text = pattern.sub(replacement, text)
+        if new_text == text:
+            break
+        text = new_text
+    return text
+
+
 def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
     """
     Parse safe Markdown subset to HTML.
@@ -118,12 +135,13 @@ def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
         )
 
     # Process anonymous BBCode quotes: [quote]...[/quote] (no username)
-    text = re.sub(
-        r"\[quote\](.*?)\[/quote\]",
-        r"<blockquote>\1</blockquote>",
-        text,
-        flags=re.DOTALL,
+    # Same tempered token and innermost-first passes as the spoilers below, so
+    # nested quotes keep their nesting and unclosed openers stay linear
+    anonymous_quote_pattern = re.compile(
+        r"\[quote\]((?:(?!\[quote\]|\[/quote\]).)*?)\[/quote\]",
+        re.DOTALL,
     )
+    text = _sub_innermost_first(anonymous_quote_pattern, r"<blockquote>\1</blockquote>", text)
 
     # Remove any unmatched [quote] or [/quote] tags (orphaned tags)
     text = text.replace("[quote]", "")
@@ -135,12 +153,7 @@ def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
         r"\[spoiler\]((?:(?!\[spoiler\]|\[/spoiler\]).)*?)\[/spoiler\]",
         re.DOTALL,
     )
-    max_spoiler_iterations = 10
-    for _ in range(max_spoiler_iterations):
-        new_text = spoiler_pattern.sub(r'<span class="spoiler">\1</span>', text)
-        if new_text == text:
-            break
-        text = new_text
+    text = _sub_innermost_first(spoiler_pattern, r'<span class="spoiler">\1</span>', text)
 
     # Remove any unmatched [spoiler] or [/spoiler] tags
     text = text.replace("[spoiler]", "")

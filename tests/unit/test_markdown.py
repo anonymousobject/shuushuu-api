@@ -2,6 +2,8 @@
 Tests for safe Markdown parser
 """
 
+import time
+
 from app.utils.markdown import is_safe_url, parse_markdown, strip_markdown
 
 
@@ -214,6 +216,13 @@ Another line."""
         assert "<blockquote>" in result
         assert '<a href="https://example.com"' in result
 
+    def test_nested_spoilers(self):
+        result = parse_markdown("[spoiler]a [spoiler]b[/spoiler] c[/spoiler]")
+        assert result == '<span class="spoiler">a <span class="spoiler">b</span> c</span>'
+
+    def test_unclosed_spoiler_tag_is_removed(self):
+        assert parse_markdown("[spoiler]unclosed") == "unclosed"
+
     def test_nested_bold_italic_not_supported(self):
         # We don't support nested formatting like ***text***
         # This is acceptable for our use case
@@ -317,6 +326,24 @@ class TestParseMarkdownQuotes:
     def test_extra_closing_tag_after_named_quote_is_removed(self):
         result = parse_markdown('[quote="alice"]a[/quote][/quote]')
         assert result == "<blockquote><small>alice said:</small> a</blockquote>"
+
+    def test_nested_anonymous_quotes(self):
+        result = parse_markdown("[quote]outer [quote]inner[/quote] tail[/quote]")
+        assert result == "<blockquote>outer <blockquote>inner</blockquote> tail</blockquote>"
+
+
+# Linear parsing takes milliseconds on these inputs; a scan that restarts from
+# every opener takes seconds. The gap leaves room for a loaded CI runner.
+RENDER_TIME_LIMIT_SECONDS = 0.5
+
+
+class TestParseMarkdownQuoteScaling:
+    """Quote parsing stays linear in input length"""
+
+    def test_many_anonymous_quote_openers(self):
+        start = time.perf_counter()
+        parse_markdown("[quote]" * 10000)
+        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 class TestStripMarkdown:
