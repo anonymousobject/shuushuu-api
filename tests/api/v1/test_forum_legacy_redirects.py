@@ -92,18 +92,17 @@ class TestViewtopicRedirect:
         assert missing_resp.status_code == gated_resp.status_code == 404
         assert missing_resp.json() == gated_resp.json()
 
-    async def test_post_id_alone_redirects_to_post_page(
+    async def test_post_id_alone_redirects_to_post_permalink(
         self, client: AsyncClient, db_session: AsyncSession, public_thread
     ):
         # phpBB's standard post link is viewtopic.php?p=N#pN, with no t.
-        replies = [await _add_reply(db_session, public_thread, f"r{i}") for i in range(20)]
-        replies[19].legacy_post_id = 777  # 21st post overall -> page 2
+        reply = await _add_reply(db_session, public_thread, "r")
+        reply.legacy_post_id = 777
         await db_session.commit()
         r = await client.get("/api/v1/forum/legacy/viewtopic?p=777")
+        # Permanent, to the permalink: the post's page can change, its id can't
         assert r.status_code == 301
-        assert r.headers["location"] == (
-            f"/forum/threads/{public_thread.thread_id}?page=2#post-{replies[19].post_id}"
-        )
+        assert r.headers["location"] == f"/forum/posts/{reply.post_id}"
 
     async def test_post_id_takes_precedence_over_topic_id(
         self, client: AsyncClient, db_session: AsyncSession, public_category, public_thread
@@ -115,9 +114,7 @@ class TestViewtopicRedirect:
         await db_session.commit()
         r = await client.get("/api/v1/forum/legacy/viewtopic?t=9&p=10")
         assert r.status_code == 301
-        assert r.headers["location"] == (
-            f"/forum/threads/{public_thread.thread_id}?page=1#post-{opening.post_id}"
-        )
+        assert r.headers["location"] == f"/forum/posts/{opening.post_id}"
 
     async def test_unknown_post_404(self, client: AsyncClient):
         r = await client.get("/api/v1/forum/legacy/viewtopic?p=999999")

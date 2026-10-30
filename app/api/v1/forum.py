@@ -873,10 +873,10 @@ async def delete_post(
 
 # ===== Legacy phpBB URL redirects & post permalinks =====
 # Resolve retired forum URLs (and the /forum/posts/{id} permalink) to their new
-# equivalents. Permission-aware: 404 (never 301) when the destination category
-# isn't visible to the caller, so gated categories stay hidden. nginx maps the
-# legacy/permalink paths onto these endpoints; they are not part of the public
-# JSON API (include_in_schema=False).
+# equivalents. Permission-aware: 404 (never a redirect) when the destination
+# category isn't visible to the caller, so gated categories stay hidden. nginx
+# maps the legacy paths onto these endpoints, and the frontend calls the
+# permalink one; they are not part of the public JSON API (include_in_schema=False).
 
 
 @router.get("/legacy/viewforum", include_in_schema=False)
@@ -900,10 +900,8 @@ async def legacy_viewforum(
     )
 
 
-async def _post_location(db: AsyncSession, perms: set[str], post: ForumPosts) -> RedirectResponse:
-    """301 to a post's thread, page, and anchor. Page math matches get_thread's
-    pagination: posts ordered by post_id, FORUM_POSTS_PER_PAGE per page, deleted
-    posts counted (they render inline as tombstones)."""
+async def _visible_post_thread(db: AsyncSession, perms: set[str], post: ForumPosts) -> ForumThreads:
+    """The post's thread, or the 404 a missing post gets if the caller can't see it."""
     thread = await db.get(ForumThreads, post.thread_id)
     # FK guarantees a parent thread; guard defensively anyway. A deleted thread is
     # a 404 to non-moderators, as in get_thread (a deleted post still resolves).
@@ -913,6 +911,16 @@ async def _post_location(db: AsyncSession, perms: set[str], post: ForumPosts) ->
     # category is gated and not visible to the caller, so gated post ids can't be
     # enumerated by the differing detail string.
     await _visible_category(db, thread.category_id, perms, not_found_detail="Post not found")
+    return thread
+
+
+async def _post_location(db: AsyncSession, perms: set[str], post: ForumPosts) -> RedirectResponse:
+    """302 to a post's thread, page, and anchor. Page math matches get_thread's
+    pagination: posts ordered by post_id, FORUM_POSTS_PER_PAGE per page, deleted
+    posts counted (they render inline as tombstones). Not a 301, which browsers
+    cache for good: the page moves if earlier posts are hard-deleted or
+    FORUM_POSTS_PER_PAGE changes."""
+    thread = await _visible_post_thread(db, perms, post)
     rank = (
         await db.execute(
             select(func.count())
@@ -924,7 +932,7 @@ async def _post_location(db: AsyncSession, perms: set[str], post: ForumPosts) ->
     page = rank // FORUM_POSTS_PER_PAGE + 1
     return RedirectResponse(
         url=f"/forum/threads/{thread.thread_id}?page={page}#post-{post.post_id}",
-        status_code=status.HTTP_301_MOVED_PERMANENTLY,
+        status_code=status.HTTP_302_FOUND,
     )
 
 
@@ -936,9 +944,10 @@ async def legacy_viewtopic(
     t: Annotated[int | None, Query(description="Legacy phpBB topic id")] = None,
     p: Annotated[int | None, Query(description="Legacy phpBB post id")] = None,
 ) -> RedirectResponse:
-    """301 an old forums/viewtopic.php?f=…&t=… (or ?p=…) to the new thread page (f is
-    ignored). p wins over t, as in phpBB, and lands on the page holding the post.
-    Unknown ids, or neither, are 404 (never 422: these URLs come from old links)."""
+    """301 an old forums/viewtopic.php?f=…&t=… to the new thread page (f is ignored),
+    or ?p=… to the post's /forum/posts/{id} permalink, which finds its page. p wins
+    over t, as in phpBB. Unknown ids, or neither, are 404 (never 422: these URLs
+    come from old links)."""
     perms = await _effective_perms(db, redis_client, current_user)
     if p is not None:
         post_result = await db.execute(
@@ -947,7 +956,11 @@ async def legacy_viewtopic(
         post = post_result.scalars().first()
         if post is None:
             raise HTTPException(status_code=404, detail="Post not found")
-        return await _post_location(db, perms, post)
+        await _visible_post_thread(db, perms, post)
+        return RedirectResponse(
+            url=f"/forum/posts/{post.post_id}",
+            status_code=status.HTTP_301_MOVED_PERMANENTLY,
+        )
     if t is None:  # neither id: also avoids matching every NULL legacy_topic_id
         raise HTTPException(status_code=404, detail="Topic not found")
     thread_result = await db.execute(
@@ -974,7 +987,7 @@ async def post_permalink(
     redis_client: RedisDep,  # type: ignore[type-arg]
     current_user: OptionalCurrentUser,
 ) -> RedirectResponse:
-    """301 a stable /forum/posts/{post_id} permalink to the post's thread, page,
+    """302 a stable /forum/posts/{post_id} permalink to the post's thread, page,
     and anchor. The frontend's /forum/posts/[post_id] route calls this and
     passes the redirect on."""
     perms = await _effective_perms(db, redis_client, current_user)
