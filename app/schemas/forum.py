@@ -90,6 +90,7 @@ class ForumCategoryResponse(ForumCategorySettings):
     last_post_at: UTCDatetimeOptional = None
     last_thread_id: int | None = None
     last_thread_title: str | None = None
+    last_post_id: int | None = None
     last_post_user: UserSummary | None = None
     can_create_thread: bool = False
     can_reply: bool = False
@@ -162,6 +163,8 @@ class ForumThreadSummary(BaseModel):
     post_count: int
     last_post_at: UTCDatetimeOptional = None
     last_post_user: UserSummary | None = None
+    # Like unread, only the thread list fills this in
+    last_post_id: int | None = None
     unread: bool = False
 
 
