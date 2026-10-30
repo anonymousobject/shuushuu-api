@@ -2,7 +2,7 @@
 Pydantic schemas for Privmsg endpoints
 """
 
-from pydantic import BaseModel, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.privmsg import PrivmsgBase
 from app.utils.markdown import normalize_legacy_entities, parse_markdown
@@ -13,7 +13,7 @@ class PrivmsgCreate(BaseModel):
 
     to_user_id: int
     subject: str
-    message: str
+    message: str = Field(max_length=20000)
     thread_id: str | None = None
 
     @field_validator("subject")

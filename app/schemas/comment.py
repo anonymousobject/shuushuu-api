@@ -14,7 +14,9 @@ class CommentCreate(BaseModel):
     """Schema for creating a new comment"""
 
     image_id: int = Field(description="ID of image to comment on")
-    post_text: str = Field(min_length=1, description="Comment text (markdown supported)")
+    post_text: str = Field(
+        min_length=1, max_length=10000, description="Comment text (markdown supported)"
+    )
     parent_comment_id: int | None = Field(
         default=None,
         description="Parent comment ID for replies (null = top-level comment)",
@@ -40,7 +42,9 @@ class CommentCreate(BaseModel):
 class CommentUpdate(BaseModel):
     """Schema for updating a comment"""
 
-    post_text: str = Field(min_length=1, description="Comment text (markdown supported)")
+    post_text: str = Field(
+        min_length=1, max_length=10000, description="Comment text (markdown supported)"
+    )
 
     @field_validator("post_text", mode="before")
     @classmethod

@@ -229,6 +229,20 @@ class TestSendThreadedMessage:
         assert data["thread_id"] is not None
         assert len(data["thread_id"]) == 36  # UUID format
 
+    async def test_message_over_length_limit_422(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        await create_user(db_session, "long_a", email_verified=True)
+        user_b = await create_user(db_session, "long_b", email_verified=True)
+
+        token = await login(client, "long_a")
+        response = await client.post(
+            "/api/v1/privmsgs",
+            json={"to_user_id": user_b.user_id, "subject": "Long", "message": "x" * 20001},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 422, response.text
+
     async def test_reply_to_thread(self, client: AsyncClient, db_session: AsyncSession):
         """Test replying to an existing thread uses the same thread_id."""
         user_a = await create_user(db_session, "reply_a", email_verified=True)
