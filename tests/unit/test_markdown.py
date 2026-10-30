@@ -223,6 +223,102 @@ Another line."""
         assert "<script>" not in result
 
 
+class TestParseMarkdownQuotes:
+    """BBCode [quote] rendering: named, anonymous, nested and orphaned tags"""
+
+    def test_named_quote(self):
+        result = parse_markdown('[quote="alice"]hi[/quote]')
+        assert result == "<blockquote><small>alice said:</small> hi</blockquote>"
+
+    def test_named_quote_with_legacy_entity_encoded_name(self):
+        result = parse_markdown("[quote=&quot;alice&quot;]hi[/quote]")
+        assert result == "<blockquote><small>alice said:</small> hi</blockquote>"
+
+    def test_named_quote_multiline_with_surrounding_text(self):
+        result = parse_markdown('before [quote="alice"]hi\nthere[/quote] after')
+        assert (
+            result
+            == "before <blockquote><small>alice said:</small> hi<br>\nthere</blockquote> after"
+        )
+
+    def test_sibling_named_quotes(self):
+        result = parse_markdown('[quote="alice"]one[/quote] and [quote="bob"]two[/quote]')
+        assert result == (
+            "<blockquote><small>alice said:</small> one</blockquote> and "
+            "<blockquote><small>bob said:</small> two</blockquote>"
+        )
+
+    def test_named_quote_content_is_escaped(self):
+        result = parse_markdown("[quote=\"alice\"]<script>alert('xss')</script>[/quote]")
+        assert result == (
+            "<blockquote><small>alice said:</small> "
+            "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;</blockquote>"
+        )
+
+    def test_named_quote_content_keeps_markdown(self):
+        result = parse_markdown('[quote="alice"]**bold** [spoiler]s[/spoiler][/quote]')
+        assert result == (
+            "<blockquote><small>alice said:</small> "
+            '<strong>bold</strong> <span class="spoiler">s</span></blockquote>'
+        )
+
+    def test_named_quote_inside_spoiler(self):
+        result = parse_markdown('[spoiler][quote="alice"]x[/quote][/spoiler]')
+        assert result == (
+            '<span class="spoiler"><blockquote><small>alice said:</small> x</blockquote></span>'
+        )
+
+    def test_anonymous_quote(self):
+        assert parse_markdown("[quote]anon[/quote]") == "<blockquote>anon</blockquote>"
+
+    def test_sibling_anonymous_quotes(self):
+        result = parse_markdown("[quote]a[/quote] [quote]b[/quote]")
+        assert result == "<blockquote>a</blockquote> <blockquote>b</blockquote>"
+
+    def test_nested_named_quotes(self):
+        result = parse_markdown('[quote="alice"]outer [quote="bob"]inner[/quote] tail[/quote]')
+        assert result == (
+            "<blockquote><small>alice said:</small> outer "
+            "<blockquote><small>bob said:</small> inner</blockquote> tail</blockquote>"
+        )
+
+    def test_three_deep_named_quotes(self):
+        result = parse_markdown('[quote="a"][quote="b"][quote="c"]x[/quote]y[/quote]z[/quote]')
+        assert result == (
+            "<blockquote><small>a said:</small> "
+            "<blockquote><small>b said:</small> "
+            "<blockquote><small>c said:</small> x</blockquote>y</blockquote>z</blockquote>"
+        )
+
+    def test_anonymous_quote_inside_named_quote(self):
+        result = parse_markdown('[quote="alice"]outer [quote]anon[/quote] tail[/quote]')
+        assert result == (
+            "<blockquote><small>alice said:</small> outer "
+            "<blockquote>anon</blockquote> tail</blockquote>"
+        )
+
+    def test_named_quote_inside_anonymous_quote(self):
+        result = parse_markdown('[quote]outer [quote="bob"]inner[/quote] tail[/quote]')
+        assert result == (
+            "<blockquote>outer "
+            "<blockquote><small>bob said:</small> inner</blockquote> tail</blockquote>"
+        )
+
+    def test_unclosed_named_quote_is_left_as_text(self):
+        result = parse_markdown('[quote="alice"]unclosed')
+        assert result == "[quote=&quot;alice&quot;]unclosed"
+
+    def test_unclosed_anonymous_quote_tag_is_removed(self):
+        assert parse_markdown("[quote]unclosed") == "unclosed"
+
+    def test_orphan_closing_tag_is_removed(self):
+        assert parse_markdown("orphan close[/quote]") == "orphan close"
+
+    def test_extra_closing_tag_after_named_quote_is_removed(self):
+        result = parse_markdown('[quote="alice"]a[/quote][/quote]')
+        assert result == "<blockquote><small>alice said:</small> a</blockquote>"
+
+
 class TestStripMarkdown:
     """Tests for stripping Markdown formatting"""
 
