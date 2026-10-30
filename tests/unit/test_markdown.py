@@ -4,6 +4,8 @@ Tests for safe Markdown parser
 
 import time
 
+import pytest
+
 from app.utils.markdown import is_safe_url, parse_markdown, strip_markdown
 
 
@@ -331,6 +333,15 @@ class TestParseMarkdownQuotes:
         result = parse_markdown("[quote]outer [quote]inner[/quote] tail[/quote]")
         assert result == "<blockquote>outer <blockquote>inner</blockquote> tail</blockquote>"
 
+    def test_named_quote_missing_a_closer_pairs_leftmost_opener_first(self):
+        """Many legacy comments lost an inner quote's closer: the first closer
+        follows the outer author's reply, so it must stay with the outer opener."""
+        result = parse_markdown('[quote="alice"][quote="bob"]question\nanswer[/quote]\nreply')
+        assert result == (
+            "<blockquote><small>alice said:</small> [quote=&quot;bob&quot;]question<br>\n"
+            "answer</blockquote><br>\nreply"
+        )
+
 
 # Linear parsing takes milliseconds on these inputs; a scan that restarts from
 # every opener takes seconds. The gap leaves room for a loaded CI runner.
@@ -339,6 +350,28 @@ RENDER_TIME_LIMIT_SECONDS = 0.5
 
 class TestParseMarkdownQuoteScaling:
     """Quote parsing stays linear in input length"""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '[quote="x"]' * 2000,
+            '[quote="x"]' * 2000 + "[/quote]",
+            '[quote="x"]' * 5900,
+            '[quote="x"]' * 5900 + "[/quote]",
+            "[/quote]" + '[quote="x"]' * 5900,
+        ],
+        ids=[
+            "2000-openers",
+            "2000-openers-one-closer",
+            "5900-openers",
+            "5900-openers-one-closer",
+            "5900-openers-after-a-closer",
+        ],
+    )
+    def test_many_named_quote_openers(self, text):
+        start = time.perf_counter()
+        parse_markdown(text)
+        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
 
     def test_many_anonymous_quote_openers(self):
         start = time.perf_counter()

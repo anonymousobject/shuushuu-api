@@ -119,19 +119,32 @@ def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
         iterations += 1
 
         # Match [quote="..."] or [quote=&quot;...&quot;] followed by content and [/quote]
-        # Use non-greedy matching to get innermost quotes first
+        # Non-greedy: the leftmost opener pairs with the first closer after it.
+        # Balanced nesting renders the same either way, and legacy comments that
+        # lost an inner quote's closer depend on this pairing to keep the outer
+        # author's attribution.
         def replace_bbcode_quote(match: re.Match[str]) -> str:
             username = match.group(1) or match.group(2)
             username = username.replace("&quot;", '"')
             content = match.group(3)
             return f"<blockquote><small>{escape(username)} said:</small> {content}</blockquote>"
 
-        text = re.sub(
-            r'\[quote=(?:"([^"]*)"|&quot;([^&]*)&quot;)\](.*?)\[/quote\]',
-            replace_bbcode_quote,
-            text,
-            count=1,  # Replace one at a time, innermost first
-            flags=re.DOTALL,
+        # Only an opener before the last closer can match, so the search stops
+        # there. Searching further would scan from every later opener to the end
+        # of the text, which is quadratic in the number of unclosed openers.
+        last_closer = text.rfind("[/quote]")
+        if last_closer == -1:
+            break
+        search_end = last_closer + len("[/quote]")
+        text = (
+            re.sub(
+                r'\[quote=(?:"([^"]*)"|&quot;([^&]*)&quot;)\](.*?)\[/quote\]',
+                replace_bbcode_quote,
+                text[:search_end],
+                count=1,  # Replace one at a time
+                flags=re.DOTALL,
+            )
+            + text[search_end:]
         )
 
     # Process anonymous BBCode quotes: [quote]...[/quote] (no username)
