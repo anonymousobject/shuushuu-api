@@ -65,6 +65,37 @@ class TestParseMarkdown:
         assert "<a href" not in result
         assert "[click me](javascript:alert(&#x27;xss&#x27;))" in result
 
+    def test_link_text_starts_at_leftmost_open_bracket(self):
+        result = parse_markdown("[a[b](https://x.com)")
+        assert result == '<a href="https://x.com" rel="nofollow noopener" target="_blank">a[b</a>'
+
+    def test_link_after_empty_link_text(self):
+        result = parse_markdown("[](x)[a](https://x.com)")
+        assert (
+            result == '[](x)<a href="https://x.com" rel="nofollow noopener" target="_blank">a</a>'
+        )
+
+    def test_link_after_bracket_pair_without_url(self):
+        result = parse_markdown("[a][b](https://x.com)")
+        assert result == '[a]<a href="https://x.com" rel="nofollow noopener" target="_blank">b</a>'
+
+    def test_link_with_empty_url_not_rendered(self):
+        assert parse_markdown("[x]()") == "[x]()"
+
+    def test_link_url_runs_to_first_closing_paren(self):
+        result = parse_markdown("[a](b)(c)")
+        assert result == '<a href="b" rel="nofollow noopener" target="_blank">a</a>(c)'
+
+    def test_link_url_may_contain_brackets(self):
+        result = parse_markdown("[x](a](b)")
+        assert result == '<a href="a](b" rel="nofollow noopener" target="_blank">x</a>'
+
+    def test_link_text_may_span_lines(self):
+        result = parse_markdown("[a\nb](https://x.com)")
+        assert (
+            result == '<a href="https://x.com" rel="nofollow noopener" target="_blank">a<br>\nb</a>'
+        )
+
     def test_blockquote(self):
         result = parse_markdown("> This is a quote")
         assert result == "<blockquote>This is a quote</blockquote>"
@@ -376,6 +407,32 @@ class TestParseMarkdownQuoteScaling:
     def test_many_anonymous_quote_openers(self):
         start = time.perf_counter()
         parse_markdown("[quote]" * 10000)
+        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+
+
+class TestParseMarkdownLinkScaling:
+    """Link parsing stays linear in input length"""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "[" * 20000,
+            "[" * 40000,
+            "[" * 40000 + "]",
+            "[" * 40000 + "](",
+            "[x](" * 20000,
+        ],
+        ids=[
+            "20000-open-brackets",
+            "40000-open-brackets",
+            "40000-open-brackets-one-close",
+            "40000-open-brackets-one-close-and-paren",
+            "20000-links-without-closing-paren",
+        ],
+    )
+    def test_many_unfinished_links(self, text):
+        start = time.perf_counter()
+        parse_markdown(text)
         assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
 
 

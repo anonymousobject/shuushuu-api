@@ -37,6 +37,7 @@ All HTML is escaped - no arbitrary HTML/scripts allowed.
 """
 
 import re
+from collections.abc import Callable
 from html import escape
 from urllib.parse import urlparse
 
@@ -71,6 +72,46 @@ def _sub_innermost_first(pattern: re.Pattern[str], replacement: str, text: str) 
             break
         text = new_text
     return text
+
+
+_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def _sub_links(replace: Callable[[re.Match[str]], str], text: str) -> str:
+    """
+    Same result as _LINK_PATTERN.sub(replace, text), in linear time.
+
+    re.sub tries the pattern at every "[", and a failed attempt can scan to
+    the end of the text, so many "[" without a "](...)" after them took
+    quadratic time. A match at a "[" is fully determined by the first "]"
+    after it and the first ")" after that: every "[" before the same "]"
+    matches or fails together, so one check covers them all and the scan
+    moves on past that "]".
+    """
+    parts = []
+    done = 0  # text[:done] is already in parts
+    position = 0  # where to look for the next "["
+    while (start := text.find("[", position)) != -1:
+        close = text.find("]", start + 1)
+        if close == -1:
+            break  # No "]" after any remaining "["
+        if close == start + 1 or not text.startswith("(", close + 1):
+            # Empty link text (start is the only "[" before this "]"), or no
+            # "(" after the "]": no "[" before this "]" can match
+            position = close + 1
+            continue
+        end = text.find(")", close + 2)
+        if end == -1:
+            break  # No ")" left, so no later link can close either
+        if end == close + 2:
+            position = close + 1  # Empty URL
+            continue
+        match = _LINK_PATTERN.match(text, start)
+        assert match is not None  # the checks above are exactly the pattern
+        parts += [text[done:start], replace(match)]
+        done = position = end + 1
+    parts.append(text[done:])
+    return "".join(parts)
 
 
 def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
@@ -216,7 +257,7 @@ def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
 
         return f'<a href="{escape(url)}" rel="nofollow noopener" target="_blank">{link_text}</a>'
 
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, text)
+    text = _sub_links(replace_link, text)
 
     # Auto-link bare URLs (https://... or http://...)
     # Runs AFTER explicit markdown links to avoid double-linking.
