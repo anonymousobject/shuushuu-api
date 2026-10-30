@@ -55,6 +55,19 @@ class TestListThreads:
         assert data["threads"][0]["user"]["username"] == "testuser"
         assert data["threads"][0]["post_count"] == 1
 
+    async def test_last_post_id_is_the_newest_live_post(
+        self, client: AsyncClient, db_session: AsyncSession, public_category, public_thread
+    ):
+        kept = await _add_reply(db_session, public_thread, text="kept")
+        removed = await _add_reply(db_session, public_thread, text="removed")
+        removed.deleted = True
+        await db_session.commit()
+
+        response = await client.get(
+            f"/api/v1/forum/categories/{public_category.category_id}/threads"
+        )
+        assert response.json()["threads"][0]["last_post_id"] == kept.post_id
+
     async def test_gated_category_404(self, client: AsyncClient, staff_category, user_token):
         response = await client.get(
             f"/api/v1/forum/categories/{staff_category.category_id}/threads",

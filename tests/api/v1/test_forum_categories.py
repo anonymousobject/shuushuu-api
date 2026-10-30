@@ -2,8 +2,10 @@
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.forum import ForumPosts
 from tests.api.v1.conftest import make_thread
 
 
@@ -63,6 +65,20 @@ class TestListCategories:
         assert cat["last_thread_id"] == thread.thread_id
         assert cat["last_thread_title"] == "Latest thread"
         assert cat["last_post_user"]["username"] == "testuser"
+
+    async def test_last_post_id_is_the_latest_threads_newest_post(
+        self, client: AsyncClient, db_session: AsyncSession, public_category
+    ):
+        await make_thread(db_session, public_category, title="Older thread")
+        latest = await make_thread(db_session, public_category, title="Latest thread")
+        latest_post_id = (
+            await db_session.execute(
+                select(ForumPosts.post_id).where(ForumPosts.thread_id == latest.thread_id)
+            )
+        ).scalar_one()
+
+        response = await client.get("/api/v1/forum/categories")
+        assert response.json()["categories"][0]["last_post_id"] == latest_post_id
 
     async def test_capabilities(
         self, client: AsyncClient, announce_category, user_token, staff_token

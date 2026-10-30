@@ -98,8 +98,25 @@ async def _first_post_id(db: AsyncSession, thread_id: int) -> int | None:
     return result.scalar()
 
 
+async def _last_post_ids(db: AsyncSession, thread_ids: list[int]) -> dict[int, int]:
+    """thread_id -> post_id of its newest live post: the post that
+    recompute_thread_stats takes last_post_at/last_post_user_id from."""
+    if not thread_ids:
+        return {}
+    result = await db.execute(
+        select(ForumPosts.thread_id, func.max(ForumPosts.post_id))  # type: ignore[call-overload]
+        .where(ForumPosts.thread_id.in_(thread_ids))  # type: ignore[attr-defined]
+        .where(ForumPosts.deleted == False)  # noqa: E712
+        .group_by(ForumPosts.thread_id)
+    )
+    return dict(result.all())  # type: ignore[arg-type]
+
+
 def _thread_summary(
-    thread: ForumThreads, summaries: dict[int, UserSummary], unread: bool
+    thread: ForumThreads,
+    summaries: dict[int, UserSummary],
+    unread: bool,
+    last_post_id: int | None = None,
 ) -> ForumThreadSummary:
     return ForumThreadSummary(
         thread_id=thread.thread_id or 0,  # guaranteed to exist after flush/refresh
@@ -115,6 +132,7 @@ def _thread_summary(
         last_post_user=(
             summaries.get(thread.last_post_user_id) if thread.last_post_user_id else None
         ),
+        last_post_id=last_post_id,
         unread=unread,
     )
 
@@ -170,6 +188,7 @@ def _category_response(
     last_post_at: datetime | None = None,
     last_thread_id: int | None = None,
     last_thread_title: str | None = None,
+    last_post_id: int | None = None,
     last_post_user: UserSummary | None = None,
     can_create_thread: bool = False,
     can_reply: bool = False,
@@ -181,6 +200,7 @@ def _category_response(
         last_post_at=last_post_at,
         last_thread_id=last_thread_id,
         last_thread_title=last_thread_title,
+        last_post_id=last_post_id,
         last_post_user=last_post_user,
         can_create_thread=can_create_thread,
         can_reply=can_reply,
@@ -263,6 +283,7 @@ async def list_categories(
     )
     latest_rows = (await db.execute(select(latest_sq).where(latest_sq.c.rn == 1))).all()
     latest = {row.category_id: row for row in latest_rows}
+    last_post_ids = await _last_post_ids(db, [row.thread_id for row in latest_rows])
 
     user_ids = {row.last_post_user_id for row in latest_rows if row.last_post_user_id}
     summaries = await build_user_summaries(db, user_ids)
@@ -280,6 +301,7 @@ async def list_categories(
                 last_post_at=last.last_post_at if last else None,
                 last_thread_id=last.thread_id if last else None,
                 last_thread_title=last.title if last else None,
+                last_post_id=last_post_ids.get(last.thread_id) if last else None,
                 last_post_user=(
                     summaries.get(last.last_post_user_id)
                     if last and last.last_post_user_id
@@ -417,6 +439,7 @@ async def list_threads(
         t.last_post_user_id for t in threads if t.last_post_user_id
     }
     summaries = await build_user_summaries(db, user_ids)
+    last_post_ids = await _last_post_ids(db, [t.thread_id for t in threads if t.thread_id])
 
     read_map: dict[int, datetime] = {}
     if current_user is not None and threads:
@@ -439,7 +462,10 @@ async def list_threads(
         total=total,
         page=pagination.page,
         per_page=pagination.per_page,
-        threads=[_thread_summary(t, summaries, is_unread(t)) for t in threads],
+        threads=[
+            _thread_summary(t, summaries, is_unread(t), last_post_ids.get(t.thread_id or 0))
+            for t in threads
+        ],
     )
 
 
