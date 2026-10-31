@@ -76,6 +76,50 @@ async def test_isolation_between_tests(db_session):
 
 
 @pytest.mark.asyncio
+async def test_failed_commit_keeps_earlier_test_data(db_session):
+    """A failed commit undoes only its own changes, not the test's earlier data."""
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import Donations
+    from app.models.user import Users
+
+    db_session.add(Donations(amount=10, user_id=0, nick="dangling"))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+    result = await db_session.execute(select(func.count()).select_from(Users))
+    assert result.scalar() == 3
+
+
+@pytest.mark.asyncio
+async def test_commit_after_failed_commit_stays_inside_the_test(db_session, engine):
+    """After a failed commit, later commits are still rolled back at teardown.
+
+    Another connection must not see them, or they would leak into later tests.
+    """
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import Donations
+
+    db_session.add(Donations(amount=10, user_id=0, nick="dangling"))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+    db_session.add(Donations(amount=10, user_id=None, nick="after-failure"))
+    await db_session.commit()
+
+    async with engine.connect() as other:
+        result = await other.execute(
+            select(func.count()).select_from(Donations).where(Donations.nick == "after-failure")
+        )
+        assert result.scalar() == 0
+
+
+@pytest.mark.asyncio
 async def test_using_sample_data_dict(sample_image_data):
     """
     Example: Using sample data dictionaries for API payloads.

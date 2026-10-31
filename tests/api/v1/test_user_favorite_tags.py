@@ -218,14 +218,6 @@ class TestAddFavorite:
         assert response.status_code == status, response.text
         assert fragment in response.json()["detail"]
 
-    # The 409 path rolls back a failed commit (IntegrityError on the duplicate
-    # PK) -- same as create_character_source_link's duplicate-link 409 -- which
-    # SQLAlchemy flags on fixture teardown. Expected consequence of that
-    # pattern, not a defect; named explicitly so the suite's output stays
-    # clean without hiding anything else.
-    @pytest.mark.filterwarnings(
-        "ignore:transaction already deassociated from connection:sqlalchemy.exc.SAWarning"
-    )
     async def test_duplicate_409_and_anonymous_401(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
@@ -239,6 +231,7 @@ class TestAddFavorite:
             "/api/v1/users/me/favorite-tags", json={"tag_id": SRC_A}, headers=headers
         )
         assert dupe.status_code == 409
+        client.cookies.clear()  # login set an access_token cookie; stay anonymous
         anon = await client.post("/api/v1/users/me/favorite-tags", json={"tag_id": SRC_A})
         assert anon.status_code == 401
 
