@@ -335,7 +335,6 @@ class TestImageStatusChange:
         assert data["status"] == ImageStatus.ACTIVE
         assert data["replacement_id"] is None
 
-    @pytest.mark.needs_commit
     async def test_repost_retries_deadlock_and_migrates_exactly_once(
         self, client: AsyncClient, db_session: AsyncSession
     ):

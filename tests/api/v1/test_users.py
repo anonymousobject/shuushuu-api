@@ -3721,16 +3721,10 @@ class TestUserUpdateSnapshotConflictRetry:
         return user, create_access_token(user.id)
 
     @pytest.mark.asyncio
-    @pytest.mark.needs_commit
     async def test_patch_me_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient Postgres deadlock (40P01) on the users UPDATE is retried and the PATCH succeeds.
-
-        needs_commit: the retry performs a real session rollback for a fresh
-        snapshot; under SAVEPOINT isolation that rollback would unwind the
-        fixture's user row too, which can't happen in production.
-        """
+        """A transient Postgres deadlock (40P01) on the users UPDATE is retried and the PATCH succeeds."""
         from unittest.mock import patch
 
         from tests.transient_conflict import _deadlock_error
@@ -3758,16 +3752,10 @@ class TestUserUpdateSnapshotConflictRetry:
         assert len(calls) >= 2  # failed attempt + successful retry
 
     @pytest.mark.asyncio
-    @pytest.mark.needs_commit
     async def test_patch_me_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts.
-
-        needs_commit: each retry re-SELECTs the user after a real rollback;
-        under SAVEPOINT isolation that rollback unwinds the fixture's user row
-        and the retry would 404 instead of exercising the conflict path.
-        """
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         from unittest.mock import patch
 
         from sqlalchemy.exc import DBAPIError

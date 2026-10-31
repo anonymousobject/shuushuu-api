@@ -180,16 +180,9 @@ class TestResolveUrl:
         assert body["artist_tag_id"] is None
         assert body["artist_tag_title"] is None
 
-    @pytest.mark.needs_commit
     async def test_resolve_artist_tag_lookup_failure_degrades_gracefully(self, resolve_client):
         """A DB failure in the artist-tag lookup must not fail an import whose
         resolver step already succeeded -- it degrades to null tag fields.
-
-        needs_commit: the endpoint's except block calls db.rollback() for
-        real (see the fix commit); under this fixture's default SAVEPOINT
-        isolation that triggers a benign but noisy
-        'transaction already deassociated from connection' SAWarning
-        (same rationale as test_resolve_artist_tag_db_error_rolls_back).
         """
         from unittest.mock import AsyncMock, patch
 
@@ -213,7 +206,6 @@ class TestResolveUrl:
         assert body["artist_tag_id"] is None
         assert body["artist_tag_title"] is None
 
-    @pytest.mark.needs_commit
     async def test_resolve_artist_tag_db_error_rolls_back(
         self, resolve_client, db_session: AsyncSession
     ):
@@ -222,14 +214,6 @@ class TestResolveUrl:
         DBAPI/SQLAlchemy exception leaves the session's implicit transaction
         needing a rollback; skipping it would poison db_session for
         whatever runs next on it (get_db's post-yield commit in production).
-
-        needs_commit: real transaction semantics (not this fixture's default
-        SAVEPOINT-per-test isolation) so the rollback below exercises genuine
-        commit/rollback behavior instead of interacting with the SAVEPOINT
-        auto-restart listener -- same rationale as
-        test_store_predictions_swallows_duplicate_race in
-        tests/services/test_ml_suggestion_pipeline.py, the established
-        precedent for testing a caught-exception-then-rollback path.
 
         Unlike test_resolve_artist_tag_lookup_failure_degrades_gracefully
         (which mocks resolve_identity wholesale and never touches the real

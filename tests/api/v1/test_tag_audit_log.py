@@ -1844,17 +1844,10 @@ class TestTagAuditLogExternalLinks:
         assert entries[0].link_url == "https://example.com/artist"
         assert entries[0].user_id == admin.user_id
 
-    @pytest.mark.needs_commit
     async def test_duplicate_link_creates_no_audit_entry(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """The 409 path rolls back; the audit row must roll back with it.
-
-        needs_commit: the duplicate-URL path performs a real session rollback;
-        under the default SAVEPOINT isolation that rollback would unwind the
-        first (successful) link_added row too, which can't happen in
-        production where it is durably committed before the second request.
-        """
+        """The 409 path rolls back; the audit row must roll back with it."""
         _, token = await self._admin_and_token(client, db_session, "linkaudit2")
         tag = await self._tag(db_session, "link audit dupe")
         # Captured before the request that rolls back: the rollback expires every
