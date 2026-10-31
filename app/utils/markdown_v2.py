@@ -13,7 +13,7 @@ a token table behind placeholders, and the placeholders are expanded last.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import escape, unescape
 from typing import Literal
 
@@ -104,13 +104,18 @@ def _quote_content(line: str) -> str | None:
     return None
 
 
-def _split_blocks(text: str) -> list[_Block]:
+def _split_blocks(text: str, starts_line: bool) -> list[_Block]:
     """
     Block pass: sort the lines into blocks.
+
+    starts_line says whether the text starts a line of the source. A container
+    opened mid-line doesn't, and its first line stays inline.
     """
     blocks: list[_Block] = []
-    for line in text.split("\n"):
-        quote_content = _quote_content(line)
+    for number, line in enumerate(text.split("\n")):
+        # Only a line that starts a line of the source gets the block rules
+        line_start = number > 0 or starts_line
+        quote_content = _quote_content(line) if line_start else None
         block = (
             _Block("text", [line]) if quote_content is None else _Block("quote", [quote_content])
         )
@@ -166,11 +171,11 @@ def _line_break_before(block: _Block, tokens: _Tokens) -> str:
     return "<br>\n"
 
 
-def _render_blocks(text: str, tokens: _Tokens) -> str:
+def _render_blocks(text: str, tokens: _Tokens, *, starts_line: bool) -> str:
     """
     Render prepared text with the block and inline passes, leaving placeholders in place.
     """
-    blocks = _split_blocks(text)
+    blocks = _split_blocks(text, starts_line)
     parts = [_render_block(blocks[0], tokens)]
     for block in blocks[1:]:
         parts += [_line_break_before(block, tokens), _render_block(block, tokens)]
@@ -195,7 +200,22 @@ class _Open:
 
     kind: str  # "root", "quote" or "spoiler"
     name: str | None  # A named quote's name, escaped
-    content: list[str]  # Source text and placeholders, in order
+    # Whether the content starts a line: the root does, and an opening tag
+    # does when only whitespace is before it on its line
+    starts_line: bool
+    content: list[str] = field(default_factory=list)  # Source text and placeholders
+    # Whether only whitespace has followed the content's last line start so far
+    at_line_start: bool = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.at_line_start = self.starts_line
+
+    def append(self, piece: str) -> None:
+        """Add source text or a placeholder to the content."""
+        self.content.append(piece)
+        newline = piece.rfind("\n")
+        tail = piece[newline + 1 :]  # The whole piece if it has no newline
+        self.at_line_start = (newline != -1 or self.at_line_start) and not tail.strip()
 
 
 def _strip_unmatched(stack: list[_Open], start: int, open_at: dict[str, list[int]]) -> None:
@@ -204,7 +224,8 @@ def _strip_unmatched(stack: list[_Open], start: int, open_at: dict[str, list[int
     in order, into the entry below them.
     """
     for entry in stack[start:]:
-        stack[start - 1].content.extend(entry.content)
+        for piece in entry.content:
+            stack[start - 1].append(piece)
         open_at[entry.kind].pop()
     del stack[start:]
 
@@ -214,7 +235,7 @@ def _render_container(pair: _Open, tokens: _Tokens) -> str:
     Render a matched pair, running the block and inline passes over its
     content, and return the placeholder that stands in for it.
     """
-    html = _render_blocks("".join(pair.content), tokens)
+    html = _render_blocks("".join(pair.content), tokens, starts_line=pair.starts_line)
     if pair.kind == "spoiler":
         return tokens.add(f'<span class="spoiler">{html}</span>')
     if html.endswith("<br>\n"):
@@ -240,19 +261,22 @@ def _render_containers(text: str, tokens: _Tokens) -> str:
     Each pair is rendered as it closes, over content whose inner pairs are
     already placeholders, so nothing recurses. Each tag is pushed and popped
     once, and each character is rendered once.
+
+    A pair's content gets the block rules on its first line only if its
+    opening tag starts a line, so a container opened mid-line stays inline.
     """
-    stack = [_Open("root", None, [])]
+    stack = [_Open("root", None, starts_line=True)]
     # Stack positions of the open tags of each kind, so the nearest open tag
     # of a kind, and whether a spoiler is open above it, are found at once
     open_at: dict[str, list[int]] = {"quote": [], "spoiler": []}
     position = 0
     for match in _CONTAINER_TAG.finditer(text):
-        stack[-1].content.append(text[position : match.start()])
+        stack[-1].append(text[position : match.start()])
         position = match.end()
         kind = match["kind"] or "quote"
         if not match["slash"]:
             open_at[kind].append(len(stack))
-            stack.append(_Open(kind, match["name"], []))
+            stack.append(_Open(kind, match["name"], starts_line=stack[-1].at_line_start))
             continue
         if not open_at[kind]:
             continue  # Nothing to close: the closing tag is unmatched
@@ -262,8 +286,8 @@ def _render_containers(text: str, tokens: _Tokens) -> str:
         _strip_unmatched(stack, partner + 1, open_at)
         pair = stack.pop()
         open_at[kind].pop()
-        stack[-1].content.append(_render_container(pair, tokens))
-    stack[-1].content.append(text[position:])
+        stack[-1].append(_render_container(pair, tokens))
+    stack[-1].append(text[position:])
     _strip_unmatched(stack, 1, open_at)
     return "".join(stack[0].content)
 
@@ -284,4 +308,4 @@ def render_v2(text: str | None, headings: bool) -> str:  # noqa: ARG001
         return ""
     tokens = _Tokens()
     text = _render_containers(_prepare(text), tokens)
-    return tokens.expand(_render_blocks(text, tokens))
+    return tokens.expand(_render_blocks(text, tokens, starts_line=True))

@@ -73,6 +73,8 @@ PARITY_CORPUS = [
     "x\n[spoiler]a[/spoiler]",
     "x\n [quote]a[/quote]",
     "[spoiler]x\n[quote]a[/quote][/spoiler]",
+    "a [spoiler]>_> b[/spoiler] c",
+    "text [quote]> x[/quote]",
 ]
 
 
@@ -125,6 +127,43 @@ def test_bracket_runs_are_linear(text):
     ],
 )
 def test_inline_rules_do_not_cross_a_container(text, html):
+    assert render_v2(text, headings=False) == html
+
+
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        # A container opened mid-line keeps its first line inline
+        ("a [spoiler]>_> b[/spoiler] c", 'a <span class="spoiler">&gt;_&gt; b</span> c'),
+        ("text [quote]> x[/quote]", "text <blockquote>&gt; x</blockquote>"),
+        (
+            "a [quote][spoiler]> x[/spoiler][/quote]",
+            'a <blockquote><span class="spoiler">&gt; x</span></blockquote>',
+        ),
+        (
+            "[spoiler]a[/spoiler][quote]> x[/quote]",
+            '<span class="spoiler">a</span><blockquote>&gt; x</blockquote>',
+        ),
+        # A container opened at the start of a line starts one
+        ("[quote]> x[/quote]", "<blockquote><blockquote>x</blockquote></blockquote>"),
+        ("  [quote]> x[/quote]", "  <blockquote><blockquote>x</blockquote></blockquote>"),
+        ("a\n[quote]> x[/quote]", "a\n<blockquote><blockquote>x</blockquote></blockquote>"),
+        (
+            "[quote][spoiler]> x[/spoiler][/quote]",
+            '<blockquote><span class="spoiler"><blockquote>x</blockquote></span></blockquote>',
+        ),
+        (
+            "a [quote]b\n[spoiler]> x[/spoiler][/quote]",
+            'a <blockquote>b<br>\n<span class="spoiler"><blockquote>x</blockquote></span></blockquote>',
+        ),
+        # Later content lines are ordinary line starts
+        (
+            "a [spoiler]x\n> y[/spoiler]",
+            'a <span class="spoiler">x\n<blockquote>y</blockquote></span>',
+        ),
+    ],
+)
+def test_block_rules_on_a_containers_first_line(text, html):
     assert render_v2(text, headings=False) == html
 
 
