@@ -277,3 +277,48 @@ def test_container_scan_is_linear(text):
     start = time.perf_counter()
     render_v2(text, headings=False)
     assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        ("- a", "<ul><li>a</li></ul>"),
+        ("- a\n- b", "<ul><li>a</li><li>b</li></ul>"),
+        ("* a\n* b", "<ul><li>a</li><li>b</li></ul>"),
+        ("- a\n* b", "<ul><li>a</li><li>b</li></ul>"),
+        ("* a*\n* b*", "<ul><li>a*</li><li>b*</li></ul>"),
+        ("1. a\n2. b", "<ol><li>a</li><li>b</li></ol>"),
+        ("3. a\n7. b", '<ol start="3"><li>a</li><li>b</li></ol>'),
+        ("0001. a", "<ol><li>a</li></ol>"),
+        ("2012. Coming soon.", '<ol start="2012"><li>Coming soon.</li></ol>'),
+        ("- a\n1. b", "<ul><li>a</li></ul>\n<ol><li>b</li></ol>"),
+        ("  - a\n    - b", "<ul><li>a</li><li>b</li></ul>"),
+        ("- 日本", "<ul><li>日本</li></ul>"),
+        ("- **b**", "<ul><li><strong>b</strong></li></ul>"),
+        ("- > a", "<ul><li>&gt; a</li></ul>"),
+        ("- [spoiler]x[/spoiler]", '<ul><li><span class="spoiler">x</span></li></ul>'),
+        ("x\n- a\n- b\ny", "x\n<ul><li>a</li><li>b</li></ul>\ny"),
+        ("x\n\n- a\n\ny", "x\n<ul><li>a</li></ul>\ny"),
+        ("- a\n\n\ny", "<ul><li>a</li></ul>\n<br>\ny"),
+        ("[quote]- a\n- b[/quote]", "<blockquote><ul><li>a</li><li>b</li></ul></blockquote>"),
+        ("[quote]\n- a\n[/quote]", "<blockquote><ul><li>a</li></ul></blockquote>"),
+        # A list marker not at the start of a line of the source is text
+        ("a [spoiler]- b[/spoiler] c", 'a <span class="spoiler">- b</span> c'),
+        ("[spoiler]- b[/spoiler]", '<span class="spoiler"><ul><li>b</li></ul></span>'),
+        ("a [quote]- b\n- c[/quote]", "a <blockquote>- b\n<ul><li>c</li></ul></blockquote>"),
+    ],
+)
+def test_lists(text, html):
+    assert render_v2(text, headings=False) == html
+
+
+def test_huge_list_number_is_text():
+    text = "9" * 5000 + ". x"
+    assert render_v2(text, headings=False) == render_v1(text)
+
+
+@pytest.mark.parametrize("text", ["- a\n" * 4000, "* a\n" * 4000, "1. a\n" * 4000, "- -\n" * 4000])
+def test_many_list_lines_are_linear(text):
+    start = time.perf_counter()
+    render_v2(text, headings=False)
+    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS

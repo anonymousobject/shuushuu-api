@@ -13,6 +13,10 @@ the output matches version 1, except:
   a > right after the opening tag makes a nested quote.
 - A quote's name is plain text: the inline rules don't apply to it, and it
   can't hold a container tag.
+- A line starting with - or * and a space is a bulleted list item, and one
+  starting with a number, a dot, and a space is a numbered list item. Lists
+  are flat, and a * line is an item only next to another bullet line.
+  A blank line right above or below a list is dropped.
 
 The source is escaped first. A container scan then renders each quote and
 spoiler pair, a block pass sorts lines into blocks, and an inline pass
@@ -95,11 +99,20 @@ def _prepare(text: str) -> str:
 @dataclass
 class _Block:
     """
-    Consecutive lines of one kind: plain text lines, or the content of > quote lines.
+    Consecutive lines of one kind: plain text lines, the content of > quote
+    lines, or the text of bulleted (ul) or numbered (ol) list items.
     """
 
-    kind: Literal["text", "quote"]
+    kind: Literal["text", "quote", "ul", "ol"]
     lines: list[str]
+    start: int = 1  # The number a numbered list starts at
+
+
+# A bullet line; the group is the item's text
+_BULLET = re.compile(r"\s*[-*] +(\S.*)")
+# A numbered line; the groups are the number and the item's text. At most nine
+# digits: longer numbers are prose, and int() stays cheap.
+_NUMBERED = re.compile(r"\s*(\d{1,9})\. +(\S.*)")
 
 
 def _quote_content(line: str) -> str | None:
@@ -112,6 +125,46 @@ def _quote_content(line: str) -> str | None:
     return None
 
 
+def _list_item(line: str, bullet_neighbour: bool) -> _Block | None:
+    """
+    Return a one-item list block for a list item line, or None if the line isn't one.
+
+    bullet_neighbour says whether the line above or below is a bullet line,
+    which a * line needs to count: otherwise it is most likely italics.
+    """
+    bullet = _BULLET.fullmatch(line)
+    if bullet is not None:
+        # A token's index is digits, so a token counts as a letter or digit
+        if not any(c.isalnum() for c in bullet[1]):
+            return None
+        if line.lstrip().startswith("*") and not bullet_neighbour:
+            return None
+        return _Block("ul", [bullet[1]])
+    numbered = _NUMBERED.fullmatch(line)
+    if numbered is None or not any(c.isalnum() for c in numbered[2]):
+        return None
+    return _Block("ol", [numbered[2]], start=int(numbered[1]))
+
+
+def _absorb_blank_lines(blocks: list[_Block]) -> list[_Block]:
+    """
+    Drop one blank line right above and one right below each list.
+
+    A list is separated from its neighbours by a newline already, and a blank
+    line next to it would only add a <br>.
+    """
+    for i, block in enumerate(blocks):
+        if block.kind not in ("ul", "ol"):
+            continue
+        before = blocks[i - 1] if i > 0 else None
+        if before and before.kind == "text" and before.lines and not before.lines[-1].strip():
+            before.lines.pop()
+        after = blocks[i + 1] if i + 1 < len(blocks) else None
+        if after and after.kind == "text" and after.lines and not after.lines[0].strip():
+            after.lines.pop(0)
+    return [block for block in blocks if block.lines]
+
+
 def _split_blocks(text: str, starts_line: bool) -> list[_Block]:
     """
     Block pass: sort the lines into blocks.
@@ -119,19 +172,32 @@ def _split_blocks(text: str, starts_line: bool) -> list[_Block]:
     starts_line says whether the text starts a line of the source. A container
     opened mid-line doesn't, and its first line stays inline.
     """
+    lines = text.split("\n")
+    # Only a line that starts a line of the source gets the block rules
+    is_bullet = [
+        (number > 0 or starts_line) and _BULLET.fullmatch(line) is not None
+        for number, line in enumerate(lines)
+    ]
     blocks: list[_Block] = []
-    for number, line in enumerate(text.split("\n")):
-        # Only a line that starts a line of the source gets the block rules
+    for number, line in enumerate(lines):
         line_start = number > 0 or starts_line
         quote_content = _quote_content(line) if line_start else None
-        block = (
-            _Block("text", [line]) if quote_content is None else _Block("quote", [quote_content])
-        )
+        block = None
+        if quote_content is not None:
+            block = _Block("quote", [quote_content])
+        elif line_start:
+            block = _list_item(
+                line,
+                (number > 0 and is_bullet[number - 1])
+                or (number + 1 < len(lines) and is_bullet[number + 1]),
+            )
+        if block is None:
+            block = _Block("text", [line])
         if blocks and blocks[-1].kind == block.kind:
             blocks[-1].lines += block.lines
         else:
             blocks.append(block)
-    return blocks
+    return _absorb_blank_lines(blocks)
 
 
 def _render_inline(text: str) -> str:
@@ -163,15 +229,22 @@ def _render_block(block: _Block, tokens: _Tokens) -> str:
     if block.kind == "quote":
         # Consecutive quote lines join with spaces into one blockquote
         return f"<blockquote>{_render_inline(' '.join(block.lines))}</blockquote>"
+    if block.kind in ("ul", "ol"):
+        items = "".join(f"<li>{_render_inline(line)}</li>" for line in block.lines)
+        start = f' start="{block.start}"' if block.start != 1 else ""
+        return f"<{block.kind}{start}>{items}</{block.kind}>"
     # The inline pass runs over the whole run of lines, so italics and links can
     # span a line break, then the line breaks are rendered
     return _line_breaks(_render_inline("\n".join(block.lines)), tokens)
 
 
-def _line_break_before(block: _Block, tokens: _Tokens) -> str:
+def _line_break_before(previous: _Block, block: _Block, tokens: _Tokens) -> str:
     """
     Return the newline that separates a block from the one before it.
     """
+    # Lists are separated by a bare newline
+    if "ul" in (previous.kind, block.kind) or "ol" in (previous.kind, block.kind):
+        return "\n"
     # The newline before a blockquote or a quote container stays bare, as in
     # version 1
     if block.kind == "quote" or tokens.starts_quote(block.lines[0]):
@@ -185,8 +258,8 @@ def _render_blocks(text: str, tokens: _Tokens, *, starts_line: bool) -> str:
     """
     blocks = _split_blocks(text, starts_line)
     parts = [_render_block(blocks[0], tokens)]
-    for block in blocks[1:]:
-        parts += [_line_break_before(block, tokens), _render_block(block, tokens)]
+    for previous, block in zip(blocks, blocks[1:], strict=False):
+        parts += [_line_break_before(previous, block, tokens), _render_block(block, tokens)]
     return "".join(parts)
 
 
