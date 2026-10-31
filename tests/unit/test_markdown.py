@@ -443,6 +443,35 @@ class TestParseMarkdownLinkScaling:
         assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
 
 
+class TestParseMarkdownFaces:
+    """Tests for emoticon faces that start with > are not quotes"""
+
+    @pytest.mark.parametrize(
+        ("text", "html"),
+        [
+            (">_< oh no", "&gt;_&lt; oh no"),
+            (">.<", "&gt;.&lt;"),
+            ("><", "&gt;&lt;"),
+            (">'<", "&gt;&#x27;&lt;"),
+            ("  >w< hi", "  &gt;w&lt; hi"),
+            ("a\n>_<\nb", "a<br>\n&gt;_&lt;<br>\nb"),
+        ],
+    )
+    def test_face_is_not_a_quote(self, text, html):
+        assert parse_markdown(text) == html
+
+    @pytest.mark.parametrize(
+        ("text", "html"),
+        [
+            (">____< x", "<blockquote>____&lt; x</blockquote>"),
+            ("> quote", "<blockquote>quote</blockquote>"),
+            (">[spoiler]x[/spoiler]", '<blockquote><span class="spoiler">x</span></blockquote>'),
+        ],
+    )
+    def test_quote_lines_stay_quotes(self, text, html):
+        assert parse_markdown(text) == html
+
+
 class TestStripMarkdown:
     """Tests for stripping Markdown formatting"""
 

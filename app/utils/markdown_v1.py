@@ -7,7 +7,7 @@ Posts stored before markup versions existed keep rendering with these rules.
 import re
 from html import escape
 
-from app.utils.markdown_inline import escape_source, render_inline
+from app.utils.markdown_inline import escape_source, is_face_line, render_inline
 
 
 def _sub_innermost_first(pattern: re.Pattern[str], replacement: str, text: str) -> str:
@@ -126,7 +126,7 @@ def render_v1(text: str) -> str:
 
     for line in lines:
         stripped = line.lstrip()
-        if stripped.startswith("&gt;"):
+        if stripped.startswith("&gt;") and not is_face_line(stripped):
             # Start or continue blockquote
             quote_text = stripped[4:].lstrip()  # Remove &gt; (escaped >)
             blockquote_content.append(quote_text)

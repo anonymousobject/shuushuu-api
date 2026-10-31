@@ -28,6 +28,19 @@ def is_safe_url(url: str) -> bool:
 
 _LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
+_FACE_LINE = re.compile(r"&gt;(?:&#?\w+;|[^\s&<\ue000]){0,3}&lt;")
+
+
+def is_face_line(stripped: str) -> bool:
+    """
+    Check if an escaped line starting with &gt; is a face like >_< rather than a quote.
+
+    A face is &gt;, up to three characters, then &lt;. An escaped entity counts
+    as one character. A raw < (from rendered spoiler or quote HTML) or a
+    placeholder can't be part of a face.
+    """
+    return _FACE_LINE.match(stripped) is not None
+
 
 def _sub_links(replace: Callable[[re.Match[str]], str], text: str) -> str:
     """
