@@ -5,6 +5,7 @@ such snapshots. Used to prove a markdown parser change against real content.
 
 Usage:
     uv run python scripts/markdown_snapshot.py render --out FILE [--version N]
+    uv run python scripts/markdown_snapshot.py gate MAIN V1 --report FILE
     uv run python scripts/markdown_snapshot.py compare A B --report FILE [--normalise-newlines]
 
 `render` reads the database named by DATABASE_URL, read-only, with a
@@ -27,6 +28,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import asyncpg  # type: ignore[import-untyped]
 
@@ -128,7 +130,7 @@ def causes(source: str) -> set[str]:
     return {name for name, detect in _DETECTORS.items() if detect(source)}
 
 
-def _renderer(version: int | None) -> Any:
+def _renderer(version: int | None) -> Callable[[str, str | None, bool], str]:
     takes_version = "version" in inspect.signature(parse_markdown).parameters
 
     def render(kind: str, text: str | None, normalise: bool) -> str:
@@ -200,6 +202,19 @@ async def _fetch_sources(keys: set[tuple[str, int]]) -> dict[tuple[str, int], st
     return sources
 
 
+def _first_diff(a: str, b: str) -> int:
+    return next(
+        (i for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y), min(len(a), len(b))
+    )
+
+
+def _excerpt(text: str, centre: int, width: int) -> str:
+    """`width` characters of `text` around `centre`, with ... where cut."""
+    start = max(0, min(centre - width // 2, len(text) - width))
+    end = start + width
+    return ("..." if start else "") + text[start:end] + ("..." if end < len(text) else "")
+
+
 def _fence(text: str) -> str:
     return "```\n" + text.replace("```", "'''") + "\n```"
 
@@ -258,11 +273,61 @@ def compare(a: Path, b: Path, report: Path, normalise: bool) -> None:
         lines.append(f"\n## {cause} ({group_counts[cause]})\n")
         for kind, id_, source, before, after in groups[cause]:
             lines.append(f"### {kind} {id_}\n")
-            lines.append("Source:\n" + _fence(source[:EXCERPT]))
-            lines.append("Before:\n" + _fence(before[: EXCERPT * 2]))
-            lines.append("After:\n" + _fence(after[: EXCERPT * 2]) + "\n")
+            at = _first_diff(before, after)
+            # Escaping lengthens the HTML, so scale the offset to find the source spot.
+            source_at = at * len(source) // max(len(before), 1)
+            lines.append("Source:\n" + _fence(_excerpt(source, source_at, EXCERPT)))
+            lines.append("Before:\n" + _fence(_excerpt(before, at, EXCERPT * 2)))
+            lines.append("After:\n" + _fence(_excerpt(after, at, EXCERPT * 2)) + "\n")
     report.write_text("\n".join(lines), encoding="utf-8")
     print(f"changed {len(changed)} rows; groups: {dict(group_counts)}", file=sys.stderr)
+
+
+def _face_off_renderer() -> Callable[[str, str | None, bool], str]:
+    """Version 1 render with the face check forced off, i.e. main's behaviour."""
+    render = _renderer(1)
+
+    def render_without_face(kind: str, text: str | None, normalise: bool) -> str:
+        with patch("app.utils.markdown_v1.is_face_line", return_value=False):
+            return render(kind, text, normalise)
+
+    return render_without_face
+
+
+def gate_failures(
+    changed: list[tuple[str, int, str, str]],
+    sources: dict[tuple[str, int], str],
+    render_without_face: Callable[[str, str | None, bool], str],
+    main_html: dict[tuple[str, int], str],
+) -> list[tuple[str, int]]:
+    """Rows whose face-off version 1 output differs from main's: not 'face fix only'."""
+    normalise = {kind: n for kind, _, _, _, n in SOURCES}
+    failures = []
+    for kind, id_, _, _ in changed:
+        key = (kind, id_)
+        if render_without_face(kind, sources.get(key, ""), normalise[kind]) != main_html[key]:
+            failures.append(key)
+    return failures
+
+
+def gate(a: Path, b: Path, report: Path) -> bool:
+    """Prove every row that differs between main (a) and version 1 (b) is the face fix alone."""
+    changed, _ = _changed_rows(a, b, False)
+    wanted = {(k, i) for k, i, _, _ in changed}
+    main_html = {
+        (r["kind"], r["id"]): r["html"] for r in _read(a) if (r["kind"], r["id"]) in wanted
+    }
+    sources = asyncio.run(_fetch_sources(wanted))
+    failures = gate_failures(changed, sources, _face_off_renderer(), main_html)
+    proven = len(changed) - len(failures)
+    lines = ["# Gate: changed rows are the face fix only\n"]
+    lines.append(f"Changed rows: {len(changed)}")
+    lines.append(f"Proven face-fix-only (face-off render equals main byte for byte): {proven}")
+    lines.append(f"Failures: {len(failures)}\n")
+    lines.extend(f"- {kind} {id_}" for kind, id_ in failures)
+    report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"changed {len(changed)}, proven {proven}, failures {len(failures)}", file=sys.stderr)
+    return not failures
 
 
 def main() -> None:
@@ -276,7 +341,13 @@ def main() -> None:
     c.add_argument("b", type=Path)
     c.add_argument("--report", type=Path, required=True)
     c.add_argument("--normalise-newlines", action="store_true")
+    g = sub.add_parser("gate")
+    g.add_argument("a", type=Path, help="main snapshot")
+    g.add_argument("b", type=Path, help="branch version 1 snapshot")
+    g.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
+    if args.cmd == "gate":
+        sys.exit(0 if gate(args.a, args.b, args.report) else 1)
     if args.cmd == "render":
         asyncio.run(render_all(args.out, args.version))
     else:

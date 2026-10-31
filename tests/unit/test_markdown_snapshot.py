@@ -71,3 +71,53 @@ class TestCrOnly:
 
     def test_real_difference(self) -> None:
         assert not snapshot._cr_only("a\r<br>\nb", "<ul><li>a</li></ul>")
+
+
+class TestGateFailures:
+    def test_pass_and_fail(self) -> None:
+        sources = {("comment", 1): ">_< hi", ("comment", 2): "x"}
+        main_html = {("comment", 1): "OLD", ("comment", 2): "OLD"}
+        changed = [("comment", 1, "OLD", "NEW"), ("comment", 2, "OLD", "NEW")]
+
+        def render(kind: str, text: str | None, normalise: bool) -> str:
+            return "OLD" if text == ">_< hi" else "REGRESSED"
+
+        assert snapshot.gate_failures(changed, sources, render, main_html) == [("comment", 2)]
+
+
+class TestExcerpt:
+    def test_centred_on_difference(self) -> None:
+        text = "a" * 500 + "X" + "b" * 500
+        out = snapshot._excerpt(text, 500, 100)
+        assert "X" in out and out.startswith("...") and out.endswith("...")
+
+    def test_short_text_whole(self) -> None:
+        assert snapshot._excerpt("abc", 1, 100) == "abc"
+
+    def test_first_diff(self) -> None:
+        assert snapshot._first_diff("abcd", "abXd") == 2
+
+
+class TestRenderer:
+    def test_one_argument_signature(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(snapshot, "parse_markdown", lambda text: f"main:{text}")
+        assert snapshot._renderer(2)("comment", "t", False) == "main:t"
+
+    def test_forum_v2_headings(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        def fake(text: str, version: int, headings: bool = False) -> str:
+            return f"{version}:{headings}"
+
+        monkeypatch.setattr(snapshot, "parse_markdown", fake)
+        render = snapshot._renderer(2)
+        assert render("forum", "t", False) == "2:True"
+        assert render("comment", "t", False) == "2:False"
+        assert snapshot._renderer(1)("forum", "t", False) == "1:False"
+
+    def test_normalise_applied(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        def fake(text: str, version: int, headings: bool = False) -> str:
+            return text
+
+        monkeypatch.setattr(snapshot, "parse_markdown", fake)
+        render = snapshot._renderer(1)
+        assert render("comment", " &quot;a&quot; ", True) == '"a"'
+        assert render("forum", " &quot;a&quot; ", False) == " &quot;a&quot; "
