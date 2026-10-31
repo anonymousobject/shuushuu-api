@@ -373,8 +373,6 @@ async def db_session(engine, request) -> AsyncGenerator[AsyncSession]:
             # This test needs real commits for its rows to be visible
             ...
     """
-    from sqlalchemy import event
-
     # Check if test needs real commits (e.g., search through the API)
     needs_commit = request.node.get_closest_marker("needs_commit") is not None
 
@@ -400,18 +398,14 @@ async def db_session(engine, request) -> AsyncGenerator[AsyncSession]:
             # Start outer transaction - this will be rolled back at the end
             transaction = await connection.begin()
 
-            # Create session bound to this connection
-            session = AsyncSession(bind=connection, expire_on_commit=False)
-
-            # Make session.commit() use SAVEPOINT instead of real commit
-            @event.listens_for(session.sync_session, "after_transaction_end")
-            def restart_savepoint(sync_session, trans):
-                """After a SAVEPOINT ends, start a new one to keep isolation."""
-                if trans.nested and not trans._parent.nested:
-                    sync_session.begin_nested()
-
-            # Start initial nested transaction (SAVEPOINT)
-            await session.begin_nested()
+            # Every session transaction is a SAVEPOINT inside the outer one:
+            # session.commit() releases it, and session.rollback() (including
+            # the one after a failed commit) never reaches the outer transaction
+            session = AsyncSession(
+                bind=connection,
+                expire_on_commit=False,
+                join_transaction_mode="create_savepoint",
+            )
 
             await _create_test_users(session)
 

@@ -11,6 +11,8 @@ from pydantic import BaseModel, ValidationError
 
 from app.schemas.auth import ForgotPasswordRequest, ResetPasswordRequest
 from app.schemas.base import UTCDatetime, UTCDatetimeOptional
+from app.schemas.comment import CommentCreate, CommentResponse, CommentUpdate
+from app.schemas.common import UserSummary
 from app.schemas.image import (
     ImageBase,
     ImageResponse,
@@ -384,3 +386,33 @@ class TestResetPasswordRequest:
                 token="abc123",
                 new_password="weakpassword",
             )
+
+
+@pytest.mark.unit
+class TestCommentTextLength:
+    """Comment input is capped at 10,000 characters; stored text is not."""
+
+    @pytest.mark.parametrize(
+        ("schema", "fields"), [(CommentCreate, {"image_id": 1}), (CommentUpdate, {})]
+    )
+    def test_post_text_at_limit_accepted(self, schema, fields):
+        assert len(schema(post_text="x" * 10000, **fields).post_text) == 10000
+
+    @pytest.mark.parametrize(
+        ("schema", "fields"), [(CommentCreate, {"image_id": 1}), (CommentUpdate, {})]
+    )
+    def test_post_text_over_limit_rejected(self, schema, fields):
+        with pytest.raises(ValidationError, match="at most 10000 characters"):
+            schema(post_text="x" * 10001, **fields)
+
+    def test_response_accepts_stored_text_over_input_limit(self):
+        comment = CommentResponse(
+            post_id=1,
+            user_id=1,
+            image_id=1,
+            post_text="x" * 10001,
+            date=datetime(2026, 1, 1),
+            update_count=0,
+            user=UserSummary(user_id=1, username="testuser"),
+        )
+        assert len(comment.post_text_html) == 10001

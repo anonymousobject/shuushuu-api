@@ -66,6 +66,21 @@ class TestForumTextValidation:
         assert ForumThreadUpdate(title="  Hi  ").title == "Hi"
         assert ForumCategoryUpdate(title="  Hi  ").title == "Hi"
 
+    @pytest.mark.parametrize(
+        ("schema", "fields"),
+        [(ForumThreadCreate, {"title": "Hello"}), (ForumPostCreate, {}), (ForumPostUpdate, {})],
+    )
+    def test_post_text_at_limit_accepted(self, schema, fields):
+        assert len(schema(post_text="x" * 20000, **fields).post_text) == 20000
+
+    @pytest.mark.parametrize(
+        ("schema", "fields"),
+        [(ForumThreadCreate, {"title": "Hello"}), (ForumPostCreate, {}), (ForumPostUpdate, {})],
+    )
+    def test_post_text_over_limit_rejected(self, schema, fields):
+        with pytest.raises(ValidationError, match="at most 20000 characters"):
+            schema(post_text="x" * 20001, **fields)
+
 
 class TestForumPostHtml:
     def test_post_text_html_renders_markdown_and_quote(self):
@@ -84,3 +99,19 @@ class TestForumPostHtml:
         )
         assert "<strong>bold</strong>" in post.post_text_html
         assert "blockquote" in post.post_text_html
+
+    def test_stored_text_over_input_limit_accepted(self):
+        from app.schemas.common import UserSummary
+        from app.schemas.forum import ForumPostResponse
+
+        post = ForumPostResponse(
+            post_id=1,
+            thread_id=1,
+            user_id=1,
+            post_text="x" * 20001,
+            date="2026-07-06T00:00:00Z",
+            deleted=False,
+            update_count=0,
+            user=UserSummary(user_id=1, username="testuser"),
+        )
+        assert len(post.post_text_html) == 20001

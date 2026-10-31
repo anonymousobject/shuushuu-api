@@ -225,6 +225,16 @@ class TestCreatePost:
         )
         assert response.status_code == 403
 
+    async def test_post_text_over_length_limit_422(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        response = await client.post(
+            f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
+            json={"post_text": "x" * 20001},
+            headers=_auth(user_token),
+        )
+        assert response.status_code == 422
+
 
 class TestUpdatePost:
     """PATCH /api/v1/forum/posts/{post_id}"""
@@ -252,6 +262,17 @@ class TestUpdatePost:
         assert data["last_updated"] is not None
         assert data["last_updated_user_id"] == 3
         assert data["last_updated_user"]["user_id"] == 3
+
+    async def test_post_text_over_length_limit_422(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        response = await client.patch(
+            f"/api/v1/forum/posts/{post['post_id']}",
+            json={"post_text": "x" * 20001},
+            headers=_auth(user_token),
+        )
+        assert response.status_code == 422
 
     @pytest.mark.parametrize("field", ["post_text", "deleted"])
     async def test_explicit_null_422(
@@ -461,12 +482,7 @@ class TestForumTransientConflictRetry:
     (40P01); each write path must replay its unit on a fresh transaction
     (ADR-0004) instead of surfacing a 500. The error is injected into the
     locking read itself via _flaky_locking_read, exercising the real retry
-    helper (app/core/db_retry.py).
-
-    needs_commit: the retry performs a real session rollback; under the default
-    SAVEPOINT test isolation that rollback would unwind the committed
-    thread/user fixtures too, which cannot happen in production where they are
-    durably committed."""
+    helper (app/core/db_retry.py)."""
 
     async def _create_reply(self, client: AsyncClient, thread_id: int, token: str) -> dict:
         r = await client.post(
@@ -477,7 +493,6 @@ class TestForumTransientConflictRetry:
         assert r.status_code == 201
         return r.json()
 
-    @pytest.mark.needs_commit
     async def test_reply_retries_deadlock_and_succeeds(
         self, client: AsyncClient, public_thread, user_token
     ):
@@ -495,7 +510,6 @@ class TestForumTransientConflictRetry:
         detail = (await client.get(f"/api/v1/forum/threads/{public_thread.thread_id}")).json()
         assert detail["total"] == 2  # opening + the single retried reply
 
-    @pytest.mark.needs_commit
     async def test_reply_gives_up_after_bounded_retries(
         self, client: AsyncClient, public_thread, user_token
     ):
@@ -522,7 +536,6 @@ class TestForumTransientConflictRetry:
             )
         assert len(calls) == 1  # lock_not_available is deliberately not retried (ADR-0004)
 
-    @pytest.mark.needs_commit
     async def test_edit_post_retries_deadlock_and_succeeds(
         self, client: AsyncClient, public_thread, user_token
     ):
@@ -538,7 +551,6 @@ class TestForumTransientConflictRetry:
         assert response.json()["post_text"] == "edited"
         assert len(calls) >= 2
 
-    @pytest.mark.needs_commit
     async def test_delete_post_retries_deadlock_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token
     ):

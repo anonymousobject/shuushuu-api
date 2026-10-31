@@ -279,6 +279,16 @@ class TestCreateThread:
         )
         assert response.status_code == 422
 
+    async def test_post_text_over_length_limit_422(
+        self, client: AsyncClient, public_category, user_token
+    ):
+        response = await client.post(
+            f"/api/v1/forum/categories/{public_category.category_id}/threads",
+            json={"title": "Long", "post_text": "x" * 20001},
+            headers=_auth(user_token),
+        )
+        assert response.status_code == 422
+
 
 class TestGetThread:
     """GET /api/v1/forum/threads/{thread_id}"""

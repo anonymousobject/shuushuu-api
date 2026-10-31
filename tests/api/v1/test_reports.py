@@ -2489,7 +2489,6 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
     retry reports each tag once per attempt.
     """
 
-    @pytest.mark.needs_commit
     async def test_apply_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -2546,7 +2545,6 @@ class TestApplyTagSuggestionsSnapshotConflictRetry:
         await db_session.refresh(report)
         assert report.status == ReportStatus.REVIEWED
 
-    @pytest.mark.needs_commit
     async def test_apply_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):

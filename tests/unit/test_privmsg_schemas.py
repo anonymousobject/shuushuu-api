@@ -1,6 +1,9 @@
 """Tests for privmsg thread schemas."""
 
-from app.schemas.privmsg import PrivmsgCreate, ThreadSummary
+import pytest
+from pydantic import ValidationError
+
+from app.schemas.privmsg import PrivmsgCreate, PrivmsgMessage, ThreadSummary
 
 
 class TestPrivmsgCreate:
@@ -13,6 +16,29 @@ class TestPrivmsgCreate:
         """PrivmsgCreate should accept thread_id when provided."""
         msg = PrivmsgCreate(to_user_id=1, subject="Hello", message="World", thread_id="abc-123")
         assert msg.thread_id == "abc-123"
+
+    def test_message_at_length_limit_accepted(self):
+        msg = PrivmsgCreate(to_user_id=1, subject="Hello", message="x" * 20000)
+        assert len(msg.message) == 20000
+
+    def test_message_over_length_limit_rejected(self):
+        with pytest.raises(ValidationError, match="at most 20000 characters"):
+            PrivmsgCreate(to_user_id=1, subject="Hello", message="x" * 20001)
+
+
+class TestPrivmsgMessage:
+    def test_stored_text_over_input_limit_accepted(self):
+        """The cap is on input only: a legacy message longer than it still renders."""
+        msg = PrivmsgMessage(
+            privmsg_id=1,
+            viewed=0,
+            from_user_id=1,
+            to_user_id=2,
+            subject="Hello",
+            text="x" * 65000,
+            date="2026-01-01T00:00:00Z",
+        )
+        assert len(msg.text_html) == 65000
 
 
 class TestThreadSummary:

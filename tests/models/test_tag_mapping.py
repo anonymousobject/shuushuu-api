@@ -37,7 +37,6 @@ async def test_tag_mapping_null_internal_tag(db_session):
     assert mapping.internal_tag_id is None
 
 
-@pytest.mark.needs_commit  # failed commit needs real-commit + truncate isolation
 async def test_tag_mapping_unique_constraint(db_session):
     """The same external tag cannot be mapped twice."""
     mapping1 = TagMappings(external_tag="1girl")
