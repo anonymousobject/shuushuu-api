@@ -6,7 +6,8 @@ import time
 
 import pytest
 
-from app.utils.markdown import is_safe_url, parse_markdown, strip_markdown
+from app.utils.markdown import parse_markdown, strip_markdown
+from app.utils.markdown_inline import is_safe_url
 
 
 class TestIsSafeUrl:
@@ -36,6 +37,12 @@ class TestIsSafeUrl:
 
 class TestParseMarkdown:
     """Tests for Markdown to HTML conversion"""
+
+    def test_inline_spoiler(self):
+        assert parse_markdown("a [spoiler]b[/spoiler] c") == 'a <span class="spoiler">b</span> c'
+
+    def test_multiline_spoiler(self):
+        assert parse_markdown("[spoiler]a\nb[/spoiler]") == '<span class="spoiler">a<br>\nb</span>'
 
     def test_bold_text(self):
         result = parse_markdown("This is **bold** text")
