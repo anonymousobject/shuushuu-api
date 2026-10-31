@@ -26,7 +26,7 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 
 | Date | Effort | Docs |
 | --- | --- | --- |
-| 2026-10-30 | Lists, code, and forum headings in the markdown parser | [design](2026-Q4/2026-10-30-markdown-lists-and-code-design.md) |
+| 2026-10-30 | Lists, code, and forum headings in the markdown parser | [design](2026-Q4/2026-10-30-markdown-lists-and-code-design.md) · [impl](2026-Q4/2026-10-31-markdown-lists-and-code-impl.md) |
 
 ## 2026-Q3
 
@@ -122,4 +122,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-75 efforts, 110 documents.
+75 efforts, 111 documents.
