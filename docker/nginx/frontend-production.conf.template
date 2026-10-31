@@ -49,6 +49,15 @@ server {
     }
 }
 
+# Cache-Control for chunks @frontend_assets serves. A hit gets what the
+# frontend sends for them; a miss must not be cached at all, or Cloudflare
+# keeps the 404 for 3 minutes.
+map $status $frontend_assets_cache_control {
+    200     "public, max-age=31536000, immutable";
+    304     "public, max-age=31536000, immutable";
+    default "no-store";
+}
+
 # HTTPS server
 server {
     listen 443 ssl;
@@ -261,6 +270,29 @@ server {
         proxy_buffer_size 16k;
         proxy_buffers 4 16k;
         proxy_busy_buffers_size 32k;
+
+        # Hashed build chunks. While prod-deploy has two frontend replicas up,
+        # a page from the new one can ask the old one for a chunk it never
+        # had, and that 404 breaks hydration into a "500" error page
+        # (2026-10-30). So a 404 here falls back to the frontend_assets
+        # volume, which prod-deploy fills before rolling the frontend. Only on
+        # a 404: everything else is still the frontend's own (brotli) reply.
+        location /_app/immutable/ {
+            # Not inherited from the enclosing location.
+            set $frontend_upstream frontend:3000;
+            proxy_pass http://$frontend_upstream;
+            proxy_intercept_errors on;
+            error_page 404 = @frontend_assets;
+        }
+    }
+
+    location @frontend_assets {
+        root /srv/frontend-assets;
+        gzip_static on;
+        # Keep the server-level security headers despite our own add_header.
+        add_header_inherit merge;
+        add_header Cache-Control $frontend_assets_cache_control always;
+        try_files $uri =404;
     }
 
     # Health check

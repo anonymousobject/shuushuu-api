@@ -116,6 +116,9 @@ services:
       # LE certs land here via the certbot service. Read-only for nginx;
       # certbot has it RW.
       - ./docker/certbot/conf:/etc/letsencrypt:ro
+      # Frontend chunks from every deployed build (see the frontend_assets
+      # volume). Read-only here; only prod-deploy's sync step writes it.
+      - frontend_assets:/srv/frontend-assets:ro
     ports:
       # Appended to the base file's 80/443. Bound to loopback so the status
       # endpoint is reachable by dd-agent on this host and by nothing off it;
@@ -490,6 +493,13 @@ volumes:
     external: true
   alloy_data:
     name: alloy_data_prod
+    driver: local
+  # Hashed SvelteKit chunks (/_app/immutable/) from every frontend build
+  # `make prod-deploy` has shipped, so nginx can serve a chunk that the
+  # replica it reached doesn't have (see frontend-production.conf.template).
+  # Disposable: wiping it only loses that cover until the next deploy.
+  frontend_assets:
+    name: frontend_assets_prod
     driver: local
 
 networks:
