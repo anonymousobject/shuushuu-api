@@ -96,6 +96,11 @@ def _prepare(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+# Block kinds that are separated from their neighbours by a bare newline, and
+# that absorb a blank line directly above and below
+_STANDALONE_KINDS = {"ul", "ol"}
+
+
 @dataclass
 class _Block:
     """
@@ -136,21 +141,31 @@ def _has_typed_alnum(text: str) -> bool:
     return any(c.isalnum() for c in unescape(text))
 
 
+def _bullet_text(line: str) -> str | None:
+    """
+    Return the text of a bullet line that passes the item test, or None.
+
+    The text needs a letter or digit. A token's index is digits, so a token
+    counts as one.
+    """
+    bullet = _BULLET.fullmatch(line)
+    if bullet is None or not _has_typed_alnum(bullet[1]):
+        return None
+    return bullet[1]
+
+
 def _list_item(line: str, bullet_neighbour: bool) -> _Block | None:
     """
     Return a one-item list block for a list item line, or None if the line isn't one.
 
-    bullet_neighbour says whether the line above or below is a bullet line,
+    bullet_neighbour says whether the line above or below is a bullet item,
     which a * line needs to count: otherwise it is most likely italics.
     """
-    bullet = _BULLET.fullmatch(line)
+    bullet = _bullet_text(line)
     if bullet is not None:
-        # A token's index is digits, so a token counts as a letter or digit
-        if not _has_typed_alnum(bullet[1]):
-            return None
         if line.lstrip().startswith("*") and not bullet_neighbour:
             return None
-        return _Block("ul", [bullet[1]])
+        return _Block("ul", [bullet])
     numbered = _NUMBERED.fullmatch(line)
     if numbered is None or not _has_typed_alnum(numbered[2]):
         return None
@@ -165,7 +180,7 @@ def _absorb_blank_lines(blocks: list[_Block]) -> list[_Block]:
     line next to it would only add a <br>.
     """
     for i, block in enumerate(blocks):
-        if block.kind not in ("ul", "ol"):
+        if block.kind not in _STANDALONE_KINDS:
             continue
         before = blocks[i - 1] if i > 0 else None
         if before and before.kind == "text" and before.lines and not before.lines[-1].strip():
@@ -186,7 +201,7 @@ def _split_blocks(text: str, starts_line: bool) -> list[_Block]:
     lines = text.split("\n")
     # Only a line that starts a line of the source gets the block rules
     is_bullet = [
-        (number > 0 or starts_line) and _BULLET.fullmatch(line) is not None
+        (number > 0 or starts_line) and _bullet_text(line) is not None
         for number, line in enumerate(lines)
     ]
     blocks: list[_Block] = []
@@ -254,7 +269,7 @@ def _line_break_before(previous: _Block, block: _Block, tokens: _Tokens) -> str:
     Return the newline that separates a block from the one before it.
     """
     # Lists are separated by a bare newline
-    if "ul" in (previous.kind, block.kind) or "ol" in (previous.kind, block.kind):
+    if {previous.kind, block.kind} & _STANDALONE_KINDS:
         return "\n"
     # The newline before a blockquote or a quote container stays bare, as in
     # version 1

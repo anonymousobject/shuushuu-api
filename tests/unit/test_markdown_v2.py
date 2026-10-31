@@ -51,6 +51,8 @@ PARITY_CORPUS = [
     "- >_<",
     "- '_'",
     "- &amp;",
+    "- -\n* a",
+    "* *\n* x",
     "#1 fan!",
     "# x",
     "#### x",
@@ -302,6 +304,8 @@ def test_container_scan_is_linear(text):
         ("- > a", "<ul><li>&gt; a</li></ul>"),
         # The 3 is a typed digit, so this is a list item
         ("- <3", "<ul><li>&lt;3</li></ul>"),
+        ("* a", "* a"),
+        ("- a\n\n- b", "<ul><li>a</li></ul>\n<ul><li>b</li></ul>"),
         ("- 'a'", "<ul><li>&#x27;a&#x27;</li></ul>"),
         ("- [spoiler]x[/spoiler]", '<ul><li><span class="spoiler">x</span></li></ul>'),
         ("x\n- a\n- b\ny", "x\n<ul><li>a</li><li>b</li></ul>\ny"),
