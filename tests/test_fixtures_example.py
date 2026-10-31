@@ -75,19 +75,26 @@ async def test_isolation_between_tests(db_session):
     assert len(users) == 3
 
 
-@pytest.mark.asyncio
-async def test_failed_commit_keeps_earlier_test_data(db_session):
-    """A failed commit undoes only its own changes, not the test's earlier data."""
-    from sqlalchemy import func, select
+async def _fail_a_commit(db_session):
+    """Make a commit fail: user_id 0 has no users row, so its FK rejects the donation."""
     from sqlalchemy.exc import IntegrityError
 
     from app.models import Donations
-    from app.models.user import Users
 
     db_session.add(Donations(amount=10, user_id=0, nick="dangling"))
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_failed_commit_keeps_earlier_test_data(db_session):
+    """A failed commit undoes only its own changes, not the test's earlier data."""
+    from sqlalchemy import func, select
+
+    from app.models.user import Users
+
+    await _fail_a_commit(db_session)
 
     result = await db_session.execute(select(func.count()).select_from(Users))
     assert result.scalar() == 3
@@ -100,14 +107,10 @@ async def test_commit_after_failed_commit_stays_inside_the_test(db_session, engi
     Another connection must not see them, or they would leak into later tests.
     """
     from sqlalchemy import func, select
-    from sqlalchemy.exc import IntegrityError
 
     from app.models import Donations
 
-    db_session.add(Donations(amount=10, user_id=0, nick="dangling"))
-    with pytest.raises(IntegrityError):
-        await db_session.commit()
-    await db_session.rollback()
+    await _fail_a_commit(db_session)
 
     db_session.add(Donations(amount=10, user_id=None, nick="after-failure"))
     await db_session.commit()
