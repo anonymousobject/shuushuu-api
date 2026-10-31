@@ -418,3 +418,34 @@ def test_unclosed_fences_are_linear():
     start = time.perf_counter()
     render_v2(text, headings=False)
     assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        ("## Title", "<h2>Title</h2>"),
+        ("### Sub", "<h3>Sub</h3>"),
+        ("  ## Title", "<h2>Title</h2>"),
+        ("## **b**", "<h2><strong>b</strong></h2>"),
+        ("a\n## T\nb", "a\n<h2>T</h2>\nb"),
+        ("[quote]## T[/quote]", "<blockquote><h2>T</h2></blockquote>"),
+        ("## a\n## b", "<h2>a</h2>\n<h2>b</h2>"),
+        ("a\n\n## T\n\nb", "a\n<h2>T</h2>\nb"),
+    ],
+)
+def test_headings_in_forum_posts(text, html):
+    assert render_v2(text, headings=True) == html
+
+
+@pytest.mark.parametrize("text", ["# x", "#### x", "##x", "###hashtag", "## ", "#1 fan!"])
+def test_not_headings(text):
+    assert render_v2(text, headings=True) == render_v1(text)
+
+
+def test_headings_off_by_default():
+    assert render_v2("## Title", headings=False) == "## Title"
+
+
+def test_heading_opened_mid_line_stays_inline():
+    html = render_v2("a [spoiler]## T[/spoiler]", headings=True)
+    assert "<h2>" not in html

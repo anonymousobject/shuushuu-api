@@ -23,11 +23,16 @@ the output matches version 1, except:
 - A line holding only ``` and an optional language name opens a code block,
   and the next line holding only ``` closes it. Its content is literal, and
   the language name is dropped. A fence with no closing fence is plain text.
+- In forum posts, a line starting with ## and a space is a heading, and one
+  starting with ### and a space is a smaller heading. A single # or four or
+  more stay plain text. A blank line right above or below a heading is
+  dropped.
 
 The source is escaped first. Fenced code blocks and then code spans become
 tokens. A container scan then renders each quote and spoiler pair, a block
-pass sorts lines into blocks, and an inline pass renders each block's text. HTML that later passes must not touch is held in
-a token table behind placeholders, and the placeholders are expanded last.
+pass sorts lines into blocks, and an inline pass renders each block's text.
+HTML that later passes must not touch is held in a token table behind
+placeholders, and the placeholders are expanded last.
 """
 
 import re
@@ -112,18 +117,18 @@ def _prepare(text: str) -> str:
 
 # Block kinds that are separated from their neighbours by a bare newline, and
 # that absorb a blank line directly above and below
-_STANDALONE_KINDS = {"ul", "ol", "pre"}
+_STANDALONE_KINDS = {"ul", "ol", "pre", "h2", "h3"}
 
 
 @dataclass
 class _Block:
     """
     Consecutive lines of one kind: plain text lines, the content of > quote
-    lines, the text of bulleted (ul) or numbered (ol) list items, or the
-    placeholders of fenced code blocks (pre).
+    lines, the text of bulleted (ul) or numbered (ol) list items, the
+    placeholders of fenced code blocks (pre), or the text of headings (h2, h3).
     """
 
-    kind: Literal["text", "quote", "ul", "ol", "pre"]
+    kind: Literal["text", "quote", "ul", "ol", "pre", "h2", "h3"]
     lines: list[str]
     start: int = 1  # The number a numbered list starts at
 
@@ -133,6 +138,8 @@ _BULLET = re.compile(r"\s*[-*] +(\S.*)")
 # A numbered line; the groups are the number and the item's text. At most nine
 # digits: longer numbers are prose, and int() stays cheap.
 _NUMBERED = re.compile(r"\s*(\d{1,9})\. +(\S.*)")
+# A heading line; the groups are the markers and the heading's text
+_HEADING = re.compile(r"\s*(#{2,3}) +(\S.*)")
 
 
 def _quote_content(line: str) -> str | None:
@@ -189,9 +196,9 @@ def _list_item(line: str, bullet_neighbour: bool) -> _Block | None:
 
 def _absorb_blank_lines(blocks: list[_Block]) -> list[_Block]:
     """
-    Drop one blank line right above and one right below each list.
+    Drop one blank line right above and one right below each standalone block.
 
-    A list is separated from its neighbours by a newline already, and a blank
+    A standalone block is separated from its neighbours by a newline already, and a blank
     line next to it would only add a <br>.
     """
     for i, block in enumerate(blocks):
@@ -206,7 +213,7 @@ def _absorb_blank_lines(blocks: list[_Block]) -> list[_Block]:
     return [block for block in blocks if block.lines]
 
 
-def _split_blocks(text: str, starts_line: bool, tokens: _Tokens) -> list[_Block]:
+def _split_blocks(text: str, starts_line: bool, tokens: _Tokens, *, headings: bool) -> list[_Block]:
     """
     Block pass: sort the lines into blocks.
 
@@ -228,6 +235,8 @@ def _split_blocks(text: str, starts_line: bool, tokens: _Tokens) -> list[_Block]
             block = _Block("pre", [line])
         elif quote_content is not None:
             block = _Block("quote", [quote_content])
+        elif line_start and headings and (heading := _HEADING.fullmatch(line)):
+            block = _Block("h2" if len(heading[1]) == 2 else "h3", [heading[2]])
         elif line_start:
             block = _list_item(
                 line,
@@ -274,6 +283,10 @@ def _render_block(block: _Block, tokens: _Tokens) -> str:
         return f"<blockquote>{_render_inline(' '.join(block.lines))}</blockquote>"
     if block.kind == "pre":
         return "\n".join(block.lines)
+    if block.kind in ("h2", "h3"):
+        return "\n".join(
+            f"<{block.kind}>{_render_inline(line)}</{block.kind}>" for line in block.lines
+        )
     if block.kind in ("ul", "ol"):
         items = "".join(f"<li>{_render_inline(line)}</li>" for line in block.lines)
         start = f' start="{block.start}"' if block.start != 1 else ""
@@ -287,7 +300,7 @@ def _line_break_before(previous: _Block, block: _Block, tokens: _Tokens) -> str:
     """
     Return the newline that separates a block from the one before it.
     """
-    # Lists are separated by a bare newline
+    # Lists, code blocks, and headings are separated by a bare newline
     if {previous.kind, block.kind} & _STANDALONE_KINDS:
         return "\n"
     # The newline before a blockquote or a quote container stays bare, as in
@@ -297,11 +310,11 @@ def _line_break_before(previous: _Block, block: _Block, tokens: _Tokens) -> str:
     return "<br>\n"
 
 
-def _render_blocks(text: str, tokens: _Tokens, *, starts_line: bool) -> str:
+def _render_blocks(text: str, tokens: _Tokens, *, starts_line: bool, headings: bool) -> str:
     """
     Render prepared text with the block and inline passes, leaving placeholders in place.
     """
-    blocks = _split_blocks(text, starts_line, tokens)
+    blocks = _split_blocks(text, starts_line, tokens, headings=headings)
     parts = [_render_block(blocks[0], tokens)]
     for previous, block in zip(blocks, blocks[1:], strict=False):
         parts += [_line_break_before(previous, block, tokens), _render_block(block, tokens)]
@@ -363,18 +376,23 @@ def _strip_unmatched(stack: list[_Open], start: int, open_at: dict[str, list[int
     del stack[start:]
 
 
-def _render_container(pair: _Open, tokens: _Tokens) -> str:
+def _render_container(pair: _Open, tokens: _Tokens, *, headings: bool) -> str:
     """
     Render a matched pair, running the block and inline passes over its
     content, and return the placeholder that stands in for it.
     """
-    html = _render_blocks("".join(pair.content), tokens, starts_line=pair.starts_line)
+    html = _render_blocks(
+        "".join(pair.content), tokens, starts_line=pair.starts_line, headings=headings
+    )
     if pair.kind == "spoiler":
         return tokens.add(f'<span class="spoiler">{html}</span>')
     if html.endswith("<br>\n"):
         # The newline at the end of a quote stays bare, as in version 1. This
         # relies on rendered content ending in <br>\n exactly when the source
-        # content ends in a newline; new block kinds must keep that true.
+        # content ends in a newline. The exception is a standalone block (list,
+        # pre, heading) ending the content: blank-line absorption drops that
+        # newline, so [quote]\n- a\n[/quote] ends in </ul>, as intended. New
+        # block kinds must keep this true.
         html = html.removesuffix("<br>\n") + "\n"
     if pair.name is not None:
         # Unescape the name, then escape it once, as version 1 does
@@ -456,7 +474,7 @@ def _render_code_spans(text: str, tokens: _Tokens) -> str:
     return "".join(parts)
 
 
-def _render_containers(text: str, tokens: _Tokens) -> str:
+def _render_containers(text: str, tokens: _Tokens, *, headings: bool) -> str:
     """
     Container scan: replace each matched quote or spoiler pair with a
     placeholder, innermost first, and strip every unmatched tag.
@@ -496,20 +514,19 @@ def _render_containers(text: str, tokens: _Tokens) -> str:
         _strip_unmatched(stack, partner + 1, open_at)
         pair = stack.pop()
         open_at[kind].pop()
-        stack[-1].append(_render_container(pair, tokens))
+        stack[-1].append(_render_container(pair, tokens, headings=headings))
     stack[-1].append(text[position:])
     _strip_unmatched(stack, 1, open_at)
     return "".join(stack[0].content)
 
 
-def render_v2(text: str | None, headings: bool) -> str:  # noqa: ARG001
+def render_v2(text: str | None, headings: bool) -> str:
     """
     Render text written with version 2's rules to safe HTML.
 
     Args:
         text: Raw markdown text from user
-        headings: Whether ## and ### lines become headings, for forum posts.
-            Version 2 has no heading rule yet, so this has no effect.
+        headings: Whether ## and ### lines become headings, for forum posts
 
     Returns:
         Safe HTML string
@@ -518,6 +535,8 @@ def render_v2(text: str | None, headings: bool) -> str:  # noqa: ARG001
         return ""
     tokens = _Tokens()
     text = _render_containers(
-        _render_code_spans(_render_fences(_prepare(text), tokens), tokens), tokens
+        _render_code_spans(_render_fences(_prepare(text), tokens), tokens),
+        tokens,
+        headings=headings,
     )
-    return tokens.expand(_render_blocks(text, tokens, starts_line=True))
+    return tokens.expand(_render_blocks(text, tokens, starts_line=True, headings=headings))
