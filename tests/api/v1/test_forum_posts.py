@@ -225,6 +225,16 @@ class TestCreatePost:
         )
         assert response.status_code == 403
 
+    async def test_post_text_over_length_limit_422(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        response = await client.post(
+            f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
+            json={"post_text": "x" * 20001},
+            headers=_auth(user_token),
+        )
+        assert response.status_code == 422
+
 
 class TestUpdatePost:
     """PATCH /api/v1/forum/posts/{post_id}"""
@@ -252,6 +262,17 @@ class TestUpdatePost:
         assert data["last_updated"] is not None
         assert data["last_updated_user_id"] == 3
         assert data["last_updated_user"]["user_id"] == 3
+
+    async def test_post_text_over_length_limit_422(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        post = await self._create_reply(client, public_thread.thread_id, user_token)
+        response = await client.patch(
+            f"/api/v1/forum/posts/{post['post_id']}",
+            json={"post_text": "x" * 20001},
+            headers=_auth(user_token),
+        )
+        assert response.status_code == 422
 
     @pytest.mark.parametrize("field", ["post_text", "deleted"])
     async def test_explicit_null_422(

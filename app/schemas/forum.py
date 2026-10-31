@@ -120,7 +120,7 @@ class ForumThreadCreate(BaseModel):
     """Create a thread with its opening post in one call."""
 
     title: str = Field(min_length=1, max_length=255)
-    post_text: str = Field(min_length=1)
+    post_text: str = Field(min_length=1, max_length=20000)
 
     @field_validator("title", "post_text", mode="before")
     @classmethod
@@ -179,7 +179,9 @@ class ForumThreadListResponse(BaseModel):
 
 
 class ForumPostCreate(BaseModel):
-    post_text: str = Field(min_length=1, description="Post text (markdown supported)")
+    post_text: str = Field(
+        min_length=1, max_length=20000, description="Post text (markdown supported)"
+    )
 
     @field_validator("post_text", mode="before")
     @classmethod
@@ -191,7 +193,7 @@ class ForumPostCreate(BaseModel):
 class ForumPostUpdate(BaseModel):
     """post_text: owner or FORUM_MODERATE; deleted: FORUM_MODERATE only."""
 
-    post_text: str | None = Field(default=None, min_length=1)
+    post_text: str | None = Field(default=None, min_length=1, max_length=20000)
     deleted: bool | None = None
 
     _not_null = field_validator("post_text", "deleted", mode="before")(_reject_null)

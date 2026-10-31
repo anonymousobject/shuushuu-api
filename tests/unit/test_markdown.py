@@ -2,6 +2,10 @@
 Tests for safe Markdown parser
 """
 
+import time
+
+import pytest
+
 from app.utils.markdown import is_safe_url, parse_markdown, strip_markdown
 
 
@@ -60,6 +64,37 @@ class TestParseMarkdown:
         # Should not create a link
         assert "<a href" not in result
         assert "[click me](javascript:alert(&#x27;xss&#x27;))" in result
+
+    def test_link_text_starts_at_leftmost_open_bracket(self):
+        result = parse_markdown("[a[b](https://x.com)")
+        assert result == '<a href="https://x.com" rel="nofollow noopener" target="_blank">a[b</a>'
+
+    def test_link_after_empty_link_text(self):
+        result = parse_markdown("[](x)[a](https://x.com)")
+        assert (
+            result == '[](x)<a href="https://x.com" rel="nofollow noopener" target="_blank">a</a>'
+        )
+
+    def test_link_after_bracket_pair_without_url(self):
+        result = parse_markdown("[a][b](https://x.com)")
+        assert result == '[a]<a href="https://x.com" rel="nofollow noopener" target="_blank">b</a>'
+
+    def test_link_with_empty_url_not_rendered(self):
+        assert parse_markdown("[x]()") == "[x]()"
+
+    def test_link_url_runs_to_first_closing_paren(self):
+        result = parse_markdown("[a](b)(c)")
+        assert result == '<a href="b" rel="nofollow noopener" target="_blank">a</a>(c)'
+
+    def test_link_url_may_contain_brackets(self):
+        result = parse_markdown("[x](a](b)")
+        assert result == '<a href="a](b" rel="nofollow noopener" target="_blank">x</a>'
+
+    def test_link_text_may_span_lines(self):
+        result = parse_markdown("[a\nb](https://x.com)")
+        assert (
+            result == '<a href="https://x.com" rel="nofollow noopener" target="_blank">a<br>\nb</a>'
+        )
 
     def test_blockquote(self):
         result = parse_markdown("> This is a quote")
@@ -214,6 +249,13 @@ Another line."""
         assert "<blockquote>" in result
         assert '<a href="https://example.com"' in result
 
+    def test_nested_spoilers(self):
+        result = parse_markdown("[spoiler]a [spoiler]b[/spoiler] c[/spoiler]")
+        assert result == '<span class="spoiler">a <span class="spoiler">b</span> c</span>'
+
+    def test_unclosed_spoiler_tag_is_removed(self):
+        assert parse_markdown("[spoiler]unclosed") == "unclosed"
+
     def test_nested_bold_italic_not_supported(self):
         # We don't support nested formatting like ***text***
         # This is acceptable for our use case
@@ -221,6 +263,177 @@ Another line."""
         # Exact output depends on regex matching order
         # Just verify no script injection
         assert "<script>" not in result
+
+
+class TestParseMarkdownQuotes:
+    """BBCode [quote] rendering: named, anonymous, nested and orphaned tags"""
+
+    def test_named_quote(self):
+        result = parse_markdown('[quote="alice"]hi[/quote]')
+        assert result == "<blockquote><small>alice said:</small> hi</blockquote>"
+
+    def test_named_quote_with_legacy_entity_encoded_name(self):
+        result = parse_markdown("[quote=&quot;alice&quot;]hi[/quote]")
+        assert result == "<blockquote><small>alice said:</small> hi</blockquote>"
+
+    def test_named_quote_multiline_with_surrounding_text(self):
+        result = parse_markdown('before [quote="alice"]hi\nthere[/quote] after')
+        assert (
+            result
+            == "before <blockquote><small>alice said:</small> hi<br>\nthere</blockquote> after"
+        )
+
+    def test_sibling_named_quotes(self):
+        result = parse_markdown('[quote="alice"]one[/quote] and [quote="bob"]two[/quote]')
+        assert result == (
+            "<blockquote><small>alice said:</small> one</blockquote> and "
+            "<blockquote><small>bob said:</small> two</blockquote>"
+        )
+
+    def test_named_quote_content_is_escaped(self):
+        result = parse_markdown("[quote=\"alice\"]<script>alert('xss')</script>[/quote]")
+        assert result == (
+            "<blockquote><small>alice said:</small> "
+            "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;</blockquote>"
+        )
+
+    def test_named_quote_content_keeps_markdown(self):
+        result = parse_markdown('[quote="alice"]**bold** [spoiler]s[/spoiler][/quote]')
+        assert result == (
+            "<blockquote><small>alice said:</small> "
+            '<strong>bold</strong> <span class="spoiler">s</span></blockquote>'
+        )
+
+    def test_named_quote_inside_spoiler(self):
+        result = parse_markdown('[spoiler][quote="alice"]x[/quote][/spoiler]')
+        assert result == (
+            '<span class="spoiler"><blockquote><small>alice said:</small> x</blockquote></span>'
+        )
+
+    def test_anonymous_quote(self):
+        assert parse_markdown("[quote]anon[/quote]") == "<blockquote>anon</blockquote>"
+
+    def test_sibling_anonymous_quotes(self):
+        result = parse_markdown("[quote]a[/quote] [quote]b[/quote]")
+        assert result == "<blockquote>a</blockquote> <blockquote>b</blockquote>"
+
+    def test_nested_named_quotes(self):
+        result = parse_markdown('[quote="alice"]outer [quote="bob"]inner[/quote] tail[/quote]')
+        assert result == (
+            "<blockquote><small>alice said:</small> outer "
+            "<blockquote><small>bob said:</small> inner</blockquote> tail</blockquote>"
+        )
+
+    def test_three_deep_named_quotes(self):
+        result = parse_markdown('[quote="a"][quote="b"][quote="c"]x[/quote]y[/quote]z[/quote]')
+        assert result == (
+            "<blockquote><small>a said:</small> "
+            "<blockquote><small>b said:</small> "
+            "<blockquote><small>c said:</small> x</blockquote>y</blockquote>z</blockquote>"
+        )
+
+    def test_anonymous_quote_inside_named_quote(self):
+        result = parse_markdown('[quote="alice"]outer [quote]anon[/quote] tail[/quote]')
+        assert result == (
+            "<blockquote><small>alice said:</small> outer "
+            "<blockquote>anon</blockquote> tail</blockquote>"
+        )
+
+    def test_named_quote_inside_anonymous_quote(self):
+        result = parse_markdown('[quote]outer [quote="bob"]inner[/quote] tail[/quote]')
+        assert result == (
+            "<blockquote>outer "
+            "<blockquote><small>bob said:</small> inner</blockquote> tail</blockquote>"
+        )
+
+    def test_unclosed_named_quote_is_left_as_text(self):
+        result = parse_markdown('[quote="alice"]unclosed')
+        assert result == "[quote=&quot;alice&quot;]unclosed"
+
+    def test_unclosed_anonymous_quote_tag_is_removed(self):
+        assert parse_markdown("[quote]unclosed") == "unclosed"
+
+    def test_orphan_closing_tag_is_removed(self):
+        assert parse_markdown("orphan close[/quote]") == "orphan close"
+
+    def test_extra_closing_tag_after_named_quote_is_removed(self):
+        result = parse_markdown('[quote="alice"]a[/quote][/quote]')
+        assert result == "<blockquote><small>alice said:</small> a</blockquote>"
+
+    def test_nested_anonymous_quotes(self):
+        result = parse_markdown("[quote]outer [quote]inner[/quote] tail[/quote]")
+        assert result == "<blockquote>outer <blockquote>inner</blockquote> tail</blockquote>"
+
+    def test_named_quote_missing_a_closer_pairs_leftmost_opener_first(self):
+        """Many legacy comments lost an inner quote's closer: the first closer
+        follows the outer author's reply, so it must stay with the outer opener."""
+        result = parse_markdown('[quote="alice"][quote="bob"]question\nanswer[/quote]\nreply')
+        assert result == (
+            "<blockquote><small>alice said:</small> [quote=&quot;bob&quot;]question<br>\n"
+            "answer</blockquote><br>\nreply"
+        )
+
+
+# Linear parsing takes milliseconds on these inputs; a scan that restarts from
+# every opener takes seconds. The gap leaves room for a loaded CI runner.
+RENDER_TIME_LIMIT_SECONDS = 0.5
+
+
+class TestParseMarkdownQuoteScaling:
+    """Quote parsing stays linear in input length"""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '[quote="x"]' * 2000,
+            '[quote="x"]' * 2000 + "[/quote]",
+            '[quote="x"]' * 5900,
+            '[quote="x"]' * 5900 + "[/quote]",
+            "[/quote]" + '[quote="x"]' * 5900,
+        ],
+        ids=[
+            "2000-openers",
+            "2000-openers-one-closer",
+            "5900-openers",
+            "5900-openers-one-closer",
+            "5900-openers-after-a-closer",
+        ],
+    )
+    def test_many_named_quote_openers(self, text):
+        start = time.perf_counter()
+        parse_markdown(text)
+        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+
+    def test_many_anonymous_quote_openers(self):
+        start = time.perf_counter()
+        parse_markdown("[quote]" * 10000)
+        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+
+
+class TestParseMarkdownLinkScaling:
+    """Link parsing stays linear in input length"""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "[" * 20000,
+            "[" * 40000,
+            "[" * 40000 + "]",
+            "[" * 40000 + "](",
+            "[x](" * 20000,
+        ],
+        ids=[
+            "20000-open-brackets",
+            "40000-open-brackets",
+            "40000-open-brackets-one-close",
+            "40000-open-brackets-one-close-and-paren",
+            "20000-links-without-closing-paren",
+        ],
+    )
+    def test_many_unfinished_links(self, text):
+        start = time.perf_counter()
+        parse_markdown(text)
+        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 class TestStripMarkdown:

@@ -37,6 +37,7 @@ All HTML is escaped - no arbitrary HTML/scripts allowed.
 """
 
 import re
+from collections.abc import Callable
 from html import escape
 from urllib.parse import urlparse
 
@@ -54,6 +55,63 @@ def is_safe_url(url: str) -> bool:
         return parsed.scheme in ("http", "https", "") or url.startswith("//")
     except Exception:
         return False
+
+
+def _sub_innermost_first(pattern: re.Pattern[str], replacement: str, text: str) -> str:
+    """
+    Replace every match of a tempered-token tag pattern, pass after pass.
+
+    Each pass replaces the innermost tags, exposing the next level of nesting
+    to the following pass. Stops when a pass changes nothing, or after 10
+    passes so pathological nesting can't loop for long.
+    """
+    max_iterations = 10
+    for _ in range(max_iterations):
+        new_text = pattern.sub(replacement, text)
+        if new_text == text:
+            break
+        text = new_text
+    return text
+
+
+_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def _sub_links(replace: Callable[[re.Match[str]], str], text: str) -> str:
+    """
+    Same result as _LINK_PATTERN.sub(replace, text), in linear time.
+
+    re.sub tries the pattern at every "[", and a failed attempt can scan to
+    the end of the text, so many "[" without a "](...)" after them took
+    quadratic time. A match at a "[" is fully determined by the first "]"
+    after it and the first ")" after that: every "[" before the same "]"
+    matches or fails together, so one check covers them all and the scan
+    moves on past that "]".
+    """
+    parts = []
+    done = 0  # text[:done] is already in parts
+    position = 0  # where to look for the next "["
+    while (start := text.find("[", position)) != -1:
+        close = text.find("]", start + 1)
+        if close == -1:
+            break  # No "]" after any remaining "["
+        if close == start + 1 or not text.startswith("(", close + 1):
+            # Empty link text (start is the only "[" before this "]"), or no
+            # "(" after the "]": no "[" before this "]" can match
+            position = close + 1
+            continue
+        end = text.find(")", close + 2)
+        if end == -1:
+            break  # No ")" left, so no later link can close either
+        if end == close + 2:
+            position = close + 1  # Empty URL
+            continue
+        match = _LINK_PATTERN.match(text, start)
+        assert match is not None  # the checks above are exactly the pattern
+        parts += [text[done:start], replace(match)]
+        done = position = end + 1
+    parts.append(text[done:])
+    return "".join(parts)
 
 
 def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
@@ -102,28 +160,42 @@ def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
         iterations += 1
 
         # Match [quote="..."] or [quote=&quot;...&quot;] followed by content and [/quote]
-        # Use non-greedy matching to get innermost quotes first
+        # Non-greedy: the leftmost opener pairs with the first closer after it.
+        # Balanced nesting renders the same either way, and legacy comments that
+        # lost an inner quote's closer depend on this pairing to keep the outer
+        # author's attribution.
         def replace_bbcode_quote(match: re.Match[str]) -> str:
             username = match.group(1) or match.group(2)
             username = username.replace("&quot;", '"')
             content = match.group(3)
             return f"<blockquote><small>{escape(username)} said:</small> {content}</blockquote>"
 
-        text = re.sub(
-            r'\[quote=(?:"([^"]*)"|&quot;([^&]*)&quot;)\](.*?)\[/quote\]',
-            replace_bbcode_quote,
-            text,
-            count=1,  # Replace one at a time, innermost first
-            flags=re.DOTALL,
+        # Only an opener before the last closer can match, so the search stops
+        # there. Searching further would scan from every later opener to the end
+        # of the text, which is quadratic in the number of unclosed openers.
+        last_closer = text.rfind("[/quote]")
+        if last_closer == -1:
+            break
+        search_end = last_closer + len("[/quote]")
+        text = (
+            re.sub(
+                r'\[quote=(?:"([^"]*)"|&quot;([^&]*)&quot;)\](.*?)\[/quote\]',
+                replace_bbcode_quote,
+                text[:search_end],
+                count=1,  # Replace one at a time
+                flags=re.DOTALL,
+            )
+            + text[search_end:]
         )
 
     # Process anonymous BBCode quotes: [quote]...[/quote] (no username)
-    text = re.sub(
-        r"\[quote\](.*?)\[/quote\]",
-        r"<blockquote>\1</blockquote>",
-        text,
-        flags=re.DOTALL,
+    # Same tempered token and innermost-first passes as the spoilers below, so
+    # nested quotes keep their nesting and unclosed openers stay linear
+    anonymous_quote_pattern = re.compile(
+        r"\[quote\]((?:(?!\[quote\]|\[/quote\]).)*?)\[/quote\]",
+        re.DOTALL,
     )
+    text = _sub_innermost_first(anonymous_quote_pattern, r"<blockquote>\1</blockquote>", text)
 
     # Remove any unmatched [quote] or [/quote] tags (orphaned tags)
     text = text.replace("[quote]", "")
@@ -135,12 +207,7 @@ def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
         r"\[spoiler\]((?:(?!\[spoiler\]|\[/spoiler\]).)*?)\[/spoiler\]",
         re.DOTALL,
     )
-    max_spoiler_iterations = 10
-    for _ in range(max_spoiler_iterations):
-        new_text = spoiler_pattern.sub(r'<span class="spoiler">\1</span>', text)
-        if new_text == text:
-            break
-        text = new_text
+    text = _sub_innermost_first(spoiler_pattern, r'<span class="spoiler">\1</span>', text)
 
     # Remove any unmatched [spoiler] or [/spoiler] tags
     text = text.replace("[spoiler]", "")
@@ -190,7 +257,7 @@ def parse_markdown(text: str) -> str:  # noqa: C901, PLR0915
 
         return f'<a href="{escape(url)}" rel="nofollow noopener" target="_blank">{link_text}</a>'
 
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, text)
+    text = _sub_links(replace_link, text)
 
     # Auto-link bare URLs (https://... or http://...)
     # Runs AFTER explicit markdown links to avoid double-linking.

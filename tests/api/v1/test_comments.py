@@ -627,6 +627,24 @@ class TestCreateComment:
         # Validation error from pydantic (stripped text is empty)
         assert response.status_code == 422
 
+    async def test_create_comment_over_length_limit(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        """Comment text over 10,000 characters is rejected by validation."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        response = await authenticated_client.post(
+            "/api/v1/comments",
+            json={"image_id": image.image_id, "post_text": "x" * 10001},
+        )
+        assert response.status_code == 422
+
     async def test_create_comment_on_locked_image(
         self,
         authenticated_client: AsyncClient,
@@ -755,6 +773,37 @@ class TestUpdateComment:
             json={"post_text": "   "},
         )
         assert response.status_code == 422
+
+    async def test_update_comment_over_length_limit(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: dict,
+        sample_image_data: dict,
+    ):
+        """An edit over 10,000 characters is rejected; the comment keeps its text."""
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+
+        comment = Comments(
+            image_id=image.image_id,
+            user_id=sample_user.id,
+            post_text="Original text",
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        response = await authenticated_client.patch(
+            f"/api/v1/comments/{comment.post_id}",
+            json={"post_text": "x" * 10001},
+        )
+        assert response.status_code == 422
+
+        await db_session.refresh(comment)
+        assert comment.post_text == "Original text"
 
     async def test_update_requires_auth(self, client: AsyncClient):
         """Test that updating a comment requires authentication."""
