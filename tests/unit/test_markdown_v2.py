@@ -7,7 +7,7 @@ import time
 import pytest
 
 from app.utils.markdown_v1 import render_v1
-from app.utils.markdown_v2 import _render_inline, _Tokens, render_v2
+from app.utils.markdown_v2 import render_v2
 from tests.unit.test_markdown import RENDER_TIME_LIMIT_SECONDS
 
 # Text that uses only version 1 syntax and none of the design's expected
@@ -50,6 +50,29 @@ PARITY_CORPUS = [
     "#1 fan!",
     "# x",
     "#### x",
+    '[quote="alice"]hi[/quote]',
+    "[quote]a\nb[/quote]",
+    "[quote]\na\n[/quote]",
+    "x\n[quote]a[/quote]\ny",
+    "[quote]a[/quote]\n[quote]b[/quote]",
+    '[quote="a"][quote="b"]x[/quote] y[/quote]',
+    "a [spoiler]b[/spoiler] c",
+    "[spoiler]a\nb[/spoiler]",
+    "[spoiler]a\n[/spoiler]",
+    "[spoiler]a [spoiler]b[/spoiler] c[/spoiler]",
+    "[spoiler]a [quote] b[/spoiler]",
+    '[spoiler][quote="a"]x[/quote][/spoiler]',
+    "[spoiler]unclosed",
+    "[/quote] x",
+    "[quote]unclosed",
+    "> a\n[quote]b[/quote]",
+    "[quote]\n> a\n[/quote]",
+    '[quote="a"]x\n[/quote]',
+    "[quote]x\n[quote]y[/quote]\n[/quote]",
+    "[quote]\n[/quote]",
+    "x\n[spoiler]a[/spoiler]",
+    "x\n [quote]a[/quote]",
+    "[spoiler]x\n[quote]a[/quote][/spoiler]",
 ]
 
 
@@ -90,8 +113,83 @@ def test_bracket_runs_are_linear(text):
     assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
 
 
-def test_inline_rules_skip_tokens():
-    tokens = _Tokens()
-    token = tokens.add("<code>*x*</code>")
-    html = _render_inline(f"*a{token}b* **c**")
-    assert tokens.expand(html) == "*a<code>*x*</code>b* <strong>c</strong>"
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        # Bold markers on both sides of a spoiler don't pair across it
+        ("**a [spoiler]b[/spoiler] c**", '**a <span class="spoiler">b</span> c**'),
+        # A marker outside a spoiler doesn't pair with one inside it
+        ("*a [spoiler]b*[/spoiler]", '*a <span class="spoiler">b*</span>'),
+        # The rules still apply on either side
+        ("*a* [spoiler]b[/spoiler] *c*", '<em>a</em> <span class="spoiler">b</span> <em>c</em>'),
+    ],
+)
+def test_inline_rules_do_not_cross_a_container(text, html):
+    assert render_v2(text, headings=False) == html
+
+
+def test_mis_nested_spoiler_keeps_its_text_hidden():
+    assert render_v2("[quote][spoiler]x[/quote][/spoiler]", headings=False) == (
+        '<span class="spoiler">x</span>'
+    )
+
+
+def test_unclosed_named_quote_is_stripped():
+    assert render_v2('[quote="alice"]unclosed', headings=False) == "unclosed"
+
+
+def test_missing_inner_closer_pairs_innermost():
+    text = '[quote="alice"][quote="bob"]question\nanswer[/quote]\nreply'
+    assert render_v2(text, headings=False) == (
+        "<blockquote><small>bob said:</small> question<br>\nanswer</blockquote><br>\nreply"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        ('[spoiler]a [quote]b [quote="x"]c[/spoiler] d', '<span class="spoiler">a b c</span> d'),
+        ('a [quote]b [spoiler]c [quote="x"]d', "a b c d"),
+    ],
+    ids=["inside-a-pair", "at-the-end"],
+)
+def test_unmatched_openers_are_stripped_keeping_content_in_order(text, html):
+    assert render_v2(text, headings=False) == html
+
+
+def test_quotes_nest_past_ten():
+    text = "[quote]" * 12 + "x" + "[/quote]" * 12
+    assert render_v2(text, headings=False) == "<blockquote>" * 12 + "x" + "</blockquote>" * 12
+
+
+def test_url_before_container_links_only_the_url():
+    html = render_v2("see http://a.com/[spoiler]x[/spoiler]", headings=False)
+    assert html == (
+        'see <a href="http://a.com/" rel="nofollow noopener" target="_blank">http://a.com/</a>'
+        '<span class="spoiler">x</span>'
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[quote]" * 700 + "[/quote]" * 700,
+        "[spoiler]" * 700 + "[/spoiler]" * 700,
+        '[quote="x"]' * 700 + "[/quote]" * 700,
+        '[quote="x"]' * 5900,
+        "[quote]" * 10000,
+        "[quote]" + "[spoiler]" * 1100 + "[/quote]" * 1100,
+    ],
+    ids=[
+        "quote-700",
+        "spoiler-700",
+        "named-700",
+        "named-openers",
+        "anon-openers",
+        "blocked-closers",
+    ],
+)
+def test_container_scan_is_linear(text):
+    start = time.perf_counter()
+    render_v2(text, headings=False)
+    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS

@@ -3,17 +3,18 @@ Version 2 of the markdown renderer.
 
 New posts render with these rules. On text written with version 1's syntax
 the output matches version 1, except where inline markup crosses from one
-block into another: version 2 applies the inline rules to each block on its
-own.
+block or container into another (version 2 applies the inline rules to each
+on its own), and where quote and spoiler tags are unclosed or mis-nested.
 
-The source is escaped first. A block pass then sorts lines into blocks, and
-an inline pass renders each block's text. HTML that later passes must not
-touch is held in a token table behind placeholders, and the placeholders are
-expanded last.
+The source is escaped first. A container scan then renders each quote and
+spoiler pair, a block pass sorts lines into blocks, and an inline pass
+renders each block's text. HTML that later passes must not touch is held in
+a token table behind placeholders, and the placeholders are expanded last.
 """
 
 import re
 from dataclasses import dataclass
+from html import escape, unescape
 from typing import Literal
 
 from app.utils.markdown_inline import escape_source, is_face_line, render_inline
@@ -33,15 +34,43 @@ class _Tokens:
 
     def __init__(self) -> None:
         self._html: list[str] = []
+        self._quotes: set[str] = set()  # Placeholders of quote containers
 
-    def add(self, html: str) -> str:
-        """Store rendered HTML and return the placeholder that stands in for it."""
+    def add(self, html: str, *, quote: bool = False) -> str:
+        """
+        Store rendered HTML and return the placeholder that stands in for it.
+
+        quote marks the HTML as a quote container, which the newline rules
+        treat like a blockquote.
+        """
+        placeholder = f"{_TOKEN_START}{len(self._html)}{_TOKEN_END}"
         self._html.append(html)
-        return f"{_TOKEN_START}{len(self._html) - 1}{_TOKEN_END}"
+        if quote:
+            self._quotes.add(placeholder)
+        return placeholder
+
+    def starts_quote(self, text: str, position: int = 0) -> bool:
+        """Check if the placeholder of a quote container starts at text[position]."""
+        match = _TOKEN.match(text, position)
+        return match is not None and match.group() in self._quotes
 
     def expand(self, text: str) -> str:
-        """Replace every placeholder with its HTML."""
-        return _TOKEN.sub(lambda match: self._html[int(match.group()[1:-1])], text)
+        """
+        Replace every placeholder with its HTML, and the placeholders in that HTML in turn.
+
+        A stack of pieces still to emit stands in for recursion, so nesting
+        depth is limited only by the input's length, and each token's HTML is
+        split and copied once.
+        """
+        parts: list[str] = []
+        pending = _TOKEN.split(text)[::-1]  # The next piece is last
+        while pending:
+            piece = pending.pop()
+            if piece.startswith(_TOKEN_START):
+                pending += _TOKEN.split(self._html[int(piece[1:-1])])[::-1]
+            else:
+                parts.append(piece)
+        return "".join(parts)
 
 
 def _prepare(text: str) -> str:
@@ -104,29 +133,139 @@ def _render_inline(text: str) -> str:
     return "".join(pieces)
 
 
-def _render_block(block: _Block) -> str:
+def _line_breaks(text: str, tokens: _Tokens) -> str:
+    """
+    Turn each newline in a run of text lines into <br> and a newline.
+    """
+    # The newline before a quote container stays bare, as in version 1
+    return re.sub(
+        "\n", lambda match: "\n" if tokens.starts_quote(text, match.end()) else "<br>\n", text
+    )
+
+
+def _render_block(block: _Block, tokens: _Tokens) -> str:
+    """
+    Render one block with the inline pass, leaving placeholders in place.
+    """
     if block.kind == "quote":
         # Consecutive quote lines join with spaces into one blockquote
         return f"<blockquote>{_render_inline(' '.join(block.lines))}</blockquote>"
     # The inline pass runs over the whole run of lines, so italics and links can
-    # span a line break, then each line break becomes a <br>
-    return _render_inline("\n".join(block.lines)).replace("\n", "<br>\n")
+    # span a line break, then the line breaks are rendered
+    return _line_breaks(_render_inline("\n".join(block.lines)), tokens)
 
 
-def _line_break_before(block: _Block) -> str:
-    # The newline before a blockquote stays bare, as in version 1
-    return "\n" if block.kind == "quote" else "<br>\n"
-
-
-def _render_blocks(text: str) -> str:
+def _line_break_before(block: _Block, tokens: _Tokens) -> str:
     """
-    Render prepared text with the block and inline passes, leaving tokens in place.
+    Return the newline that separates a block from the one before it.
+    """
+    # The newline before a blockquote or a quote container stays bare, as in
+    # version 1
+    if block.kind == "quote" or tokens.starts_quote(block.lines[0]):
+        return "\n"
+    return "<br>\n"
+
+
+def _render_blocks(text: str, tokens: _Tokens) -> str:
+    """
+    Render prepared text with the block and inline passes, leaving placeholders in place.
     """
     blocks = _split_blocks(text)
-    parts = [_render_block(blocks[0])]
+    parts = [_render_block(blocks[0], tokens)]
     for block in blocks[1:]:
-        parts += [_line_break_before(block), _render_block(block)]
+        parts += [_line_break_before(block, tokens), _render_block(block, tokens)]
     return "".join(parts)
+
+
+# Container tags on the escaped source. In [quote="name"] the quotes are
+# escaped by then. A name has no "&", as in version 1.
+_CONTAINER_TAG = re.compile(
+    r"\[(?P<slash>/?)(?P<kind>quote|spoiler)\]|\[quote=&quot;(?P<name>[^&]*)&quot;\]"
+)
+
+
+@dataclass
+class _Open:
+    """
+    An entry on the container scan's stack, with the content after it so far.
+
+    The root is at the bottom. Above it, each entry is an opening tag that
+    hasn't been closed yet.
+    """
+
+    kind: str  # "root", "quote" or "spoiler"
+    name: str | None  # A named quote's name, escaped
+    content: list[str]  # Source text and placeholders, in order
+
+
+def _strip_unmatched(stack: list[_Open], start: int, open_at: dict[str, list[int]]) -> None:
+    """
+    Strip the opening tags at stack[start:] as unmatched, merging their content,
+    in order, into the entry below them.
+    """
+    for entry in stack[start:]:
+        stack[start - 1].content.extend(entry.content)
+        open_at[entry.kind].pop()
+    del stack[start:]
+
+
+def _render_container(pair: _Open, tokens: _Tokens) -> str:
+    """
+    Render a matched pair, running the block and inline passes over its
+    content, and return the placeholder that stands in for it.
+    """
+    html = _render_blocks("".join(pair.content), tokens)
+    if pair.kind == "spoiler":
+        return tokens.add(f'<span class="spoiler">{html}</span>')
+    if html.endswith("<br>\n"):
+        # The newline at the end of a quote stays bare, as in version 1
+        html = html.removesuffix("<br>\n") + "\n"
+    if pair.name is not None:
+        # Unescape the name, then escape it once, as version 1 does
+        html = f"<small>{escape(unescape(pair.name))} said:</small> {html}"
+    return tokens.add(f"<blockquote>{html}</blockquote>", quote=True)
+
+
+def _render_containers(text: str, tokens: _Tokens) -> str:
+    """
+    Container scan: replace each matched quote or spoiler pair with a
+    placeholder, innermost first, and strip every unmatched tag.
+
+    One pass over the tags, with a stack of the tags still open. A closing tag
+    pairs with the nearest open tag of its kind, unless a spoiler opened after
+    that tag is still open: then the closing tag is unmatched, so a spoiler is
+    never cut short and its text never renders outside it. Tags still open
+    between a closing tag and its partner are unmatched.
+
+    Each pair is rendered as it closes, over content whose inner pairs are
+    already placeholders, so nothing recurses. Each tag is pushed and popped
+    once, and each character is rendered once.
+    """
+    stack = [_Open("root", None, [])]
+    # Stack positions of the open tags of each kind, so the nearest open tag
+    # of a kind, and whether a spoiler is open above it, are found at once
+    open_at: dict[str, list[int]] = {"quote": [], "spoiler": []}
+    position = 0
+    for match in _CONTAINER_TAG.finditer(text):
+        stack[-1].content.append(text[position : match.start()])
+        position = match.end()
+        kind = match["kind"] or "quote"
+        if not match["slash"]:
+            open_at[kind].append(len(stack))
+            stack.append(_Open(kind, match["name"], []))
+            continue
+        if not open_at[kind]:
+            continue  # Nothing to close: the closing tag is unmatched
+        partner = open_at[kind][-1]
+        if open_at["spoiler"] and open_at["spoiler"][-1] > partner:
+            continue  # A spoiler is open inside the partner: unmatched
+        _strip_unmatched(stack, partner + 1, open_at)
+        pair = stack.pop()
+        open_at[kind].pop()
+        stack[-1].content.append(_render_container(pair, tokens))
+    stack[-1].content.append(text[position:])
+    _strip_unmatched(stack, 1, open_at)
+    return "".join(stack[0].content)
 
 
 def render_v2(text: str | None, headings: bool) -> str:  # noqa: ARG001
@@ -144,5 +283,5 @@ def render_v2(text: str | None, headings: bool) -> str:  # noqa: ARG001
     if not text:
         return ""
     tokens = _Tokens()
-    html = _render_blocks(_prepare(text))
-    return tokens.expand(html)
+    text = _render_containers(_prepare(text), tokens)
+    return tokens.expand(_render_blocks(text, tokens))
