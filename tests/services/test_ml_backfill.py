@@ -314,7 +314,6 @@ async def _passthrough(db, suggestions):
     return suggestions
 
 
-@pytest.mark.needs_commit
 async def test_ingest_results_creates_rows(db_session):
     user = await _make_user(db_session, "ingest")
     img1 = await _make_image(db_session, user, "i1")
@@ -353,7 +352,6 @@ async def test_ingest_results_creates_rows(db_session):
     assert {s.image_id for s in rows.scalars().all()} == {img1.image_id, img2.image_id}
 
 
-@pytest.mark.needs_commit
 async def test_ingest_results_skips_given_ids(db_session):
     user = await _make_user(db_session, "skip")
     img1 = await _make_image(db_session, user, "s1")
@@ -387,7 +385,6 @@ async def test_ingest_results_skips_given_ids(db_session):
     assert stats.processed == 1
 
 
-@pytest.mark.needs_commit
 async def test_ingest_results_skips_missing_image_and_continues(db_session):
     """A manifest entry for an image_id that no longer exists (e.g. deleted since
     the manifest was built) is gracefully skipped by store_predictions'
@@ -434,7 +431,6 @@ async def test_ingest_results_skips_missing_image_and_continues(db_session):
     assert {s.image_id for s in rows.scalars().all()} == {good_id}
 
 
-@pytest.mark.needs_commit
 async def test_ingest_results_records_exception_and_continues(db_session):
     """A genuine error partway through ingest is recorded in stats.errors and
     rolled back; a later valid manifest item still processes and creates a row.

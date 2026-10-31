@@ -602,7 +602,6 @@ async def test_remap_images_for_tag_scopes_to_mapped_images(db_session, monkeypa
     assert rows_b == [], "image B must not receive any suggestion (unrelated raw pred)"
 
 
-@pytest.mark.needs_commit
 async def test_run_rolls_back_and_continues_after_failed_image(
     db_session, monkeypatch, tmp_path, capsys
 ):
@@ -610,7 +609,7 @@ async def test_run_rolls_back_and_continues_after_failed_image(
     image's commit fails (here an FK violation from a suggestion referencing a
     nonexistent tag), the except rolls the session back so later images still
     process. Without the rollback the poisoned session raises PendingRollbackError
-    on every subsequent image (real commits reproduce this — hence needs_commit).
+    on every subsequent image.
     """
     monkeypatch.setattr(settings, "ML_MIN_CONFIDENCE", 0.35)
 

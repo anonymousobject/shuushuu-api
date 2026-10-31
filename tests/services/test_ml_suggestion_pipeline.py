@@ -760,7 +760,6 @@ async def test_store_predictions_skips_ineligible_image(db_session):
     assert result.scalars().all() == []
 
 
-@pytest.mark.needs_commit
 async def test_persist_predictions_retries_transient_conflict(db_session, tmp_path, monkeypatch):
     """persist_predictions replays on a transient conflict rather than 500ing.
 
@@ -807,7 +806,6 @@ async def test_persist_predictions_retries_transient_conflict(db_session, tmp_pa
     assert sorted(s.tag_id for s in suggestions) == [46, 161]
 
 
-@pytest.mark.needs_commit
 async def test_store_predictions_swallows_duplicate_race(db_session, tmp_path, monkeypatch):
     """Two concurrent regenerations of the same image (arq job vs sync generate,
     or overlapping retries) can insert the same (image_id, tag_id) between this
@@ -821,8 +819,7 @@ async def test_store_predictions_swallows_duplicate_race(db_session, tmp_path, m
     injected at the real commit boundary (db.commit). The assertions are on the
     service's real handling of it: no exception escapes, it returns 0, and it
     rolls the session back (the action that un-poisons the session in the real
-    race). needs_commit is used for real transaction semantics; the follow-up
-    query confirms the session is reusable afterward.
+    race). The follow-up query confirms the session is reusable afterward.
     """
     from sqlalchemy.exc import IntegrityError
 

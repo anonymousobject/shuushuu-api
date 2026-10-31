@@ -21,15 +21,6 @@ from tests.transient_conflict import (
     _flaky_flush_nth,
 )
 
-# A rejected upload runs the handler's real db.rollback() (see
-# _discard_unfinished_upload), which under db_session's SAVEPOINT isolation
-# makes SQLAlchemy flag the outer transaction on fixture teardown. Expected
-# consequence of that path, not a defect; named explicitly so the suite's
-# output stays clean without hiding anything else.
-_ROLLBACK_SAWARNING = pytest.mark.filterwarnings(
-    "ignore:transaction already deassociated from connection:sqlalchemy.exc.SAWarning"
-)
-
 
 @pytest.fixture
 async def verified_user(db_session: AsyncSession) -> Users:
@@ -265,7 +256,6 @@ class TestUploadIQDBDuplicateDetection:
         data = response.json()
         assert data["image"]["source_url"] == "https://www.pixiv.net/artworks/138823691"
 
-    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_rejects_non_http_source_url(
         self, upload_client: AsyncClient, verified_user: Users
@@ -389,7 +379,6 @@ class TestUploadIQDBDuplicateDetection:
         assert data["image"]["miscmeta"] == miscmeta
         assert data["image"]["source_url"] == source_url
 
-    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("field", "value", "detail"),
@@ -634,18 +623,10 @@ class TestUploadSnapshotConflictRetry:
     (SQLSTATE 40P01) error to prove the retry contract still holds here."""
 
     @pytest.mark.asyncio
-    @pytest.mark.needs_commit
     async def test_upload_retries_snapshot_conflict_and_succeeds(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """A transient Postgres deadlock (40P01) on the temp-row INSERT is retried and the upload succeeds.
-
-        needs_commit: the retry performs a real session rollback to obtain a
-        fresh snapshot; under the default SAVEPOINT isolation that rollback
-        would unwind the fixture's user row too (FK 1452 on the retried
-        INSERT), which can't happen in production where the user is durably
-        committed.
-        """
+        """A transient Postgres deadlock (40P01) on the temp-row INSERT is retried and the upload succeeds."""
         flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with (
             _mock_upload_storage("snapshotretry1"),
@@ -668,7 +649,6 @@ class TestUploadSnapshotConflictRetry:
         assert response.json()["image"]["image_id"] > 0
         assert len(calls) >= 2  # failed attempt + successful retry
 
-    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_gives_up_after_bounded_retries(
         self, upload_client: AsyncClient, verified_user: Users
@@ -699,7 +679,6 @@ class TestUploadSnapshotConflictRetry:
         assert response.status_code == 500
         assert len(calls) == 3  # bounded: no infinite retry loop
 
-    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_upload_does_not_retry_other_db_errors(
         self, upload_client: AsyncClient, verified_user: Users
@@ -738,7 +717,6 @@ class TestUploadTagLinkSnapshotConflictRetry:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.needs_commit
     async def test_upload_with_tags_retries_snapshot_conflict_and_succeeds(
         self,
         upload_client: AsyncClient,
@@ -901,7 +879,6 @@ class TestUploadRealStorageRoundTrip:
         # And the staged bytes were not left behind under an unfindable name.
         assert list((tmp_path / "fullsize").glob("staged_*")) == []
 
-    @_ROLLBACK_SAWARNING
     @pytest.mark.asyncio
     async def test_pixiv_downsized_rendition_is_refused_with_guidance(
         self,

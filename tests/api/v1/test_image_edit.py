@@ -844,16 +844,10 @@ class TestImageEditTransientConflictRetry:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.needs_commit
     async def test_repost_with_metadata_retries_deadlock_and_applies_once(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """The replay lands the edit, the repost migration and both history rows once.
-
-        needs_commit: the retry performs a real transaction rollback; under the
-        default SAVEPOINT isolation that rollback would unwind the fixture's
-        committed rows too.
-        """
+        """The replay lands the edit, the repost migration and both history rows once."""
         owner = await create_user(db_session, username="retryowner", email="retry@test.com")
         original = await create_image(db_session, owner.user_id)
         repost = await create_image(db_session, owner.user_id, miscmeta="old info")

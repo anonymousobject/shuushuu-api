@@ -218,14 +218,6 @@ class TestAddFavorite:
         assert response.status_code == status, response.text
         assert fragment in response.json()["detail"]
 
-    # The 409 path rolls back a failed commit (IntegrityError on the duplicate
-    # PK) -- same as create_character_source_link's duplicate-link 409 -- which
-    # SQLAlchemy flags on fixture teardown. Expected consequence of that
-    # pattern, not a defect; named explicitly so the suite's output stays
-    # clean without hiding anything else.
-    @pytest.mark.filterwarnings(
-        "ignore:transaction already deassociated from connection:sqlalchemy.exc.SAWarning"
-    )
     async def test_duplicate_409_and_anonymous_401(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
@@ -239,6 +231,7 @@ class TestAddFavorite:
             "/api/v1/users/me/favorite-tags", json={"tag_id": SRC_A}, headers=headers
         )
         assert dupe.status_code == 409
+        client.cookies.clear()  # login set an access_token cookie; stay anonymous
         anon = await client.post("/api/v1/users/me/favorite-tags", json={"tag_id": SRC_A})
         assert anon.status_code == 401
 
@@ -264,17 +257,12 @@ class TestAddFavorite:
         )
         assert artist_ok.status_code == 201
 
-    @pytest.mark.needs_commit
     async def test_add_tag_retries_on_transient_conflict_and_lands_once(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """ADR-0004: a transient Postgres deadlock (SQLSTATE 40P01) at commit is retried, not
         surfaced as a 500 — and the retried unit re-derives its INSERT rather
         than replaying a stale one, so exactly one row lands.
-
-        needs_commit: retry_on_transient_conflict's rollback between attempts
-        needs the seeded user row to be durably committed (not just
-        savepoint-released) to survive re-fetch on the retry, as in production.
         """
         ids = await _seed(db_session)
         headers = await _login(client)
@@ -301,7 +289,6 @@ class TestAddFavorite:
         )
         assert len(rows) == 1
 
-    @pytest.mark.needs_commit
     async def test_add_link_retries_on_transient_conflict_and_lands_once(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
@@ -417,7 +404,6 @@ class TestReorder:
         assert response.status_code == 400
         assert "permutation" in response.json()["detail"]
 
-    @pytest.mark.needs_commit
     async def test_reorder_retries_on_transient_conflict(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
@@ -425,10 +411,6 @@ class TestReorder:
         test injects the fabricated Postgres deadlock (SQLSTATE 40P01) error
         so a transient conflict on the position UPDATEs is retried, and the
         retried unit re-fetches its rows rather than reusing stale ones.
-
-        needs_commit: same reason as the add-favorite retry tests — the
-        seeded favorites must be durably committed to survive the internal
-        rollback between attempts.
         """
         ids = await _seed(db_session)
         await _favorite_all(db_session, ids)

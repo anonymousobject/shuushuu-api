@@ -52,13 +52,6 @@ class TestStatementTimeout:
             assert await _session_limit(db_session) == before
         assert await _session_limit(db_session) == before
 
-    # The server killing the statement aborts the transaction under SQLAlchemy,
-    # which emits this on the rollback below. It is the expected consequence of
-    # the breaker firing, not a defect -- named explicitly so the suite's output
-    # stays clean without hiding anything else.
-    @pytest.mark.filterwarnings(
-        "ignore:transaction already deassociated from connection:sqlalchemy.exc.SAWarning"
-    )
     async def test_a_statement_over_the_limit_is_killed(self, db_session: AsyncSession):
         """The breaker must actually break, not just set a variable.
 
