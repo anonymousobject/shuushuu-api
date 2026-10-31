@@ -17,8 +17,11 @@ the output matches version 1, except:
   starting with a number, a dot, and a space is a numbered list item. Lists
   are flat, and a * line is an item only next to another bullet line.
   A blank line right above or below a list is dropped.
+- `code` between single backticks is an inline code span, when it holds a
+  letter or digit and the backticks aren't inside a word. Its content is
+  literal.
 
-The source is escaped first. A container scan then renders each quote and
+The source is escaped first. Code spans become tokens. A container scan then renders each quote and
 spoiler pair, a block pass sorts lines into blocks, and an inline pass
 renders each block's text. HTML that later passes must not touch is held in
 a token table behind placeholders, and the placeholders are expanded last.
@@ -289,6 +292,9 @@ def _render_blocks(text: str, tokens: _Tokens, *, starts_line: bool) -> str:
     return "".join(parts)
 
 
+_WORD = re.compile(r"\w")
+_ASCII_ALNUM = re.compile("[A-Za-z0-9]")
+
 # Container tags on the escaped source. In [quote="name"] the quotes are
 # escaped by then. A name stops at the first "&", as in version 1, and can't
 # run into a container tag or a placeholder: a tag in what looks like a name
@@ -360,6 +366,50 @@ def _render_container(pair: _Open, tokens: _Tokens) -> str:
     return tokens.add(f"<blockquote>{html}</blockquote>", quote=True)
 
 
+def _is_code_span(text: str, start: int, end: int) -> bool:
+    """
+    Check if the backticks at text[start] and text[end] make a code span.
+
+    start is not preceded by a word character or a backtick and not followed
+    by a backtick, and end is the next backtick after it.
+    """
+    if end + 1 < len(text) and (text[end + 1] == "`" or _WORD.match(text[end + 1])):
+        return False
+    if text.find("\n", start, end) != -1:
+        return False
+    # Entities are decoded first: the x27 of &#x27; isn't a letter anybody typed
+    return _ASCII_ALNUM.search(unescape(text[start + 1 : end])) is not None
+
+
+def _render_code_spans(text: str, tokens: _Tokens) -> str:
+    """
+    Replace each inline code span with a placeholder.
+
+    At each backtick that can open a span, the next backtick decides: if the
+    pair isn't a span, the opener is plain text and the scan goes on right
+    after it. Each step looks no further than the next backtick, and the next
+    step starts at or before it, so the scan is linear.
+    """
+    parts: list[str] = []
+    position = 0  # Start of the text not yet copied to parts
+    start = text.find("`")
+    while start != -1:
+        end = text.find("`", start + 1)
+        if end == -1:
+            break
+        opens = (start == 0 or not (_WORD.match(text[start - 1]) or text[start - 1] == "`")) and (
+            text[start + 1] != "`"
+        )
+        if opens and _is_code_span(text, start, end):
+            parts += [text[position:start], tokens.add(f"<code>{text[start + 1 : end]}</code>")]
+            position = end + 1
+            start = text.find("`", position)
+        else:
+            start = end  # The next backtick, where the scan resumes
+    parts.append(text[position:])
+    return "".join(parts)
+
+
 def _render_containers(text: str, tokens: _Tokens) -> str:
     """
     Container scan: replace each matched quote or spoiler pair with a
@@ -421,5 +471,5 @@ def render_v2(text: str | None, headings: bool) -> str:  # noqa: ARG001
     if not text:
         return ""
     tokens = _Tokens()
-    text = _render_containers(_prepare(text), tokens)
+    text = _render_containers(_render_code_spans(_prepare(text), tokens), tokens)
     return tokens.expand(_render_blocks(text, tokens, starts_line=True))

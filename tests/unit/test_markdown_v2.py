@@ -21,6 +21,11 @@ PARITY_CORPUS = [
     "[search](https://example.com/search?q=test&page=2)",
     "see https://example.com/a_(b). ok",
     "**https://example.com**",
+    "x`a` y",
+    "`a`b`",
+    "`'`",
+    "`&`",
+    "`<>`",
     "> a",
     "> a\n> b",
     "> a\nb",
@@ -337,3 +342,42 @@ def test_many_list_lines_are_linear(text):
 
 def test_star_faces_do_not_pair_into_a_list():
     assert "<ul>" not in render_v2("* >_<\n* >.<", headings=False)
+
+
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        ("a `v` b", "a <code>v</code> b"),
+        ("`image_id`", "<code>image_id</code>"),
+        ("(`a`)", "(<code>a</code>)"),
+        ("`**x**`", "<code>**x**</code>"),
+        ("`<b>`", "<code>&lt;b&gt;</code>"),
+        ("`[spoiler]x[/spoiler]`", "<code>[spoiler]x[/spoiler]</code>"),
+        ("[spoiler]`x`[/spoiler]", '<span class="spoiler"><code>x</code></span>'),
+        ("[spoiler]`_`[/spoiler] oh `w`", '<span class="spoiler">`_`</span> oh <code>w</code>'),
+        ("- `x`", "<ul><li><code>x</code></li></ul>"),
+        ("> use `x`", "<blockquote>use <code>x</code></blockquote>"),
+        (
+            "see http://a.com/`x`",
+            'see <a href="http://a.com/" rel="nofollow noopener" target="_blank">http://a.com/</a>'
+            "<code>x</code>",
+        ),
+        ("`'a'`", "<code>&#x27;a&#x27;</code>"),
+        ("`'`", "`&#x27;`"),
+    ],
+)
+def test_inline_code(text, html):
+    assert render_v2(text, headings=False) == html
+
+
+def test_code_span_in_a_would_be_quote_name_is_not_in_small():
+    html = render_v2('[quote="`x`"]hi[/quote]', headings=False)
+    assert "<code>x</code>" in html
+    assert "<small>" not in html
+
+
+@pytest.mark.parametrize("text", ["`" * 20000, "`a" * 10000, "`a`b" * 5000, "` " * 10000])
+def test_many_backticks_are_linear(text):
+    start = time.perf_counter()
+    render_v2(text, headings=False)
+    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
