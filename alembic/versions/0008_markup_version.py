@@ -30,7 +30,9 @@ def upgrade() -> None:
         # flips to "2" for everything inserted from here on.
         op.add_column(
             table,
-            sa.Column("markup_version", sa.SmallInteger(), nullable=False, server_default="1"),
+            sa.Column(
+                "markup_version", sa.SmallInteger(), nullable=False, server_default=sa.text("1")
+            ),
         )
         op.alter_column(table, "markup_version", server_default=sa.text("2"))
 

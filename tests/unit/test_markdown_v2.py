@@ -50,6 +50,8 @@ PARITY_CORPUS = [
     "`_`",
     "``x``",
     "```\na",
+    "````\na\n````",
+    "```js x\na\n```",
     "1234567890. x",
     "> - a",
     "- >",
@@ -390,6 +392,11 @@ def test_many_backticks_are_linear(text):
         ("```python\nx = 1\n```", "<pre><code>x = 1</code></pre>"),
         ("```\na\n\nb\n```", "<pre><code>a\n\nb</code></pre>"),
         ("```\n```", "<pre><code></code></pre>"),
+        ("```\na\n```\nb\n```", "<pre><code>a</code></pre>\nb<br>\n```"),
+        (
+            "```\n```\n```\n```",
+            "<pre><code></code></pre>\n<pre><code></code></pre>",
+        ),
         ("```\n<b>&amp;\n```", "<pre><code>&lt;b&gt;&amp;</code></pre>"),
         (
             "```\n**x** [spoiler]y[/spoiler] - z\n## h\n```",
