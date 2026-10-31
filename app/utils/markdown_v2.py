@@ -2,9 +2,17 @@
 Version 2 of the markdown renderer.
 
 New posts render with these rules. On text written with version 1's syntax
-the output matches version 1, except where inline markup crosses from one
-block or container into another (version 2 applies the inline rules to each
-on its own), and where quote and spoiler tags are unclosed or mis-nested.
+the output matches version 1, except:
+
+- Inline markup can't cross from one block or container into another:
+  version 2 applies the inline rules to each on its own.
+- Unclosed and mis-nested quote and spoiler tags pair differently, and every
+  unmatched tag is stripped.
+- Quotes and spoilers nest to any depth, where version 1 stops at ten.
+- A container opened at the start of a line starts a line inside it too, so
+  a > right after the opening tag makes a nested quote.
+- A quote's name is plain text: the inline rules don't apply to it, and it
+  can't hold a container tag.
 
 The source is escaped first. A container scan then renders each quote and
 spoiler pair, a block pass sorts lines into blocks, and an inline pass
@@ -183,9 +191,13 @@ def _render_blocks(text: str, tokens: _Tokens, *, starts_line: bool) -> str:
 
 
 # Container tags on the escaped source. In [quote="name"] the quotes are
-# escaped by then. A name has no "&", as in version 1.
+# escaped by then. A name stops at the first "&", as in version 1, and can't
+# run into a container tag or a placeholder: a tag in what looks like a name
+# is still a tag, so a spoiler's closer can't hide in one. Other brackets are
+# fine, as some usernames have them.
 _CONTAINER_TAG = re.compile(
-    r"\[(?P<slash>/?)(?P<kind>quote|spoiler)\]|\[quote=&quot;(?P<name>[^&]*)&quot;\]"
+    r"\[(?P<slash>/?)(?P<kind>quote|spoiler)\]"
+    r"|\[quote=&quot;(?P<name>(?:(?!\[/?(?:quote|spoiler)[\]=])[^&\ue000])*)&quot;\]"
 )
 
 
@@ -198,7 +210,7 @@ class _Open:
     hasn't been closed yet.
     """
 
-    kind: str  # "root", "quote" or "spoiler"
+    kind: Literal["root", "quote", "spoiler"]
     name: str | None  # A named quote's name, escaped
     # Whether the content starts a line: the root does, and an opening tag
     # does when only whitespace is before it on its line
@@ -239,7 +251,9 @@ def _render_container(pair: _Open, tokens: _Tokens) -> str:
     if pair.kind == "spoiler":
         return tokens.add(f'<span class="spoiler">{html}</span>')
     if html.endswith("<br>\n"):
-        # The newline at the end of a quote stays bare, as in version 1
+        # The newline at the end of a quote stays bare, as in version 1. This
+        # relies on rendered content ending in <br>\n exactly when the source
+        # content ends in a newline; new block kinds must keep that true.
         html = html.removesuffix("<br>\n") + "\n"
     if pair.name is not None:
         # Unescape the name, then escape it once, as version 1 does
@@ -259,8 +273,9 @@ def _render_containers(text: str, tokens: _Tokens) -> str:
     between a closing tag and its partner are unmatched.
 
     Each pair is rendered as it closes, over content whose inner pairs are
-    already placeholders, so nothing recurses. Each tag is pushed and popped
-    once, and each character is rendered once.
+    already placeholders, so nothing recurses. Each opening tag is pushed and
+    popped once, each closing tag is looked at once, and each character is
+    rendered once.
 
     A pair's content gets the block rules on its first line only if its
     opening tag starts a line, so a container opened mid-line stays inline.
@@ -273,7 +288,7 @@ def _render_containers(text: str, tokens: _Tokens) -> str:
     for match in _CONTAINER_TAG.finditer(text):
         stack[-1].append(text[position : match.start()])
         position = match.end()
-        kind = match["kind"] or "quote"
+        kind: Literal["quote", "spoiler"] = "spoiler" if match["kind"] == "spoiler" else "quote"
         if not match["slash"]:
             open_at[kind].append(len(stack))
             stack.append(_Open(kind, match["name"], starts_line=stack[-1].at_line_start))

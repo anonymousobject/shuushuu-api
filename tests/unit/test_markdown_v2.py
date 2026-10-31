@@ -75,6 +75,7 @@ PARITY_CORPUS = [
     "[spoiler]x\n[quote]a[/quote][/spoiler]",
     "a [spoiler]>_> b[/spoiler] c",
     "text [quote]> x[/quote]",
+    '[spoiler]Snape kills Dumbledore [quote="lol[/spoiler] what"] after',
 ]
 
 
@@ -177,6 +178,44 @@ def test_unclosed_named_quote_is_stripped():
     assert render_v2('[quote="alice"]unclosed', headings=False) == "unclosed"
 
 
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        (
+            '[spoiler]Snape kills Dumbledore [quote="lol[/spoiler] what"] after',
+            '<span class="spoiler">Snape kills Dumbledore [quote=&quot;lol</span>'
+            " what&quot;] after",
+        ),
+        (
+            '[spoiler]secret [quote="x[/spoiler] y"]z[/quote]',
+            '<span class="spoiler">secret [quote=&quot;x</span> y&quot;]z',
+        ),
+        (
+            '[quote="[spoiler]Bob[/spoiler]"]text[/quote]',
+            '[quote=&quot;<span class="spoiler">Bob</span>&quot;]text',
+        ),
+    ],
+    ids=["unclosed-name-holds-closer", "closed-name-holds-closer", "name-holds-pair"],
+)
+def test_a_quote_name_cannot_hold_a_container_tag(text, html):
+    # A spoiler's text never escapes it through a tag inside a quote's name
+    assert render_v2(text, headings=False) == html
+
+
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        (
+            '[quote="[XYZ]Bob"]hi[/quote]',
+            "<blockquote><small>[XYZ]Bob said:</small> hi</blockquote>",
+        ),
+        ('[quote="*a*"]x[/quote]', "<blockquote><small>*a* said:</small> x</blockquote>"),
+    ],
+)
+def test_quote_names_are_plain_text(text, html):
+    assert render_v2(text, headings=False) == html
+
+
 def test_missing_inner_closer_pairs_innermost():
     text = '[quote="alice"][quote="bob"]question\nanswer[/quote]\nreply'
     assert render_v2(text, headings=False) == (
@@ -218,6 +257,9 @@ def test_url_before_container_links_only_the_url():
         '[quote="x"]' * 5900,
         "[quote]" * 10000,
         "[quote]" + "[spoiler]" * 1100 + "[/quote]" * 1100,
+        '[quote="ab]' * 8000,
+        '[quote="a' * 2000,
+        '[quote="[x]' * 2000,
     ],
     ids=[
         "quote-700",
@@ -226,6 +268,9 @@ def test_url_before_container_links_only_the_url():
         "named-openers",
         "anon-openers",
         "blocked-closers",
+        "names-ending-in-bracket",
+        "unterminated-names",
+        "names-starting-with-brackets",
     ],
 )
 def test_container_scan_is_linear(text):
