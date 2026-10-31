@@ -4,7 +4,7 @@
 # Ensure bash is used for all commands (required for read -p in clean target)
 SHELL := /bin/bash
 
-.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend pytest prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy clean check-env-test check-env-prod
+.PHONY: help dev dev-up dev-down dev-logs dev-ps test test-up test-down test-logs test-ps test-build-frontend pytest prod prod-up prod-down prod-logs prod-ps prod-build prod-build-frontend prod-migrate prod-restart prod-deploy prod-sync-frontend-assets clean check-env-test check-env-prod
 
 # Capture extra arguments for logs commands (e.g., `make dev-logs api`)
 ARGS = $(filter-out $@,$(MAKECMDGOALS))
@@ -200,10 +200,28 @@ prod-migrate: check-env-prod
 # deploys that don't touch Python code.
 prod-deploy: check-env-prod
 	$(COMPOSE_PROD) build $(sort $(DEPLOY_SERVICES) arq-worker)
+	$(if $(filter frontend,$(DEPLOY_SERVICES)),@$(MAKE) --no-print-directory prod-sync-frontend-assets)
 	@for svc in $(DEPLOY_SERVICES); do \
 		echo "==> Rolling out $$svc (zero-downtime)"; \
 		$(ROLLOUT_PROD) $$svc || exit 1; \
 	done
+
+# Copy the built frontend image's hashed chunks into the frontend_assets volume,
+# where nginx looks when a frontend replica 404s one. prod-deploy runs this
+# BEFORE rolling the frontend: for the ~20s both replicas are up, nginx sends
+# each request to either one, so a page from the new replica asks the old one
+# for chunks it never had, and those 404s made SvelteKit's hydration show a
+# "500" error page (2026-10-30).
+# The volume must already exist (compose creates it with nginx); creating it
+# here instead would leave compose warning that it didn't make it.
+FRONTEND_ASSETS_VOLUME = frontend_assets_prod
+prod-sync-frontend-assets: check-env-prod
+	@docker volume inspect $(FRONTEND_ASSETS_VOLUME) >/dev/null 2>&1 || \
+		{ echo "ERROR: volume $(FRONTEND_ASSETS_VOLUME) missing — recreate nginx first (make prod-restart nginx)"; exit 1; }
+	$(COMPOSE_PROD) run --rm --no-deps -T \
+		-v $(FRONTEND_ASSETS_VOLUME):/frontend-assets \
+		-v $(CURDIR)/docker/frontend/sync-assets.sh:/sync-assets.sh:ro \
+		--entrypoint sh frontend /sync-assets.sh
 
 # Force-recreate service(s). This is the OLD deploy path and CAUSES a brief
 # outage (stop-then-start with no overlap), and with no args it recreates nginx

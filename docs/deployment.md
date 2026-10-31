@@ -33,6 +33,16 @@ knows only the old IP for up to 10s; removing the old replica in that window
 rollout through 2026-10 dropped requests this way. The wait must outlast
 nginx's `valid=`, so change the two together.
 
+The overlap has one more frontend hazard: version skew. A page from the new
+replica references hashed chunks (`/_app/immutable/`) the old replica never
+had, and nginx can send the browser's request for one to the old replica. That
+404 breaks hydration into SvelteKit's "500" error page, even though the page
+itself loaded fine. So before rolling the frontend, `prod-deploy` copies the
+new image's chunks into the `frontend_assets` volume
+(`make prod-sync-frontend-assets`), and nginx serves a chunk from there when
+the replica it reached 404s it. Every other response is still the frontend's
+own.
+
 This required (see `docker-compose.prod.yml`):
 
 - `api` / `frontend` have **no `container_name`** (can't fix a name across two
@@ -60,6 +70,15 @@ docker rollout --help   # verify it loaded
 
 When bumping the pin, update the version in both this doc and the `ROLLOUT_PROD`
 comment in the `Makefile`.
+
+Compose creates the `frontend_assets_prod` volume when it creates nginx, and
+until it exists a `prod-deploy` that includes the frontend stops before rolling
+anything. On a host whose nginx predates the volume, recreate nginx once (a
+brief outage):
+
+```bash
+make prod-restart nginx
+```
 
 ## Deploying app changes
 
