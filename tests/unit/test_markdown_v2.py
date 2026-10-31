@@ -47,6 +47,10 @@ PARITY_CORPUS = [
     "```\na",
     "1234567890. x",
     "> - a",
+    "- >",
+    "- >_<",
+    "- '_'",
+    "- &amp;",
     "#1 fan!",
     "# x",
     "#### x",
@@ -296,6 +300,9 @@ def test_container_scan_is_linear(text):
         ("- 日本", "<ul><li>日本</li></ul>"),
         ("- **b**", "<ul><li><strong>b</strong></li></ul>"),
         ("- > a", "<ul><li>&gt; a</li></ul>"),
+        # The 3 is a typed digit, so this is a list item
+        ("- <3", "<ul><li>&lt;3</li></ul>"),
+        ("- 'a'", "<ul><li>&#x27;a&#x27;</li></ul>"),
         ("- [spoiler]x[/spoiler]", '<ul><li><span class="spoiler">x</span></li></ul>'),
         ("x\n- a\n- b\ny", "x\n<ul><li>a</li><li>b</li></ul>\ny"),
         ("x\n\n- a\n\ny", "x\n<ul><li>a</li></ul>\ny"),
@@ -322,3 +329,7 @@ def test_many_list_lines_are_linear(text):
     start = time.perf_counter()
     render_v2(text, headings=False)
     assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+
+
+def test_star_faces_do_not_pair_into_a_list():
+    assert "<ul>" not in render_v2("* >_<\n* >.<", headings=False)

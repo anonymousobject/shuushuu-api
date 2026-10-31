@@ -125,6 +125,17 @@ def _quote_content(line: str) -> str | None:
     return None
 
 
+def _has_typed_alnum(text: str) -> bool:
+    """
+    Check if the writer typed a letter or digit in escaped text.
+
+    Entities are decoded first: the &gt; of a face or the &#x27; of a quote
+    mark has letters and digits that nobody typed. A placeholder counts
+    through the digits of its index.
+    """
+    return any(c.isalnum() for c in unescape(text))
+
+
 def _list_item(line: str, bullet_neighbour: bool) -> _Block | None:
     """
     Return a one-item list block for a list item line, or None if the line isn't one.
@@ -135,13 +146,13 @@ def _list_item(line: str, bullet_neighbour: bool) -> _Block | None:
     bullet = _BULLET.fullmatch(line)
     if bullet is not None:
         # A token's index is digits, so a token counts as a letter or digit
-        if not any(c.isalnum() for c in bullet[1]):
+        if not _has_typed_alnum(bullet[1]):
             return None
         if line.lstrip().startswith("*") and not bullet_neighbour:
             return None
         return _Block("ul", [bullet[1]])
     numbered = _NUMBERED.fullmatch(line)
-    if numbered is None or not any(c.isalnum() for c in numbered[2]):
+    if numbered is None or not _has_typed_alnum(numbered[2]):
         return None
     return _Block("ol", [numbered[2]], start=int(numbered[1]))
 
