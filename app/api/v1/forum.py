@@ -155,6 +155,7 @@ def _post_response(
         thread_id=post.thread_id,
         user_id=post.user_id,
         post_text="" if post.deleted and not is_moderator else post.post_text,
+        markup_version=post.markup_version,
         date=post.date,
         deleted=post.deleted,
         update_count=post.update_count,

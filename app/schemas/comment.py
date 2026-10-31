@@ -73,6 +73,7 @@ class CommentResponse(CommentBase):
 
     post_id: int
     user_id: int
+    markup_version: int
     date: UTCDatetime
     update_count: int
     last_updated: UTCDatetimeOptional = None
@@ -94,7 +95,7 @@ class CommentResponse(CommentBase):
     @property
     def post_text_html(self) -> str:
         """Rendered HTML from markdown post_text"""
-        return parse_markdown(self.post_text)
+        return parse_markdown(self.post_text, self.markup_version)
 
 
 class CommentListResponse(BaseModel):

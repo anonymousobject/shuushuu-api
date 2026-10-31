@@ -1259,3 +1259,91 @@ class TestAdminCommentDeletion:
         action = result.scalar_one_or_none()
 
         assert action is None  # No audit entry should exist
+
+
+@pytest.mark.api
+class TestCommentMarkupVersion:
+    """Comments render by their stored markup_version."""
+
+    async def _image(self, db_session: AsyncSession, sample_image_data: dict) -> Images:
+        image = Images(**sample_image_data)
+        db_session.add(image)
+        await db_session.commit()
+        await db_session.refresh(image)
+        return image
+
+    async def test_new_comment_is_version_2(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        image = await self._image(db_session, sample_image_data)
+        response = await authenticated_client.post(
+            "/api/v1/comments",
+            json={"image_id": image.image_id, "post_text": "- a\n- b"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["markup_version"] == 2
+        assert data["post_text_html"] == "<ul><li>a</li><li>b</li></ul>"
+
+    async def test_existing_comment_renders_with_version_1(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        image = await self._image(db_session, sample_image_data)
+        comment = Comments(
+            image_id=image.image_id, user_id=1, post_text="- a\n- b", markup_version=1
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        response = await client.get(f"/api/v1/comments/{comment.post_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["markup_version"] == 1
+        assert data["post_text_html"] == "- a<br>\n- b"
+
+    async def test_editing_keeps_version_1(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_user: dict,
+        sample_image_data: dict,
+    ):
+        image = await self._image(db_session, sample_image_data)
+        comment = Comments(
+            image_id=image.image_id,
+            user_id=sample_user.id,
+            post_text="- a\n- b",
+            markup_version=1,
+        )
+        db_session.add(comment)
+        await db_session.commit()
+        await db_session.refresh(comment)
+
+        response = await authenticated_client.patch(
+            f"/api/v1/comments/{comment.post_id}", json={"post_text": "- c\n- d"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["markup_version"] == 1
+        assert data["post_text_html"] == "- c<br>\n- d"
+
+    async def test_comment_renders_no_heading(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        sample_image_data: dict,
+    ):
+        image = await self._image(db_session, sample_image_data)
+        response = await authenticated_client.post(
+            "/api/v1/comments",
+            json={"image_id": image.image_id, "post_text": "## Title"},
+        )
+        assert response.status_code == 201
+        assert response.json()["post_text_html"] == "## Title"

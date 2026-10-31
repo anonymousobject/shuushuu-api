@@ -27,7 +27,7 @@ def _sub_innermost_first(pattern: re.Pattern[str], replacement: str, text: str) 
     return text
 
 
-def render_v1(text: str) -> str:
+def render_v1(text: str | None) -> str:
     """
     Parse safe Markdown subset to HTML.
 
