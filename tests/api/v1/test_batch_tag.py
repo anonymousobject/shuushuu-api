@@ -728,7 +728,6 @@ class TestBatchTagSnapshotConflictRetry:
     shares this session, so the retry's real rollback expires the fixtures.
     """
 
-    @pytest.mark.needs_commit
     async def test_batch_add_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -765,7 +764,6 @@ class TestBatchTagSnapshotConflictRetry:
         )
         assert link_count.scalar_one() == 2
 
-    @pytest.mark.needs_commit
     async def test_batch_remove_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
@@ -804,7 +802,6 @@ class TestBatchTagSnapshotConflictRetry:
         )
         assert link_count.scalar_one() == 0
 
-    @pytest.mark.needs_commit
     async def test_batch_add_gives_up_after_bounded_retries(
         self, client: AsyncClient, db_session: AsyncSession
     ):

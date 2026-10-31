@@ -1560,17 +1560,10 @@ class TestReviewMlTagSuggestionsSnapshotConflictRetry:
     this test injects the fabricated Postgres deadlock (SQLSTATE 40P01) error
     to prove the retry contract still holds at this site."""
 
-    @pytest.mark.needs_commit
     async def test_review_approve_retries_snapshot_conflict_and_succeeds(
         self, client: AsyncClient, db_session: AsyncSession
     ):
-        """A transient Postgres deadlock (40P01) on the review commit is retried and the approval succeeds.
-
-        needs_commit: the retry performs a real session rollback for a fresh
-        snapshot; under the default SAVEPOINT isolation that rollback would
-        unwind the fixture's committed image/tag/suggestion rows too, which
-        can't happen in production where they are durably committed.
-        """
+        """A transient Postgres deadlock (40P01) on the review commit is retried and the approval succeeds."""
         from unittest.mock import patch
 
         from tests.transient_conflict import _deadlock_error

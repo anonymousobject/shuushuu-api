@@ -623,18 +623,10 @@ class TestUploadSnapshotConflictRetry:
     (SQLSTATE 40P01) error to prove the retry contract still holds here."""
 
     @pytest.mark.asyncio
-    @pytest.mark.needs_commit
     async def test_upload_retries_snapshot_conflict_and_succeeds(
         self, upload_client: AsyncClient, verified_user: Users
     ):
-        """A transient Postgres deadlock (40P01) on the temp-row INSERT is retried and the upload succeeds.
-
-        needs_commit: the retry performs a real session rollback to obtain a
-        fresh snapshot; under the default SAVEPOINT isolation that rollback
-        would unwind the fixture's user row too (FK 1452 on the retried
-        INSERT), which can't happen in production where the user is durably
-        committed.
-        """
+        """A transient Postgres deadlock (40P01) on the temp-row INSERT is retried and the upload succeeds."""
         flush_patch, calls = _flaky_flush(1, _deadlock_error())
         with (
             _mock_upload_storage("snapshotretry1"),
@@ -725,7 +717,6 @@ class TestUploadTagLinkSnapshotConflictRetry:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.needs_commit
     async def test_upload_with_tags_retries_snapshot_conflict_and_succeeds(
         self,
         upload_client: AsyncClient,

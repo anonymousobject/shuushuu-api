@@ -4501,7 +4501,6 @@ class TestFavoriteRatingSnapshotConflictRetry:
     injected into the wrapped unit's explicit flush, mirroring the upload path's
     TestUploadSnapshotConflictRetry."""
 
-    @pytest.mark.needs_commit
     async def test_favorite_retries_snapshot_conflict_and_succeeds(
         self,
         authenticated_client: AsyncClient,
@@ -4509,13 +4508,7 @@ class TestFavoriteRatingSnapshotConflictRetry:
         sample_image_data: dict,
         sample_user: Users,
     ):
-        """A transient Postgres deadlock (SQLSTATE 40P01) on the favorite counter write is retried and succeeds.
-
-        needs_commit: the retry performs a real transaction rollback to obtain a
-        fresh transaction; under the default SAVEPOINT isolation that rollback
-        would unwind the fixture's committed image/user rows too, which can't
-        happen in production where they are durably committed.
-        """
+        """A transient Postgres deadlock (SQLSTATE 40P01) on the favorite counter write is retried and succeeds."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
@@ -4539,7 +4532,6 @@ class TestFavoriteRatingSnapshotConflictRetry:
         )
         assert result.scalar_one_or_none() is not None
 
-    @pytest.mark.needs_commit
     async def test_unfavorite_retries_snapshot_conflict_and_succeeds(
         self,
         authenticated_client: AsyncClient,
@@ -4579,7 +4571,6 @@ class TestFavoriteRatingSnapshotConflictRetry:
         )
         assert result.scalar_one_or_none() is None
 
-    @pytest.mark.needs_commit
     async def test_rate_retries_snapshot_conflict_and_succeeds(
         self,
         authenticated_client: AsyncClient,
@@ -4605,19 +4596,13 @@ class TestFavoriteRatingSnapshotConflictRetry:
         assert data["num_ratings"] == 1
         assert len(calls) >= 2
 
-    @pytest.mark.needs_commit
     async def test_favorite_gives_up_after_bounded_retries(
         self,
         authenticated_client: AsyncClient,
         db_session: AsyncSession,
         sample_image_data: dict,
     ):
-        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts.
-
-        needs_commit: each retry rolls back for a fresh snapshot, so the image
-        must be durably committed to survive re-fetch across attempts (as in
-        production).
-        """
+        """A persistent Postgres deadlock (SQLSTATE 40P01) propagates after a bounded number of attempts."""
         image = Images(**sample_image_data)
         db_session.add(image)
         await db_session.commit()
@@ -4667,7 +4652,6 @@ class TestTagWriteSnapshotConflictRetry:
     Production never sees that — the request session is nobody else's.
     """
 
-    @pytest.mark.needs_commit
     async def test_add_tag_retries_snapshot_conflict_and_succeeds(
         self,
         authenticated_client: AsyncClient,
@@ -4675,13 +4659,7 @@ class TestTagWriteSnapshotConflictRetry:
         sample_user: Users,
         sample_image_data: dict,
     ):
-        """A transient Postgres deadlock (SQLSTATE 40P01) during the tag add is retried and the tag lands once.
-
-        needs_commit: the retry performs a real session rollback to obtain a
-        fresh snapshot; under the default SAVEPOINT isolation that rollback
-        would unwind the fixture's committed image/tag rows too, which cannot
-        happen in production where they are durably committed.
-        """
+        """A transient Postgres deadlock (SQLSTATE 40P01) during the tag add is retried and the tag lands once."""
         image_data = sample_image_data.copy()
         image_data["user_id"] = sample_user.user_id
         image = Images(**image_data)
@@ -4723,7 +4701,6 @@ class TestTagWriteSnapshotConflictRetry:
         )
         assert len(list(history.scalars().all())) == 1
 
-    @pytest.mark.needs_commit
     async def test_remove_tag_retries_snapshot_conflict_and_succeeds(
         self,
         authenticated_client: AsyncClient,
@@ -4774,7 +4751,6 @@ class TestTagWriteSnapshotConflictRetry:
         )
         assert len(list(history.scalars().all())) == 1
 
-    @pytest.mark.needs_commit
     async def test_add_tag_gives_up_after_bounded_retries(
         self,
         authenticated_client: AsyncClient,

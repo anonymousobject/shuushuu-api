@@ -5,7 +5,6 @@ No mocked behavior is asserted; all assertions target real DB rows written
 by the service.
 """
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -427,17 +426,10 @@ class TestBulkReviewSnapshotConflictRetry:
     transaction instead of propagating the 500 (see app/core/db_retry.py and
     app/services/ml_suggestion_review.py)."""
 
-    @pytest.mark.needs_commit
     async def test_bulk_review_approve_retries_snapshot_conflict_and_succeeds(
         self, db_session: AsyncSession
     ):
-        """A transient Postgres deadlock (40P01) on the bulk commit is retried and the approval succeeds.
-
-        needs_commit: the retry performs a real session rollback for a fresh
-        snapshot; under the default SAVEPOINT isolation that rollback would
-        unwind the fixture's committed image/tag/suggestion rows too, which
-        can't happen in production where they are durably committed.
-        """
+        """A transient Postgres deadlock (40P01) on the bulk commit is retried and the approval succeeds."""
         from unittest.mock import patch
 
         from tests.transient_conflict import _deadlock_error

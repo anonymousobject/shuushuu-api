@@ -29,7 +29,6 @@ async def test_ml_tag_suggestion_model_creation(db_session, test_image, test_tag
     assert suggestion.created_at is not None
 
 
-@pytest.mark.needs_commit  # failed commit needs real-commit + truncate isolation
 async def test_ml_tag_suggestion_unique_constraint(db_session, test_image, test_tag):
     """The same tag cannot be suggested twice for the same image."""
     suggestion1 = MlTagSuggestions(
