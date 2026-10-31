@@ -20,10 +20,13 @@ the output matches version 1, except:
 - `code` between single backticks is an inline code span, when it holds a
   letter or digit and the backticks aren't inside a word. Its content is
   literal.
+- A line holding only ``` and an optional language name opens a code block,
+  and the next line holding only ``` closes it. Its content is literal, and
+  the language name is dropped. A fence with no closing fence is plain text.
 
-The source is escaped first. Code spans become tokens. A container scan then renders each quote and
-spoiler pair, a block pass sorts lines into blocks, and an inline pass
-renders each block's text. HTML that later passes must not touch is held in
+The source is escaped first. Fenced code blocks and then code spans become
+tokens. A container scan then renders each quote and spoiler pair, a block
+pass sorts lines into blocks, and an inline pass renders each block's text. HTML that later passes must not touch is held in
 a token table behind placeholders, and the placeholders are expanded last.
 """
 
@@ -50,19 +53,27 @@ class _Tokens:
     def __init__(self) -> None:
         self._html: list[str] = []
         self._quotes: set[str] = set()  # Placeholders of quote containers
+        self._blocks: set[str] = set()  # Placeholders of fenced code blocks
 
-    def add(self, html: str, *, quote: bool = False) -> str:
+    def add(self, html: str, *, quote: bool = False, code_block: bool = False) -> str:
         """
         Store rendered HTML and return the placeholder that stands in for it.
 
         quote marks the HTML as a quote container, which the newline rules
-        treat like a blockquote.
+        treat like a blockquote. code_block marks a fenced code block, which
+        the block pass gives a block of its own.
         """
         placeholder = f"{_TOKEN_START}{len(self._html)}{_TOKEN_END}"
         self._html.append(html)
         if quote:
             self._quotes.add(placeholder)
+        if code_block:
+            self._blocks.add(placeholder)
         return placeholder
+
+    def is_code_block(self, line: str) -> bool:
+        """Check if a line is only the placeholder of a fenced code block."""
+        return line in self._blocks
 
     def starts_quote(self, text: str, position: int = 0) -> bool:
         """Check if the placeholder of a quote container starts at text[position]."""
@@ -101,17 +112,18 @@ def _prepare(text: str) -> str:
 
 # Block kinds that are separated from their neighbours by a bare newline, and
 # that absorb a blank line directly above and below
-_STANDALONE_KINDS = {"ul", "ol"}
+_STANDALONE_KINDS = {"ul", "ol", "pre"}
 
 
 @dataclass
 class _Block:
     """
     Consecutive lines of one kind: plain text lines, the content of > quote
-    lines, or the text of bulleted (ul) or numbered (ol) list items.
+    lines, the text of bulleted (ul) or numbered (ol) list items, or the
+    placeholders of fenced code blocks (pre).
     """
 
-    kind: Literal["text", "quote", "ul", "ol"]
+    kind: Literal["text", "quote", "ul", "ol", "pre"]
     lines: list[str]
     start: int = 1  # The number a numbered list starts at
 
@@ -194,7 +206,7 @@ def _absorb_blank_lines(blocks: list[_Block]) -> list[_Block]:
     return [block for block in blocks if block.lines]
 
 
-def _split_blocks(text: str, starts_line: bool) -> list[_Block]:
+def _split_blocks(text: str, starts_line: bool, tokens: _Tokens) -> list[_Block]:
     """
     Block pass: sort the lines into blocks.
 
@@ -212,7 +224,9 @@ def _split_blocks(text: str, starts_line: bool) -> list[_Block]:
         line_start = number > 0 or starts_line
         quote_content = _quote_content(line) if line_start else None
         block = None
-        if quote_content is not None:
+        if line_start and tokens.is_code_block(line):
+            block = _Block("pre", [line])
+        elif quote_content is not None:
             block = _Block("quote", [quote_content])
         elif line_start:
             block = _list_item(
@@ -258,6 +272,8 @@ def _render_block(block: _Block, tokens: _Tokens) -> str:
     if block.kind == "quote":
         # Consecutive quote lines join with spaces into one blockquote
         return f"<blockquote>{_render_inline(' '.join(block.lines))}</blockquote>"
+    if block.kind == "pre":
+        return "\n".join(block.lines)
     if block.kind in ("ul", "ol"):
         items = "".join(f"<li>{_render_inline(line)}</li>" for line in block.lines)
         start = f' start="{block.start}"' if block.start != 1 else ""
@@ -285,7 +301,7 @@ def _render_blocks(text: str, tokens: _Tokens, *, starts_line: bool) -> str:
     """
     Render prepared text with the block and inline passes, leaving placeholders in place.
     """
-    blocks = _split_blocks(text, starts_line)
+    blocks = _split_blocks(text, starts_line, tokens)
     parts = [_render_block(blocks[0], tokens)]
     for previous, block in zip(blocks, blocks[1:], strict=False):
         parts += [_line_break_before(previous, block, tokens), _render_block(block, tokens)]
@@ -364,6 +380,36 @@ def _render_container(pair: _Open, tokens: _Tokens) -> str:
         # Unescape the name, then escape it once, as version 1 does
         html = f"<small>{escape(unescape(pair.name))} said:</small> {html}"
     return tokens.add(f"<blockquote>{html}</blockquote>", quote=True)
+
+
+_OPENING_FENCE = re.compile(r"```[^\s`]*")
+
+
+def _render_fences(text: str, tokens: _Tokens) -> str:
+    """
+    Replace each fenced code block with a line holding its placeholder.
+
+    An opening fence pairs with the next closing line. An opening fence at or
+    after the last closing line has no partner, so it stays plain text and so
+    does everything after it. The last closing line is found first, so an
+    unclosed fence never rescans the lines after it, and the scan is linear.
+    """
+    lines = text.split("\n")
+    last_close = max((i for i, line in enumerate(lines) if line.rstrip() == "```"), default=-1)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if i < last_close and _OPENING_FENCE.fullmatch(lines[i].rstrip()):
+            close = i + 1
+            while lines[close].rstrip() != "```":
+                close += 1
+            code = "\n".join(lines[i + 1 : close])
+            out.append(tokens.add(f"<pre><code>{code}</code></pre>", code_block=True))
+            i = close + 1
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
 
 
 def _is_code_span(text: str, start: int, end: int) -> bool:
@@ -471,5 +517,7 @@ def render_v2(text: str | None, headings: bool) -> str:  # noqa: ARG001
     if not text:
         return ""
     tokens = _Tokens()
-    text = _render_containers(_render_code_spans(_prepare(text), tokens), tokens)
+    text = _render_containers(
+        _render_code_spans(_render_fences(_prepare(text), tokens), tokens), tokens
+    )
     return tokens.expand(_render_blocks(text, tokens, starts_line=True))

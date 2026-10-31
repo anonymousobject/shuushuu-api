@@ -381,3 +381,40 @@ def test_many_backticks_are_linear(text):
     start = time.perf_counter()
     render_v2(text, headings=False)
     assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        ("```\nx = 1\n```", "<pre><code>x = 1</code></pre>"),
+        ("```python\nx = 1\n```", "<pre><code>x = 1</code></pre>"),
+        ("```\na\n\nb\n```", "<pre><code>a\n\nb</code></pre>"),
+        ("```\n```", "<pre><code></code></pre>"),
+        ("```\n<b>&amp;\n```", "<pre><code>&lt;b&gt;&amp;</code></pre>"),
+        (
+            "```\n**x** [spoiler]y[/spoiler] - z\n## h\n```",
+            "<pre><code>**x** [spoiler]y[/spoiler] - z\n## h</code></pre>",
+        ),
+        ("x\n```\nc\n```\ny", "x\n<pre><code>c</code></pre>\ny"),
+        ("```\r\nx\r\n```", "<pre><code>x</code></pre>"),
+        (
+            "[spoiler]\n```\nx\n```\n[/spoiler]",
+            '<span class="spoiler"><pre><code>x</code></pre></span>',
+        ),
+    ],
+)
+def test_code_blocks(text, html):
+    assert render_v2(text, headings=False) == html
+
+
+def test_fence_breaks_a_straddling_spoiler():
+    html = render_v2("[spoiler]\n```\n[/spoiler]\n```", headings=False)
+    assert "spoiler" not in html.replace("[/spoiler]", "")
+    assert "<pre><code>[/spoiler]</code></pre>" in html
+
+
+def test_unclosed_fences_are_linear():
+    text = "```\n" * 5000
+    start = time.perf_counter()
+    render_v2(text, headings=False)
+    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
