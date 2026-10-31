@@ -12,7 +12,7 @@ from live posts inside the mutating transaction, never incremented.
 
 from datetime import datetime
 
-from sqlalchemy import Column, ForeignKeyConstraint, Index, Text, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, SmallInteger, Text, text
 from sqlmodel import Field, SQLModel
 
 from app.models.types import UtcDateTime
@@ -145,6 +145,12 @@ class ForumPosts(SQLModel, table=True):
         default=None, sa_column=Column(UtcDateTime, nullable=True)
     )
     last_updated_user_id: int | None = Field(default=None)
+
+    # Picks the renderer: 1 = original, 2 = lists/code/headings. Existing rows
+    # are 1; every new row is 2; edits keep the version.
+    markup_version: int = Field(
+        default=2, sa_column=Column(SmallInteger, nullable=False, server_default=text("2"))
+    )
 
     legacy_post_id: int | None = Field(default=None, unique=True)
     legacy_poster_id: int | None = Field(default=None, index=True)
