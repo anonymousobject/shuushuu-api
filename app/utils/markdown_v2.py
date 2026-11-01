@@ -23,10 +23,9 @@ the output matches version 1, except:
 - A line holding only ``` and an optional language name opens a code block,
   and the next line holding only ``` closes it. Its content is literal, and
   the language name is dropped. A fence with no closing fence is plain text.
-- In forum posts, a line starting with ## and a space is a heading, and one
-  starting with ### and a space is a smaller heading. A single # or four or
-  more stay plain text. A blank line right above or below a heading is
-  dropped.
+- In forum posts, a line starting with # or ## and a space is a heading, and
+  one starting with ### and a space is a smaller heading. Four or more stay
+  plain text. A blank line right above or below a heading is dropped.
 
 The source is escaped first. Fenced code blocks and then code spans become
 tokens. A container scan then renders each quote and spoiler pair, a block
@@ -139,7 +138,7 @@ _BULLET = re.compile(r"\s*[-*] +(\S.*)")
 # digits: longer numbers are prose, and int() stays cheap.
 _NUMBERED = re.compile(r"\s*(\d{1,9})\. +(\S.*)")
 # A heading line; the groups are the markers and the heading's text
-_HEADING = re.compile(r"\s*(#{2,3}) +(\S.*)")
+_HEADING = re.compile(r"\s*(#{1,3}) +(\S.*)")
 
 
 def _quote_content(line: str) -> str | None:
@@ -236,7 +235,7 @@ def _split_blocks(text: str, starts_line: bool, tokens: _Tokens, *, headings: bo
         elif quote_content is not None:
             block = _Block("quote", [quote_content])
         elif line_start and headings and (heading := _HEADING.fullmatch(line)):
-            block = _Block("h2" if len(heading[1]) == 2 else "h3", [heading[2]])
+            block = _Block("h3" if len(heading[1]) == 3 else "h2", [heading[2]])
         elif line_start:
             block = _list_item(
                 line,
@@ -526,7 +525,7 @@ def render_v2(text: str | None, headings: bool) -> str:
 
     Args:
         text: Raw markdown text from user
-        headings: Whether ## and ### lines become headings, for forum posts
+        headings: Whether #, ## and ### lines become headings, for forum posts
 
     Returns:
         Safe HTML string

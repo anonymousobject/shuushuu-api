@@ -31,7 +31,7 @@ This module provides security mechanisms for different types of user content:
 - > blockquotes
 - Line breaks
 - Version 2 only: - and 1. lists, `code` spans, ``` code blocks, and (forum
-  posts only) ## and ### headings. Version 1 rows keep the original rules.
+  posts only) #, ## and ### headings. Version 1 rows keep the original rules.
 - BBCode-style [quote="user"]...[/quote]
 - BBCode-style [spoiler]...[/spoiler] (renders as <span class="spoiler">)
 
@@ -51,7 +51,7 @@ def parse_markdown(text: str | None, version: int, headings: bool = False) -> st
 
     Version 1 is the original renderer (see markdown_v1.render_v1) and ignores
     `headings`. Version 2 adds lists and code (see markdown_v2.render_v2);
-    `headings` enables ## and ### headings and is passed only for forum posts.
+    `headings` enables #, ## and ### headings and is passed only for forum posts.
 
     Raises:
         ValueError: if version is not 1 or 2.
