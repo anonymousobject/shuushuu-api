@@ -44,6 +44,10 @@ from html import escape
 from app.utils.markdown_v1 import render_v1
 from app.utils.markdown_v2 import render_v2
 
+# The rules an edited comment or forum post moves to. Raising it also needs
+# the column's default raised, so new posts get the same rules.
+CURRENT_MARKUP_VERSION = 2
+
 
 def parse_markdown(text: str | None, version: int, headings: bool = False) -> str:
     """

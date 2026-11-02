@@ -102,7 +102,7 @@ class Privmsgs(PrivmsgBase, table=True):
     to_del: int = Field(default=0)
 
     # Picks the renderer: 1 = original, 2 = lists/code/headings. Existing rows
-    # are 1; every new row is 2; edits keep the version.
+    # are 1; every new row is 2. Messages can't be edited.
     markup_version: int = Field(
         default=2, sa_column=Column(SmallInteger, nullable=False, server_default=text("2"))
     )

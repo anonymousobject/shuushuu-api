@@ -1308,7 +1308,7 @@ class TestCommentMarkupVersion:
         assert data["markup_version"] == 1
         assert data["post_text_html"] == "- a<br>\n- b"
 
-    async def test_editing_keeps_version_1(
+    async def test_editing_moves_version_1_to_version_2(
         self,
         authenticated_client: AsyncClient,
         db_session: AsyncSession,
@@ -1331,8 +1331,8 @@ class TestCommentMarkupVersion:
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["markup_version"] == 1
-        assert data["post_text_html"] == "- c<br>\n- d"
+        assert data["markup_version"] == 2
+        assert data["post_text_html"] == "<ul><li>c</li><li>d</li></ul>"
 
     async def test_comment_renders_no_heading(
         self,

@@ -147,7 +147,7 @@ class ForumPosts(SQLModel, table=True):
     last_updated_user_id: int | None = Field(default=None)
 
     # Picks the renderer: 1 = original, 2 = lists/code/headings. Existing rows
-    # are 1; every new row is 2; edits keep the version.
+    # are 1; every new row is 2; editing the text moves a row to 2.
     markup_version: int = Field(
         default=2, sa_column=Column(SmallInteger, nullable=False, server_default=text("2"))
     )
