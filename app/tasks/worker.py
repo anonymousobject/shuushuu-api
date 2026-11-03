@@ -5,9 +5,7 @@ Run worker with: uv run arq app.tasks.worker.WorkerSettings
 """
 
 import asyncio
-import hashlib
 import socket
-from pathlib import Path
 from typing import Any
 
 # arq's Worker.__init__ calls asyncio.get_event_loop() which raises RuntimeError
@@ -23,32 +21,45 @@ from arq.cron import cron
 from arq.worker import func
 
 from app.config import settings
-from app.core.database import get_async_session
-from app.core.logging import configure_logging
-from app.services.image_status import enqueue_r2_sync_on_status_change
-from app.services.review_jobs import check_review_deadlines
-from app.services.user_cleanup import cleanup_unverified_accounts
-from app.tasks.email_jobs import send_password_reset_email_job, send_verification_email_job
-from app.tasks.image_jobs import (
-    add_to_iqdb_job,
-    create_thumbnail_job,
-    create_variant_job,
-)
-from app.tasks.ml_tag_suggestion_job import generate_ml_tag_suggestions
-from app.tasks.pm_jobs import send_pm_notification
-from app.tasks.r2_jobs import (
-    r2_delete_image_job,
-    r2_finalize_upload_job,
-    sync_image_status_job,
-)
-from app.tasks.rating_jobs import recalculate_rating_job
-from app.tasks.taste_profile import refresh_user_tag_affinity_job
+from app.core.logging import configure_logging, get_logger
+from app.tasks.lockfile_check import check_lockfile_freshness
 
 # Same pattern as app/main.py: configure structlog at module import. arq is
 # launched as `uv run arq app.tasks.worker.WorkerSettings`, which never goes
 # through main.py, so without this call the worker would fall through to
 # structlog's defaults (ConsoleRenderer) instead of the prod JSONRenderer.
 configure_logging()
+
+# Verify the Docker image isn't stale before importing the app modules that
+# pull in driver dependencies at import time: app.core.database builds the
+# engine (and so imports asyncpg) on import, so a dependency added to uv.lock
+# without a rebuild would otherwise crash there with a bare ModuleNotFoundError
+# before this check ran. The imports above (arq, pydantic-settings, structlog)
+# are the floor: the check needs the logger, and those rarely change.
+check_lockfile_freshness(get_logger(__name__))
+
+from app.core.database import get_async_session  # noqa: E402
+from app.services.image_status import enqueue_r2_sync_on_status_change  # noqa: E402
+from app.services.review_jobs import check_review_deadlines  # noqa: E402
+from app.services.user_cleanup import cleanup_unverified_accounts  # noqa: E402
+from app.tasks.email_jobs import (  # noqa: E402
+    send_password_reset_email_job,
+    send_verification_email_job,
+)
+from app.tasks.image_jobs import (  # noqa: E402
+    add_to_iqdb_job,
+    create_thumbnail_job,
+    create_variant_job,
+)
+from app.tasks.ml_tag_suggestion_job import generate_ml_tag_suggestions  # noqa: E402
+from app.tasks.pm_jobs import send_pm_notification  # noqa: E402
+from app.tasks.r2_jobs import (  # noqa: E402
+    r2_delete_image_job,
+    r2_finalize_upload_job,
+    sync_image_status_job,
+)
+from app.tasks.rating_jobs import recalculate_rating_job  # noqa: E402
+from app.tasks.taste_profile import refresh_user_tag_affinity_job  # noqa: E402
 
 
 async def cleanup_stale_accounts(ctx: dict[str, Any]) -> None:
@@ -105,54 +116,12 @@ async def process_review_deadlines(ctx: dict[str, Any]) -> None:
             )
 
 
-def _check_lockfile_freshness(logger: Any) -> None:
-    """Verify the mounted uv.lock matches the one used to build the image.
-
-    The Dockerfile bakes a sha256 of uv.lock into /app/.uv-lock-hash at
-    build time. docker-compose mounts the host's uv.lock at /app/uv.lock
-    at runtime. If the hashes differ, the image was built against an older
-    lockfile — installed packages are stale and the worker will crash-loop
-    on the first import of a missing dependency.
-
-    Raises SystemExit(1) with an actionable message so the operator knows
-    to rebuild instead of debugging a raw ModuleNotFoundError traceback.
-    """
-    hash_file = Path("/app/.uv-lock-hash")
-    lock_file = Path("/app/uv.lock")
-
-    # Older image without the hash file — skip check (no false positive).
-    if not hash_file.exists() or not lock_file.exists():
-        return
-
-    expected = hash_file.read_text().strip()
-    actual = hashlib.sha256(lock_file.read_bytes()).hexdigest()
-
-    if expected != actual:
-        logger.error(
-            "worker_lockfile_mismatch",
-            expected_hash=expected,
-            actual_hash=actual,
-            hint="Rebuild the Docker image: docker compose build --no-cache arq-worker",
-        )
-        raise SystemExit(
-            "uv.lock has changed since the Docker image was built — "
-            "installed packages are stale.\n"
-            "Rebuild: docker compose build --no-cache arq-worker"
-        )
-
-
 async def startup(ctx: dict[str, Any]) -> None:
     """Worker startup - initialize any shared resources."""
     from app.core.logging import get_logger
 
     logger = get_logger(__name__)
     logger.info("arq_worker_starting", redis_url=settings.ARQ_REDIS_URL)
-
-    # Verify the Docker image isn't stale: compare the baked-in lockfile
-    # hash against the host's uv.lock mounted at runtime. A mismatch means
-    # deps were added to uv.lock but the image wasn't rebuilt — the worker
-    # would crash-loop on the first missing import.
-    _check_lockfile_freshness(logger)
 
     # Load the ML tagging model once per worker when the feature is enabled.
     # Deliberately NOT wrapped in try/except: if the flag is on but model
