@@ -417,3 +417,204 @@ def test_writer_rejects_store_with_other_dim(tmp_path):
 
     with pytest.raises(ValueError, match="dim"):
         ml_gpu_infer.EmbeddingWriter(tmp_path, dim=8, meta={"model": "m"})
+
+
+# ---------------------------------------------------------------------------
+# Embedding extraction: prefetch, CLI validation, and the predict() split
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_bounded_prefetch_preserves_order_and_yields_exceptions():
+    def fn(i):
+        if i == 2:
+            raise ValueError("bad")
+        return i * 10
+
+    out = list(ml_gpu_infer.bounded_prefetch(fn, [0, 1, 2, 3], workers=2, window=2))
+
+    assert [item for item, _ in out] == [0, 1, 2, 3]
+    assert [value for _, value in out][:2] == [0, 10]
+    assert isinstance(out[2][1], ValueError)
+    assert out[3][1] == 30
+
+
+@pytest.mark.unit
+def test_bounded_prefetch_handles_empty_input():
+    assert list(ml_gpu_infer.bounded_prefetch(lambda i: i, [], workers=2, window=2)) == []
+
+
+@pytest.mark.unit
+def test_cli_requires_out_or_embeddings_out():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            "m",
+            "--model-dir",
+            "d",
+            "--storage-path",
+            "s",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "one of --out or --embeddings-out is required" in result.stderr
+
+
+@pytest.mark.unit
+def test_select_predictions_matches_predict(monkeypatch, tmp_path):
+    """The selection loop split out of predict() produces exactly what predict() does."""
+    _make_fake_pipeline_patches(monkeypatch)
+    allowed = {ml_gpu_infer.GENERAL_CATEGORY, ml_gpu_infer.CHARACTER_CATEGORY}
+
+    via_predict = ml_gpu_infer.predict(
+        session=_FakeSession(_PROBS),
+        input_name="input",
+        names=_NAMES,
+        categories=_CATEGORIES,
+        thresholds=_THRESHOLDS,
+        pipeline=DUMMY_PIPELINE,
+        image_path=str(tmp_path / "fake.png"),
+        min_confidence=0.35,
+        model_version="test-model",
+        allowed_categories=allowed,
+    )
+    direct = ml_gpu_infer.select_predictions(
+        np.array(_PROBS, dtype=np.float32),
+        _NAMES,
+        _CATEGORIES,
+        _THRESHOLDS,
+        0.35,
+        "test-model",
+        allowed,
+    )
+
+    assert direct == via_predict
+    assert [r["external_tag"] for r in direct] == ["sky", "reimu", "outdoors"]
+
+
+@pytest.mark.unit
+def test_infer_returns_embedding_only_when_asked():
+    class _TwoOutputSession:
+        def run(self, outputs, feed):
+            assert feed["input"].shape == (1, 3, 448, 448)
+            table = {
+                "prediction": np.array([[0.1, 0.9]], dtype=np.float32),
+                "embedding": np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
+            }
+            return [table[name] for name in outputs]
+
+    x = np.zeros((1, 3, 448, 448), dtype=np.float32)
+    probs, emb = ml_gpu_infer.infer(_TwoOutputSession(), "input", x, with_embedding=False)
+    assert probs.tolist() == pytest.approx([0.1, 0.9]) and emb is None
+    probs, emb = ml_gpu_infer.infer(_TwoOutputSession(), "input", x, with_embedding=True)
+    assert emb is not None and emb.tolist() == [1.0, 2.0, 3.0]
+
+
+# ---------------------------------------------------------------------------
+# --embeddings-out end to end, against the real model (skipped without it)
+# ---------------------------------------------------------------------------
+
+_NEEDS_MODEL = pytest.mark.skipif(
+    not (_MODEL_DIR / "model.onnx").exists(),
+    reason="animetimm model not present; set ML_MODELS_PATH to the dir containing it",
+)
+
+
+def _synthetic_storage(tmp_path, image_ids, *, corrupt=()):
+    """A fullsize/ dir with one random PNG per id (or junk bytes for ids in corrupt)."""
+    storage = tmp_path / "storage"
+    (storage / "fullsize").mkdir(parents=True, exist_ok=True)
+    rows = []
+    for image_id in image_ids:
+        path = storage / "fullsize" / f"img{image_id}.png"
+        if image_id in corrupt:
+            path.write_bytes(b"not an image")
+        else:
+            arr = np.random.default_rng(image_id).integers(0, 256, (400, 300, 3), dtype=np.uint8)
+            Image.fromarray(arr).save(path)
+        rows.append({"image_id": image_id, "filename": f"img{image_id}", "ext": "png"})
+    return storage, rows
+
+
+def _run_embeddings(tmp_path, storage, rows, store_dir, name="m.jsonl"):
+    manifest = tmp_path / name
+    manifest.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return subprocess.run(
+        [
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            str(manifest),
+            "--embeddings-out",
+            str(store_dir),
+            "--model-dir",
+            str(_MODEL_DIR),
+            "--storage-path",
+            str(storage),
+            "--variant",
+            "fullsize",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@_NEEDS_MODEL
+async def test_embeddings_out_matches_canonical_embedding(tmp_path):
+    from app.services.animetimm_model import AnimetimmModel
+    from app.services.ml_probe.store import open_embedding_store
+
+    storage, rows = _synthetic_storage(tmp_path, [123])
+    store_dir = tmp_path / "emb"
+
+    _run_embeddings(tmp_path, storage, rows, store_dir)
+
+    store = open_embedding_store(store_dir)
+    model = AnimetimmModel(str(_MODEL_DIR / "model.onnx"), str(_MODEL_DIR / "selected_tags.csv"))
+    await model.load()
+    try:
+        canonical = await model.embed(str(storage / "fullsize" / "img123.png"))
+    finally:
+        await model.cleanup()
+
+    assert store.ids.tolist() == [123]
+    assert store.vectors.shape == (1, 1024)
+    assert store.meta["dim"] == 1024
+    assert store.meta["model"] == _MODEL_DIR.name
+    assert canonical.shape == (1024,)
+    assert np.max(np.abs(store.vectors[0].astype(np.float32) - canonical)) < 2e-2
+    assert not list(tmp_path.glob("*.jsonl.meta")), "no predictions JSONL without --out"
+
+
+@_NEEDS_MODEL
+def test_embeddings_out_skips_unreadable_image(tmp_path):
+    from app.services.ml_probe.store import open_embedding_store
+
+    storage, rows = _synthetic_storage(tmp_path, [1, 2], corrupt={1})
+    store_dir = tmp_path / "emb"
+
+    proc = _run_embeddings(tmp_path, storage, rows, store_dir)
+
+    assert open_embedding_store(store_dir).ids.tolist() == [2]
+    assert "skipping image 1" in proc.stdout
+    assert "1 unreadable" in proc.stdout
+
+
+@_NEEDS_MODEL
+def test_embeddings_out_resumes(tmp_path):
+    from app.services.ml_probe.store import open_embedding_store
+
+    storage, rows = _synthetic_storage(tmp_path, [1, 2, 3])
+    store_dir = tmp_path / "emb"
+
+    _run_embeddings(tmp_path, storage, rows[:2], store_dir, name="first.jsonl")
+    proc = _run_embeddings(tmp_path, storage, rows, store_dir, name="second.jsonl")
+
+    assert open_embedding_store(store_dir).ids.tolist() == [1, 2, 3]
+    assert "2 already done, 1 to process" in proc.stdout

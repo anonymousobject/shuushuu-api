@@ -27,13 +27,17 @@ Usage:
 
 import argparse
 import csv
+import itertools
 import json
 import os
 import sys
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import numpy as np
 import onnxruntime as ort  # type: ignore[import-untyped]
@@ -173,6 +177,56 @@ def load_model(
     return session, input_name, names, categories, thresholds, pipeline
 
 
+def infer(
+    session: ort.InferenceSession,
+    input_name: str,
+    img_array: NDArray[np.float32],
+    *,
+    with_embedding: bool,
+) -> tuple[NDArray[np.float32], NDArray[np.float32] | None]:
+    """One forward pass for one preprocessed image.
+
+    "prediction" already has sigmoid applied. "embedding" is the pooled 1024-d
+    feature vector the Danbooru head consumes; requesting it from the same run
+    costs nothing extra.
+    """
+    outputs = ["prediction", "embedding"] if with_embedding else ["prediction"]
+    results = session.run(outputs, {input_name: img_array})
+    probabilities = results[0][0]
+    embedding = results[1][0] if with_embedding else None
+    return probabilities, embedding
+
+
+def select_predictions(
+    probabilities: NDArray[np.float32],
+    names: list[str],
+    categories: list[int],
+    thresholds: list[float],
+    min_confidence: float,
+    model_version: str,
+    allowed_categories: set[int],
+) -> list[dict[str, Any]]:
+    """Threshold and shape per-tag probabilities for ml_backfill_ingest."""
+    results: list[dict[str, Any]] = []
+    for name, category, prob, tag_threshold in zip(
+        names, categories, probabilities, thresholds, strict=True
+    ):
+        if category not in allowed_categories:
+            continue
+        if prob < max(tag_threshold, min_confidence):
+            continue
+        results.append(
+            {
+                "external_tag": name,
+                "confidence": float(prob),
+                "model_version": model_version,
+                "category": category,
+            }
+        )
+    results.sort(key=lambda r: r["confidence"], reverse=True)
+    return results
+
+
 def predict(
     session: ort.InferenceSession,
     input_name: str,
@@ -194,27 +248,44 @@ def predict(
         allowed_categories = {GENERAL_CATEGORY}
 
     img_array = apply_test_pipeline(load_rgb(image_path), pipeline)
-    # "prediction" output already has sigmoid applied.
-    probabilities = session.run(["prediction"], {input_name: img_array})[0][0]
+    probabilities, _ = infer(session, input_name, img_array, with_embedding=False)
+    return select_predictions(
+        probabilities,
+        names,
+        categories,
+        thresholds,
+        min_confidence,
+        model_version,
+        allowed_categories,
+    )
 
-    results: list[dict[str, Any]] = []
-    for name, category, prob, tag_threshold in zip(
-        names, categories, probabilities, thresholds, strict=True
-    ):
-        if category not in allowed_categories:
-            continue
-        if prob < max(tag_threshold, min_confidence):
-            continue
-        results.append(
-            {
-                "external_tag": name,
-                "confidence": float(prob),
-                "model_version": model_version,
-                "category": category,
-            }
-        )
-    results.sort(key=lambda r: r["confidence"], reverse=True)
-    return results
+
+def bounded_prefetch[T, R](
+    fn: Callable[[T], R], items: Iterable[T], *, workers: int, window: int
+) -> Iterator[tuple[T, R | Exception]]:
+    """Run ``fn`` over ``items`` on a thread pool, yielding in input order.
+
+    At most ``window`` results are in flight, so a million-row manifest is never
+    submitted at once. An exception raised by ``fn`` is yielded as that item's
+    value rather than raised, so one bad image cannot end the run.
+    """
+    if window < 1:
+        raise ValueError("window must be >= 1")
+    iterator = iter(items)
+    pending: deque[tuple[T, Future[R]]] = deque()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for item in itertools.islice(iterator, window):
+            pending.append((item, pool.submit(fn, item)))
+        while pending:
+            item, future = pending.popleft()
+            value: R | Exception
+            try:
+                value = future.result()
+            except Exception as exc:
+                value = exc
+            for nxt in itertools.islice(iterator, 1):
+                pending.append((nxt, pool.submit(fn, nxt)))
+            yield item, value
 
 
 # --- JSONL / shard helpers (standalone copies of app/services/ml_backfill.py) ---
@@ -345,78 +416,165 @@ class EmbeddingWriter:
         self._ids.close()
 
 
+def _resolve_image_path(storage: Path, variant: str, rec: dict[str, Any]) -> Path | None:
+    path = storage / variant_relpath(variant, rec["filename"], rec["ext"])
+    if path.exists():
+        return path
+    fallback = storage / variant_relpath("fullsize", rec["filename"], rec["ext"])
+    return fallback if fallback.exists() else None
+
+
+def _embedding_dim(session: ort.InferenceSession) -> int:
+    for output in session.get_outputs():
+        if output.name == "embedding":
+            return int(output.shape[1])
+    raise ValueError("model has no 'embedding' output")
+
+
+@dataclass
+class _ShardJob:
+    """Everything the per-image loop needs, bundled so the loop stays one function."""
+
+    session: ort.InferenceSession
+    input_name: str
+    names: list[str]
+    categories: list[int]
+    thresholds: list[float]
+    pipeline: list[dict[str, Any]]
+    storage: Path
+    variant: str
+    min_confidence: float
+    model_version: str
+    allowed_categories: set[int]
+    prefetch_workers: int
+    writer: EmbeddingWriter | None
+    out_fh: TextIO | None
+
+
+def _process_shard(job: _ShardJob, todo: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """Infer every record in ``todo``; returns (processed, missing, failed)."""
+
+    def load_tensor(rec: dict[str, Any]) -> NDArray[np.float32] | None:
+        path = _resolve_image_path(job.storage, job.variant, rec)
+        if path is None:
+            return None
+        return apply_test_pipeline(load_rgb(str(path)), job.pipeline)
+
+    processed = missing = failed = 0
+    prefetched = bounded_prefetch(
+        load_tensor, todo, workers=job.prefetch_workers, window=4 * job.prefetch_workers
+    )
+    for rec, tensor in prefetched:
+        if tensor is None:
+            missing += 1
+            continue
+        # A corrupt/unreadable image (or any per-image inference error) must
+        # not abort a million-image run — log it and move on.
+        try:
+            if isinstance(tensor, Exception):
+                raise tensor
+            probabilities, embedding = infer(
+                job.session, job.input_name, tensor, with_embedding=job.writer is not None
+            )
+        except Exception as exc:
+            failed += 1
+            print(
+                f"  warning: skipping image {rec['image_id']} "
+                f"({rec['filename']}.{rec['ext']}): {type(exc).__name__}: {exc}"
+            )
+            continue
+        if job.writer is not None and embedding is not None:
+            job.writer.append(rec["image_id"], embedding)
+        if job.out_fh is not None:
+            predictions = select_predictions(
+                probabilities,
+                job.names,
+                job.categories,
+                job.thresholds,
+                job.min_confidence,
+                job.model_version,
+                job.allowed_categories,
+            )
+            job.out_fh.write(
+                json.dumps({"image_id": rec["image_id"], "predictions": predictions}) + "\n"
+            )
+            job.out_fh.flush()
+        processed += 1
+        if processed % 500 == 0:
+            print(f"  {processed}/{len(todo)} processed...")
+    return processed, missing, failed
+
+
 def run(args: argparse.Namespace) -> None:
     model_dir = Path(args.model_dir)
     model_version = args.model_name or model_dir.name
-    out = Path(args.out)
-    check_shard_output(out, args.shards, args.shard_index)
+    out = Path(args.out) if args.out else None
+    if out is not None:
+        check_shard_output(out, args.shards, args.shard_index)
 
     manifest = list(iter_jsonl(Path(args.manifest)))
     shard = select_shard(manifest, args.shards, args.shard_index)
-    done = load_image_ids(out)
+
+    session, input_name, names, categories, thresholds, pipeline = load_model(model_dir)
+    print(f"providers: {session.get_providers()}")
+
+    writer: EmbeddingWriter | None = None
+    if args.embeddings_out:
+        writer = EmbeddingWriter(
+            Path(args.embeddings_out),
+            _embedding_dim(session),
+            {
+                "model": model_version,
+                "variant": args.variant,
+                "storage_root": str(args.storage_path),
+            },
+        )
+        done = set(writer.done_ids)
+    else:
+        assert out is not None  # main() guarantees one of --out / --embeddings-out
+        done = load_image_ids(out)
     todo = [rec for rec in shard if rec["image_id"] not in done]
     print(
         f"shard {args.shard_index}/{args.shards}: {len(shard)} images, "
         f"{len(done)} already done, {len(todo)} to process"
     )
 
-    session, input_name, names, categories, thresholds, pipeline = load_model(model_dir)
-    print(f"providers: {session.get_providers()}")
-
     allowed_categories: set[int] = {GENERAL_CATEGORY}
     if args.include_character:
         allowed_categories.add(CHARACTER_CATEGORY)
 
-    storage = Path(args.storage_path)
-    processed = 0
-    missing = 0
-    failed = 0
-    with open(out, "a") as out_fh:
-        for rec in todo:
-            path = storage / variant_relpath(args.variant, rec["filename"], rec["ext"])
-            if not path.exists():
-                fallback = storage / variant_relpath("fullsize", rec["filename"], rec["ext"])
-                if not fallback.exists():
-                    missing += 1
-                    continue
-                path = fallback
+    out_fh = open(out, "a") if out is not None else None  # noqa: SIM115 - closed in finally
+    try:
+        job = _ShardJob(
+            session=session,
+            input_name=input_name,
+            names=names,
+            categories=categories,
+            thresholds=thresholds,
+            pipeline=pipeline,
+            storage=Path(args.storage_path),
+            variant=args.variant,
+            min_confidence=args.min_confidence,
+            model_version=model_version,
+            allowed_categories=allowed_categories,
+            prefetch_workers=args.prefetch_workers,
+            writer=writer,
+            out_fh=out_fh,
+        )
+        processed, missing, failed = _process_shard(job, todo)
+    finally:
+        if out_fh is not None:
+            out_fh.close()
+        if writer is not None:
+            writer.close()
 
-            # A corrupt/unreadable image (or any per-image inference error) must
-            # not abort a million-image run — log it and move on.
-            try:
-                predictions = predict(
-                    session,
-                    input_name,
-                    names,
-                    categories,
-                    thresholds,
-                    pipeline,
-                    str(path),
-                    args.min_confidence,
-                    model_version,
-                    allowed_categories=allowed_categories,
-                )
-            except Exception as exc:
-                failed += 1
-                print(
-                    f"  warning: skipping image {rec['image_id']} ({path}): "
-                    f"{type(exc).__name__}: {exc}"
-                )
-                continue
-            out_fh.write(
-                json.dumps({"image_id": rec["image_id"], "predictions": predictions}) + "\n"
-            )
-            out_fh.flush()
-            processed += 1
-            if processed % 500 == 0:
-                print(f"  {processed}/{len(todo)} processed...")
-
-    print(f"done: {processed} processed, {missing} missing-file, {failed} unreadable → {out}")
+    targets = " + ".join(str(t) for t in (out, args.embeddings_out) if t)
+    print(f"done: {processed} processed, {missing} missing-file, {failed} unreadable → {targets}")
 
     # onnxruntime's ROCm runtime can corrupt the heap in its teardown
     # destructors at interpreter exit ("corrupted size vs prev_size in
-    # fastbins"). All results are written and flushed above (the output file is
-    # closed by the `with` block), so hard-exit now to skip the buggy teardown
+    # fastbins"). All results are written and flushed above (the output files are
+    # closed in the `finally`), so hard-exit now to skip the buggy teardown
     # and the session destructor that triggers it. Exit 0 keeps shard
     # orchestration happy.
     sys.stdout.flush()
@@ -430,7 +588,13 @@ def main() -> None:
     parser.add_argument(
         "--manifest", required=True, help="Manifest JSONL from ml_backfill_manifest.py"
     )
-    parser.add_argument("--out", required=True, help="Output results JSONL (appended; resumable)")
+    parser.add_argument("--out", default=None, help="Output results JSONL (appended; resumable)")
+    parser.add_argument(
+        "--embeddings-out",
+        default=None,
+        help="Directory for the embedding store (embeddings.f16 + .ids + .meta.json; "
+        "appended; resumable). With this set, --out is optional.",
+    )
     parser.add_argument(
         "--model-dir", required=True, help="Dir with model.onnx + selected_tags.csv"
     )
@@ -447,12 +611,21 @@ def main() -> None:
     parser.add_argument("--shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument(
+        "--prefetch-workers",
+        type=int,
+        default=4,
+        help="Threads decoding and preprocessing images ahead of the GPU (default: 4).",
+    )
+    parser.add_argument(
         "--include-character",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Emit character tags (category 4) in addition to general tags (default: on).",
     )
-    run(parser.parse_args())
+    args = parser.parse_args()
+    if not args.out and not args.embeddings_out:
+        parser.error("one of --out or --embeddings-out is required")
+    run(args)
 
 
 if __name__ == "__main__":
