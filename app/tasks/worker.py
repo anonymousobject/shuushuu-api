@@ -30,11 +30,12 @@ from app.tasks.lockfile_check import check_lockfile_freshness
 # structlog's defaults (ConsoleRenderer) instead of the prod JSONRenderer.
 configure_logging()
 
-# Verify the Docker image isn't stale before importing anything that loads
-# third-party deps at import time: app.core.database builds the engine (and
-# so imports the asyncpg driver) on import, so a dependency added to uv.lock
-# without a rebuild would otherwise crash here with a bare ModuleNotFoundError
-# and the check below would never run.
+# Verify the Docker image isn't stale before importing the app modules that
+# pull in driver dependencies at import time: app.core.database builds the
+# engine (and so imports asyncpg) on import, so a dependency added to uv.lock
+# without a rebuild would otherwise crash there with a bare ModuleNotFoundError
+# before this check ran. The imports above (arq, pydantic-settings, structlog)
+# are the floor: the check needs the logger, and those rarely change.
 check_lockfile_freshness(get_logger(__name__))
 
 from app.core.database import get_async_session  # noqa: E402
