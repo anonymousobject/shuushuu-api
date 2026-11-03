@@ -397,6 +397,64 @@ class TestUpdatePost:
         assert mod_resp.json()["post_text"] == "mod edit"
 
 
+class TestPostMarkupVersion:
+    """Posts render by their stored markup_version; only forum posts get headings."""
+
+    async def test_new_reply_is_version_2_with_headings(
+        self, client: AsyncClient, public_thread, user_token
+    ):
+        response = await client.post(
+            f"/api/v1/forum/threads/{public_thread.thread_id}/posts",
+            json={"post_text": "## Title"},
+            headers=_auth(user_token),
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["markup_version"] == 2
+        assert data["post_text_html"] == "<h2>Title</h2>"
+
+    async def test_editing_v1_post_moves_to_version_2(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, user_token
+    ):
+        post = ForumPosts(
+            thread_id=public_thread.thread_id, user_id=3, post_text="- a", markup_version=1
+        )
+        db_session.add(post)
+        await db_session.commit()
+        await db_session.refresh(post)
+
+        response = await client.patch(
+            f"/api/v1/forum/posts/{post.post_id}",
+            json={"post_text": "## b"},
+            headers=_auth(user_token),
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["markup_version"] == 2
+        assert data["post_text_html"] == "<h2>b</h2>"
+
+    async def test_delete_and_restore_keep_version_1(
+        self, client: AsyncClient, db_session: AsyncSession, public_thread, staff_token
+    ):
+        # Only a text edit moves a post to the current rules; a moderator
+        # hiding or restoring it leaves the author's text rendering as before.
+        post = ForumPosts(
+            thread_id=public_thread.thread_id, user_id=3, post_text="- a", markup_version=1
+        )
+        db_session.add(post)
+        await db_session.commit()
+        await db_session.refresh(post)
+
+        for deleted in (True, False):
+            response = await client.patch(
+                f"/api/v1/forum/posts/{post.post_id}",
+                json={"deleted": deleted},
+                headers=_auth(staff_token),
+            )
+            assert response.status_code == 200
+            assert response.json()["markup_version"] == 1
+
+
 class TestDeletePost:
     """DELETE /api/v1/forum/posts/{post_id}"""
 

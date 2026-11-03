@@ -92,6 +92,7 @@ async def test_import_one_forum(db_session: AsyncSession, monkeypatch, tmp_path)
     posts = (await db_session.execute(select(ForumPosts))).scalars().all()
     assert all(p.legacy_post_id is not None for p in posts)
     assert all(p.legacy_poster_id is not None for p in posts)
+    assert all(p.markup_version == 1 for p in posts)
     assert all(p.legacy_username for p in posts)
     # archived-user posts (if any) have a legacy name preserved
     archived_id = await get_archived_user_id(db_session)

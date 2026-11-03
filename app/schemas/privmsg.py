@@ -43,6 +43,7 @@ class PrivmsgMessage(PrivmsgBase):
     """Schema for retrieving private messages for a user"""
 
     privmsg_id: int
+    markup_version: int
     viewed: int
     from_username: str | None = None
     to_username: str | None = None
@@ -68,7 +69,7 @@ class PrivmsgMessage(PrivmsgBase):
     @property
     def text_html(self) -> str:
         """Rendered HTML from markdown text"""
-        return parse_markdown(self.text or "")
+        return parse_markdown(self.text or "", self.markup_version)
 
 
 class PrivmsgMessages(BaseModel):

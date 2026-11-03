@@ -40,6 +40,7 @@ from app.schemas.forum import (
 )
 from app.services.forum import can_access, recompute_thread_stats, upsert_thread_read
 from app.services.rate_limit import check_forum_create_rate_limit
+from app.utils.markdown import CURRENT_MARKUP_VERSION
 
 router = APIRouter(prefix="/forum", tags=["forum"])
 
@@ -155,6 +156,7 @@ def _post_response(
         thread_id=post.thread_id,
         user_id=post.user_id,
         post_text="" if post.deleted and not is_moderator else post.post_text,
+        markup_version=post.markup_version,
         date=post.date,
         deleted=post.deleted,
         update_count=post.update_count,
@@ -768,7 +770,10 @@ async def create_post(
 def _apply_post_edit(
     post: ForumPosts, updates: dict[str, Any], user_id: int, is_moderator: bool
 ) -> None:
-    """Validate and apply a post_text edit, recording the edit metadata."""
+    """Validate and apply a post_text edit, recording the edit metadata.
+
+    The edit moves the post to the current formatting rules, so the editor gets
+    the syntax they'd use in a new post. Deleting or restoring doesn't."""
     if not (is_moderator or post.user_id == user_id):
         raise HTTPException(
             status_code=403, detail="Only the author or a moderator can edit this post"
@@ -776,6 +781,7 @@ def _apply_post_edit(
     if updates.get("deleted", post.deleted):
         raise HTTPException(status_code=400, detail="Restore the post before editing it")
     post.post_text = updates["post_text"]
+    post.markup_version = CURRENT_MARKUP_VERSION
     post.update_count += 1
     post.last_updated = datetime.now(UTC)
     post.last_updated_user_id = user_id
