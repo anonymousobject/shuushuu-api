@@ -16,7 +16,7 @@ Note: Privmsgs are private messages between users.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, SmallInteger, text
 from sqlmodel import Field, SQLModel
 
 from app.models.types import UtcDateTime
@@ -100,6 +100,12 @@ class Privmsgs(PrivmsgBase, table=True):
     viewed: int = Field(default=0)
     from_del: int = Field(default=0)
     to_del: int = Field(default=0)
+
+    # Picks the renderer: 1 = original, 2 = lists/code/headings. Existing rows
+    # are 1; every new row is 2. Messages can't be edited.
+    markup_version: int = Field(
+        default=2, sa_column=Column(SmallInteger, nullable=False, server_default=text("2"))
+    )
 
     # Public timestamp
     date: datetime = Field(

@@ -90,6 +90,7 @@ class TestForumPostHtml:
         post = ForumPostResponse(
             post_id=1,
             thread_id=1,
+            markup_version=2,
             user_id=1,
             post_text='**bold** [quote="alice"]hi[/quote]',
             date="2026-07-06T00:00:00Z",
@@ -107,6 +108,7 @@ class TestForumPostHtml:
         post = ForumPostResponse(
             post_id=1,
             thread_id=1,
+            markup_version=2,
             user_id=1,
             post_text="x" * 20001,
             date="2026-07-06T00:00:00Z",

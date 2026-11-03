@@ -350,6 +350,7 @@ async def _import_topic(
                 legacy_post_id=int(post_id),
                 legacy_poster_id=int(poster_id),
                 legacy_username=legacy_name,
+                markup_version=1,  # phpBB text predates the new renderer
             )
         )
         stats.posts += 1

@@ -409,6 +409,7 @@ class TestCommentTextLength:
         comment = CommentResponse(
             post_id=1,
             user_id=1,
+            markup_version=2,
             image_id=1,
             post_text="x" * 10001,
             date=datetime(2026, 1, 1),

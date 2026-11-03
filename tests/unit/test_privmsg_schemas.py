@@ -32,6 +32,7 @@ class TestPrivmsgMessage:
         msg = PrivmsgMessage(
             privmsg_id=1,
             viewed=0,
+            markup_version=2,
             from_user_id=1,
             to_user_id=2,
             subject="Hello",

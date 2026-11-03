@@ -512,3 +512,51 @@ class TestLeaveThread:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 403, response.text
+
+
+@pytest.mark.api
+class TestPrivmsgMarkupVersion:
+    """Private messages render by their stored markup_version."""
+
+    async def test_new_message_is_version_2(self, client: AsyncClient, db_session: AsyncSession):
+        sender = await create_user(db_session, "mv_send", email_verified=True)
+        recipient = await create_user(db_session, "mv_recv", email_verified=True)
+
+        token = await login(client, "mv_send")
+        response = await client.post(
+            "/api/v1/privmsgs",
+            json={"to_user_id": recipient.user_id, "subject": "Hi", "message": "- a"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert sender.user_id == data["from_user_id"]
+        assert data["markup_version"] == 2
+        assert data["text_html"] == "<ul><li>a</li></ul>"
+
+    async def test_v1_message_renders_v1(self, client: AsyncClient, db_session: AsyncSession):
+        user_a = await create_user(db_session, "mv1_a", email_verified=True)
+        user_b = await create_user(db_session, "mv1_b", email_verified=True)
+
+        thread_id = str(uuid.uuid4())
+        db_session.add(
+            Privmsgs(
+                from_user_id=user_a.user_id,
+                to_user_id=user_b.user_id,
+                subject="Old",
+                text="- a",
+                thread_id=thread_id,
+                markup_version=1,
+            )
+        )
+        await db_session.commit()
+
+        token = await login(client, "mv1_a")
+        response = await client.get(
+            f"/api/v1/privmsgs/threads/{thread_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200, response.text
+        message = response.json()["messages"][0]
+        assert message["markup_version"] == 1
+        assert message["text_html"] == "- a"

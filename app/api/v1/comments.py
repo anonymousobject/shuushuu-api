@@ -35,6 +35,7 @@ from app.utils.comment_search import (
     apply_comment_text_search,
     reject_unindexable_comment_search,
 )
+from app.utils.markdown import CURRENT_MARKUP_VERSION
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
@@ -466,8 +467,10 @@ async def update_comment(
             detail="You can only edit your own comments",
         )
 
-    # Update comment
+    # Update comment. The edit moves it to the current formatting rules, so
+    # the author gets the syntax they'd use in a new comment.
     comment.post_text = body.post_text
+    comment.markup_version = CURRENT_MARKUP_VERSION
     comment.update_count += 1
     comment.last_updated = datetime.now(UTC)
     comment.last_updated_user_id = current_user.user_id

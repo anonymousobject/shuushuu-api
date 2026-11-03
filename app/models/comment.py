@@ -17,7 +17,7 @@ but the model is named Comments and all references use 'comment' terminology.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, SmallInteger, text
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.models.types import UtcDateTime
@@ -132,6 +132,12 @@ class Comments(CommentBase, table=True):
         default=None, sa_column=Column(UtcDateTime, nullable=True)
     )
     last_updated_user_id: int | None = Field(default=None)
+
+    # Picks the renderer: 1 = original, 2 = lists/code/headings. Existing rows
+    # are 1; every new row is 2; editing the text moves a row to 2.
+    markup_version: int = Field(
+        default=2, sa_column=Column(SmallInteger, nullable=False, server_default=text("2"))
+    )
 
     # Relationships
     # Load user info for displaying comment author

@@ -212,6 +212,7 @@ class ForumPostResponse(BaseModel):
     thread_id: int
     user_id: int
     post_text: str
+    markup_version: int
     date: UTCDatetime
     deleted: bool
     update_count: int
@@ -226,7 +227,7 @@ class ForumPostResponse(BaseModel):
     @property
     def post_text_html(self) -> str:
         """Rendered HTML from markdown post_text"""
-        return parse_markdown(self.post_text)
+        return parse_markdown(self.post_text, self.markup_version, headings=True)
 
 
 class ForumThreadDetailResponse(BaseModel):
