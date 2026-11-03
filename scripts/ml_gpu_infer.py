@@ -31,11 +31,13 @@ import json
 import os
 import sys
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import onnxruntime as ort  # type: ignore[import-untyped]
+from numpy.typing import NDArray
 from PIL import Image
 
 GENERAL_CATEGORY = 0  # theme/general tags
@@ -261,6 +263,86 @@ def check_shard_output(out_path: Path, shards: int, shard_index: int) -> None:
             )
     else:
         meta_path.write_text(json.dumps(identity))
+
+
+# --- embedding store writer (reader: app/services/ml_probe/store.py) ---
+
+EMBEDDINGS_VECTORS_FILE = "embeddings.f16"
+EMBEDDINGS_IDS_FILE = "embeddings.ids"
+EMBEDDINGS_META_FILE = "embeddings.meta.json"
+_VECTOR_ITEMSIZE = np.dtype(np.float16).itemsize
+_ID_ITEMSIZE = np.dtype(np.int64).itemsize
+
+
+class EmbeddingWriter:
+    """Append-only float16 embedding store, resumable after a crash.
+
+    Each record is the vector, flushed, then its int64 id, flushed, so an
+    interrupted run can leave at most a trailing partial record. On open,
+    both files are truncated to their longest consistent prefix and the ids
+    already present become ``done_ids``. The meta sidecar pins the model and
+    dimension so two runs can't interleave different embeddings in one store.
+    """
+
+    def __init__(self, directory: Path, dim: int, meta: dict[str, Any]) -> None:
+        self.directory = Path(directory)
+        self.dim = dim
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self._reconcile_meta(meta)
+        self._truncate_to_consistent_rows()
+        ids_path = self.directory / EMBEDDINGS_IDS_FILE
+        self.done_ids: set[int] = {int(i) for i in np.fromfile(ids_path, dtype="<i8")}
+        # Handles stay open for the life of the writer; close() releases them.
+        self._vectors = open(self.directory / EMBEDDINGS_VECTORS_FILE, "ab")  # noqa: SIM115
+        self._ids = open(ids_path, "ab")  # noqa: SIM115
+
+    def _reconcile_meta(self, meta: dict[str, Any]) -> None:
+        meta_path = self.directory / EMBEDDINGS_META_FILE
+        if meta_path.exists():
+            existing = json.loads(meta_path.read_text())
+            if existing.get("model") != meta.get("model"):
+                raise ValueError(
+                    f"{self.directory} holds embeddings for model {existing.get('model')!r}, "
+                    f"not {meta.get('model')!r}"
+                )
+            if int(existing.get("dim", -1)) != self.dim:
+                raise ValueError(
+                    f"{self.directory} holds dim={existing.get('dim')} embeddings, not dim={self.dim}"
+                )
+            return
+        full = {
+            **meta,
+            "dim": self.dim,
+            "dtype": "float16",
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        meta_path.write_text(json.dumps(full, indent=1) + "\n")
+
+    def _truncate_to_consistent_rows(self) -> None:
+        vectors_path = self.directory / EMBEDDINGS_VECTORS_FILE
+        ids_path = self.directory / EMBEDDINGS_IDS_FILE
+        vectors_path.touch()
+        ids_path.touch()
+        rows = min(
+            vectors_path.stat().st_size // (self.dim * _VECTOR_ITEMSIZE),
+            ids_path.stat().st_size // _ID_ITEMSIZE,
+        )
+        os.truncate(vectors_path, rows * self.dim * _VECTOR_ITEMSIZE)
+        os.truncate(ids_path, rows * _ID_ITEMSIZE)
+
+    def append(self, image_id: int, vector: NDArray[np.floating]) -> None:
+        arr = np.ascontiguousarray(np.asarray(vector).reshape(-1).astype("<f2"))
+        if arr.shape[0] != self.dim:
+            raise ValueError(f"vector has {arr.shape[0]} values, store dim is {self.dim}")
+        self._vectors.write(arr.tobytes())
+        self._vectors.flush()
+        self._ids.write(np.array(image_id, dtype="<i8").tobytes())
+        self._ids.flush()
+        self.done_ids.add(int(image_id))
+
+    def close(self) -> None:
+        self._vectors.close()
+        self._ids.close()
 
 
 def run(args: argparse.Namespace) -> None:

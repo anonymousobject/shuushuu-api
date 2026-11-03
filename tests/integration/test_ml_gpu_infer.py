@@ -321,3 +321,99 @@ def test_help_shows_include_character_flag():
     assert result.returncode == 0
     assert "--include-character" in result.stdout
     assert "--no-include-character" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Embedding store writer — the runner's append-only output, read back through
+# the app's reader (app/services/ml_probe/store.py)
+# ---------------------------------------------------------------------------
+
+
+def _writer(tmp_path, meta=None):
+    return ml_gpu_infer.EmbeddingWriter(tmp_path, dim=4, meta=meta or {"model": "m"})
+
+
+@pytest.mark.unit
+def test_writer_round_trips_through_reader(tmp_path):
+    from app.services.ml_probe.store import open_embedding_store
+
+    writer = ml_gpu_infer.EmbeddingWriter(
+        tmp_path, dim=4, meta={"model": "m", "variant": "thumbs", "storage_root": "/x"}
+    )
+    writer.append(5, np.arange(4, dtype=np.float32))
+    writer.append(9, np.ones(4, dtype=np.float32))
+    writer.close()
+
+    store = open_embedding_store(tmp_path)
+
+    assert store.ids.tolist() == [5, 9]
+    assert np.allclose(store.vectors[0], [0, 1, 2, 3])
+    assert np.allclose(store.vectors[1], [1, 1, 1, 1])
+    assert store.meta["model"] == "m"
+    assert store.meta["dim"] == 4
+    assert store.meta["dtype"] == "float16"
+    assert store.meta["variant"] == "thumbs"
+    assert store.meta["storage_root"] == "/x"
+    assert "created_at" in store.meta
+
+
+@pytest.mark.unit
+def test_writer_resume_truncates_partial_vector(tmp_path):
+    writer = _writer(tmp_path)
+    for image_id in (1, 2, 3):
+        writer.append(image_id, np.full(4, image_id, dtype=np.float32))
+    writer.close()
+    with open(tmp_path / "embeddings.f16", "ab") as f:
+        f.write(b"\x00" * 8)  # crash mid-record: a half-written 4th vector, no id
+
+    resumed = _writer(tmp_path)
+
+    assert resumed.done_ids == {1, 2, 3}
+    assert (tmp_path / "embeddings.f16").stat().st_size == 3 * 4 * 2
+    assert (tmp_path / "embeddings.ids").stat().st_size == 3 * 8
+
+
+@pytest.mark.unit
+def test_writer_resume_truncates_orphan_id(tmp_path):
+    writer = _writer(tmp_path)
+    for image_id in (1, 2, 3):
+        writer.append(image_id, np.full(4, image_id, dtype=np.float32))
+    writer.close()
+    with open(tmp_path / "embeddings.ids", "ab") as f:
+        f.write(np.int64(4).tobytes())  # an id with no vector behind it
+
+    resumed = _writer(tmp_path)
+
+    assert resumed.done_ids == {1, 2, 3}
+    assert (tmp_path / "embeddings.ids").stat().st_size == 3 * 8
+
+
+@pytest.mark.unit
+def test_writer_append_after_resume_continues_the_store(tmp_path):
+    from app.services.ml_probe.store import open_embedding_store
+
+    writer = _writer(tmp_path)
+    writer.append(1, np.zeros(4, dtype=np.float32))
+    writer.close()
+
+    resumed = _writer(tmp_path)
+    resumed.append(2, np.ones(4, dtype=np.float32))
+    resumed.close()
+
+    assert open_embedding_store(tmp_path).ids.tolist() == [1, 2]
+
+
+@pytest.mark.unit
+def test_writer_rejects_store_from_other_model(tmp_path):
+    _writer(tmp_path, meta={"model": "m"}).close()
+
+    with pytest.raises(ValueError, match="model"):
+        _writer(tmp_path, meta={"model": "other"})
+
+
+@pytest.mark.unit
+def test_writer_rejects_store_with_other_dim(tmp_path):
+    _writer(tmp_path, meta={"model": "m"}).close()
+
+    with pytest.raises(ValueError, match="dim"):
+        ml_gpu_infer.EmbeddingWriter(tmp_path, dim=8, meta={"model": "m"})
