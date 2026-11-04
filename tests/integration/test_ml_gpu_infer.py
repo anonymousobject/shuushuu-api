@@ -618,3 +618,29 @@ def test_embeddings_out_resumes(tmp_path):
 
     assert open_embedding_store(store_dir).ids.tolist() == [1, 2, 3]
     assert "2 already done, 1 to process" in proc.stdout
+
+
+@pytest.mark.unit
+def test_cli_rejects_shards_with_embeddings_out():
+    """Two shard processes appending to one store would interleave rows and ids undetectably."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            "m",
+            "--model-dir",
+            "d",
+            "--storage-path",
+            "s",
+            "--embeddings-out",
+            "e",
+            "--shards",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "--embeddings-out" in result.stderr and "--shards" in result.stderr

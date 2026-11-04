@@ -119,3 +119,16 @@ def test_roc_auc_perfect_reversed_ties_and_single_class():
     assert roc_auc(np.array([0.5, 0.5, 0.5, 0.5]), truth) == pytest.approx(0.5)
     assert roc_auc(np.array([0.1, 0.9, 0.5, 0.9]), truth) == pytest.approx(0.625)
     assert math.isnan(roc_auc(np.array([0.1, 0.2]), np.array([T, T])))
+
+
+@pytest.mark.unit
+def test_best_thresholds_never_right_tag_picks_highest_threshold():
+    # the only positive scores 0.0: no grid threshold ever catches it, so every threshold has
+    # F1 = 0 and the sane pick is the one that predicts least, not 0.05 which predicts most
+    scores = np.array([[0.0, 0.9], [0.5, 0.1]], dtype=np.float32)
+    truth = np.array([[T, T], [F, F]])
+
+    thresholds = best_thresholds(scores, truth)
+
+    assert thresholds[0] == pytest.approx(DEFAULT_GRID.max())
+    assert thresholds[1] == pytest.approx(0.11)

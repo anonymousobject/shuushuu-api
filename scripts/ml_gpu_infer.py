@@ -625,6 +625,11 @@ def main() -> None:
     args = parser.parse_args()
     if not args.out and not args.embeddings_out:
         parser.error("one of --out or --embeddings-out is required")
+    if args.embeddings_out and args.shards > 1:
+        # Two shard processes appending to one store would interleave vectors and
+        # ids across processes; both files would stay length-consistent, so the
+        # scramble is undetectable. One store per run until a merge exists.
+        parser.error("--embeddings-out cannot be combined with --shards > 1")
     run(args)
 
 

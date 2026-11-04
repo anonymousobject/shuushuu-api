@@ -17,6 +17,7 @@ from app.services.ml_probe.report import (
     newest_rows,
     render_markdown,
     reviewed_view,
+    select_view_thresholds,
     write_csv,
 )
 
@@ -195,3 +196,26 @@ def test_write_csv_and_render_markdown_have_expected_columns(tmp_path):
     assert "headline/all" in markdown and "sensitivity/all" in markdown
     assert "reviewed" in markdown.lower()
     assert "probe_macro_f1" in markdown or "macro F1" in markdown
+
+
+@pytest.mark.unit
+def test_select_view_thresholds_uses_each_views_own_mask():
+    # one tag; validation rows: a true negative at 0.2, a pending pair at 0.6, a positive at 0.9
+    probe = np.array([[0.2], [0.6], [0.9]], dtype=np.float32)
+    baseline = np.array([[0.2], [0.6], [0.9]], dtype=np.float32)
+    truth = np.array([[F], [F], [T]])
+    masks = {
+        "headline": np.array([[F], [F], [F]]),
+        "sensitivity": np.array([[F], [T], [F]]),  # the pending pair is unknown here
+    }
+
+    thresholds = select_view_thresholds(
+        probe_scores=probe, baseline_scores=baseline, truth=truth, masks=masks
+    )
+
+    assert set(thresholds) == {"headline", "sensitivity"}
+    # headline must exclude the 0.6 false positive; sensitivity may include it
+    assert thresholds["headline"].probe.tolist() == pytest.approx([0.61])
+    assert thresholds["headline"].baseline.tolist() == pytest.approx([0.61])
+    assert thresholds["sensitivity"].probe.tolist() == pytest.approx([0.21])
+    assert thresholds["sensitivity"].baseline.tolist() == pytest.approx([0.21])

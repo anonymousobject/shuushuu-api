@@ -55,6 +55,7 @@ from app.services.ml_probe.report import (
     newest_rows,
     render_markdown,
     reviewed_view,
+    select_view_thresholds,
     write_csv,
 )
 from app.services.ml_probe.split import TEST_FOLD, VAL_FOLD, fold_of
@@ -238,12 +239,21 @@ def cmd_eval(args: argparse.Namespace) -> dict[str, dict[str, float]]:
     pending = labels.pending_mask()[aligned.label_rows][:, columns]
     provenance = labels.provenance[aligned.label_rows][:, columns]
 
-    # baseline best-F1 thresholds on the validation fold, headline mask, closed scores
+    # Per-view operating points, chosen on the validation images both systems can score,
+    # each under its own mask (design §2b), on closed scores as compare() thresholds them.
     val_sel = folds == VAL_FOLD
     val_base, val_has_raw = _baseline_rows(baseline, aligned.image_ids[val_sel], columns)
-    val_base = close_upward(val_base, parent_index)
-    baseline_best = best_thresholds(
-        val_base[val_has_raw], positives[val_sel][val_has_raw], approved[val_sel][val_has_raw]
+    val_base = close_upward(val_base, parent_index)[val_has_raw]
+    val_probe = close_upward(
+        probe_scores(head, store.vectors, aligned.store_rows[val_sel]), parent_index
+    )[val_has_raw]
+    val_truth = positives[val_sel][val_has_raw]
+    val_masks = {
+        "headline": approved[val_sel][val_has_raw],
+        "sensitivity": (approved[val_sel] | pending[val_sel])[val_has_raw],
+    }
+    thresholds = select_view_thresholds(
+        probe_scores=val_probe, baseline_scores=val_base, truth=val_truth, masks=val_masks
     )
 
     test_sel = folds == TEST_FOLD
@@ -268,8 +278,8 @@ def cmd_eval(args: argparse.Namespace) -> dict[str, dict[str, float]]:
                 truth=truth,
                 has_raw=test_has_raw,
                 view=view,
-                probe_thresholds=head.thresholds,
-                baseline_best_thresholds=baseline_best,
+                probe_thresholds=thresholds[mask_name].probe,
+                baseline_best_thresholds=thresholds[mask_name].baseline,
                 parent_index=parent_index,
                 tag_ids=head.tag_ids,
                 titles=titles,
@@ -285,8 +295,8 @@ def cmd_eval(args: argparse.Namespace) -> dict[str, dict[str, float]]:
             baseline_scores=base_closed,
             provenance=provenance[test_sel],
             rows=rows[test_has_raw[rows]],
-            probe_thresholds=head.thresholds,
-            baseline_thresholds=baseline_best,
+            probe_thresholds=thresholds["headline"].probe,
+            baseline_thresholds=thresholds["headline"].baseline,
         )
         for slice_name, rows in slices.items()
     }

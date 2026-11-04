@@ -74,7 +74,8 @@ def best_thresholds(
     """Per tag, the grid threshold with the best F1; the lowest on ties.
 
     A tag with no scored positives gets 0.5, since every threshold is equally
-    meaningless for it.
+    meaningless for it. A tag with positives that no threshold ever catches
+    gets the highest grid value, so it predicts as little as possible.
     """
     truth = np.asarray(truth, dtype=np.bool_)
     n_tags = scores.shape[1]
@@ -86,6 +87,9 @@ def best_thresholds(
         best_f1[better] = f1[better]
         best[better] = threshold
     positives = confusion(np.zeros_like(truth), truth, mask).support()
+    # Never right at any threshold: predict as little as possible rather than
+    # flooding false positives from the lowest grid point.
+    best[best_f1 <= 0] = np.float32(np.max(grid))
     best[positives == 0] = _NO_POSITIVES_THRESHOLD
     return best
 

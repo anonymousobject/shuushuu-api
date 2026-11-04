@@ -19,7 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from app.services.ml_probe.labels import APPROVED, REJECTED, close_upward
-from app.services.ml_probe.metrics import TagMetrics, confusion, micro_f1, roc_auc
+from app.services.ml_probe.metrics import TagMetrics, best_thresholds, confusion, micro_f1, roc_auc
 
 MIN_SUPPORT = 20
 WIN_GAP = 0.05
@@ -74,6 +74,37 @@ class Comparison:
             out[f"{system}_micro_f1"] = micro_f1(metrics)
             out[f"{system}_tags_f1_ge_0.5"] = int((scored_f1 >= _F1_FLOOR).sum())
         return out
+
+
+@dataclass
+class ViewThresholds:
+    """Per-tag operating points for one view: chosen on validation under that view's mask."""
+
+    probe: NDArray[np.float32]
+    baseline: NDArray[np.float32]
+
+
+def select_view_thresholds(
+    *,
+    probe_scores: NDArray[np.float32],
+    baseline_scores: NDArray[np.float32],
+    truth: NDArray[np.bool_],
+    masks: dict[str, NDArray[np.bool_]],
+) -> dict[str, ViewThresholds]:
+    """Best-F1 thresholds for both systems, once per mask, on the same validation rows.
+
+    Design §2b: threshold selection respects the same mask as the scoring it
+    feeds. Pending pairs are the baseline's own predictions, so a threshold
+    tuned with them counted as false positives is too high once they are
+    masked out; each view therefore gets its own pair.
+    """
+    return {
+        name: ViewThresholds(
+            probe=best_thresholds(probe_scores, truth, mask),
+            baseline=best_thresholds(baseline_scores, truth, mask),
+        )
+        for name, mask in masks.items()
+    }
 
 
 def compare(
