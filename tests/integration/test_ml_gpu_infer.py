@@ -202,29 +202,6 @@ def test_corrupt_image_is_skipped_not_fatal(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _FakeSession:
-    """Minimal ONNX session stub for predict() unit tests."""
-
-    def __init__(self, probabilities: list[float]) -> None:
-        # probabilities must align with the tag lists passed to predict()
-        self._probs = np.array(probabilities, dtype=np.float32)
-
-    def run(self, outputs, feed):
-        # predict() does session.run(["prediction"], {...})[0][0]
-        return [np.array([self._probs])]
-
-
-def _make_fake_pipeline_patches(monkeypatch):
-    """Patch load_rgb and apply_test_pipeline so predict() needs no real image."""
-    dummy_img = object()
-    monkeypatch.setattr(ml_gpu_infer, "load_rgb", lambda path: dummy_img)
-    monkeypatch.setattr(
-        ml_gpu_infer,
-        "apply_test_pipeline",
-        lambda img, pipeline: np.zeros((1, 3, 448, 448), dtype=np.float32),
-    )
-
-
 # Tags layout used by the synthetic tests:
 #   index 0: general tag "sky",       category=0 (GENERAL), threshold=0.35, prob=0.9
 #   index 1: rating tag "safe",       category=9 (rating),  threshold=0.35, prob=0.8
@@ -240,74 +217,61 @@ DUMMY_PIPELINE: list = []
 
 
 @pytest.mark.unit
-def test_predict_include_character_emits_general_and_character(monkeypatch, tmp_path):
+def test_select_predictions_include_character_emits_general_and_character():
     """With allowed_categories={GENERAL, CHARACTER}, predictions for both categories appear."""
-    _make_fake_pipeline_patches(monkeypatch)
-
-    session = _FakeSession(_PROBS)
-    results = ml_gpu_infer.predict(
-        session=session,
-        input_name="input",
-        names=_NAMES,
-        categories=_CATEGORIES,
-        thresholds=_THRESHOLDS,
-        pipeline=DUMMY_PIPELINE,
-        image_path=str(tmp_path / "fake.png"),
-        min_confidence=0.35,
-        model_version="test-model",
-        allowed_categories={ml_gpu_infer.GENERAL_CATEGORY, ml_gpu_infer.CHARACTER_CATEGORY},
+    results = ml_gpu_infer.select_predictions(
+        np.array(_PROBS, dtype=np.float32),
+        _NAMES,
+        _CATEGORIES,
+        _THRESHOLDS,
+        0.35,
+        "test-model",
+        {ml_gpu_infer.GENERAL_CATEGORY, ml_gpu_infer.CHARACTER_CATEGORY},
     )
 
-    emitted_tags = {r["external_tag"] for r in results}
-    emitted_categories = {r["category"] for r in results}
-
-    # General tags present
-    assert "sky" in emitted_tags
-    assert "outdoors" in emitted_tags
-    # Character tag present
-    assert "reimu" in emitted_tags
-    # Rating tag (category 9) not present
-    assert "safe" not in emitted_tags
-
-    assert ml_gpu_infer.GENERAL_CATEGORY in emitted_categories
-    assert ml_gpu_infer.CHARACTER_CATEGORY in emitted_categories
-
-    # Each result carries a category key
-    for r in results:
-        assert "category" in r
+    emitted_tags = [r["external_tag"] for r in results]
+    assert emitted_tags == ["sky", "reimu", "outdoors"], "sorted by confidence, no rating tag"
+    assert {r["category"] for r in results} == {
+        ml_gpu_infer.GENERAL_CATEGORY,
+        ml_gpu_infer.CHARACTER_CATEGORY,
+    }
+    assert all(r["model_version"] == "test-model" for r in results)
 
 
 @pytest.mark.unit
-def test_predict_no_include_character_emits_general_only(monkeypatch, tmp_path):
-    """With allowed_categories={GENERAL} only, character predictions are suppressed."""
-    _make_fake_pipeline_patches(monkeypatch)
-
-    session = _FakeSession(_PROBS)
-    results = ml_gpu_infer.predict(
-        session=session,
-        input_name="input",
-        names=_NAMES,
-        categories=_CATEGORIES,
-        thresholds=_THRESHOLDS,
-        pipeline=DUMMY_PIPELINE,
-        image_path=str(tmp_path / "fake.png"),
-        min_confidence=0.35,
-        model_version="test-model",
-        allowed_categories={ml_gpu_infer.GENERAL_CATEGORY},
+def test_select_predictions_general_only_suppresses_character():
+    results = ml_gpu_infer.select_predictions(
+        np.array(_PROBS, dtype=np.float32),
+        _NAMES,
+        _CATEGORIES,
+        _THRESHOLDS,
+        0.35,
+        "test-model",
+        {ml_gpu_infer.GENERAL_CATEGORY},
     )
 
-    emitted_tags = {r["external_tag"] for r in results}
-    emitted_categories = {r["category"] for r in results}
+    assert [r["external_tag"] for r in results] == ["sky", "outdoors"]
+    assert {r["category"] for r in results} == {ml_gpu_infer.GENERAL_CATEGORY}
 
-    assert "sky" in emitted_tags
-    assert "outdoors" in emitted_tags
-    assert "reimu" not in emitted_tags  # character tag suppressed
-    assert "safe" not in emitted_tags  # rating tag suppressed
 
-    assert emitted_categories == {ml_gpu_infer.GENERAL_CATEGORY}
+@pytest.mark.unit
+def test_select_predictions_applies_the_higher_of_tag_and_floor_threshold():
+    results = ml_gpu_infer.select_predictions(
+        np.array([0.5, 0.5], dtype=np.float32),
+        ["a", "b"],
+        [0, 0],
+        [0.6, 0.2],  # a's own threshold is above 0.5; b's is below the 0.35 floor
+        0.35,
+        "m",
+        {0},
+    )
+    assert [r["external_tag"] for r in results] == ["b"]
 
-    for r in results:
-        assert "category" in r
+
+@pytest.mark.unit
+def test_predict_wrapper_is_gone():
+    """run() uses infer() + select_predictions(); no compatibility wrapper is kept."""
+    assert not hasattr(ml_gpu_infer, "predict")
 
 
 @pytest.mark.unit
@@ -466,38 +430,6 @@ def test_cli_requires_out_or_embeddings_out():
 
 
 @pytest.mark.unit
-def test_select_predictions_matches_predict(monkeypatch, tmp_path):
-    """The selection loop split out of predict() produces exactly what predict() does."""
-    _make_fake_pipeline_patches(monkeypatch)
-    allowed = {ml_gpu_infer.GENERAL_CATEGORY, ml_gpu_infer.CHARACTER_CATEGORY}
-
-    via_predict = ml_gpu_infer.predict(
-        session=_FakeSession(_PROBS),
-        input_name="input",
-        names=_NAMES,
-        categories=_CATEGORIES,
-        thresholds=_THRESHOLDS,
-        pipeline=DUMMY_PIPELINE,
-        image_path=str(tmp_path / "fake.png"),
-        min_confidence=0.35,
-        model_version="test-model",
-        allowed_categories=allowed,
-    )
-    direct = ml_gpu_infer.select_predictions(
-        np.array(_PROBS, dtype=np.float32),
-        _NAMES,
-        _CATEGORIES,
-        _THRESHOLDS,
-        0.35,
-        "test-model",
-        allowed,
-    )
-
-    assert direct == via_predict
-    assert [r["external_tag"] for r in direct] == ["sky", "reimu", "outdoors"]
-
-
-@pytest.mark.unit
 def test_infer_returns_embedding_only_when_asked():
     class _TwoOutputSession:
         def run(self, outputs, feed):
@@ -644,3 +576,54 @@ def test_cli_rejects_shards_with_embeddings_out():
 
     assert result.returncode == 2
     assert "--embeddings-out" in result.stderr and "--shards" in result.stderr
+
+
+@pytest.mark.unit
+def test_writer_refuses_a_second_writer_on_the_same_store(tmp_path):
+    first = _writer(tmp_path)
+    with pytest.raises(RuntimeError, match="another process"):
+        _writer(tmp_path)
+    first.close()
+    second = _writer(tmp_path)  # released on close
+    second.close()
+
+
+@_NEEDS_MODEL
+def test_embeddings_out_with_out_fills_each_output_independently(tmp_path):
+    """Store and JSONL may be out of step; each gets exactly the images it is missing."""
+    from app.services.ml_probe.store import open_embedding_store
+
+    storage, rows = _synthetic_storage(tmp_path, [1, 2, 3])
+    store_dir = tmp_path / "emb"
+    _run_embeddings(tmp_path, storage, rows[:2], store_dir, name="first.jsonl")  # store: 1, 2
+    out = tmp_path / "r.jsonl"
+    out.write_text(json.dumps({"image_id": 1, "predictions": []}) + "\n")  # JSONL: 1 only
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            str(manifest),
+            "--embeddings-out",
+            str(store_dir),
+            "--out",
+            str(out),
+            "--model-dir",
+            str(_MODEL_DIR),
+            "--storage-path",
+            str(storage),
+            "--variant",
+            "fullsize",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert open_embedding_store(store_dir).ids.tolist() == [1, 2, 3]
+    jsonl_ids = [json.loads(line)["image_id"] for line in out.read_text().splitlines()]
+    assert jsonl_ids == [1, 2, 3], "image 2 repaired, image 1 not duplicated"
+    assert "1 already done, 2 to process" in proc.stdout

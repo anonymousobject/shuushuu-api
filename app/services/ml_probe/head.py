@@ -17,6 +17,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from app.services.ml_probe.artifacts import npz_path
+
 _STD_FLOOR = np.float32(1e-6)
 _ADAM_BETA1, _ADAM_BETA2, _ADAM_EPS = 0.9, 0.999, 1e-8
 
@@ -63,7 +65,7 @@ class LinearHead:
 
     def save(self, path: Path) -> None:
         np.savez(
-            path,
+            npz_path(path),
             weight=self.weight,
             bias=self.bias,
             mean=self.mean,
@@ -75,7 +77,7 @@ class LinearHead:
 
     @classmethod
     def load(cls, path: Path) -> LinearHead:
-        with np.load(path) as data:
+        with np.load(npz_path(path)) as data:
             return cls(
                 weight=data["weight"].astype(np.float32),
                 bias=data["bias"].astype(np.float32),

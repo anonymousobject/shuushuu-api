@@ -18,12 +18,15 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from app.config import settings
 from app.services.ml_probe.labels import APPROVED, REJECTED, close_upward
 from app.services.ml_probe.metrics import TagMetrics, best_thresholds, confusion, micro_f1, roc_auc
 
 MIN_SUPPORT = 20
 WIN_GAP = 0.05
-FIXED_BASELINE_THRESHOLD = 0.35
+# The mapping path as deployed: the live pipeline's ML_MIN_CONFIDENCE, read from settings
+# so the report follows the environment it runs in. The value used is printed in the summary.
+FIXED_BASELINE_THRESHOLD = float(settings.ML_MIN_CONFIDENCE)
 SYSTEMS = ("probe", "baseline_fixed", "baseline_best")
 _F1_FLOOR = 0.5
 
@@ -149,12 +152,9 @@ def compare(
 
 
 def _pooled(pred: NDArray[np.bool_], truth: NDArray[np.bool_]) -> tuple[float, float]:
-    tp = int((pred & truth).sum())
-    fp = int((pred & ~truth).sum())
-    fn = int((~pred & truth).sum())
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    return precision, recall
+    """Precision and recall of one pooled set of pairs, via the same confusion code as the tags."""
+    metrics = confusion(pred[:, None], truth[:, None])
+    return float(metrics.precision[0]), float(metrics.recall[0])
 
 
 def reviewed_view(
@@ -162,13 +162,19 @@ def reviewed_view(
     probe_scores: NDArray[np.float32],
     baseline_scores: NDArray[np.float32],
     provenance: NDArray[np.uint8],
+    positives: NDArray[np.bool_],
     rows: NDArray[np.int64],
     probe_thresholds: NDArray[np.float32],
     baseline_thresholds: NDArray[np.float32],
 ) -> dict[str, float]:
-    """Pooled precision, recall and AUC over pairs a reviewer approved or rejected."""
+    """Pooled precision, recall and AUC over pairs a reviewer approved or rejected.
+
+    A rejected pair that hierarchy closure makes positive (a linked child) is
+    not a negative anywhere else in the evaluation, so it is left out here too.
+    """
     prov = provenance[rows]
-    selected = (prov == APPROVED) | (prov == REJECTED)
+    rejected = (prov == REJECTED) & ~positives[rows]
+    selected = (prov == APPROVED) | rejected
     truth = prov[selected] == APPROVED
     out: dict[str, float] = {
         "n_approved": int(truth.sum()),
@@ -215,7 +221,7 @@ _CSV_COLUMNS = [
 
 def write_csv(path: Path, comparison: Comparison) -> None:
     winners = comparison.winners()
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=_CSV_COLUMNS)
         writer.writeheader()
         for i, tag_id in enumerate(comparison.tag_ids):
@@ -244,12 +250,22 @@ def _fmt(value: Any) -> str:
 
 
 def render_markdown(
-    summaries: dict[str, dict[str, float]], reviewed: dict[str, dict[str, float]]
+    summaries: dict[str, dict[str, float]],
+    reviewed: dict[str, dict[str, float]],
+    provenance: dict[str, Any] | None = None,
 ) -> str:
-    """One aggregates table (view × system) and one reviewed-pairs table."""
+    """Provenance, one aggregates table (view × system) and one reviewed-pairs table."""
     lines = [
         "# Theme-tag probe vs mapping path",
         "",
+        f"baseline_fixed uses the deployed ML_MIN_CONFIDENCE = {FIXED_BASELINE_THRESHOLD:.2f}.",
+        "",
+    ]
+    if provenance:
+        lines += ["## Provenance", "", "| | |", "|---|---|"]
+        lines += [f"| {key} | {_fmt(value)} |" for key, value in provenance.items()]
+        lines.append("")
+    lines += [
         "## Aggregates",
         "",
         "| view | system | macro F1 (support ≥ 20) | micro F1 | tags F1 ≥ 0.5 |"

@@ -140,6 +140,7 @@ def test_reviewed_view_counts_precision_recall_and_auc():
         probe_scores=probe,
         baseline_scores=baseline,
         provenance=provenance,
+        positives=np.array([[T, F], [T, T], [T, F]]),
         rows=np.array([0, 1, 2]),
         probe_thresholds=np.array([0.5, 0.5], dtype=np.float32),
         baseline_thresholds=np.array([0.5, 0.5], dtype=np.float32),
@@ -192,8 +193,11 @@ def test_write_csv_and_render_markdown_have_expected_columns(tmp_path):
     markdown = render_markdown(
         {"headline/all": result.summary(), "sensitivity/all": result.summary()},
         {"all": {"n_approved": 3, "n_rejected": 1, "probe_auc": 1.0, "baseline_auc": 0.5}},
+        provenance={"model": "swinv2-test", "split": "image_id % 10"},
     )
     assert "headline/all" in markdown and "sensitivity/all" in markdown
+    assert "## Provenance" in markdown
+    assert "| model | swinv2-test |" in markdown
     assert "reviewed" in markdown.lower()
     assert "probe_macro_f1" in markdown or "macro F1" in markdown
 
@@ -219,3 +223,43 @@ def test_select_view_thresholds_uses_each_views_own_mask():
     assert thresholds["headline"].baseline.tolist() == pytest.approx([0.61])
     assert thresholds["sensitivity"].probe.tolist() == pytest.approx([0.21])
     assert thresholds["sensitivity"].baseline.tolist() == pytest.approx([0.21])
+
+
+@pytest.mark.unit
+def test_reviewed_view_ignores_rejection_made_positive_by_closure():
+    # tag 0 is the parent of tag 1; the rejected parent pair sits on an image whose child is linked
+    provenance = np.array([[REJECTED, LINKED]], dtype=np.uint8)
+    positives = np.array([[T, T]])  # closure made the parent positive
+
+    result = reviewed_view(
+        probe_scores=np.array([[0.9, 0.9]], dtype=np.float32),
+        baseline_scores=np.array([[0.9, 0.9]], dtype=np.float32),
+        provenance=provenance,
+        positives=positives,
+        rows=np.array([0]),
+        probe_thresholds=np.array([0.5, 0.5], dtype=np.float32),
+        baseline_thresholds=np.array([0.5, 0.5], dtype=np.float32),
+    )
+
+    assert result["n_rejected"] == 0
+    assert result["n_approved"] == 0
+
+
+@pytest.mark.unit
+def test_fixed_baseline_threshold_follows_the_deployed_setting():
+    from app.config import settings
+
+    assert FIXED_BASELINE_THRESHOLD == settings.ML_MIN_CONFIDENCE
+
+
+@pytest.mark.unit
+def test_write_csv_is_utf8_regardless_of_locale(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    result = _compare(probe=[[0.9]], baseline=[[0.9]], truth=[[T]])
+    result.titles = ["ребёнок ≥ 1"]
+    path = tmp_path / "per_tag.csv"
+
+    write_csv(path, result)
+
+    with open(path, encoding="utf-8") as f:
+        assert list(csv.DictReader(f))[0]["title"] == "ребёнок ≥ 1"

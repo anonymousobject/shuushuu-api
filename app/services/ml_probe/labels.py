@@ -31,6 +31,8 @@ from app.models.image import Images
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
+from app.services.ml_probe.artifacts import npz_path
+from app.services.ml_probe.store import locate_sorted
 
 NONE = 0
 LINKED = 1
@@ -71,6 +73,17 @@ def close_upward(matrix: NDArray[Any], parent_index: NDArray[np.int64]) -> NDArr
 
 
 @dataclass
+class LabelView:
+    """Masks for a row/column subset of a LabelSet, all computed from one pass."""
+
+    positives: NDArray[np.bool_]
+    approved_mask: NDArray[np.bool_]
+    pending_mask: NDArray[np.bool_]
+    rejected: NDArray[np.bool_]
+    provenance: NDArray[np.uint8]
+
+
+@dataclass
 class LabelSet:
     """Provenance matrix for a set of images over the canonical theme tags."""
 
@@ -105,9 +118,32 @@ class LabelSet:
         rejected: NDArray[np.bool_] = self.provenance == REJECTED
         return rejected & ~self.positives()
 
+    def view(self, rows: NDArray[np.int64], columns: NDArray[np.int64]) -> LabelView:
+        """Every mask for a row/column subset, from two closures instead of four.
+
+        The CLI slices to the images that are also in the embedding store and to
+        the tags the head was trained on; computing the closures once on the full
+        matrix and slicing afterwards is what keeps eval's memory in check.
+        """
+        positives = self.positives()
+        human = self.human_positives()
+        pending: NDArray[np.bool_] = self.provenance == PENDING
+        rejected: NDArray[np.bool_] = self.provenance == REJECTED
+
+        def cut(matrix: NDArray[Any]) -> NDArray[Any]:
+            return matrix[rows][:, columns]
+
+        return LabelView(
+            positives=cut(positives),
+            approved_mask=cut(positives & ~human),
+            pending_mask=cut(pending & ~positives),
+            rejected=cut(rejected & ~positives),
+            provenance=cut(self.provenance),
+        )
+
     def save(self, path: Path) -> None:
         np.savez_compressed(
-            path,
+            npz_path(path),
             image_ids=self.image_ids,
             tag_ids=self.tag_ids,
             titles=np.array(self.titles, dtype=str),
@@ -117,7 +153,7 @@ class LabelSet:
 
     @classmethod
     def load(cls, path: Path) -> LabelSet:
-        with np.load(path) as data:
+        with np.load(npz_path(path)) as data:
             return cls(
                 image_ids=data["image_ids"].astype(np.int64),
                 tag_ids=data["tag_ids"].astype(np.int64),
@@ -172,13 +208,11 @@ def _locate(
     """Row and column index for each (image_id, tag_id) pair in a chunk, plus a validity mask."""
     pair_images = np.fromiter((r[0] for r in chunk), dtype=np.int64, count=len(chunk))
     pair_tags = np.fromiter((r[1] for r in chunk), dtype=np.int64, count=len(chunk))
-    rows = np.searchsorted(image_ids, pair_images)
-    rows_clipped = np.clip(rows, 0, max(len(image_ids) - 1, 0))
-    known_image = (len(image_ids) > 0) & (image_ids[rows_clipped] == pair_images)
+    rows, known_image = locate_sorted(image_ids, pair_images)
     known_tag = pair_tags < len(lookup)
     cols = np.where(known_tag, lookup[np.clip(pair_tags, 0, len(lookup) - 1)], -1)
     valid = known_image & (cols >= 0)
-    return rows_clipped[valid], cols[valid], valid
+    return rows[valid], cols[valid], valid
 
 
 async def build_label_set(

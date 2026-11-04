@@ -31,6 +31,7 @@ from numpy.typing import NDArray
 
 from app.config import ImageStatus
 from app.core.database import get_async_session
+from app.services.ml_probe.artifacts import npz_path
 from app.services.ml_probe.baseline import BaselineScores, build_baseline_scores
 from app.services.ml_probe.head import (
     LinearHead,
@@ -59,7 +60,7 @@ from app.services.ml_probe.report import (
     write_csv,
 )
 from app.services.ml_probe.split import TEST_FOLD, VAL_FOLD, fold_of
-from app.services.ml_probe.store import EmbeddingStore, open_embedding_store
+from app.services.ml_probe.store import EmbeddingStore, locate_sorted, open_embedding_store
 
 SPLIT_RULE = "image_id % 10; test 0, val 1"
 _SCORE_CHUNK = 65_536
@@ -73,6 +74,7 @@ async def cmd_labels(args: argparse.Namespace) -> LabelSet:
         graph = await load_theme_tag_graph(db)
         labels = await build_label_set(db, graph, status=args.status)
     labels.save(Path(args.out))
+    args.out = str(npz_path(Path(args.out)))
     pairs = {
         name: int((labels.provenance == code).sum())
         for name, code in (
@@ -99,7 +101,7 @@ async def cmd_baseline(args: argparse.Namespace) -> BaselineScores:
     baseline.save(Path(args.out))
     print(
         f"baseline: {len(baseline.image_ids)} val+test images, "
-        f"{int(baseline.has_raw.sum())} with raw rows; wrote {args.out}"
+        f"{int(baseline.has_raw.sum())} with raw rows; wrote {npz_path(Path(args.out))}"
     )
     return baseline
 
@@ -154,8 +156,14 @@ def cmd_train(args: argparse.Namespace) -> LinearHead:
     folds = fold_of(aligned.image_ids)
     train_sel = folds >= 2
     val_sel = folds == VAL_FOLD
+    if not train_sel.any():
+        raise SystemExit("training fold (image_id % 10 >= 2) has no images in the store")
+    if not val_sel.any():
+        raise SystemExit("validation fold (image_id % 10 == 1) has no images in the store")
 
-    positives = labels.positives()[aligned.label_rows]
+    all_columns = np.arange(len(labels.tag_ids), dtype=np.int64)
+    view_all = labels.view(aligned.label_rows, all_columns)
+    positives = view_all.positives
     tag_sel = positives[train_sel].sum(axis=0) >= args.min_train_positives
     if not tag_sel.any():
         raise SystemExit(f"no tag has {args.min_train_positives} training positives")
@@ -187,7 +195,7 @@ def cmd_train(args: argparse.Namespace) -> LinearHead:
     # thresholds: best F1 per tag on validation, under the headline mask, on closed scores
     parent_index = subset_parent_index(labels.parent_index, columns)
     val_scores = close_upward(probe_scores(head, store.vectors, val_rows), parent_index)
-    val_mask = labels.approved_mask()[aligned.label_rows][val_sel][:, columns]
+    val_mask = view_all.approved_mask[val_sel][:, columns]
     head.thresholds = best_thresholds(val_scores, y[val_rows], val_mask)
     head.meta.update(
         {
@@ -199,7 +207,7 @@ def cmd_train(args: argparse.Namespace) -> LinearHead:
     head.save(Path(args.out))
     print(
         f"trained {len(tag_ids)} tags in {head.meta['epochs_run']} epochs, "
-        f"best val loss {head.meta['best_val_loss']:.4f}; wrote {args.out}"
+        f"best val loss {head.meta['best_val_loss']:.4f}; wrote {npz_path(Path(args.out))}"
     )
     return head
 
@@ -208,13 +216,11 @@ def _baseline_rows(
     baseline: BaselineScores, image_ids: NDArray[np.int64], columns: NDArray[np.int64]
 ) -> tuple[NDArray[np.float32], NDArray[np.bool_]]:
     """Baseline scores (head's tag subset) and has_raw for the given images, zeros where absent."""
-    position = np.searchsorted(baseline.image_ids, image_ids)
-    clipped = np.clip(position, 0, max(len(baseline.image_ids) - 1, 0))
-    found = (len(baseline.image_ids) > 0) & (baseline.image_ids[clipped] == image_ids)
+    position, found = locate_sorted(baseline.image_ids, image_ids)
     scores = np.zeros((len(image_ids), len(columns)), dtype=np.float32)
     has_raw = np.zeros(len(image_ids), dtype=np.bool_)
-    scores[found] = baseline.scores[clipped[found]][:, columns]
-    has_raw[found] = baseline.has_raw[clipped[found]]
+    scores[found] = baseline.scores[position[found]][:, columns]
+    has_raw[found] = baseline.has_raw[position[found]]
     return scores, has_raw
 
 
@@ -226,18 +232,30 @@ def cmd_eval(args: argparse.Namespace) -> dict[str, dict[str, float]]:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    columns = np.searchsorted(labels.tag_ids, head.tag_ids)
-    if not np.array_equal(labels.tag_ids[columns], head.tag_ids):
+    # The three files must describe the same tags and the same model, or the
+    # comparison silently scores the wrong columns.
+    if baseline.tag_ids.tolist() != labels.tag_ids.tolist():
+        raise SystemExit("baseline.npz columns differ from labels.npz; rerun `baseline`")
+    if head.meta.get("model") != store.meta.get("model"):
+        raise SystemExit(
+            f"head.npz was trained on model {head.meta.get('model')!r} but the store holds "
+            f"{store.meta.get('model')!r}"
+        )
+    columns, found = locate_sorted(labels.tag_ids, head.tag_ids)
+    if not found.all():
         raise SystemExit("head.npz tags are not all present in labels.npz")
     parent_index = subset_parent_index(labels.parent_index, columns)
     titles = [labels.titles[int(c)] for c in columns]
 
     aligned = align(store, labels)
     folds = fold_of(aligned.image_ids)
-    positives = labels.positives()[aligned.label_rows][:, columns]
-    approved = labels.approved_mask()[aligned.label_rows][:, columns]
-    pending = labels.pending_mask()[aligned.label_rows][:, columns]
-    provenance = labels.provenance[aligned.label_rows][:, columns]
+    view_all = labels.view(aligned.label_rows, columns)
+    positives, approved, pending, provenance = (
+        view_all.positives,
+        view_all.approved_mask,
+        view_all.pending_mask,
+        view_all.provenance,
+    )
 
     # Per-view operating points, chosen on the validation images both systems can score,
     # each under its own mask (design §2b), on closed scores as compare() thresholds them.
@@ -255,6 +273,11 @@ def cmd_eval(args: argparse.Namespace) -> dict[str, dict[str, float]]:
     thresholds = select_view_thresholds(
         probe_scores=val_probe, baseline_scores=val_base, truth=val_truth, masks=val_masks
     )
+    # The headline view scores the probe at the operating point shipped in head.npz
+    # (chosen in `train` on the validation fold under the same mask), so the artifact
+    # and the report agree; the baseline's per-view thresholds and the sensitivity
+    # view's probe thresholds are chosen here.
+    thresholds["headline"].probe = head.thresholds
 
     test_sel = folds == TEST_FOLD
     test_ids = aligned.image_ids[test_sel]
@@ -294,14 +317,28 @@ def cmd_eval(args: argparse.Namespace) -> dict[str, dict[str, float]]:
             probe_scores=probe_closed,
             baseline_scores=base_closed,
             provenance=provenance[test_sel],
+            positives=truth,
             rows=rows[test_has_raw[rows]],
             probe_thresholds=thresholds["headline"].probe,
             baseline_thresholds=thresholds["headline"].baseline,
         )
         for slice_name, rows in slices.items()
     }
-    markdown = render_markdown(summaries, reviewed)
-    (out_dir / "summary.md").write_text(markdown)
+    run_info = {
+        "embedding model": store.meta.get("model"),
+        "embedding store": str(Path(args.embeddings).resolve()),
+        "labels": str(Path(args.labels).resolve()),
+        "baseline": f"{Path(args.baseline).resolve()} (raw predictions of {baseline.model})",
+        "head": str(Path(args.head).resolve()),
+        "head training": f"{head.meta.get('epochs_run')} epochs, best val loss "
+        f"{head.meta.get('best_val_loss', float('nan')):.4f}, config {head.meta.get('config')}",
+        "split": head.meta.get("split", SPLIT_RULE),
+        "min train positives": head.meta.get("min_train_positives"),
+        "test images scored": int(test_has_raw.sum()),
+        "tags evaluated": len(head.tag_ids),
+    }
+    markdown = render_markdown(summaries, reviewed, run_info)
+    (out_dir / "summary.md").write_text(markdown, encoding="utf-8")
     print(markdown)
     print(f"wrote {out_dir}")
     return summaries

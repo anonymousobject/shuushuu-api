@@ -68,3 +68,28 @@ def test_open_store_truncates_view_to_consistent_rows(tmp_path):
 def test_open_store_without_meta_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         open_embedding_store(tmp_path)
+
+
+@pytest.mark.unit
+def test_locate_sorted_handles_misses_and_empty():
+    from app.services.ml_probe.store import locate_sorted
+
+    rows, found = locate_sorted(np.array([2, 5, 9]), np.array([5, 1, 9, 10]))
+    assert found.tolist() == [True, False, True, False]
+    assert rows[found].tolist() == [1, 2]
+
+    rows, found = locate_sorted(np.array([], dtype=np.int64), np.array([1, 2]))
+    assert found.tolist() == [False, False]
+    assert rows.shape == (2,)
+
+
+@pytest.mark.unit
+def test_rows_for_on_empty_store_returns_minus_one(tmp_path):
+    (tmp_path / META_FILE).write_text(json.dumps({"model": "m", "dim": 4, "dtype": "float16"}))
+    (tmp_path / IDS_FILE).write_bytes(b"")
+    (tmp_path / VECTORS_FILE).write_bytes(b"\x00" * 3)  # a partial first vector, no id yet
+
+    store = open_embedding_store(tmp_path)
+
+    assert store.vectors.shape == (0, 4)
+    assert store.rows_for(np.array([1, 2])).tolist() == [-1, -1]

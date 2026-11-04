@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import csv
+import fcntl
 import itertools
 import json
 import os
@@ -227,39 +228,6 @@ def select_predictions(
     return results
 
 
-def predict(
-    session: ort.InferenceSession,
-    input_name: str,
-    names: list[str],
-    categories: list[int],
-    thresholds: list[float],
-    pipeline: list[dict[str, Any]],
-    image_path: str,
-    min_confidence: float,
-    model_version: str,
-    allowed_categories: set[int] | None = None,
-) -> list[dict[str, Any]]:
-    """Tag predictions for one image, shaped for ml_backfill_ingest.
-
-    allowed_categories controls which tag categories are emitted.  Defaults to
-    {GENERAL_CATEGORY} when not supplied (general/theme tags only).
-    """
-    if allowed_categories is None:
-        allowed_categories = {GENERAL_CATEGORY}
-
-    img_array = apply_test_pipeline(load_rgb(image_path), pipeline)
-    probabilities, _ = infer(session, input_name, img_array, with_embedding=False)
-    return select_predictions(
-        probabilities,
-        names,
-        categories,
-        thresholds,
-        min_confidence,
-        model_version,
-        allowed_categories,
-    )
-
-
 def bounded_prefetch[T, R](
     fn: Callable[[T], R], items: Iterable[T], *, workers: int, window: int
 ) -> Iterator[tuple[T, R | Exception]]:
@@ -341,6 +309,7 @@ def check_shard_output(out_path: Path, shards: int, shard_index: int) -> None:
 EMBEDDINGS_VECTORS_FILE = "embeddings.f16"
 EMBEDDINGS_IDS_FILE = "embeddings.ids"
 EMBEDDINGS_META_FILE = "embeddings.meta.json"
+EMBEDDINGS_LOCK_FILE = "embeddings.lock"
 _VECTOR_ITEMSIZE = np.dtype(np.float16).itemsize
 _ID_ITEMSIZE = np.dtype(np.int64).itemsize
 
@@ -359,6 +328,14 @@ class EmbeddingWriter:
         self.directory = Path(directory)
         self.dim = dim
         self.directory.mkdir(parents=True, exist_ok=True)
+        # One writer per store: a second process would truncate under the first
+        # and interleave its records, which the length check cannot detect.
+        self._lock = open(self.directory / EMBEDDINGS_LOCK_FILE, "a")  # noqa: SIM115
+        try:
+            fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self._lock.close()
+            raise RuntimeError(f"{self.directory} is being written by another process") from None
         self._reconcile_meta(meta)
         self._truncate_to_consistent_rows()
         ids_path = self.directory / EMBEDDINGS_IDS_FILE
@@ -414,6 +391,8 @@ class EmbeddingWriter:
     def close(self) -> None:
         self._vectors.close()
         self._ids.close()
+        fcntl.flock(self._lock, fcntl.LOCK_UN)
+        self._lock.close()
 
 
 def _resolve_image_path(storage: Path, variant: str, rec: dict[str, Any]) -> Path | None:
@@ -449,6 +428,7 @@ class _ShardJob:
     prefetch_workers: int
     writer: EmbeddingWriter | None
     out_fh: TextIO | None
+    jsonl_done: set[int]
 
 
 def _process_shard(job: _ShardJob, todo: list[dict[str, Any]]) -> tuple[int, int, int]:
@@ -483,9 +463,11 @@ def _process_shard(job: _ShardJob, todo: list[dict[str, Any]]) -> tuple[int, int
                 f"({rec['filename']}.{rec['ext']}): {type(exc).__name__}: {exc}"
             )
             continue
-        if job.writer is not None and embedding is not None:
-            job.writer.append(rec["image_id"], embedding)
-        if job.out_fh is not None:
+        image_id = int(rec["image_id"])
+        if job.writer is not None and embedding is not None and image_id not in job.writer.done_ids:
+            job.writer.append(image_id, embedding)
+        if job.out_fh is not None and image_id not in job.jsonl_done:
+            job.jsonl_done.add(image_id)
             predictions = select_predictions(
                 probabilities,
                 job.names,
@@ -529,10 +511,16 @@ def run(args: argparse.Namespace) -> None:
                 "storage_root": str(args.storage_path),
             },
         )
-        done = set(writer.done_ids)
-    else:
-        assert out is not None  # main() guarantees one of --out / --embeddings-out
-        done = load_image_ids(out)
+    # Each output resumes from its own done-set: an image is skipped only when
+    # every requested output already has it, and each output is written only
+    # where it is missing, so the two can never drift apart.
+    jsonl_done = load_image_ids(out) if out is not None else set()
+    done_sets = []
+    if writer is not None:
+        done_sets.append(set(writer.done_ids))
+    if out is not None:
+        done_sets.append(jsonl_done)
+    done = set.intersection(*done_sets)
     todo = [rec for rec in shard if rec["image_id"] not in done]
     print(
         f"shard {args.shard_index}/{args.shards}: {len(shard)} images, "
@@ -560,6 +548,7 @@ def run(args: argparse.Namespace) -> None:
             prefetch_workers=args.prefetch_workers,
             writer=writer,
             out_fh=out_fh,
+            jsonl_done=jsonl_done,
         )
         processed, missing, failed = _process_shard(job, todo)
     finally:

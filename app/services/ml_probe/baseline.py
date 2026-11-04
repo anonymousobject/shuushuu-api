@@ -22,7 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ml_raw_prediction import MlExternalTags, MlModels, MlRawPredictions
 from app.models.tag_mapping import TagMappings
+from app.services.ml_probe.artifacts import npz_path
 from app.services.ml_probe.labels import ThemeTagGraph
+from app.services.ml_probe.store import locate_sorted
 
 _STREAM_CHUNK = 100_000
 
@@ -34,19 +36,28 @@ class BaselineScores:
     image_ids: NDArray[np.int64]
     scores: NDArray[np.float32]
     has_raw: NDArray[np.bool_]
+    tag_ids: NDArray[np.int64]  # column identity, checked against labels.npz at eval
+    model: str  # ml_models.name the raw rows came from
 
     def save(self, path: Path) -> None:
         np.savez_compressed(
-            path, image_ids=self.image_ids, scores=self.scores, has_raw=self.has_raw
+            npz_path(path),
+            image_ids=self.image_ids,
+            scores=self.scores,
+            has_raw=self.has_raw,
+            tag_ids=self.tag_ids,
+            model=np.array(self.model),
         )
 
     @classmethod
     def load(cls, path: Path) -> BaselineScores:
-        with np.load(path) as data:
+        with np.load(npz_path(path)) as data:
             return cls(
                 image_ids=data["image_ids"].astype(np.int64),
                 scores=data["scores"].astype(np.float32),
                 has_raw=data["has_raw"].astype(np.bool_),
+                tag_ids=data["tag_ids"].astype(np.int64),
+                model=str(data["model"]),
             )
 
 
@@ -105,8 +116,7 @@ async def build_baseline_scores(
         externals = np.fromiter((r[1] for r in chunk), dtype=np.int64, count=n)
         confidences = np.fromiter((r[2] for r in chunk), dtype=np.float32, count=n)
 
-        rows = np.clip(np.searchsorted(requested, images), 0, max(len(requested) - 1, 0))
-        known = (len(requested) > 0) & (requested[rows] == images)
+        rows, known = locate_sorted(requested, images)
         has_raw[rows[known]] = True
 
         in_range = externals < len(column)
@@ -115,4 +125,6 @@ async def build_baseline_scores(
         mapped = confidences[valid] * weight[externals[valid]]
         np.maximum.at(scores, (rows[valid], cols[valid]), mapped)
 
-    return BaselineScores(image_ids=requested, scores=scores, has_raw=has_raw)
+    return BaselineScores(
+        image_ids=requested, scores=scores, has_raw=has_raw, tag_ids=graph.tag_ids, model=model_name
+    )

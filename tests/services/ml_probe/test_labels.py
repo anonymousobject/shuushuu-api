@@ -110,3 +110,30 @@ def test_label_set_save_load_round_trip(tmp_path):
     assert loaded.parent_index.tolist() == [-1, 0]
     assert loaded.provenance.tolist() == labels.provenance.tolist()
     assert loaded.provenance.dtype == np.uint8
+
+
+@pytest.mark.unit
+def test_label_set_view_matches_individual_masks():
+    labels = _label_set(
+        [[NONE, APPROVED, PENDING], [LINKED, REJECTED, NONE], [PENDING, LINKED, REJECTED]],
+        parent_index=[-1, 0, -1],
+    )
+    rows = np.array([0, 2])
+    columns = np.array([0, 2])
+
+    view = labels.view(rows, columns)
+
+    assert view.positives.tolist() == labels.positives()[rows][:, columns].tolist()
+    assert view.approved_mask.tolist() == labels.approved_mask()[rows][:, columns].tolist()
+    assert view.pending_mask.tolist() == labels.pending_mask()[rows][:, columns].tolist()
+    assert view.rejected.tolist() == labels.rejected()[rows][:, columns].tolist()
+    assert view.provenance.tolist() == labels.provenance[rows][:, columns].tolist()
+
+
+@pytest.mark.unit
+def test_label_set_save_adds_npz_suffix_and_load_accepts_either(tmp_path):
+    labels = _label_set([[LINKED, NONE]], parent_index=[-1, -1])
+    labels.save(tmp_path / "labels")
+    assert (tmp_path / "labels.npz").exists()
+    assert LabelSet.load(tmp_path / "labels").image_ids.tolist() == [1]
+    assert LabelSet.load(tmp_path / "labels.npz").image_ids.tolist() == [1]

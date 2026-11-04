@@ -59,6 +59,8 @@ async def test_build_baseline_scores_maps_and_aggregates(db_session):
 
     col_parent, col_child = graph.column_of[parent.tag_id], graph.column_of[child.tag_id]
     assert baseline.image_ids.tolist() == [img1.image_id]
+    assert baseline.tag_ids.tolist() == graph.tag_ids.tolist()
+    assert baseline.model == MODEL
     assert baseline.scores.shape == (1, len(graph.tag_ids))
     assert baseline.scores.dtype == np.float32
     assert baseline.scores[0, col_child] == pytest.approx(0.8)
@@ -119,9 +121,27 @@ def test_baseline_scores_save_load_round_trip(tmp_path):
         image_ids=np.array([3, 7], dtype=np.int64),
         scores=np.array([[0.5, 0.0], [0.0, 0.25]], dtype=np.float32),
         has_raw=np.array([True, False]),
+        tag_ids=np.array([100, 101], dtype=np.int64),
+        model="m",
     )
     baseline.save(tmp_path / "b.npz")
     loaded = BaselineScores.load(tmp_path / "b.npz")
     assert loaded.image_ids.tolist() == [3, 7]
+    assert loaded.tag_ids.tolist() == [100, 101]
+    assert loaded.model == "m"
     assert np.allclose(loaded.scores, baseline.scores)
     assert loaded.has_raw.tolist() == [True, False]
+
+
+@pytest.mark.unit
+def test_baseline_save_adds_npz_suffix(tmp_path):
+    baseline = BaselineScores(
+        image_ids=np.array([3], dtype=np.int64),
+        scores=np.zeros((1, 1), dtype=np.float32),
+        has_raw=np.array([True]),
+        tag_ids=np.array([100], dtype=np.int64),
+        model="m",
+    )
+    baseline.save(tmp_path / "b")
+    assert (tmp_path / "b.npz").exists()
+    assert BaselineScores.load(tmp_path / "b").model == "m"

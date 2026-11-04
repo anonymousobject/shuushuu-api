@@ -39,12 +39,28 @@ class EmbeddingStore:
     def rows_for(self, image_ids: NDArray[np.int64]) -> NDArray[np.int64]:
         """Row index per requested id, -1 where the id is not in the store."""
         order = np.argsort(self.ids, kind="stable")
-        sorted_ids = self.ids[order]
-        position = np.searchsorted(sorted_ids, image_ids)
-        position = np.clip(position, 0, len(sorted_ids) - 1)
-        found = len(sorted_ids) > 0 and sorted_ids[position] == image_ids
-        rows = np.where(found, order[position], -1)
-        return rows.astype(np.int64)
+        position, found = locate_sorted(self.ids[order], np.asarray(image_ids, dtype=np.int64))
+        rows = np.full(len(position), -1, dtype=np.int64)
+        rows[found] = order[position[found]]
+        return rows
+
+
+def locate_sorted(
+    sorted_ids: NDArray[np.int64], query: NDArray[np.int64]
+) -> tuple[NDArray[np.int64], NDArray[np.bool_]]:
+    """Position of each query id in ``sorted_ids`` plus a found mask.
+
+    Positions are clipped into range so callers can index with them directly
+    after masking; an empty ``sorted_ids`` finds nothing. The one lookup every
+    id join in this package uses.
+    """
+    sorted_ids = np.asarray(sorted_ids, dtype=np.int64)
+    query = np.asarray(query, dtype=np.int64)
+    if len(sorted_ids) == 0:
+        return np.zeros(len(query), dtype=np.int64), np.zeros(len(query), dtype=np.bool_)
+    position = np.clip(np.searchsorted(sorted_ids, query), 0, len(sorted_ids) - 1)
+    found: NDArray[np.bool_] = sorted_ids[position] == query
+    return position.astype(np.int64), found
 
 
 def consistent_row_count(directory: Path, dim: int) -> int:

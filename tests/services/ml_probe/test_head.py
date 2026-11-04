@@ -149,3 +149,10 @@ def test_train_early_stops_on_flat_validation_loss():
     )
 
     assert head.meta["epochs_run"] < 50
+
+
+@pytest.mark.unit
+def test_head_save_adds_npz_suffix(tmp_path):
+    _head().save(tmp_path / "head")
+    assert (tmp_path / "head.npz").exists()
+    assert LinearHead.load(tmp_path / "head").tag_ids.tolist() == [10, 20]

@@ -6,6 +6,7 @@ hold different image sets, one evaluation image has no raw-store rows, and
 the three label views all have something to score.
 """
 
+import csv
 import importlib.util
 import json
 from pathlib import Path
@@ -69,14 +70,18 @@ def _synthetic(tmp_path):
     )
     labels.save(tmp_path / "labels.npz")
 
-    # baseline for folds 0 and 1: confident where true, weak otherwise; image 40 has no raw rows
+    # baseline for folds 0 and 1: confident where true, weak otherwise; 40 and 41 have no raw rows
     eval_ids = np.array([i for i in LABELED_IDS if i % 10 in (0, 1)], dtype=np.int64)
     scores = np.where(truth[np.isin(LABELED_IDS, eval_ids)], 0.8, 0.1).astype(np.float32)
-    has_raw = eval_ids != 40
+    has_raw = ~np.isin(eval_ids, [40, 41])  # one test and one validation image without raw rows
     scores[~has_raw] = 0.0
-    BaselineScores(image_ids=eval_ids, scores=scores, has_raw=has_raw).save(
-        tmp_path / "baseline.npz"
-    )
+    BaselineScores(
+        image_ids=eval_ids,
+        scores=scores,
+        has_raw=has_raw,
+        tag_ids=np.array([100, 101, 102], dtype=np.int64),
+        model="baseline-model",
+    ).save(tmp_path / "baseline.npz")
     assert provenance[LABELED_IDS == 30, 2] == PENDING and (provenance == APPROVED).sum() == 2
     assert NONE == 0
     return store
@@ -151,8 +156,14 @@ def test_train_and_eval_align_by_image_id(tmp_path):
     assert summaries["headline/newest10"]["n_images"] == 1
     for view in ("headline_all", "headline_newest10", "sensitivity_all", "sensitivity_newest10"):
         assert (out_dir / f"per_tag_{view}.csv").exists()
-    summary_md = (out_dir / "summary.md").read_text()
+    summary_md = (out_dir / "summary.md").read_text(encoding="utf-8")
     assert "headline/all" in summary_md and "sensitivity/all" in summary_md
+    assert "## Provenance" in summary_md and "test-model" in summary_md
+    with open(out_dir / "per_tag_headline_all.csv", encoding="utf-8") as f:
+        csv_thresholds = [row["probe_threshold"] for row in csv.DictReader(f)]
+    assert csv_thresholds == [f"{t:.2f}" for t in saved.thresholds], (
+        "the headline view scores the probe at the thresholds shipped in head.npz"
+    )
     assert "Reviewed pairs" in summary_md
     assert "| all | 2 | 0 |" in summary_md, "two approved pairs, no rejections, in the test fold"
 
@@ -179,3 +190,125 @@ def test_parser_has_four_subcommands():
         ],
     ):
         assert parser.parse_args(argv).command == argv[0]
+
+
+def _eval_args(tmp_path, **overrides):
+    paths = {
+        "embeddings": tmp_path / "emb",
+        "labels": tmp_path / "labels.npz",
+        "baseline": tmp_path / "baseline.npz",
+        "head": tmp_path / "head.npz",
+        "out-dir": tmp_path / "eval",
+    }
+    paths.update(overrides)
+    argv = ["eval"]
+    for key, value in paths.items():
+        argv += [f"--{key}", str(value)]
+    return ml_probe.build_parser().parse_args(argv)
+
+
+def _train(tmp_path):
+    ml_probe.cmd_train(
+        ml_probe.build_parser().parse_args(
+            [
+                "train",
+                "--embeddings",
+                str(tmp_path / "emb"),
+                "--labels",
+                str(tmp_path / "labels.npz"),
+                "--out",
+                str(tmp_path / "head.npz"),
+                "--min-train-positives",
+                "3",
+                "--max-epochs",
+                "5",
+            ]
+        )
+    )
+
+
+@pytest.mark.unit
+def test_eval_rejects_baseline_with_different_tag_columns(tmp_path):
+    _synthetic(tmp_path)
+    _train(tmp_path)
+    stale = BaselineScores.load(tmp_path / "baseline.npz")
+    stale.tag_ids = np.array([100, 101, 999], dtype=np.int64)
+    stale.save(tmp_path / "stale.npz")
+
+    with pytest.raises(SystemExit, match="baseline"):
+        ml_probe.cmd_eval(_eval_args(tmp_path, baseline=tmp_path / "stale.npz"))
+
+
+@pytest.mark.unit
+def test_eval_rejects_head_tag_missing_from_labels(tmp_path):
+    _synthetic(tmp_path)
+    _train(tmp_path)
+    head = LinearHead.load(tmp_path / "head.npz")
+    head.tag_ids = head.tag_ids.copy()
+    head.tag_ids[-1] = 10_000  # larger than every label tag id
+    head.save(tmp_path / "foreign-tag.npz")
+
+    with pytest.raises(SystemExit, match="head.npz tags"):
+        ml_probe.cmd_eval(_eval_args(tmp_path, head=tmp_path / "foreign-tag.npz"))
+
+
+@pytest.mark.unit
+def test_eval_rejects_head_from_another_model(tmp_path):
+    _synthetic(tmp_path)
+    _train(tmp_path)
+    head = LinearHead.load(tmp_path / "head.npz")
+    head.meta["model"] = "some-other-model"
+    head.save(tmp_path / "other-model.npz")
+
+    with pytest.raises(SystemExit, match="model"):
+        ml_probe.cmd_eval(_eval_args(tmp_path, head=tmp_path / "other-model.npz"))
+
+
+@pytest.mark.unit
+def test_train_rejects_an_empty_validation_fold(tmp_path):
+    _synthetic(tmp_path)
+    labels = LabelSet.load(tmp_path / "labels.npz")
+    keep = labels.image_ids % 10 != 1
+    labels.image_ids, labels.provenance = labels.image_ids[keep], labels.provenance[keep]
+    labels.save(tmp_path / "no-val.npz")
+
+    with pytest.raises(SystemExit, match="validation"):
+        ml_probe.cmd_train(
+            ml_probe.build_parser().parse_args(
+                [
+                    "train",
+                    "--embeddings",
+                    str(tmp_path / "emb"),
+                    "--labels",
+                    str(tmp_path / "no-val.npz"),
+                    "--out",
+                    str(tmp_path / "h.npz"),
+                    "--min-train-positives",
+                    "3",
+                ]
+            )
+        )
+
+
+@pytest.mark.unit
+def test_cli_out_paths_get_npz_suffix(tmp_path):
+    _synthetic(tmp_path)
+    head = ml_probe.cmd_train(
+        ml_probe.build_parser().parse_args(
+            [
+                "train",
+                "--embeddings",
+                str(tmp_path / "emb"),
+                "--labels",
+                str(tmp_path / "labels.npz"),
+                "--out",
+                str(tmp_path / "head-no-suffix"),
+                "--min-train-positives",
+                "3",
+                "--max-epochs",
+                "3",
+            ]
+        )
+    )
+    assert (tmp_path / "head-no-suffix.npz").exists()
+    assert LinearHead.load(tmp_path / "head-no-suffix").tag_ids.tolist() == head.tag_ids.tolist()
