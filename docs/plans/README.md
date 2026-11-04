@@ -26,6 +26,7 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 
 | Date | Effort | Docs |
 | --- | --- | --- |
+| 2026-11-03 | Theme-tag linear probe on frozen swinv2 embeddings | [design](2026-Q4/2026-11-03-theme-probe-design.md) · [impl](2026-Q4/2026-11-03-theme-probe-impl.md) |
 | 2026-10-30 | Lists, code, and forum headings in the markdown parser | [design](2026-Q4/2026-10-30-markdown-lists-and-code-design.md) · [impl](2026-Q4/2026-10-31-markdown-lists-and-code-impl.md) |
 
 ## 2026-Q3
@@ -122,4 +123,4 @@ Exceptions block is maintained by hand and is preserved across regeneration.
 | 2025-11-23 | Avatar Upload Feature Design | [design](2025-Q4/2025-11-23-avatar-upload-design.md) |
 | 2025-11-22 | Image Reporting and Review System Design | [design](2025-Q4/2025-11-22-image-reporting-review-design.md) |
 
-75 efforts, 111 documents.
+76 efforts, 113 documents.

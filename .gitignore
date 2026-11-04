@@ -155,3 +155,6 @@ ml_models/**
 # scripts/generate_tag_mappings.py and scripts/generate_character_mappings.py.
 data/
 .bench/
+
+# superpowers plan workspaces (ledgers, briefs, review packages)
+.superpowers/
