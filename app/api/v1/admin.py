@@ -227,6 +227,7 @@ async def delete_group(
     group_id: Annotated[int, Path(description="Group ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
     db: DbSession,
+    redis_client: RedisClient,
 ) -> None:
     """
     Delete a group.
@@ -241,8 +242,18 @@ async def delete_group(
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
+    # Capture members first: the delete cascades to user_groups, so after the commit
+    # there is no one left to look up.
+    member_result = await db.execute(
+        select(UserGroups.user_id).where(UserGroups.group_id == group_id)  # type: ignore[call-overload]
+    )
+    member_ids = [row[0] for row in member_result.fetchall()]
+
     await db.delete(group)
     await db.commit()
+
+    for member_id in member_ids:
+        await invalidate_user_permissions(redis_client, member_id)
 
 
 # ===== Group Membership =====
@@ -292,6 +303,7 @@ async def add_user_to_group(
     user_id: Annotated[int, Path(description="User ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
     db: DbSession,
+    redis_client: RedisClient,
 ) -> MessageResponse:
     """
     Add a user to a group.
@@ -323,6 +335,8 @@ async def add_user_to_group(
     db.add(membership)
     await db.commit()
 
+    await invalidate_user_permissions(redis_client, user_id)
+
     return MessageResponse(message="User added to group successfully")
 
 
@@ -335,6 +349,7 @@ async def remove_user_from_group(
     user_id: Annotated[int, Path(description="User ID")],
     _: Annotated[None, Depends(require_permission(Permission.GROUP_MANAGE))],
     db: DbSession,
+    redis_client: RedisClient,
 ) -> None:
     """
     Remove a user from a group.
@@ -355,6 +370,8 @@ async def remove_user_from_group(
 
     await db.delete(membership)
     await db.commit()
+
+    await invalidate_user_permissions(redis_client, user_id)
 
 
 # ===== Group Permissions =====
