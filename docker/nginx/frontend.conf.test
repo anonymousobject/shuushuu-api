@@ -77,9 +77,9 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
 
-    # Basic auth for tester access
-    auth_basic "Test access";
-    auth_basic_user_file /etc/nginx/.htpasswd;
+    # No basic auth: Cloudflare Access signs testers in before a request
+    # reaches this server, and only cloudflared on this host can connect to
+    # it (see the nginx ports in docker-compose.test.yml).
 
     client_max_body_size 100M;
 

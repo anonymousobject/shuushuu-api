@@ -32,9 +32,14 @@ services:
       - default
 
   nginx:
-    ports:
-      - "80:80"
-      - "443:443"
+    # The test site is reached only through a Cloudflare Tunnel: cloudflared on
+    # this host connects to 127.0.0.1:443, after Cloudflare Access has signed
+    # the tester in. !override drops the 0.0.0.0 ports from docker-compose.yml,
+    # which would let the LAN, or a router forward, reach nginx around Access.
+    # Port 80 isn't published, so certbot's HTTP-01 renewal can't work; the
+    # tunnel doesn't check the origin certificate.
+    ports: !override
+      - "127.0.0.1:443:443"
     volumes:
       - ./docker/nginx/frontend.conf.test:/etc/nginx/conf.d/frontend.conf.template:ro
       - ./docker/certbot/conf:/etc/letsencrypt:ro
