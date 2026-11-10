@@ -36,7 +36,6 @@ from app.api.dependencies import (
     PaginationParams,
     UserSortParams,
 )
-from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import (
     AdminActionType,
     DeactivationReason,
@@ -153,6 +152,7 @@ from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import RatingStats, recalculate_image_ratings
 from app.services.recommendations import get_recommended_images
 from app.services.tag_context import stamp_context_sources
+from app.services.tag_hierarchy import get_tag_hierarchy, resolve_tag_alias
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import (
     check_upload_rate_limit,

@@ -7,7 +7,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import settings
 from app.core.database import get_db
 from app.services.feeds import (
@@ -18,6 +17,7 @@ from app.services.feeds import (
     fetch_feed_sentinel,
     newest_timestamp,
 )
+from app.services.tag_hierarchy import get_tag_hierarchy, resolve_tag_alias
 
 router = APIRouter(tags=["feeds"])
 
