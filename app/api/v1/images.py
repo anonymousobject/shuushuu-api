@@ -1741,7 +1741,10 @@ async def get_image_neighbors(
     if image is None:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    filter_query = await build_image_filter_query(db, filters, current_user, redis_client)
+    # Seekable: find_neighbors bounds the link subqueries by each statement's own id range.
+    filter_query = await build_image_filter_query(
+        db, filters, current_user, redis_client, seekable=True
+    )
     try:
         prev_image_id, next_image_id = await find_neighbors(
             db, filter_query.query, image, sorting, settings.IMAGE_NEIGHBORS_TIMEOUT_SECONDS

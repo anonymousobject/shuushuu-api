@@ -6,16 +6,21 @@ GET /images (the source of truth for order and visibility).
 """
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import text
+from sqlalchemy import event, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import ImageStatus, TagType, settings
+from app.config import ImageStatus, ReportStatus, TagType, settings
+from app.core.permissions import Permission
 from app.core.security import create_access_token, get_password_hash
-from app.models import Images, TagLinks, Tags, Users
+from app.models import Comments, Favorites, ImageReports, Images, TagLinks, Tags, Users
+from app.services.image_filters import SEEK_UNBOUNDED_LOWER, SEEK_UNBOUNDED_UPPER
+from tests.api.v1.conftest import grant_permission
 
 NEIGHBORS = "/api/v1/images/{image_id}/neighbors"
 TIMEOUT_DETAIL = "Search navigation timed out"
@@ -308,3 +313,172 @@ class TestImageNeighbors:
         ]
         assert "image_neighbors_timeout" in app_records[0].message
         assert "status_code" in app_records[1].message and "504" in app_records[1].message
+
+
+# --- Seek bounds on the filter's link subqueries ------------------------------------
+#
+# The route builds the filter query seekable, so each neighbours statement repeats its
+# own images.image_id bound on every link table's image_id (app/services/image_filters.py).
+# The world below has twelve consecutive images. Every filter keeps the images at
+# SEEK_LISTED and drops the rest, so each walked image has dropped images on both sides
+# by id, and kept images sit at adjacent ids (1-2, 7-8): a link bound that is reversed
+# or one id too tight changes some answer.
+SEEK_LISTED = (1, 2, 4, 7, 8, 10)
+# images.favorites by position: two tie groups, each mixing kept and dropped images.
+SEEK_FAVORITES = [5, 5, 5, 5, 3, 3, 3, 3, 3, 3, 5, 5]
+SEEK_FILTERS = [
+    "tags_any",
+    "tags_all",
+    "exclude_tags",
+    "favorited_by_user_id",
+    "exclude_favorited_by_user_id",
+    "commenter",
+    "commentsearch",
+    "exclude_commenter",
+    "reported",
+]
+
+# A comparison of some table's image_id with a bind parameter, as asyncpg receives it
+# ("tag_links.image_id >= $4::INTEGER").
+_ID_COMPARISON = re.compile(r"\b(\w+)\.image_id (<=|>=|<|>) \$(\d+)")
+
+
+async def _seek_world(db: AsyncSession) -> tuple[list[Images], dict[str, str], dict[str, str]]:
+    """Seed the world; return its images, each filter's query string, and mod headers."""
+    owner = await _user(db, "seek_owner")
+    fan, hater, commenter, critic = [
+        await _user(db, f"seek_{name}") for name in ("fan", "hater", "commenter", "critic")
+    ]
+    mod = await _user(db, "seek_mod")
+    mod_token = await grant_permission(db, mod.user_id, Permission.REPORT_VIEW)
+    any_a, any_b, all_a, all_b, dropped_tag = [
+        await _tag(db, f"Seek{name}") for name in ("AnyA", "AnyB", "AllA", "AllB", "Drop")
+    ]
+    images = await _images(db, owner, [ImageStatus.ACTIVE] * len(SEEK_FAVORITES))
+
+    for position, image in enumerate(images):
+        odd = position % 2 == 1
+        if position in SEEK_LISTED:
+            tag_ids = [(any_a if odd else any_b).tag_id, all_a.tag_id, all_b.tag_id]
+            favoriter, author, comment = fan, commenter, "a kitten"
+            report_status = ReportStatus.PENDING
+        else:
+            # Only one of the two tags_all tags, so each tag's subquery alone matches it.
+            tag_ids = [dropped_tag.tag_id, (all_a if odd else all_b).tag_id]
+            favoriter, author, comment = hater, critic, "a puppy"
+            report_status = ReportStatus.DISMISSED
+        db.add_all(
+            [TagLinks(image_id=image.image_id, tag_id=t, user_id=owner.user_id) for t in tag_ids]
+        )
+        db.add(Favorites(user_id=favoriter.user_id, image_id=image.image_id))
+        db.add(Comments(image_id=image.image_id, user_id=author.user_id, post_text=comment))
+        db.add(
+            ImageReports(
+                image_id=image.image_id, user_id=owner.user_id, category=2, status=report_status
+            )
+        )
+    await db.commit()
+    # Counter triggers moved images.favorites while the rows went in; set the sort values last.
+    for image, favorites in zip(images, SEEK_FAVORITES, strict=True):
+        await db.execute(
+            update(Images).where(Images.image_id == image.image_id).values(favorites=favorites)  # type: ignore[arg-type]
+        )
+    await db.commit()
+
+    filters = {
+        "tags_any": f"tags={any_a.tag_id},{any_b.tag_id}",
+        "tags_all": f"tags={all_a.tag_id},{all_b.tag_id}&tags_mode=all",
+        "exclude_tags": f"exclude_tags={dropped_tag.tag_id}",
+        "favorited_by_user_id": f"favorited_by_user_id={fan.user_id}",
+        "exclude_favorited_by_user_id": f"exclude_favorited_by_user_id={hater.user_id}",
+        "commenter": f"commenter={commenter.user_id}",
+        "commentsearch": "commentsearch=kitten",
+        "exclude_commenter": f"exclude_commenter={critic.user_id}",
+        "reported": "reported=true",
+    }
+    return images, filters, {"Authorization": f"Bearer {mod_token}"}
+
+
+class TestSeekBoundedFilters:
+    @pytest.mark.parametrize("sort_order", ["ASC", "DESC"])
+    @pytest.mark.parametrize("sort_by", ["image_id", "favorites"])
+    @pytest.mark.parametrize("bounded_filter", SEEK_FILTERS)
+    async def test_walk_matches_listing(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        bounded_filter: str,
+        sort_by: str,
+        sort_order: str,
+    ):
+        images, filters, mod_headers = await _seek_world(db_session)
+        # reported is honoured only for report_view holders.
+        headers = mod_headers if bounded_filter == "reported" else None
+        params = f"{filters[bounded_filter]}&sort_by={sort_by}&sort_order={sort_order}"
+
+        listing = await client.get(f"/api/v1/images?{params}&per_page=100", headers=headers)
+        assert listing.status_code == 200, listing.text
+        ids = [image["image_id"] for image in listing.json()["images"]]
+        assert sorted(ids) == [images[position].image_id for position in SEEK_LISTED]
+
+        for position, image_id in enumerate(ids):
+            response = await client.get(
+                NEIGHBORS.format(image_id=image_id) + f"?{params}", headers=headers
+            )
+            assert response.status_code == 200, response.text
+            assert response.json() == {
+                "prev_image_id": ids[position - 1] if position > 0 else None,
+                "next_image_id": ids[position + 1] if position < len(ids) - 1 else None,
+            }
+
+    @pytest.mark.parametrize("sort_order", ["ASC", "DESC"])
+    @pytest.mark.parametrize("sort_by", ["image_id", "favorites"])
+    async def test_link_bounds_equal_each_statements_own_id_bound(
+        self, client: AsyncClient, db_session: AsyncSession, sort_by: str, sort_order: str
+    ):
+        images, filters, _ = await _seek_world(db_session)
+        params = (
+            f"{filters['tags_any']}&{filters['exclude_tags']}"
+            f"&sort_by={sort_by}&sort_order={sort_order}"
+        )
+        executed: list[tuple[str, Any]] = []
+
+        def record(conn, cursor, statement, parameters, context, executemany):
+            executed.append((statement, parameters))
+
+        sync_engine = db_session.bind.sync_engine  # type: ignore[union-attr]
+        event.listen(sync_engine, "before_cursor_execute", record)
+        try:
+            for image in images:
+                await _neighbors(client, image, params)
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", record)
+
+        seeks = [(s, p) for s, p in executed if "FROM images" in s and "LIMIT" in s]
+        assert seeks
+        kinds = set()
+        for statement, parameters in seeks:
+            own, lowers, uppers = [], [], []
+            for table, operator, position in _ID_COMPARISON.findall(statement):
+                value = parameters[int(position) - 1]
+                if table == "images":
+                    own.append((operator, value))
+                elif operator == ">=":
+                    lowers.append(value)
+                else:
+                    uppers.append(value)
+            # Both link sites (tags, exclude_tags) are bounded in every statement...
+            assert len(lowers) == len(uppers) >= 1, statement
+            # ...by exactly the statement's own restriction on images.image_id.
+            assert len(own) <= 1, statement
+            if not own:
+                expected = (SEEK_UNBOUNDED_LOWER, SEEK_UNBOUNDED_UPPER)
+            elif own[0][0] == "<":
+                expected = (SEEK_UNBOUNDED_LOWER, own[0][1] - 1)
+            else:
+                assert own[0][0] == ">", statement
+                expected = (own[0][1] + 1, SEEK_UNBOUNDED_UPPER)
+            assert (set(lowers), set(uppers)) == ({expected[0]}, {expected[1]}), statement
+            kinds.add(own[0][0] if own else None)
+        # Every statement shape ran: id-bounded both ways, and (non-id sort) unbounded.
+        assert kinds == ({"<", ">"} if sort_by == "image_id" else {"<", ">", None})

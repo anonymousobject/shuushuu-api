@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 import redis.asyncio as redis
 from fastapi import HTTPException, Query, status
-from sqlalchemy import ColumnElement, Select, and_, or_, select
+from sqlalchemy import ColumnElement, Select, and_, bindparam, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ImageStatus, ReportStatus, settings
@@ -20,6 +20,14 @@ from app.models import Comments, Favorites, ImageReports, Images, TagLinks, User
 from app.services.image_visibility import PUBLIC_IMAGE_STATUSES
 from app.services.tag_hierarchy import get_tag_hierarchy, resolve_tag_alias
 from app.utils.comment_search import apply_comment_text_search, reject_unindexable_comment_search
+
+# Bind parameters a seekable query bounds its link-table subqueries with (_seek_bounds).
+SEEK_LOWER_PARAM = "seek_lower_image_id"
+SEEK_UPPER_PARAM = "seek_upper_image_id"
+# image_id is a Postgres integer (int4) on images and on every link table, so the int4
+# limits leave a bound always true, and fit the int4 parameter asyncpg infers for it.
+SEEK_UNBOUNDED_LOWER = -(2**31)
+SEEK_UNBOUNDED_UPPER = 2**31 - 1
 
 
 @dataclass
@@ -221,13 +229,41 @@ def _not_linked_to(link_model: type[Any], *predicates: ColumnElement[bool]) -> C
     return ~_linked_to(link_model, *predicates)
 
 
+def _seek_bounds(link_image_id: Any, seekable: bool) -> list[ColumnElement[bool]]:
+    """The seek position's bounds on a link table's image_id; none for the listing.
+
+    A neighbours seek restricts images.image_id to a range, but Postgres carries only
+    equalities across ``images.image_id = link.image_id``, so the semi-join would read
+    the link table from the far end of its index. Repeating the range on the link
+    column lets that read start at the seek position.
+
+    This is correct only while every statement sets both parameters to exactly its own
+    range on images.image_id, as find_neighbors does: a joined or EXISTS link row
+    carries the outer row's image_id, so the repeated range drops nothing the outer
+    bound keeps. A narrower range would drop matches, and let a NOT EXISTS exclusion
+    pass rows it should exclude.
+    """
+    if not seekable:
+        return []
+    return [
+        link_image_id >= bindparam(SEEK_LOWER_PARAM),
+        link_image_id <= bindparam(SEEK_UPPER_PARAM),
+    ]
+
+
 async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
     db: AsyncSession,
     filters: ImageFilterParams,
     current_user: Users | None,
     redis_client: redis.Redis | None,  # type: ignore[type-arg]
+    *,
+    seekable: bool = False,
 ) -> ImageFilterQuery:
     """Build the listing's filtered query: content filters plus the viewer's visibility.
+
+    With ``seekable=True`` every link-table subquery is bounded by SEEK_LOWER_PARAM and
+    SEEK_UPPER_PARAM (see `_seek_bounds`), which each statement run from the query must
+    set. The listing leaves it False and gets exactly the query it always had.
 
     Raises HTTPException(400) for an invalid tag list, user list, tag type or date.
     """
@@ -242,7 +278,10 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
         query = query.where(Images.user_id.notin_(exclude_user_ids))  # type: ignore[attr-defined]
     if filters.favorited_by_user_id is not None:
         # Join with Favorites table to filter by user who favorited
-        query = query.join(Favorites).where(Favorites.user_id == filters.favorited_by_user_id)  # type: ignore[arg-type]
+        query = query.join(Favorites).where(
+            Favorites.user_id == filters.favorited_by_user_id,  # type: ignore[arg-type]
+            *_seek_bounds(Favorites.image_id, seekable),
+        )
     exclude_favorited_ids = _parse_user_id_list(
         filters.exclude_favorited_by_user_id, "exclude_favorited_by_user_id"
     )
@@ -251,6 +290,7 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
             _not_linked_to(
                 Favorites,
                 Favorites.user_id.in_(exclude_favorited_ids),  # type: ignore[attr-defined]
+                *_seek_bounds(Favorites.image_id, seekable),
             )
         )
     # Status filtering: explicit param overrides, otherwise use user's show_all_images
@@ -320,7 +360,10 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
                     )
                     query = query.where(
                         Images.image_id.in_(  # type: ignore[union-attr]
-                            select(TagLinks.image_id).where(TagLinks.tag_id.in_(hierarchy_ids))  # type: ignore[call-overload,attr-defined]
+                            select(TagLinks.image_id).where(  # type: ignore[call-overload]
+                                TagLinks.tag_id.in_(hierarchy_ids),  # type: ignore[attr-defined]
+                                *_seek_bounds(TagLinks.image_id, seekable),
+                            )
                         )
                     )
             else:
@@ -335,7 +378,10 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
                     all_hierarchy_ids.update(hierarchy_ids)
                 query = query.where(
                     Images.image_id.in_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id).where(TagLinks.tag_id.in_(all_hierarchy_ids))  # type: ignore[call-overload,attr-defined]
+                        select(TagLinks.image_id).where(  # type: ignore[call-overload]
+                            TagLinks.tag_id.in_(all_hierarchy_ids),  # type: ignore[attr-defined]
+                            *_seek_bounds(TagLinks.image_id, seekable),
+                        )
                     )
                 )
 
@@ -372,6 +418,7 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
                 _not_linked_to(
                     TagLinks,
                     TagLinks.tag_id.in_(resolved_exclude_ids),  # type: ignore[attr-defined]
+                    *_seek_bounds(TagLinks.image_id, seekable),
                 )
             )
 
@@ -473,7 +520,12 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
                 comment_match, filters.commentsearch, filters.commentsearch_mode
             )
         query = query.where(
-            comment_match.where(Comments.image_id == Images.image_id).correlate(Images).exists()
+            comment_match.where(
+                Comments.image_id == Images.image_id,
+                *_seek_bounds(Comments.image_id, seekable),
+            )
+            .correlate(Images)
+            .exists()
         )
     elif filters.hascomments is True:
         # Use posts counter field (fast indexed lookup)
@@ -497,6 +549,7 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
                 # Deleted comments must not hide an image, for the same reason
                 # they must not surface one: /comments never shows them.
                 Comments.deleted == False,  # type: ignore[arg-type]  # noqa: E712
+                *_seek_bounds(Comments.image_id, seekable),
             )
         )
 
@@ -514,7 +567,8 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
         query = query.where(
             Images.image_id.in_(  # type: ignore[union-attr]
                 select(ImageReports.image_id).where(  # type: ignore[call-overload]
-                    ImageReports.status == ReportStatus.PENDING
+                    ImageReports.status == ReportStatus.PENDING,
+                    *_seek_bounds(ImageReports.image_id, seekable),
                 )
             )
         )

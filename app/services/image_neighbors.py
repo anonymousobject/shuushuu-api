@@ -20,6 +20,12 @@ from sqlmodel import col
 from app.api.dependencies import ImageSortParams
 from app.core.database import statement_timeout
 from app.models.image import Images
+from app.services.image_filters import (
+    SEEK_LOWER_PARAM,
+    SEEK_UNBOUNDED_LOWER,
+    SEEK_UNBOUNDED_UPPER,
+    SEEK_UPPER_PARAM,
+)
 
 # SQLSTATE for a statement cancelled by statement_timeout (asyncpg QueryCanceledError).
 QUERY_CANCELED_SQLSTATE = "57014"
@@ -34,13 +40,40 @@ def _less_than(column: Any, value: Any) -> Any:
     return column.is_not(None) if value is None else column < value
 
 
+# Link bounds for a statement that puts no bound on images.image_id.
+_UNBOUNDED_LINKS = {SEEK_LOWER_PARAM: SEEK_UNBOUNDED_LOWER, SEEK_UPPER_PARAM: SEEK_UNBOUNDED_UPPER}
+
+
+def _past(column: Any, value: Any, *, greater: bool) -> tuple[Any, dict[str, int]]:
+    """Rows strictly past `value` on `column`, and the link bounds that match them.
+
+    A seekable filter query repeats a statement's range on images.image_id inside its
+    link subqueries (image_filters._seek_bounds), which is correct only while the two
+    ranges are equal. So both come from here: a comparison on image_id gives the link
+    bounds its exact integer range; one on any other column leaves them unbounded.
+    """
+    clause = column > value if greater else _less_than(column, value)
+    if column is not col(Images.image_id):
+        return clause, _UNBOUNDED_LINKS
+    if greater:  # image_id > value
+        return clause, {SEEK_LOWER_PARAM: value + 1, SEEK_UPPER_PARAM: SEEK_UNBOUNDED_UPPER}
+    # image_id < value
+    return clause, {SEEK_LOWER_PARAM: SEEK_UNBOUNDED_LOWER, SEEK_UPPER_PARAM: value - 1}
+
+
 async def _first_id(
-    db: AsyncSession, query: Select[Any], *clauses: Any, order_by: tuple[Any, ...]
+    db: AsyncSession,
+    query: Select[Any],
+    *clauses: Any,
+    order_by: tuple[Any, ...],
+    link_bounds: dict[str, int],
 ) -> int | None:
     statement = (
         query.where(*clauses).order_by(*order_by).with_only_columns(col(Images.image_id)).limit(1)
     )
-    return (await db.execute(statement)).scalar()
+    # `link_bounds` must be this statement's own range on images.image_id (see _past).
+    # A query without the seek parameters ignores them.
+    return (await db.execute(statement.params(link_bounds))).scalar()
 
 
 async def _find_side(
@@ -60,25 +93,35 @@ async def _find_side(
 
     if column is not id_column:
         tied = column.is_(None) if value is None else column == value
-        id_clause = id_column < current_id if is_next else id_column > current_id
-        found = await _first_id(db, query, tied, id_clause, order_by=(id_order,))
+        id_clause, link_bounds = _past(id_column, current_id, greater=not is_next)
+        found = await _first_id(
+            db, query, tied, id_clause, order_by=(id_order,), link_bounds=link_bounds
+        )
         if found is not None:
             return found
 
     # Strictly past `value`: "next" is further along the sort direction, "prev" back.
     beyond_is_greater = is_next == (sorting.sort_order == "ASC")
     if not beyond_is_greater:
-        clause = _less_than(column, value)
-        return await _first_id(db, query, clause, order_by=(desc(column), id_order))
+        clause, link_bounds = _past(column, value, greater=False)
+        return await _first_id(
+            db, query, clause, order_by=(desc(column), id_order), link_bounds=link_bounds
+        )
 
     # NULL is past every value, but `col > v OR col IS NULL` cannot drive an
     # ordered index scan, so the NULL group is its own statement. It is a tie
     # group, hence ordered by id alone.
     if value is None:
         return None
-    found = await _first_id(db, query, column > value, order_by=(asc(column), id_order))
+    clause, link_bounds = _past(column, value, greater=True)
+    found = await _first_id(
+        db, query, clause, order_by=(asc(column), id_order), link_bounds=link_bounds
+    )
     if found is None and column.expression.nullable:
-        found = await _first_id(db, query, column.is_(None), order_by=(id_order,))
+        # The NULL group has no bound on images.image_id, so neither do its links.
+        found = await _first_id(
+            db, query, column.is_(None), order_by=(id_order,), link_bounds=_UNBOUNDED_LINKS
+        )
     return found
 
 
