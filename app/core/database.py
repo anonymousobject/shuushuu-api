@@ -107,3 +107,21 @@ async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIte
         yield
     finally:
         await db.execute(sql_text("SET statement_timeout = DEFAULT"))
+
+
+@asynccontextmanager
+async def force_custom_plans(db: AsyncSession) -> AsyncIterator[None]:
+    """Plan each statement inside the block for its actual parameter values.
+
+    Under the default `plan_cache_mode = auto`, Postgres may switch a prepared
+    statement to a generic plan, made without looking at the parameters, from its
+    sixth execution, and asyncpg prepares every statement on each pooled connection.
+    Use this where a statement's best plan depends on its bind values.
+
+    Restored on exit for the same pooled-connection reason as `statement_timeout`.
+    """
+    await db.execute(sql_text("SET plan_cache_mode = force_custom_plan"))
+    try:
+        yield
+    finally:
+        await db.execute(sql_text("SET plan_cache_mode = DEFAULT"))

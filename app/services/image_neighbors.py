@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from app.api.dependencies import ImageSortParams
-from app.core.database import statement_timeout
+from app.core.database import force_custom_plans, statement_timeout
 from app.models.image import Images
 from app.services.image_filters import (
     SEEK_LOWER_PARAM,
@@ -55,8 +55,9 @@ def _past(column: Any, value: Any, *, greater: bool) -> tuple[Any, dict[str, int
     clause = column > value if greater else _less_than(column, value)
     if column is not col(Images.image_id):
         return clause, _UNBOUNDED_LINKS
-    if greater:  # image_id > value
-        return clause, {SEEK_LOWER_PARAM: value + 1, SEEK_UPPER_PARAM: SEEK_UNBOUNDED_UPPER}
+    if greater:  # image_id > value; min(): no int4 above the last id (a looser bound is safe)
+        lower = min(value + 1, SEEK_UNBOUNDED_UPPER)
+        return clause, {SEEK_LOWER_PARAM: lower, SEEK_UPPER_PARAM: SEEK_UNBOUNDED_UPPER}
     # image_id < value
     return clause, {SEEK_LOWER_PARAM: SEEK_UNBOUNDED_LOWER, SEEK_UPPER_PARAM: value - 1}
 
@@ -143,7 +144,10 @@ async def find_neighbors(
     assert image.image_id is not None
     column = sorting.sort_by.get_column(Images)
     value = getattr(image, column.key)
-    async with statement_timeout(db, timeout_seconds):
+    # Custom plans: a generic plan (a prepared statement's sixth execution onward)
+    # cannot see that the link bounds are often the always-true sentinels, and so
+    # reads a popular tag's whole link list.
+    async with statement_timeout(db, timeout_seconds), force_custom_plans(db):
         try:
             next_id = await _find_side(
                 db, query, column, value, image.image_id, sorting, is_next=True
@@ -154,7 +158,7 @@ async def find_neighbors(
         except DBAPIError as exc:
             if getattr(exc.orig, "sqlstate", None) != QUERY_CANCELED_SQLSTATE:
                 raise
-            # Roll back before statement_timeout's cleanup SET: that cannot
+            # Roll back before the context managers' cleanup SETs: those cannot
             # run in a failed transaction.
             await db.rollback()
             raise NeighborsTimeoutError from exc
