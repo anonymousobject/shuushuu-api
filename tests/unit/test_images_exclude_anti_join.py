@@ -12,8 +12,8 @@ too: it's the building block the comment-filter EXISTS in list_images shares.
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from app.api.v1.images import _linked_to, _not_linked_to
 from app.models import Comments, Favorites, TagLinks
+from app.services.image_filters import _linked_to, _not_linked_to
 
 
 @pytest.mark.unit
