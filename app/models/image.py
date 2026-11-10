@@ -214,6 +214,7 @@ class Images(ImageBase, table=True):
         Index("idx_images_has_source", "has_source", "image_id"),
         Index("idx_images_has_artist", "has_artist", "image_id"),
         Index("idx_images_has_character", "has_character", "image_id"),
+        Index("idx_last_post_image_id", "last_post", "image_id"),
     )
 
     # Primary key
