@@ -1,5 +1,8 @@
 """Tests for config constants."""
 
+import pytest
+from pydantic import ValidationError
+
 from app.config import Settings, TagAuditActionType
 
 
@@ -15,6 +18,19 @@ class TestIQDBConfig:
         """Upload threshold should be higher than general similarity threshold."""
         s = Settings()
         assert s.IQDB_UPLOAD_THRESHOLD > s.IQDB_SIMILARITY_THRESHOLD
+
+
+class TestImageNeighborsTimeoutConfig:
+    """statement_timeout works in whole milliseconds and 0 disables it."""
+
+    def test_sub_millisecond_timeout_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(IMAGE_NEIGHBORS_TIMEOUT_SECONDS=0.0005)
+
+    def test_one_millisecond_timeout_is_accepted(self) -> None:
+        assert Settings(IMAGE_NEIGHBORS_TIMEOUT_SECONDS=0.001).IMAGE_NEIGHBORS_TIMEOUT_SECONDS == (
+            0.001
+        )
 
 
 class TestTagAuditActionType:

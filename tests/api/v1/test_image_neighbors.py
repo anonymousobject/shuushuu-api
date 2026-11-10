@@ -198,19 +198,19 @@ class TestImageNeighbors:
     ):
         owner = await _user(db_session, "status_owner")
         hider = await _user(db_session, "status_hider", hide_reposts=1)
-        oldest, active, newest = await _images(
+        active, repost, top = await _images(
             db_session,
             owner,
-            [ImageStatus.REPOST, ImageStatus.ACTIVE, ImageStatus.REPOST],
+            [ImageStatus.ACTIVE, ImageStatus.REPOST, ImageStatus.ACTIVE],
         )
         headers = _hdr(hider)
-        # Default visibility drops reposts for this viewer...
-        assert (await _neighbors(client, newest, headers=headers))["next_image_id"] == (
+        # Default visibility drops the repost between them for this viewer...
+        assert (await _neighbors(client, top, headers=headers))["next_image_id"] == (
             active.image_id
         )
-        # ...but an explicit status=-1 asks for them, and excludes the active image.
-        explicit = await _neighbors(client, newest, f"status={ImageStatus.REPOST}", headers=headers)
-        assert explicit == {"prev_image_id": None, "next_image_id": oldest.image_id}
+        # ...but an explicit status=-1 asks for reposts, and so excludes the active images.
+        explicit = await _neighbors(client, top, f"status={ImageStatus.REPOST}", headers=headers)
+        assert explicit == {"prev_image_id": None, "next_image_id": repost.image_id}
 
     async def test_image_outside_filter_gets_nearest_results(
         self, client: AsyncClient, db_session: AsyncSession

@@ -196,7 +196,7 @@ class Settings(BaseSettings):
     )
     IMAGE_NEIGHBORS_TIMEOUT_SECONDS: float = Field(
         default=2.0,
-        gt=0,
+        ge=0.001,
         description="Per-statement limit for finding the previous/next result of a search",
     )
     ML_ANALYZE_CONCURRENCY: int = Field(
