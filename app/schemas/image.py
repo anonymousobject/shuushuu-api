@@ -429,6 +429,13 @@ class ImageStatsResponse(BaseModel):
     average_rating: float
 
 
+class ImageNeighborsResponse(BaseModel):
+    """The results either side of an image in a search, in the listing's order."""
+
+    prev_image_id: int | None = Field(description="Result before the image, or null at the start")
+    next_image_id: int | None = Field(description="Result after the image, or null at the end")
+
+
 class BookmarkPageResponse(BaseModel):
     """Schema for bookmark page calculation response.
 

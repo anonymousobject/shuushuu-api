@@ -194,6 +194,11 @@ class Settings(BaseSettings):
     ML_ANALYZE_RATE_LIMIT: int = Field(
         default=20, description="Max /analyze calls per user per minute"
     )
+    IMAGE_NEIGHBORS_TIMEOUT_SECONDS: float = Field(
+        default=2.0,
+        gt=0,
+        description="Per-statement limit for finding the previous/next result of a search",
+    )
     ML_ANALYZE_CONCURRENCY: int = Field(
         default=2, description="Max concurrent inferences process-wide (global semaphore)"
     )

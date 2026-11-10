@@ -28,7 +28,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import and_, asc, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload, load_only, selectinload
 
 from app.api.dependencies import (
     ImageRatingsSortParams,
@@ -99,6 +99,7 @@ from app.schemas.image import (
     ImageDetailedListResponse,
     ImageDetailedResponse,
     ImageHashSearchResponse,
+    ImageNeighborsResponse,
     ImageResponse,
     ImageStatsResponse,
     ImageTagItem,
@@ -138,6 +139,7 @@ from app.services.feed_response_cache import (
 )
 from app.services.image_filters import ImageFilterParams, build_image_filter_query
 from app.services.image_metadata_history import build_metadata_history
+from app.services.image_neighbors import NeighborsTimeoutError, find_neighbors
 from app.services.image_processing import (
     create_thumbnail,
     get_image_dimensions,
@@ -1706,6 +1708,48 @@ def get_review_outcome_label(outcome: int) -> str:
         ReviewOutcome.SUPERSEDED: "superseded",
     }
     return outcome_labels.get(outcome, "unknown")
+
+
+@router.get("/{image_id}/neighbors", response_model=ImageNeighborsResponse)
+async def get_image_neighbors(
+    image_id: Annotated[int, Path(description="Image ID")],
+    filters: Annotated[ImageFilterParams, Depends()],
+    sorting: Annotated[ImageSortParams, Depends()],
+    db: DbSession,
+    current_user: OptionalCurrentUser,
+    redis_client: RedisClient,
+) -> ImageNeighborsResponse:
+    """
+    Get the results either side of an image in a search.
+
+    Takes the same filter and sort parameters as `GET /images`, and answers with
+    the ids that precede and follow the image in that listing's order, for the
+    image page's previous/next arrows. Visibility matches the listing for the
+    caller. The image need not match the filters itself; the neighbours are then
+    the nearest results either side of where it would sit. A null id means the
+    image is at that end of the results.
+    """
+    # Only the sort column is read from the image, so load just that.
+    sort_column = sorting.sort_by.get_column(Images)
+    image = (
+        await db.execute(
+            select(Images)
+            .options(load_only(Images.image_id, sort_column))  # type: ignore[arg-type]
+            .where(Images.image_id == image_id)  # type: ignore[arg-type]
+        )
+    ).scalar_one_or_none()
+    if image is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    filter_query = await build_image_filter_query(db, filters, current_user, redis_client)
+    try:
+        prev_image_id, next_image_id = await find_neighbors(
+            db, filter_query.query, image, sorting, settings.IMAGE_NEIGHBORS_TIMEOUT_SECONDS
+        )
+    except NeighborsTimeoutError:
+        logger.warning("image_neighbors_timeout", image_id=image_id)
+        raise HTTPException(status_code=504, detail="Search navigation timed out") from None
+    return ImageNeighborsResponse(prev_image_id=prev_image_id, next_image_id=next_image_id)
 
 
 @router.get("/{image_id}/reviews", response_model=ImageReviewListResponse)
