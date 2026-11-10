@@ -194,11 +194,6 @@ class Settings(BaseSettings):
     ML_ANALYZE_RATE_LIMIT: int = Field(
         default=20, description="Max /analyze calls per user per minute"
     )
-    IMAGE_NEIGHBORS_TIMEOUT_SECONDS: float = Field(
-        default=2.0,
-        ge=0.001,
-        description="Per-statement limit for finding the previous/next result of a search",
-    )
     ML_ANALYZE_CONCURRENCY: int = Field(
         default=2, description="Max concurrent inferences process-wide (global semaphore)"
     )
@@ -248,6 +243,11 @@ class Settings(BaseSettings):
     SEARCH_DELAY_SECONDS: int = 2
     MAX_SEARCH_TAGS: int = 5
     MAX_SEARCH_USERS: int = 5
+    IMAGE_NEIGHBORS_TIMEOUT_SECONDS: float = Field(
+        default=2.0,
+        ge=0.001,
+        description="Per-statement limit for finding the previous/next result of a search",
+    )
     SIMILARITY_CHECK_RATE_LIMIT: int = 5  # Max similarity checks per user per minute
     FORUM_CREATE_RATE_LIMIT: int = Field(
         default=10,

@@ -90,7 +90,8 @@ async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIte
     Restoring on exit is not optional. Connections are pooled and returned to the
     pool without resetting session variables, so a limit left set would silently
     apply to whatever request picks that connection up next. `DEFAULT` restores
-    the server's global value rather than assuming it is 0.
+    the server's global value rather than assuming it is 0. Do not nest it: the
+    inner block's exit restores DEFAULT, not the outer block's limit.
 
     Passing `seconds=None` is a no-op, so callers can wrap a statement
     unconditionally and decide per request whether the bound applies.
@@ -119,6 +120,7 @@ async def force_custom_plans(db: AsyncSession) -> AsyncIterator[None]:
     Use this where a statement's best plan depends on its bind values.
 
     Restored on exit for the same pooled-connection reason as `statement_timeout`.
+    Do not nest it: the inner block's exit restores DEFAULT, not the outer setting.
     """
     await db.execute(sql_text("SET plan_cache_mode = force_custom_plan"))
     try:

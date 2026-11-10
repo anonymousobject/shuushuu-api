@@ -148,8 +148,8 @@ class ImageFilterParams:
     def __post_init__(self) -> None:
         # A blank/whitespace-only commentsearch means "not searching," not "search for
         # nothing" -- normalize it to None up front so it reads as absent everywhere
-        # below: the comment-filter EXISTS guard and the _FeedFilters entry both key
-        # off `commentsearch is not None`.
+        # after: the comment-filter EXISTS guard in build_image_filter_query and the
+        # _FeedFilters entry in list_images both key off `commentsearch is not None`.
         if self.commentsearch is not None and not self.commentsearch.strip():
             self.commentsearch = None
         # Rejected here, while FastAPI resolves dependencies, so the 400 precedes
@@ -294,10 +294,10 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
             )
         )
     # Status filtering: explicit param overrides, otherwise use user's show_all_images
-    # setting. Visibility clauses are COLLECTED here, not applied: the count path below
-    # decomposes the default logged-in feed into a shared public term plus a per-viewer
-    # own-hidden term, which needs the content filters without the visibility WHERE.
-    # They are applied to `query` right after the last content filter.
+    # setting. Visibility clauses are COLLECTED here, not applied: list_images' count
+    # path decomposes the default logged-in feed into a shared public term plus a
+    # per-viewer own-hidden term, which needs the content filters without the
+    # visibility WHERE. ImageFilterQuery.query applies them.
     visibility_clauses = []
     decompose_count = False
     if filters.image_status is not None:

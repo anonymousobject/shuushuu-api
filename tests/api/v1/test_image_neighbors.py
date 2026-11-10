@@ -326,6 +326,10 @@ class TestImageNeighbors:
 SEEK_LISTED = (1, 2, 4, 7, 8, 10)
 # images.favorites by position: two tie groups, each mixing kept and dropped images.
 SEEK_FAVORITES = [5, 5, 5, 5, 3, 3, 3, 3, 3, 3, 5, 5]
+# images.last_post by position, as days after SEEK_BASE (None: NULL): NULLs and a tie
+# group among both kept and dropped images, so a last_post walk runs every statement shape.
+SEEK_LAST_POST_DAYS = [None, 2, 2, None, None, 1, 1, 2, None, 2, 1, None]
+SEEK_BASE = datetime(2024, 1, 1, tzinfo=UTC)
 SEEK_FILTERS = [
     "tags_any",
     "tags_all",
@@ -378,10 +382,14 @@ async def _seek_world(db: AsyncSession) -> tuple[list[Images], dict[str, str], d
             )
         )
     await db.commit()
-    # Counter triggers moved images.favorites while the rows went in; set the sort values last.
-    for image, favorites in zip(images, SEEK_FAVORITES, strict=True):
+    # Counter triggers moved images.favorites and last_post while the rows went in; set
+    # the sort values last.
+    for image, favorites, days in zip(images, SEEK_FAVORITES, SEEK_LAST_POST_DAYS, strict=True):
+        last_post = None if days is None else SEEK_BASE + timedelta(days=days)
         await db.execute(
-            update(Images).where(Images.image_id == image.image_id).values(favorites=favorites)  # type: ignore[arg-type]
+            update(Images)
+            .where(Images.image_id == image.image_id)  # type: ignore[arg-type]
+            .values(favorites=favorites, last_post=last_post)
         )
     await db.commit()
 
@@ -397,6 +405,38 @@ async def _seek_world(db: AsyncSession) -> tuple[list[Images], dict[str, str], d
         "reported": "reported=true",
     }
     return images, filters, {"Authorization": f"Bearer {mod_token}"}
+
+
+def _check_link_bounds(statement: str, parameters: Any, sort_by: str) -> str:
+    """Assert a neighbours statement's link bounds equal its own image_id bound.
+
+    Returns the statement's shape: "<" or ">" for its bound on images.image_id,
+    else "null group" or "beyond".
+    """
+    own, lowers, uppers = [], [], []
+    for table, operator, position in _ID_COMPARISON.findall(statement):
+        value = parameters[int(position) - 1]
+        if table == "images":
+            own.append((operator, value))
+        elif operator == ">=":
+            lowers.append(value)
+        else:
+            uppers.append(value)
+    # Both link sites (tags, exclude_tags) are bounded in every statement...
+    assert len(lowers) == len(uppers) >= 1, statement
+    # ...by exactly the statement's own restriction on images.image_id.
+    assert len(own) <= 1, statement
+    if not own:
+        expected = (SEEK_UNBOUNDED_LOWER, SEEK_UNBOUNDED_UPPER)
+    elif own[0][0] == "<":
+        expected = (SEEK_UNBOUNDED_LOWER, own[0][1] - 1)
+    else:
+        assert own[0][0] == ">", statement
+        expected = (own[0][1] + 1, SEEK_UNBOUNDED_UPPER)
+    assert (set(lowers), set(uppers)) == ({expected[0]}, {expected[1]}), statement
+    if own:
+        return own[0][0]
+    return "null group" if f"images.{sort_by} IS NULL" in statement else "beyond"
 
 
 class TestSeekBoundedFilters:
@@ -432,7 +472,7 @@ class TestSeekBoundedFilters:
             }
 
     @pytest.mark.parametrize("sort_order", ["ASC", "DESC"])
-    @pytest.mark.parametrize("sort_by", ["image_id", "favorites"])
+    @pytest.mark.parametrize("sort_by", ["image_id", "favorites", "last_post"])
     async def test_link_bounds_equal_each_statements_own_id_bound(
         self, client: AsyncClient, db_session: AsyncSession, sort_by: str, sort_order: str
     ):
@@ -456,29 +496,12 @@ class TestSeekBoundedFilters:
 
         seeks = [(s, p) for s, p in executed if "FROM images" in s and "LIMIT" in s]
         assert seeks
-        kinds = set()
-        for statement, parameters in seeks:
-            own, lowers, uppers = [], [], []
-            for table, operator, position in _ID_COMPARISON.findall(statement):
-                value = parameters[int(position) - 1]
-                if table == "images":
-                    own.append((operator, value))
-                elif operator == ">=":
-                    lowers.append(value)
-                else:
-                    uppers.append(value)
-            # Both link sites (tags, exclude_tags) are bounded in every statement...
-            assert len(lowers) == len(uppers) >= 1, statement
-            # ...by exactly the statement's own restriction on images.image_id.
-            assert len(own) <= 1, statement
-            if not own:
-                expected = (SEEK_UNBOUNDED_LOWER, SEEK_UNBOUNDED_UPPER)
-            elif own[0][0] == "<":
-                expected = (SEEK_UNBOUNDED_LOWER, own[0][1] - 1)
-            else:
-                assert own[0][0] == ">", statement
-                expected = (own[0][1] + 1, SEEK_UNBOUNDED_UPPER)
-            assert (set(lowers), set(uppers)) == ({expected[0]}, {expected[1]}), statement
-            kinds.add(own[0][0] if own else None)
-        # Every statement shape ran: id-bounded both ways, and (non-id sort) unbounded.
-        assert kinds == ({"<", ">"} if sort_by == "image_id" else {"<", ">", None})
+        shapes = {_check_link_bounds(s, p, sort_by) for s, p in seeks}
+        # Every statement shape ran: id-bounded both ways; for a non-id sort the
+        # unbounded beyond step; for a nullable one the NULL group too.
+        expected_shapes = {
+            "image_id": {"<", ">"},
+            "favorites": {"<", ">", "beyond"},
+            "last_post": {"<", ">", "beyond", "null group"},
+        }
+        assert shapes == expected_shapes[sort_by]

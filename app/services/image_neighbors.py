@@ -1,10 +1,12 @@
 """Seek to the results adjacent to an image in a filtered image listing.
 
 The listing's order is ``(sort_column <direction>, image_id DESC)``. Rather than
-number the whole result set, each side is found with at most two ``LIMIT 1``
-statements: first the rows tied with the image on the sort column, then, only
-if there are none, the rows strictly past it. Neither statement has an ``OR``
-across columns, so a ``(sort_column, image_id)`` index can serve each.
+number the whole result set, each side is found with at most three ``LIMIT 1``
+statements (two for a non-nullable sort): first the rows tied with the image on
+the sort column, then, only if there are none, the rows strictly past it, and
+last, for a nullable column whose non-NULL values ran out, the NULL group as a
+statement of its own. No statement has an ``OR`` across columns, so a
+``(sort_column, image_id)`` index can serve each.
 
 NULL sorts as the largest value (Postgres's default): first under DESC, last
 under ASC.
@@ -138,8 +140,9 @@ async def find_neighbors(
     `query` is a filtered ``Select`` over ``Images`` with no ordering. "next" is
     the result that follows `image` in the listing's order, "prev" the one before.
 
-    Raises NeighborsTimeoutError when a statement exceeds `timeout_seconds`; the
-    session is rolled back and usable afterwards.
+    Raises NeighborsTimeoutError when a statement exceeds `timeout_seconds`, and
+    re-raises any other database error as itself; either way the session is rolled
+    back and usable afterwards.
     """
     assert image.image_id is not None
     column = sorting.sort_by.get_column(Images)
@@ -156,10 +159,11 @@ async def find_neighbors(
                 db, query, column, value, image.image_id, sorting, is_next=False
             )
         except DBAPIError as exc:
+            # Roll back before the context managers' cleanup SETs, whatever the
+            # error: they cannot run in a failed transaction, and their failure
+            # would replace this error.
+            await db.rollback()
             if getattr(exc.orig, "sqlstate", None) != QUERY_CANCELED_SQLSTATE:
                 raise
-            # Roll back before the context managers' cleanup SETs: those cannot
-            # run in a failed transaction.
-            await db.rollback()
             raise NeighborsTimeoutError from exc
     return prev_id, next_id

@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import asc, desc, event, func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams
@@ -302,3 +303,31 @@ async def _create_images_at(
     db_session.add_all(images)
     await db_session.commit()
     return images
+
+
+DIVISION_BY_ZERO_SQLSTATE = "22012"
+
+
+async def _statement_timeout(db_session: AsyncSession) -> str:
+    return (await db_session.execute(text("SHOW statement_timeout"))).scalar_one()
+
+
+async def test_other_database_errors_surface_as_themselves(db_session, test_user):
+    """A failing statement that is not a timeout propagates as its own error.
+
+    Without a rollback first, both cleanup SETs would fail in the aborted
+    transaction, and InFailedSQLTransaction would replace the real error.
+    """
+    images = await _create_images(db_session, test_user.user_id, ImageSortBy.favorites)
+    failing = select(Images).where(text("1 / 0 = 1"))
+    timeout_before = await _statement_timeout(db_session)
+
+    with pytest.raises(DBAPIError) as raised:
+        await find_neighbors(
+            db_session, failing, images[0], _sorting(ImageSortBy.favorites, "DESC"), 5.0
+        )
+
+    assert raised.value.orig.sqlstate == DIVISION_BY_ZERO_SQLSTATE  # type: ignore[union-attr]
+    assert await _plan_cache_mode(db_session) == "auto"
+    assert await _statement_timeout(db_session) == timeout_before
+    assert (await db_session.execute(text("SELECT 1"))).scalar() == 1
