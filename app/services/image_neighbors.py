@@ -12,7 +12,7 @@ under ASC.
 
 from typing import Any
 
-from sqlalchemy import Select, asc, desc, or_
+from sqlalchemy import Select, asc, desc
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -27,13 +27,6 @@ QUERY_CANCELED_SQLSTATE = "57014"
 
 class NeighborsTimeoutError(Exception):
     """Finding the adjacent results ran past the statement timeout."""
-
-
-def _greater_than(column: Any, value: Any) -> Any:
-    """Rows after `value` in ascending order; NULL is the largest value."""
-    if value is None:
-        return None
-    return or_(column > value, column.is_(None))
 
 
 def _less_than(column: Any, value: Any) -> Any:
@@ -74,15 +67,19 @@ async def _find_side(
 
     # Strictly past `value`: "next" is further along the sort direction, "prev" back.
     beyond_is_greater = is_next == (sorting.sort_order == "ASC")
-    if beyond_is_greater:
-        clause = _greater_than(column, value)
-        order_by = (asc(column), id_order)
-    else:
+    if not beyond_is_greater:
         clause = _less_than(column, value)
-        order_by = (desc(column), id_order)
-    if clause is None:
+        return await _first_id(db, query, clause, order_by=(desc(column), id_order))
+
+    # NULL is past every value, but `col > v OR col IS NULL` cannot drive an
+    # ordered index scan, so the NULL group is its own statement. It is a tie
+    # group, hence ordered by id alone.
+    if value is None:
         return None
-    return await _first_id(db, query, clause, order_by=order_by)
+    found = await _first_id(db, query, column > value, order_by=(asc(column), id_order))
+    if found is None and column.expression.nullable:
+        found = await _first_id(db, query, column.is_(None), order_by=(id_order,))
+    return found
 
 
 async def find_neighbors(

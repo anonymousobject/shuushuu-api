@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import asc, desc, func, select, text
+from sqlalchemy import asc, desc, event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import ImageSortParams
@@ -146,3 +146,48 @@ async def test_timeout_raises_neighbors_timeout_error(db_session, test_user):
     # Rows created before the cancelled statement survive the rollback.
     count = await db_session.execute(select(func.count()).select_from(Images))
     assert count.scalar() == 8
+
+
+async def _executed_statements(
+    db_session: AsyncSession, user_id: int, sort_by: ImageSortBy, sort_order: str
+):
+    """SQL of every statement find_neighbors runs, for each image in the listing."""
+    await _create_images(db_session, user_id, sort_by)
+    query = select(Images)
+    sorting = _sorting(sort_by, sort_order)
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    sync_engine = db_session.bind.sync_engine  # type: ignore[union-attr]
+    event.listen(sync_engine, "before_cursor_execute", record)
+    try:
+        for image in (await db_session.execute(query)).scalars().all():
+            await find_neighbors(db_session, query, image, sorting, 5.0)
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", record)
+    return [s for s in statements if "FROM images" in s]
+
+
+@pytest.mark.parametrize("sort_order", ["ASC", "DESC"])
+@pytest.mark.parametrize(
+    "sort_by", [ImageSortBy.image_id, ImageSortBy.favorites, ImageSortBy.bayesian_rating]
+)
+async def test_not_null_columns_never_test_for_null(db_session, test_user, sort_by, sort_order):
+    statements = await _executed_statements(db_session, test_user.user_id, sort_by, sort_order)
+
+    assert statements
+    assert not [s for s in statements if "IS NULL" in s]
+
+
+@pytest.mark.parametrize("sort_order", ["ASC", "DESC"])
+@pytest.mark.parametrize("sort_by", [ImageSortBy.last_post, ImageSortBy.total_pixels])
+async def test_nullable_columns_never_combine_range_and_null(
+    db_session, test_user, sort_by, sort_order
+):
+    statements = await _executed_statements(db_session, test_user.user_id, sort_by, sort_order)
+    column = f"images.{sort_by.value}"
+
+    assert [s for s in statements if f"{column} IS NULL" in s]
+    assert not [s for s in statements if f"{column} >" in s and f"{column} IS NULL" in s]
