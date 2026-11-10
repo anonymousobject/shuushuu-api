@@ -8,6 +8,12 @@ The search-context neighbours lookup (app/services/image_neighbors.py) seeks
 within one sort value in image_id order. For last_post that value is usually
 NULL (most images have no comments), and the single-column idx_last_post
 returns those rows in no useful order, so the lookup sorted every one of them.
+
+bayesian_rating and favorites have large tie groups (most images are rated 0.0),
+and the lookup's first row past a group must come in image_id order: ascending
+or descending depending on the sort direction and side. A btree scans either
+way, so (col, image_id) serves (col, id) both ascending or both descending,
+and (col, image_id DESC) serves the two mixed orders.
 """
 
 from collections.abc import Sequence
@@ -21,7 +27,13 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 # (name, index definition after "ON images")
-INDEXES = (("idx_last_post_image_id", "(last_post, image_id)"),)
+INDEXES = (
+    ("idx_last_post_image_id", "(last_post, image_id)"),
+    ("idx_bayesian_rating_image_id", "(bayesian_rating, image_id)"),
+    ("idx_bayesian_rating_image_id_desc", "(bayesian_rating, image_id DESC)"),
+    ("idx_favorites_image_id", "(favorites, image_id)"),
+    ("idx_favorites_image_id_desc", "(favorites, image_id DESC)"),
+)
 
 
 def upgrade() -> None:
