@@ -1,0 +1,105 @@
+name: Image Scan
+
+# Scans every image docker-compose.prod.yml pulls from a registry for known
+# CVEs. Dependabot (.github/dependabot.yml) only notices new releases; this
+# covers what sits inside one: the OS packages, language runtimes and bundled
+# libraries.
+#
+# Not covered: the images compose builds from this repo (api, arq-worker,
+# frontend, nginx, iqdb), which have no `image:` line to read.
+#
+# It scans the image the registry serves for each pinned tag today. Prod keeps
+# the copy it pulled when the tag last changed, so a clean run here after a
+# base image rebuild does not mean prod has that rebuild.
+
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - docker-compose.prod.yml
+      - .github/workflows/image-scan.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  images:
+    name: Resolve images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      list: ${{ steps.images.outputs.list }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Read the tags from the compose file so each version lives in one place.
+      - name: List images in docker-compose.prod.yml
+        id: images
+        run: |
+          list=$(grep -oP '^\s*image:\s*\K\S+' docker-compose.prod.yml | sort -u | jq -R . | jq -sc .)
+          if [ "$list" = "[]" ]; then
+            echo "Found no image: lines in docker-compose.prod.yml" >&2
+            exit 1
+          fi
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  scan:
+    name: ${{ matrix.image }}
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      # One image's findings must not cancel the scans of the others.
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.images.outputs.list) }}
+
+    steps:
+      # A SARIF category must be unique per image, or each upload would
+      # replace the previous image's findings in the Security tab.
+      - name: Derive SARIF category
+        id: category
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: echo "name=trivy-image-${IMAGE//[^a-zA-Z0-9.-]/-}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Trivy (SARIF for the Security tab)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: 'image'
+          image-ref: ${{ matrix.image }}
+          format: 'sarif'
+          output: 'trivy-image.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+
+      # Pull requests from Dependabot and forks get a read-only token, which
+      # cannot upload; the scheduled run on main is what feeds the Security tab.
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: github.event_name != 'pull_request' && hashFiles('trivy-image.sarif') != ''
+        with:
+          sarif_file: 'trivy-image.sarif'
+          category: ${{ steps.category.outputs.name }}
+
+      # Fails the run so a scheduled scan that finds something sends a
+      # notification. Unfixed CVEs are left out: nothing can be done about them
+      # until the distribution ships a fix, and they would keep this
+      # permanently red.
+      - name: Run Trivy (fail on fixable CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: 'image'
+          image-ref: ${{ matrix.image }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '1'

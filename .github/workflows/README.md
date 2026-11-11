@@ -29,6 +29,20 @@ Runs on every push and pull request to `main` and `dev` branches.
 
 **Typical run time:** ~3-5 minutes
 
+### **Image Scan** (`image-scan.yml`)
+
+Trivy scan of every image `docker-compose.prod.yml` pulls from a registry, one
+job per image.
+
+Runs weekly, on demand, and on pull requests that change the compose file
+(which includes Dependabot's MediaWiki bumps, configured in
+`.github/dependabot.yml`).
+
+- Fails on CRITICAL and HIGH findings that have a fix available
+- Uploads SARIF to the GitHub Security tab (not on pull requests)
+- Does not cover the images built from this repo (api, arq-worker, frontend, nginx, iqdb)
+- Scans what the registry serves for each pinned tag, not the copy prod pulled
+
 ## Key Features
 
 ### Required Environment Variables

@@ -137,7 +137,7 @@ services:
     logging: *default-logging
 
   mediawiki:
-    image: mediawiki:1.45
+    image: mediawiki:1.45.6
     container_name: shuushuu-mediawiki-prod
     ports: !override []   # nginx fronts it; no host port
     volumes:
@@ -268,7 +268,7 @@ services:
     logging: *default-logging
 
   loki:
-    image: grafana/loki:3.3.2
+    image: grafana/loki:3.7.9
     container_name: shuushuu-loki-prod
     user: "10001:10001"  # Loki's default uid; must match volume ownership
     command: -config.file=/etc/loki/loki-config.yaml
@@ -276,8 +276,12 @@ services:
     volumes:
       - ./docker/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - loki_data:/loki
+    # Exec form of Loki's own probe: the image has had no shell and no wget
+    # since 3.5.8, so neither a wget check nor any CMD-SHELL one can run.
+    # grafana and alloy wait on this, so a check that cannot run keeps both
+    # of them from starting.
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      test: ["CMD", "/usr/bin/loki", "-health"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -293,7 +297,7 @@ services:
     logging: *default-logging
 
   grafana:
-    image: grafana/grafana:11.4.0
+    image: grafana/grafana:12.4.15
     container_name: shuushuu-grafana-prod
     ports: !override
       - "127.0.0.1:3001:3000"
@@ -343,7 +347,7 @@ services:
   # isolated network. Allowlist is CONTAINERS=1 + NETWORKS=1 only — both
   # read-only inspect endpoints; no exec/create/volumes/auth/etc.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
+    image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: shuushuu-docker-socket-proxy-prod
     userns_mode: "host"
     group_add:
@@ -365,9 +369,8 @@ services:
       LOG_LEVEL: warning
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    # No read_only filesystem: the image's entrypoint regenerates its
-    # haproxy config in /usr/local/etc/haproxy at boot from env vars, and
-    # tmpfs there shadows the haproxy.cfg.template that ships in the image.
+    # No read_only filesystem: at boot the image's entrypoint renders its
+    # haproxy config from env vars into /tmp, so it needs somewhere to write.
     # The container has no persistent mounts beyond the read-only docker
     # socket, so its writable layer is ephemeral; the trust boundary is the
     # CONTAINERS=1 + NETWORKS=1 allowlist and the internal-only socket-proxy-net.
@@ -378,7 +381,7 @@ services:
     logging: *default-logging
 
   alloy:
-    image: grafana/alloy:v1.5.1
+    image: grafana/alloy:v1.21.3
     container_name: shuushuu-alloy-prod
     # Alloy runs as its image-default user (uid 473) and stays under the
     # daemon's userns-remap. It does NOT have host docker.sock access; it
@@ -442,7 +445,7 @@ services:
   # Then issue (or add as a SAN in a second invocation) the wiki cert:
   #   … certonly … -d wiki.e-shuushuu.net
   certbot:
-    image: certbot/dns-cloudflare:v3.0.0
+    image: certbot/dns-cloudflare:v5.10.0
     container_name: shuushuu-certbot-prod
     volumes:
       - ./docker/certbot/conf:/etc/letsencrypt
