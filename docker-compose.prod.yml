@@ -114,7 +114,8 @@ services:
       # picks it up. Published to 127.0.0.1 only — see ports below.
       - ./docker/nginx/conf.d/stub-status.conf:/etc/nginx/conf.d/stub-status.conf:ro
       # LE certs land here via the certbot service. Read-only for nginx;
-      # certbot has it RW.
+      # certbot has it RW. The image's cert-reload.sh watches this mount
+      # and reloads nginx when a certificate is renewed.
       - ./docker/certbot/conf:/etc/letsencrypt:ro
       # Frontend chunks from every deployed build (see the frontend_assets
       # volume). Read-only here; only prod-deploy's sync step writes it.
