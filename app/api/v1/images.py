@@ -6,7 +6,6 @@ import math
 import random
 import shutil
 import tempfile
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
@@ -309,45 +308,6 @@ async def _open_report_image_ids(
     return {r[0] for r in rows.all()}
 
 
-@dataclass(frozen=True)
-class _FeedFilters:
-    """The content filters ``list_images`` can apply.
-
-    The *bare* default feed is "every one of these empty" — the only shape the fast
-    hidden-complement count is valid for. Adding a new content filter to ``list_images``
-    means adding a field here and passing it in at the count site; this dataclass is the
-    single source the fast-path consults, so the ``== _FeedFilters()`` check covers any
-    new field automatically (unlike the old hand-listed per-field AND, where a forgotten
-    line silently returned a wrong total).
-
-    Mode/depth params (``tags_mode``, ``tag_depth``, ``*_mode``) are intentionally absent:
-    they only refine an already-set filter and never narrow the bare feed on their own.
-    """
-
-    image_status: list[int] | None = None
-    user_id: int | None = None
-    favorited_by_user_id: int | None = None
-    exclude_user_id: str | None = None
-    exclude_favorited_by_user_id: str | None = None
-    tags: str | None = None
-    exclude_tags: str | None = None
-    missing_tag_types: str | None = None
-    date_from: str | None = None
-    date_to: str | None = None
-    min_width: int | None = None
-    max_width: int | None = None
-    min_height: int | None = None
-    max_height: int | None = None
-    min_rating: float | None = None
-    min_favorites: int | None = None
-    min_num_ratings: int | None = None
-    commenter: int | None = None
-    commentsearch: str | None = None
-    exclude_commenter: str | None = None
-    hascomments: bool | None = None
-    reported: bool | None = None
-
-
 async def _default_feed_total(
     db: AsyncSession,
     current_user: Users | None,
@@ -485,35 +445,7 @@ async def list_images(  # noqa: C901, PLR0912, PLR0915
     # implicit visibility filter), count(visible OR mine) is a full-table scan; use the
     # fast hidden-complement count instead. ANY explicit filter falls back to the exact
     # subquery count.
-    active_filters = _FeedFilters(
-        image_status=filters.image_status,
-        user_id=filters.user_id,
-        favorited_by_user_id=filters.favorited_by_user_id,
-        exclude_user_id=filters.exclude_user_id or None,
-        exclude_favorited_by_user_id=filters.exclude_favorited_by_user_id or None,
-        tags=filters.tags or None,
-        exclude_tags=filters.exclude_tags or None,
-        missing_tag_types=filters.missing_tag_types or None,
-        date_from=filters.date_from,
-        date_to=filters.date_to,
-        min_width=filters.min_width,
-        max_width=filters.max_width,
-        min_height=filters.min_height,
-        max_height=filters.max_height,
-        min_rating=filters.min_rating,
-        min_favorites=filters.min_favorites,
-        min_num_ratings=filters.min_num_ratings,
-        commenter=filters.commenter,
-        commentsearch=filters.commentsearch,
-        exclude_commenter=filters.exclude_commenter or None,
-        hascomments=filters.hascomments,
-        reported=filter_query.apply_reported or None,
-    )
-    # Bare feed = every content filter empty. One comparison, so a field added to
-    # _FeedFilters is covered automatically. Falsy strings (e.g. tags="") normalize to
-    # None so an empty filter param still reads as "no filter", matching the old `not x`.
-    is_bare_default_feed = active_filters == _FeedFilters()
-    if is_bare_default_feed:
+    if not filter_query.has_content_filters:
         total = await _default_feed_total(db, current_user, redis_client)
     else:
         if filter_query.decompose_count and current_user is not None:
@@ -1745,9 +1677,14 @@ async def get_image_neighbors(
     filter_query = await build_image_filter_query(
         db, filters, current_user, redis_client, seekable=True
     )
+    timeout_seconds = settings.IMAGE_NEIGHBORS_TIMEOUT_SECONDS
+    if filters.commentsearch is not None:
+        # The listing allows a comment search this long per statement, and the last
+        # result's "nothing follows" costs about what the listing's count does.
+        timeout_seconds = max(timeout_seconds, COMMENT_SEARCH_TIMEOUT_SECONDS)
     try:
         prev_image_id, next_image_id = await find_neighbors(
-            db, filter_query.query, image, sorting, settings.IMAGE_NEIGHBORS_TIMEOUT_SECONDS
+            db, filter_query.query, image, sorting, timeout_seconds
         )
     except NeighborsTimeoutError:
         logger.warning("image_neighbors_timeout", image_id=image_id)

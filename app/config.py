@@ -246,7 +246,8 @@ class Settings(BaseSettings):
     IMAGE_NEIGHBORS_TIMEOUT_SECONDS: float = Field(
         default=2.0,
         ge=0.001,
-        description="Per-statement limit for finding the previous/next result of a search",
+        description="Limit for finding the previous/next result of a search, "
+        "across every statement the lookup runs",
     )
     SIMILARITY_CHECK_RATE_LIMIT: int = 5  # Max similarity checks per user per minute
     FORUM_CREATE_RATE_LIMIT: int = Field(

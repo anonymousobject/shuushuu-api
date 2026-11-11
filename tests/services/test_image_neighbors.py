@@ -156,6 +156,45 @@ async def test_timeout_raises_neighbors_timeout_error(db_session, test_user):
     assert count.scalar() == 8
 
 
+async def test_timeout_bounds_the_whole_lookup_not_each_statement(db_session, test_user):
+    """Four statements of 0.2s each fit a 0.5s limit one by one, but not together."""
+    images = await _create_images(db_session, test_user.user_id, ImageSortBy.favorites)
+    # An uncorrelated subquery runs once per statement, however many rows it scans.
+    each_sleeps = select(Images).where(text("(SELECT pg_sleep(0.2) IS NOT NULL)"))
+    # favorites=1 is the lowest value and untied: tie and beyond statements on both sides.
+    lowest = images[3]
+
+    with pytest.raises(NeighborsTimeoutError):
+        await find_neighbors(
+            db_session, each_sleeps, lowest, _sorting(ImageSortBy.favorites, "DESC"), 0.5
+        )
+
+    assert await _plan_cache_mode(db_session) == "auto"
+    assert (await db_session.execute(text("SELECT 1"))).scalar() == 1
+
+
+async def test_spent_budget_times_out_without_running_a_statement(db_session, test_user):
+    images = await _create_images(db_session, test_user.user_id, ImageSortBy.favorites)
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    sync_engine = db_session.bind.sync_engine  # type: ignore[union-attr]
+    event.listen(sync_engine, "before_cursor_execute", record)
+    try:
+        with pytest.raises(NeighborsTimeoutError):
+            await find_neighbors(
+                db_session, select(Images), images[0], _sorting(ImageSortBy.favorites, "DESC"), 0.0
+            )
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", record)
+
+    assert not [s for s in statements if "FROM images" in s]
+    assert await _plan_cache_mode(db_session) == "auto"
+    assert await _statement_timeout(db_session) == "0"
+
+
 async def _executed_statements(
     db_session: AsyncSession, user_id: int, sort_by: ImageSortBy, sort_order: str
 ):

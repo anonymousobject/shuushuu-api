@@ -36,8 +36,7 @@ class ImageFilterParams:
 
     Use as ``Annotated[ImageFilterParams, Depends()]``: each field is one query
     parameter. Pagination, sorting and ``include_comments`` are not filters and stay on
-    the endpoint. A new filter also needs a ``_FeedFilters`` field in
-    app/api/v1/images.py, or the bare-feed fast count ignores it.
+    the endpoint.
     """
 
     # Basic filters
@@ -148,8 +147,8 @@ class ImageFilterParams:
     def __post_init__(self) -> None:
         # A blank/whitespace-only commentsearch means "not searching," not "search for
         # nothing" -- normalize it to None up front so it reads as absent everywhere
-        # after: the comment-filter EXISTS guard in build_image_filter_query and the
-        # _FeedFilters entry in list_images both key off `commentsearch is not None`.
+        # after: the comment-filter EXISTS guard in build_image_filter_query and
+        # list_images' search timeout both key off `commentsearch is not None`.
         if self.commentsearch is not None and not self.commentsearch.strip():
             self.commentsearch = None
         # Rejected here, while FastAPI resolves dependencies, so the 400 precedes
@@ -164,13 +163,16 @@ class ImageFilterQuery:
 
     ``decompose_count`` marks the default logged-in feed, whose count splits into a
     shared public term and a per-viewer own-hidden term. ``apply_reported`` is whether
-    the ``reported`` filter ran (REPORT_VIEW viewers only).
+    the ``reported`` filter ran (REPORT_VIEW viewers only). ``has_content_filters``
+    is False for the bare feed: ``content_query`` is every image, and only the
+    visibility clauses narrow it.
     """
 
     content_query: Select[Any]
     visibility_clauses: list[ColumnElement[bool]]
     decompose_count: bool
     apply_reported: bool
+    has_content_filters: bool
 
     @property
     def query(self) -> Select[Any]:
@@ -267,8 +269,10 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
 
     Raises HTTPException(400) for an invalid tag list, user list, tag type or date.
     """
-    # Build base query
-    query = select(Images)
+    # Build base query. Every filter below replaces `query` with a narrowed copy, so
+    # it is still this object at the end only if no filter applied.
+    unfiltered = select(Images)
+    query = unfiltered
 
     # Apply basic filters
     if filters.user_id is not None:
@@ -581,4 +585,5 @@ async def build_image_filter_query(  # noqa: C901, PLR0912, PLR0915
         visibility_clauses=visibility_clauses,
         decompose_count=decompose_count,
         apply_reported=apply_reported,
+        has_content_filters=query is not unfiltered,
     )

@@ -12,6 +12,7 @@ NULL sorts as the largest value (Postgres's default): first under DESC, last
 under ASC.
 """
 
+import time
 from typing import Any
 
 from sqlalchemy import Select, asc, desc
@@ -20,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from app.api.dependencies import ImageSortParams
-from app.core.database import force_custom_plans, statement_timeout
+from app.core.database import force_custom_plans, set_statement_timeout, statement_timeout
 from app.models.image import Images
 from app.services.image_filters import (
     SEEK_LOWER_PARAM,
@@ -34,7 +35,7 @@ QUERY_CANCELED_SQLSTATE = "57014"
 
 
 class NeighborsTimeoutError(Exception):
-    """Finding the adjacent results ran past the statement timeout."""
+    """Finding the adjacent results ran past its time limit."""
 
 
 def _less_than(column: Any, value: Any) -> Any:
@@ -70,13 +71,19 @@ async def _first_id(
     *clauses: Any,
     order_by: tuple[Any, ...],
     link_bounds: dict[str, int],
+    deadline: float,
 ) -> int | None:
+    # The server's limit is per statement, so each one gets what is left of the lookup's.
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise NeighborsTimeoutError
+    await set_statement_timeout(db, remaining)
     statement = (
         query.where(*clauses).order_by(*order_by).with_only_columns(col(Images.image_id)).limit(1)
     )
     # `link_bounds` must be this statement's own range on images.image_id (see _past).
     # A query without the seek parameters ignores them.
-    return (await db.execute(statement.params(link_bounds))).scalar()
+    return (await db.execute(statement, link_bounds)).scalar()
 
 
 async def _find_side(
@@ -86,6 +93,7 @@ async def _find_side(
     value: Any,
     current_id: int,
     sorting: ImageSortParams,
+    deadline: float,
     *,
     is_next: bool,
 ) -> int | None:
@@ -98,7 +106,13 @@ async def _find_side(
         tied = column.is_(None) if value is None else column == value
         id_clause, link_bounds = _past(id_column, current_id, greater=not is_next)
         found = await _first_id(
-            db, query, tied, id_clause, order_by=(id_order,), link_bounds=link_bounds
+            db,
+            query,
+            tied,
+            id_clause,
+            order_by=(id_order,),
+            link_bounds=link_bounds,
+            deadline=deadline,
         )
         if found is not None:
             return found
@@ -108,7 +122,12 @@ async def _find_side(
     if not beyond_is_greater:
         clause, link_bounds = _past(column, value, greater=False)
         return await _first_id(
-            db, query, clause, order_by=(desc(column), id_order), link_bounds=link_bounds
+            db,
+            query,
+            clause,
+            order_by=(desc(column), id_order),
+            link_bounds=link_bounds,
+            deadline=deadline,
         )
 
     # NULL is past every value, but `col > v OR col IS NULL` cannot drive an
@@ -118,12 +137,22 @@ async def _find_side(
         return None
     clause, link_bounds = _past(column, value, greater=True)
     found = await _first_id(
-        db, query, clause, order_by=(asc(column), id_order), link_bounds=link_bounds
+        db,
+        query,
+        clause,
+        order_by=(asc(column), id_order),
+        link_bounds=link_bounds,
+        deadline=deadline,
     )
     if found is None and column.expression.nullable:
         # The NULL group has no bound on images.image_id, so neither do its links.
         found = await _first_id(
-            db, query, column.is_(None), order_by=(id_order,), link_bounds=_UNBOUNDED_LINKS
+            db,
+            query,
+            column.is_(None),
+            order_by=(id_order,),
+            link_bounds=_UNBOUNDED_LINKS,
+            deadline=deadline,
         )
     return found
 
@@ -140,30 +169,27 @@ async def find_neighbors(
     `query` is a filtered ``Select`` over ``Images`` with no ordering. "next" is
     the result that follows `image` in the listing's order, "prev" the one before.
 
-    Raises NeighborsTimeoutError when a statement exceeds `timeout_seconds`, and
-    re-raises any other database error as itself; either way the session is rolled
-    back and usable afterwards.
+    `timeout_seconds` bounds the whole lookup, not each of its statements. Raises
+    NeighborsTimeoutError past it, and re-raises any other database error as itself;
+    after a database error the session is rolled back and usable.
     """
     assert image.image_id is not None
     column = sorting.sort_by.get_column(Images)
     value = getattr(image, column.key)
+    deadline = time.monotonic() + timeout_seconds
     # Custom plans: a generic plan (a prepared statement's sixth execution onward)
     # cannot see that the link bounds are often the always-true sentinels, and so
     # reads a popular tag's whole link list.
-    async with statement_timeout(db, timeout_seconds), force_custom_plans(db):
-        try:
+    try:
+        async with statement_timeout(db, timeout_seconds), force_custom_plans(db):
             next_id = await _find_side(
-                db, query, column, value, image.image_id, sorting, is_next=True
+                db, query, column, value, image.image_id, sorting, deadline, is_next=True
             )
             prev_id = await _find_side(
-                db, query, column, value, image.image_id, sorting, is_next=False
+                db, query, column, value, image.image_id, sorting, deadline, is_next=False
             )
-        except DBAPIError as exc:
-            # Roll back before the context managers' cleanup SETs, whatever the
-            # error: they cannot run in a failed transaction, and their failure
-            # would replace this error.
-            await db.rollback()
-            if getattr(exc.orig, "sqlstate", None) != QUERY_CANCELED_SQLSTATE:
-                raise
-            raise NeighborsTimeoutError from exc
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != QUERY_CANCELED_SQLSTATE:
+            raise
+        raise NeighborsTimeoutError from exc
     return prev_id, next_id

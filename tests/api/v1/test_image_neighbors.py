@@ -104,6 +104,31 @@ async def _neighbors(
     return response.json()
 
 
+async def _slow_comment_search(db: AsyncSession) -> Images:
+    """The middle of three images, where `?commentsearch=zzzzqqqq` cannot finish in 1ms.
+
+    Its neighbours carry enough comments that a search for a word none of them
+    contain takes far longer than that, and far less than a second.
+    """
+    owner = await _user(db, "timeout_owner")
+    low, middle, high = await _images(db, owner, [ImageStatus.ACTIVE] * 3)
+    # The posts counter triggers would rewrite each image's row once per
+    # comment, which is what makes a bulk insert crawl; they are not under test.
+    await db.execute(text("ALTER TABLE posts DISABLE TRIGGER USER"))
+    await db.execute(
+        text(
+            "INSERT INTO posts (image_id, user_id, post_text, deleted, update_count, ip) "
+            "SELECT i, :user_id, 'lorem ipsum ' || g, false, 0, '127.0.0.1' "
+            "FROM unnest(CAST(:image_ids AS integer[])) AS i, "
+            "generate_series(1, 100000) AS g"
+        ),
+        {"user_id": owner.user_id, "image_ids": [low.image_id, high.image_id]},
+    )
+    await db.execute(text("ALTER TABLE posts ENABLE TRIGGER USER"))
+    await db.commit()
+    return middle
+
+
 class TestImageNeighbors:
     @pytest.mark.parametrize("sort_order", ["ASC", "DESC"])
     @pytest.mark.parametrize("sort_by", ["image_id", "favorites", "last_post"])
@@ -270,6 +295,19 @@ class TestImageNeighbors:
         assert response.status_code == 400
         assert str(settings.MAX_SEARCH_TAGS) in response.json()["detail"]
 
+    async def test_comment_search_gets_the_listings_limit(
+        self, client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ):
+        """GET /images bounds a comment search by COMMENT_SEARCH_TIMEOUT_SECONDS, so
+        a search the listing can serve must not time out navigating at a tighter limit."""
+        middle = await _slow_comment_search(db_session)
+        monkeypatch.setattr(settings, "IMAGE_NEIGHBORS_TIMEOUT_SECONDS", 0.001)
+
+        assert await _neighbors(client, middle, "commentsearch=zzzzqqqq") == {
+            "prev_image_id": None,
+            "next_image_id": None,
+        }
+
     async def test_timeout_is_504(
         self,
         client: AsyncClient,
@@ -277,25 +315,9 @@ class TestImageNeighbors:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ):
-        owner = await _user(db_session, "timeout_owner")
-        low, middle, high = await _images(db_session, owner, [ImageStatus.ACTIVE] * 3)
-        # Enough comments on the neighbouring images that a comment search for a
-        # word none of them contain cannot finish inside the 1ms limit below.
-        # The posts counter triggers would rewrite each image's row once per
-        # comment, which is what makes a bulk insert crawl; they are not under test.
-        await db_session.execute(text("ALTER TABLE posts DISABLE TRIGGER USER"))
-        await db_session.execute(
-            text(
-                "INSERT INTO posts (image_id, user_id, post_text, deleted, update_count, ip) "
-                "SELECT i, :user_id, 'lorem ipsum ' || g, false, 0, '127.0.0.1' "
-                "FROM unnest(CAST(:image_ids AS integer[])) AS i, "
-                "generate_series(1, 100000) AS g"
-            ),
-            {"user_id": owner.user_id, "image_ids": [low.image_id, high.image_id]},
-        )
-        await db_session.execute(text("ALTER TABLE posts ENABLE TRIGGER USER"))
-        await db_session.commit()
+        middle = await _slow_comment_search(db_session)
         monkeypatch.setattr(settings, "IMAGE_NEIGHBORS_TIMEOUT_SECONDS", 0.001)
+        monkeypatch.setattr("app.api.v1.images.COMMENT_SEARCH_TIMEOUT_SECONDS", 0.001)
 
         with caplog.at_level(logging.INFO):
             response = await client.get(

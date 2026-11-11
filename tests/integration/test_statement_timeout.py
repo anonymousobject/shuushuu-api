@@ -10,8 +10,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import statement_timeout
+from app.core.database import force_custom_plans, statement_timeout
 
+_QUERY_CANCELED = "57014"
+_DIVISION_BY_ZERO = "22012"
 # pg_settings.setting reports statement_timeout in ms as a bare number, which
 # sidesteps parsing the unit-suffixed SHOW output.
 _SLEEP_2 = text("SELECT pg_sleep(2)")
@@ -58,10 +60,23 @@ class TestStatementTimeout:
         A tiny limit is used deliberately: the real 5s ceiling is chosen to never
         fire on legitimate traffic, so provoking it needs an artificial one.
         """
-        with pytest.raises(_TIMEOUT_ERROR):
+        with pytest.raises(_TIMEOUT_ERROR) as raised:
             async with statement_timeout(db_session, 0.05):
                 await db_session.execute(_SLEEP_2)
 
+        # The cancellation itself, not the restore failing in the aborted transaction.
+        assert raised.value.orig.sqlstate == _QUERY_CANCELED  # type: ignore[union-attr]
         # The session is still usable afterwards, and unbounded again.
-        await db_session.rollback()
         assert await _session_limit(db_session) == 0.0
+
+    async def test_a_failure_in_a_nested_block_surfaces_as_itself(self, db_session: AsyncSession):
+        """Whichever statement fails inside, entering an inner block included, the
+        outer block's restore must not replace the error with its own."""
+        with pytest.raises(DBAPIError) as raised:
+            async with statement_timeout(db_session, 5.0), force_custom_plans(db_session):
+                await db_session.execute(text("SELECT 1 / 0"))
+
+        assert raised.value.orig.sqlstate == _DIVISION_BY_ZERO  # type: ignore[union-attr]
+        assert await _session_limit(db_session) == 0.0
+        plan_cache_mode = await db_session.execute(text("SHOW plan_cache_mode"))
+        assert plan_cache_mode.scalar_one() == "auto"
