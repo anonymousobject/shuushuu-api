@@ -268,7 +268,7 @@ services:
     logging: *default-logging
 
   loki:
-    image: grafana/loki:3.3.2
+    image: grafana/loki:3.7.9
     container_name: shuushuu-loki-prod
     user: "10001:10001"  # Loki's default uid; must match volume ownership
     command: -config.file=/etc/loki/loki-config.yaml
@@ -276,8 +276,12 @@ services:
     volumes:
       - ./docker/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - loki_data:/loki
+    # Exec form of Loki's own probe: the image has had no shell and no wget
+    # since 3.5.8, so neither a wget check nor any CMD-SHELL one can run.
+    # grafana and alloy wait on this, so a check that cannot run keeps both
+    # of them from starting.
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      test: ["CMD", "/usr/bin/loki", "-health"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -293,7 +297,7 @@ services:
     logging: *default-logging
 
   grafana:
-    image: grafana/grafana:11.4.0
+    image: grafana/grafana:12.4.15
     container_name: shuushuu-grafana-prod
     ports: !override
       - "127.0.0.1:3001:3000"
@@ -378,7 +382,7 @@ services:
     logging: *default-logging
 
   alloy:
-    image: grafana/alloy:v1.5.1
+    image: grafana/alloy:v1.21.3
     container_name: shuushuu-alloy-prod
     # Alloy runs as its image-default user (uid 473) and stays under the
     # daemon's userns-remap. It does NOT have host docker.sock access; it
