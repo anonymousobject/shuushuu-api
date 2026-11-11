@@ -40,7 +40,7 @@ Runs weekly, on demand, and on pull requests that change the compose file
 
 - Fails on CRITICAL and HIGH findings that have a fix available
 - Uploads SARIF to the GitHub Security tab (not on pull requests)
-- Does not cover the images built from this repo (api, frontend, nginx, iqdb)
+- Does not cover the images built from this repo (api, arq-worker, frontend, nginx, iqdb)
 - Scans what the registry serves for each pinned tag, not the copy prod pulled
 
 ## Key Features
