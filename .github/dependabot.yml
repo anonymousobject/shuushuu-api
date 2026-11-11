@@ -1,0 +1,24 @@
+version: 2
+
+updates:
+  # Dependabot raises no CVE alerts for container images, so version PRs are
+  # the signal here: MediaWiki ships its security fixes as patch releases, and
+  # each one arrives as a PR bumping the pinned tag in docker-compose.prod.yml.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: daily
+    # Only the wiki for now. It is the one third-party web app we expose to
+    # the internet; widen this list to have the other images watched too.
+    allow:
+      - dependency-name: mediawiki
+    ignore:
+      # Stay on the current release branch. Moving to the next one (1.45 ->
+      # 1.46) needs maintenance/update.php run against the wiki database, so
+      # it is a planned upgrade, not a PR to merge. Left unignored, the newer
+      # branch would also be the only bump offered and 1.45.x patch releases
+      # would never show up.
+      - dependency-name: mediawiki
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

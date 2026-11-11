@@ -137,7 +137,7 @@ services:
     logging: *default-logging
 
   mediawiki:
-    image: mediawiki:1.45
+    image: mediawiki:1.45.6
     container_name: shuushuu-mediawiki-prod
     ports: !override []   # nginx fronts it; no host port
     volumes:

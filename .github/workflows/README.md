@@ -29,6 +29,18 @@ Runs on every push and pull request to `main` and `dev` branches.
 
 **Typical run time:** ~3-5 minutes
 
+### **Image Scan** (`image-scan.yml`)
+
+Trivy scan of the MediaWiki image pinned in `docker-compose.prod.yml`.
+
+Runs weekly, on demand, and on pull requests that change the compose file
+(which includes Dependabot's MediaWiki bumps, configured in
+`.github/dependabot.yml`).
+
+- Fails on CRITICAL and HIGH findings that have a fix available
+- Uploads SARIF to the GitHub Security tab (not on pull requests)
+- Scans what Docker Hub serves for the pinned tag, not the copy prod pulled
+
 ## Key Features
 
 ### Required Environment Variables

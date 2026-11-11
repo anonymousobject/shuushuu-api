@@ -1,0 +1,78 @@
+name: Image Scan
+
+# Scans the MediaWiki image pinned in docker-compose.prod.yml for known CVEs.
+# Dependabot (.github/dependabot.yml) only notices new MediaWiki releases; this
+# covers what sits underneath one: the Debian, Apache and PHP layers and the
+# composer packages MediaWiki bundles.
+#
+# It scans the image Docker Hub serves for the pinned tag today. Prod keeps the
+# copy it pulled when the tag last changed, so a clean run here after a base
+# image rebuild does not mean prod has that rebuild.
+
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - docker-compose.prod.yml
+      - .github/workflows/image-scan.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mediawiki:
+    name: MediaWiki image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Read the tag from the compose file so the version lives in one place.
+      - name: Resolve pinned image
+        id: image
+        run: |
+          image=$(grep -oP '^\s*image:\s*\Kmediawiki:\S+' docker-compose.prod.yml)
+          if [ "$(printf '%s\n' "$image" | wc -l)" -ne 1 ] || [ -z "$image" ]; then
+            echo "Expected exactly one mediawiki image in docker-compose.prod.yml, got: '$image'" >&2
+            exit 1
+          fi
+          echo "ref=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Run Trivy (SARIF for the Security tab)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: 'image'
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: 'sarif'
+          output: 'trivy-mediawiki.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+
+      # Pull requests from Dependabot and forks get a read-only token, which
+      # cannot upload; the scheduled run on main is what feeds the Security tab.
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: github.event_name != 'pull_request' && hashFiles('trivy-mediawiki.sarif') != ''
+        with:
+          sarif_file: 'trivy-mediawiki.sarif'
+          category: 'trivy-mediawiki-image'
+
+      # Fails the run so a scheduled scan that finds something sends a
+      # notification. Unfixed CVEs are left out: nothing can be done about them
+      # until Debian ships a fix, and they would keep this permanently red.
+      - name: Run Trivy (fail on fixable CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: 'image'
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '1'
