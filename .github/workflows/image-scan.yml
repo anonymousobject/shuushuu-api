@@ -90,11 +90,15 @@ jobs:
           sarif_file: 'trivy-image.sarif'
           category: ${{ steps.category.outputs.name }}
 
-      # Fails the run so a scheduled scan that finds something sends a
-      # notification. Unfixed CVEs are left out: nothing can be done about them
-      # until the distribution ships a fix, and they would keep this
-      # permanently red.
-      - name: Run Trivy (fail on fixable CRITICAL/HIGH)
+      # Fails the scheduled and manual runs so a scan that finds something
+      # sends a notification. Unfixed CVEs are left out: nothing can be done
+      # about them until the distribution ships a fix, and they would keep
+      # this permanently red.
+      #
+      # On pull requests it only reports. The findings belong to the images,
+      # not to the change under review, so failing there put the same red
+      # marks on every PR that touched the compose file.
+      - name: Run Trivy (report fixable CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: 'image'
@@ -102,4 +106,4 @@ jobs:
           format: 'table'
           severity: 'CRITICAL,HIGH'
           ignore-unfixed: true
-          exit-code: '1'
+          exit-code: ${{ github.event_name == 'pull_request' && '0' || '1' }}
