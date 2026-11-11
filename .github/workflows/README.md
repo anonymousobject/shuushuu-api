@@ -31,7 +31,8 @@ Runs on every push and pull request to `main` and `dev` branches.
 
 ### **Image Scan** (`image-scan.yml`)
 
-Trivy scan of the MediaWiki image pinned in `docker-compose.prod.yml`.
+Trivy scan of every image `docker-compose.prod.yml` pulls from a registry, one
+job per image.
 
 Runs weekly, on demand, and on pull requests that change the compose file
 (which includes Dependabot's MediaWiki bumps, configured in
@@ -39,7 +40,8 @@ Runs weekly, on demand, and on pull requests that change the compose file
 
 - Fails on CRITICAL and HIGH findings that have a fix available
 - Uploads SARIF to the GitHub Security tab (not on pull requests)
-- Scans what Docker Hub serves for the pinned tag, not the copy prod pulled
+- Does not cover the images built from this repo (api, frontend, nginx, iqdb)
+- Scans what the registry serves for each pinned tag, not the copy prod pulled
 
 ## Key Features
 
