@@ -80,6 +80,9 @@ jobs:
           format: 'sarif'
           output: 'trivy-image.sarif'
           severity: 'CRITICAL,HIGH'
+          # Without this the action ignores `severity` for SARIF output and
+          # the Security tab receives every severity.
+          limit-severities-for-sarif: true
           ignore-unfixed: true
 
       # Pull requests from Dependabot and forks get a read-only token, which
