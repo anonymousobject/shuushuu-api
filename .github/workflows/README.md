@@ -41,8 +41,24 @@ Runs weekly, on demand, and on pull requests that change the compose file
 - Fails on CRITICAL and HIGH findings that have a fix available, except on
   pull requests, where it lists them in the job log and passes
 - Uploads SARIF to the GitHub Security tab (not on pull requests)
-- Does not cover the images built from this repo (api, arq-worker, frontend, nginx, iqdb)
+- Does not cover the images compose builds; see Image Build below for api and arq-worker
 - Scans what the registry serves for each pinned tag, not the copy prod pulled
+
+### **Image Build** (`image-build.yml`)
+
+Builds the api image (arq-worker runs the same one) from `Dockerfile`, scans it
+with Trivy, and on merges to `main` pushes it to
+`ghcr.io/anonymousobject/shuushuu-api`, tagged with the full commit SHA and
+`main`.
+
+Runs on every push to `main`, weekly, on demand, and on pull requests that
+change the Dockerfile or the dependencies.
+
+- Prod does not pull these images yet; `make prod-deploy` still builds on the host
+- Fails on fixable CRITICAL and HIGH findings on the weekly and manual runs only;
+  pull requests and merges list them in the job log and pass
+- Uploads SARIF to the GitHub Security tab (not on pull requests)
+- Does not cover frontend (built from the frontend repo), nginx or iqdb
 
 ## Key Features
 
