@@ -34,6 +34,12 @@ _INDEXES = {
     "idx_favorites_image_id": "(favorites, image_id)",
     "idx_favorites_image_id_desc": "(favorites, image_id DESC)",
 }
+# Single-column indexes each composite makes redundant, which 0009 drops.
+_REPLACED = {
+    "idx_last_post": "(last_post)",
+    "idx_bayesian_rating": "(bayesian_rating)",
+    "idx_favorites": "(favorites)",
+}
 # Two images with the same favorites, so a UNIQUE build on favorites fails.
 _INSERT_IMAGE = (
     "INSERT INTO images (filename, ext, md5_hash, filesize, width, height, caption, status,"
@@ -55,7 +61,7 @@ async def _database_at_previous_revision() -> tuple[str, AsyncEngine]:
 
 
 async def _indexes(engine: AsyncEngine) -> dict[str, tuple[bool, str]]:
-    """{name: (indisvalid, indexdef)} for the 0009 index names on images."""
+    """{name: (indisvalid, indexdef)} for the indexes on images that 0009 builds or drops."""
     async with engine.connect() as conn:
         rows = await conn.execute(
             text(
@@ -63,7 +69,7 @@ async def _indexes(engine: AsyncEngine) -> dict[str, tuple[bool, str]]:
                 " FROM pg_index ix JOIN pg_class c ON c.oid = ix.indexrelid"
                 " WHERE ix.indrelid = 'images'::regclass AND c.relname = ANY(:names)"
             ),
-            {"names": list(_INDEXES)},
+            {"names": [*_INDEXES, *_REPLACED]},
         )
         return {name: (valid, definition) for name, valid, definition in rows}
 
@@ -103,12 +109,52 @@ async def test_upgrade_rebuilds_an_index_a_failed_concurrent_build_left_invalid(
         await engine.dispose()
 
 
-async def test_upgrade_fails_rather_than_record_an_index_it_could_not_build():
+def _alembic_downgrade(url: str, revision: str) -> None:
+    result = subprocess.run(
+        ["uv", "run", "alembic", "downgrade", revision],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "ALEMBIC_DB_URL": url},
+    )
+    assert result.returncode == 0, f"alembic downgrade {revision} failed:\n{result.stderr}"
+
+
+async def test_upgrade_drops_the_indexes_the_composites_replace_and_downgrade_restores_them():
     url, engine = await _database_at_previous_revision()
     try:
-        # The name is taken by an index on another table, so IF NOT EXISTS skips it.
+        assert sorted(await _indexes(engine)) == sorted(_REPLACED)
+
+        _alembic_upgrade(url, "head")
+        assert sorted(await _indexes(engine)) == sorted(_INDEXES)
+
+        _alembic_downgrade(url, _PREVIOUS_REVISION)
+        indexes = await _indexes(engine)
+        assert sorted(indexes) == sorted(_REPLACED)
+        for name, definition in _REPLACED.items():
+            valid, indexdef = indexes[name]
+            assert valid, name
+            assert indexdef == f"CREATE INDEX {name} ON public.images USING btree {definition}"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "squatter",
+    [
+        # On another table.
+        "CREATE INDEX idx_last_post_image_id ON tags (tag_id)",
+        # On images and valid, but not the index 0009 means: other column order...
+        "CREATE INDEX idx_last_post_image_id ON images (last_post DESC, image_id)",
+        # ...or partial.
+        "CREATE INDEX idx_last_post_image_id ON images (last_post, image_id) WHERE status = 1",
+    ],
+)
+async def test_upgrade_fails_rather_than_record_an_index_it_could_not_build(squatter: str):
+    url, engine = await _database_at_previous_revision()
+    try:
+        # The name is taken by some other index, so IF NOT EXISTS skips it.
         async with engine.connect() as conn:
-            await conn.execute(text("CREATE INDEX idx_last_post_image_id ON tags (tag_id)"))
+            await conn.execute(text(squatter))
 
         result = subprocess.run(
             ["uv", "run", "alembic", "upgrade", "head"],
@@ -120,6 +166,8 @@ async def test_upgrade_fails_rather_than_record_an_index_it_could_not_build():
         assert result.returncode != 0
         assert "idx_last_post_image_id" in result.stderr
         assert await _revision(engine) == _PREVIOUS_REVISION
+        # Nothing is dropped until every replacement is in place.
+        assert set(_REPLACED) <= set(await _indexes(engine))
     finally:
         await engine.dispose()
 
@@ -139,3 +187,5 @@ def test_offline_sql_still_renders_the_builds():
             f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON images {definition}"
             in result.stdout
         )
+    for name in _REPLACED:
+        assert f"DROP INDEX CONCURRENTLY IF EXISTS {name}" in result.stdout
