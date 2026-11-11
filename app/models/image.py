@@ -17,7 +17,7 @@ from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict, field_validator
-from sqlalchemy import Column, ForeignKeyConstraint, Index, text
+from sqlalchemy import Column, ForeignKeyConstraint, Index, desc, text
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.config import ImageStatus
@@ -202,10 +202,7 @@ class Images(ImageBase, table=True):
         Index("fk_images_replacement_id", "replacement_id"),
         Index("fk_images_status_user_id", "status_user_id"),
         Index("fk_images_user_id", "user_id"),
-        Index("idx_bayesian_rating", "bayesian_rating"),
-        Index("idx_favorites", "favorites"),
         Index("idx_filename", "filename"),
-        Index("idx_last_post", "last_post"),
         Index("idx_posts", "posts"),
         Index("idx_status", "status"),
         Index("idx_top_images", "num_ratings"),
@@ -214,6 +211,11 @@ class Images(ImageBase, table=True):
         Index("idx_images_has_source", "has_source", "image_id"),
         Index("idx_images_has_artist", "has_artist", "image_id"),
         Index("idx_images_has_character", "has_character", "image_id"),
+        Index("idx_last_post_image_id", "last_post", "image_id"),
+        Index("idx_bayesian_rating_image_id", "bayesian_rating", "image_id"),
+        Index("idx_bayesian_rating_image_id_desc", "bayesian_rating", desc("image_id")),
+        Index("idx_favorites_image_id", "favorites", "image_id"),
+        Index("idx_favorites_image_id_desc", "favorites", desc("image_id")),
     )
 
     # Primary key

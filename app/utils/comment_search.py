@@ -141,8 +141,9 @@ def apply_comment_text_search(query: Select[Any], raw: str, mode: str | None) ->
     together).
 
     Callers are expected to skip calling this at all for a blank/whitespace-only
-    `raw` -- that means "not searching," not "search for nothing" (see the
-    `commentsearch`/`search_text` guards in images.py/comments.py). A non-blank
+    `raw` -- that means "not searching," not "search for nothing" (see
+    `ImageFilterParams.__post_init__` in app/services/image_filters.py for
+    `commentsearch`, and the `search_text` guard in comments.py). A non-blank
     `raw` that still has nothing searchable (e.g. "!!!") is a query the user typed
     that can never match a comment, so it returns zero rows rather than silently
     falling back to "no filter."

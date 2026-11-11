@@ -6,8 +6,7 @@ import math
 import random
 import shutil
 import tempfile
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
 from typing import Annotated, Any
@@ -26,9 +25,9 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse, Response
-from sqlalchemy import ColumnElement, and_, asc, delete, desc, func, or_, select
+from sqlalchemy import and_, asc, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload, load_only, selectinload
 
 from app.api.dependencies import (
     ImageRatingsSortParams,
@@ -36,7 +35,6 @@ from app.api.dependencies import (
     PaginationParams,
     UserSortParams,
 )
-from app.api.v1.tags import get_tag_hierarchy, resolve_tag_alias
 from app.config import (
     AdminActionType,
     DeactivationReason,
@@ -64,7 +62,6 @@ from app.core.redis import RedisClient, get_redis
 from app.core.user_loader import image_uploader_load
 from app.models import (
     AdminActions,
-    Comments,
     Favorites,
     ImageRatings,
     ImageReports,
@@ -101,6 +98,7 @@ from app.schemas.image import (
     ImageDetailedListResponse,
     ImageDetailedResponse,
     ImageHashSearchResponse,
+    ImageNeighborsResponse,
     ImageResponse,
     ImageStatsResponse,
     ImageTagItem,
@@ -138,7 +136,9 @@ from app.services.feed_response_cache import (
     feed_response_key,
     get_cached_feed_response,
 )
+from app.services.image_filters import ImageFilterParams, build_image_filter_query
 from app.services.image_metadata_history import build_metadata_history
+from app.services.image_neighbors import NeighborsTimeoutError, find_neighbors
 from app.services.image_processing import (
     create_thumbnail,
     get_image_dimensions,
@@ -153,6 +153,7 @@ from app.services.rate_limit import check_similarity_rate_limit
 from app.services.rating import RatingStats, recalculate_image_ratings
 from app.services.recommendations import get_recommended_images
 from app.services.tag_context import stamp_context_sources
+from app.services.tag_hierarchy import resolve_tag_alias
 from app.services.tag_type_flags import refresh_image_tag_type_flags
 from app.services.upload import (
     check_upload_rate_limit,
@@ -163,8 +164,6 @@ from app.services.upload import (
 from app.tasks.queue import enqueue_job
 from app.utils.comment_search import (
     COMMENT_SEARCH_TIMEOUT_SECONDS,
-    apply_comment_text_search,
-    reject_unindexable_comment_search,
 )
 
 logger = get_logger(__name__)
@@ -309,93 +308,6 @@ async def _open_report_image_ids(
     return {r[0] for r in rows.all()}
 
 
-@dataclass(frozen=True)
-class _FeedFilters:
-    """The content filters ``list_images`` can apply.
-
-    The *bare* default feed is "every one of these empty" — the only shape the fast
-    hidden-complement count is valid for. Adding a new content filter to ``list_images``
-    means adding a field here and passing it in at the count site; this dataclass is the
-    single source the fast-path consults, so the ``== _FeedFilters()`` check covers any
-    new field automatically (unlike the old hand-listed per-field AND, where a forgotten
-    line silently returned a wrong total).
-
-    Mode/depth params (``tags_mode``, ``tag_depth``, ``*_mode``) are intentionally absent:
-    they only refine an already-set filter and never narrow the bare feed on their own.
-    """
-
-    image_status: list[int] | None = None
-    user_id: int | None = None
-    favorited_by_user_id: int | None = None
-    exclude_user_id: str | None = None
-    exclude_favorited_by_user_id: str | None = None
-    tags: str | None = None
-    exclude_tags: str | None = None
-    missing_tag_types: str | None = None
-    date_from: str | None = None
-    date_to: str | None = None
-    min_width: int | None = None
-    max_width: int | None = None
-    min_height: int | None = None
-    max_height: int | None = None
-    min_rating: float | None = None
-    min_favorites: int | None = None
-    min_num_ratings: int | None = None
-    commenter: int | None = None
-    commentsearch: str | None = None
-    exclude_commenter: str | None = None
-    hascomments: bool | None = None
-    reported: bool | None = None
-
-
-def _parse_user_id_list(raw: str | None, param: str) -> list[int]:
-    """Parse a comma-separated user-id list param (``exclude_user_id`` etc.).
-
-    isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
-    Capped at MAX_SEARCH_USERS to bound the NOT IN list, mirroring the tags cap.
-    """
-    if not raw:
-        return []
-    ids = [int(tok.strip()) for tok in raw.split(",") if tok.strip().isdecimal()]
-    if len(ids) > settings.MAX_SEARCH_USERS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"You can only exclude up to {settings.MAX_SEARCH_USERS} users at a time"
-            f" ({param}).",
-        )
-    return ids
-
-
-def _linked_to(link_model: type[Any], *predicates: ColumnElement[bool]) -> ColumnElement[bool]:
-    """EXISTS semi-join: images with at least one `link_model` row matching `predicates`.
-
-    ``correlate(Images)`` pins correlation to just the outer ``Images`` row: some
-    callers also JOIN `link_model` for an include-side filter in the same query
-    (e.g. ``favorited_by_user_id`` + ``exclude_favorited_by_user_id``), and without
-    this, SQLAlchemy's auto-correlation sees `link_model` in both places and drops
-    it from this subquery's FROM entirely, producing an empty, table-less EXISTS.
-    """
-    return (
-        select(link_model.image_id)
-        .where(link_model.image_id == Images.image_id, *predicates)
-        .correlate(Images)
-        .exists()
-    )
-
-
-def _not_linked_to(link_model: type[Any], *predicates: ColumnElement[bool]) -> ColumnElement[bool]:
-    """NOT EXISTS anti-join: images with no `link_model` row matching `predicates`.
-
-    Postgres can only hash a NOT IN (subquery) when it fits in work_mem (4MB); a
-    popular tag's tag_links rows (717k for one tag) overflow that and the planner
-    falls back to a per-row Materialize scan that never finishes (#394). NOT EXISTS
-    always plans as a hash anti-join regardless of subquery size.
-
-    See `_linked_to` for why the EXISTS is correlated explicitly.
-    """
-    return ~_linked_to(link_model, *predicates)
-
-
 async def _default_feed_total(
     db: AsyncSession,
     current_user: Users | None,
@@ -412,7 +324,7 @@ async def _default_feed_total(
 
     The two global counts come from a short-TTL cache (they lag a mutation by at most the
     TTL); the per-viewer ``own hidden`` slice is tiny and queried live. Branches mirror
-    the visibility filter in list_images exactly:
+    the visibility filter in build_image_filter_query exactly:
     show_all_images=1 => no filter; anonymous => public only; otherwise public + own.
     """
     total_all, hidden_count, repost_count = await get_feed_counts(db, redis_client)
@@ -452,118 +364,13 @@ async def _default_feed_total(
 @router.get("/", response_model=ImageDetailedListResponse, include_in_schema=False)
 @router.get("", response_model=ImageDetailedListResponse)
 async def list_images(  # noqa: C901, PLR0912, PLR0915
+    filters: Annotated[ImageFilterParams, Depends()],
     pagination: Annotated[PaginationParams, Depends()],
     sorting: Annotated[ImageSortParams, Depends()],
-    # Basic filters
     db: DbSession,
     current_user: OptionalCurrentUser,
     redis_client: RedisClient,
     request: Request,
-    user_id: Annotated[int | None, Query(description="Filter by uploader user ID")] = None,
-    favorited_by_user_id: Annotated[
-        int | None, Query(description="Filter by user who favorited the image")
-    ] = None,
-    exclude_user_id: Annotated[
-        str | None,
-        Query(description="Comma-separated user IDs whose uploads to exclude (e.g., '5,6')"),
-    ] = None,
-    exclude_favorited_by_user_id: Annotated[
-        str | None,
-        Query(description="Comma-separated user IDs; exclude images any of them favorited"),
-    ] = None,
-    image_status: Annotated[
-        list[int] | None,
-        Query(
-            description="Filter by status (1=active, 2=spoiler, etc). Repeat for multiple.",
-            alias="status",
-        ),
-    ] = None,
-    # Tag filtering
-    tags: Annotated[
-        str | None, Query(description="Comma-separated tag IDs (e.g., '1,2,3')")
-    ] = None,
-    tags_mode: Annotated[
-        str, Query(pattern="^(any|all)$", description="Match ANY or ALL tags")
-    ] = "any",
-    tag_depth: Annotated[
-        int | None,
-        Query(
-            ge=0,
-            le=9,
-            description="How many levels of child tags to include. "
-            "0=exact tag only, 1=tag+direct children, ..., 9=up to 9 levels. "
-            "Omit for full hierarchy.",
-        ),
-    ] = None,
-    exclude_tags: Annotated[
-        str | None, Query(description="Comma-separated tag IDs to exclude (e.g., '4,5,6')")
-    ] = None,
-    exclude_descendants: Annotated[
-        bool,
-        Query(
-            description="When true, each excluded tag also excludes its child tags "
-            "(its full hierarchy). Default false (exact-match exclusion)."
-        ),
-    ] = False,
-    missing_tag_types: Annotated[
-        str | None,
-        Query(
-            description="Comma-separated tag type IDs the image must be MISSING "
-            "(1=Theme, 2=Source, 3=Artist, 4=Character)."
-        ),
-    ] = None,
-    missing_tag_types_mode: Annotated[
-        str, Query(pattern="^(any|all)$", description="Match ANY or ALL missing types")
-    ] = "any",
-    # Date filtering
-    date_from: Annotated[str | None, Query(description="Start date (YYYY-MM-DD)")] = None,
-    date_to: Annotated[str | None, Query(description="End date (YYYY-MM-DD)")] = None,
-    # Size filtering
-    min_width: Annotated[int | None, Query(ge=1, description="Minimum width in pixels")] = None,
-    max_width: Annotated[int | None, Query(ge=1, description="Maximum width in pixels")] = None,
-    min_height: Annotated[int | None, Query(ge=1, description="Minimum height in pixels")] = None,
-    max_height: Annotated[int | None, Query(ge=1, description="Maximum height in pixels")] = None,
-    # Rating filtering
-    min_rating: Annotated[
-        float | None, Query(ge=1, le=10, description="Minimum rating (1-10)")
-    ] = None,
-    min_favorites: Annotated[int | None, Query(ge=0, description="Minimum favorite count")] = None,
-    min_num_ratings: Annotated[
-        int | None, Query(ge=0, description="Minimum number of ratings")
-    ] = None,
-    # Comment filtering
-    commenter: Annotated[
-        int | None, Query(description="Filter by user who commented on the image")
-    ] = None,
-    exclude_commenter: Annotated[
-        str | None,
-        Query(description="Comma-separated user IDs; exclude images any of them commented on"),
-    ] = None,
-    commentsearch: Annotated[
-        str | None, Query(description="Substring search in comment text")
-    ] = None,
-    commentsearch_mode: Annotated[
-        str | None,
-        Query(
-            pattern="^(all_words|natural|boolean|like)$",
-            description=(
-                "Search mode: all_words (default, every term required), "
-                "like (whole string as one substring); natural and boolean "
-                "are accepted and behave as all_words"
-            ),
-        ),
-    ] = None,
-    hascomments: Annotated[
-        bool | None,
-        Query(description="Filter to images that have comments (true) or no comments (false)"),
-    ] = None,
-    reported: Annotated[
-        bool | None,
-        Query(
-            description="Filter to images with a pending report. Requires report_view; "
-            "ignored for other viewers."
-        ),
-    ] = None,
     include_comments: Annotated[
         bool,
         Query(
@@ -619,14 +426,6 @@ async def list_images(  # noqa: C901, PLR0912, PLR0915
     - `/images?exclude_commenter=10` - Hide images user 10 commented on
     - `/images?exclude_favorited_by_user_id=7` - Hide images user 7 favorited
     """
-    # A blank/whitespace-only commentsearch means "not searching," not "search for
-    # nothing" -- normalize it to None up front so it reads as absent everywhere
-    # below: the comment-filter EXISTS guard and the _FeedFilters entry both key
-    # off `commentsearch is not None`.
-    if commentsearch is not None and not commentsearch.strip():
-        commentsearch = None
-    if commentsearch is not None:
-        reject_unindexable_comment_search(commentsearch, commentsearch_mode)
     # Logged-out responses depend only on the query string, so serve them from cache.
     feed_cache_key = feed_response_key(request)
     if current_user is None:
@@ -636,339 +435,20 @@ async def list_images(  # noqa: C901, PLR0912, PLR0915
     # Only the comment-text path can degrade to an unindexed scan, so only it
     # carries the bound; every other filter here is index-backed. None elsewhere
     # makes statement_timeout a no-op, leaving the fast paths untouched.
-    search_timeout = COMMENT_SEARCH_TIMEOUT_SECONDS if commentsearch is not None else None
+    search_timeout = COMMENT_SEARCH_TIMEOUT_SECONDS if filters.commentsearch is not None else None
 
-    # Build base query
-    query = select(Images)
-
-    # Apply basic filters
-    if user_id is not None:
-        query = query.where(Images.user_id == user_id)  # type: ignore[arg-type]
-    exclude_user_ids = _parse_user_id_list(exclude_user_id, "exclude_user_id")
-    if exclude_user_ids:
-        query = query.where(Images.user_id.notin_(exclude_user_ids))  # type: ignore[attr-defined]
-    if favorited_by_user_id is not None:
-        # Join with Favorites table to filter by user who favorited
-        query = query.join(Favorites).where(Favorites.user_id == favorited_by_user_id)  # type: ignore[arg-type]
-    exclude_favorited_ids = _parse_user_id_list(
-        exclude_favorited_by_user_id, "exclude_favorited_by_user_id"
-    )
-    if exclude_favorited_ids:
-        query = query.where(
-            _not_linked_to(
-                Favorites,
-                Favorites.user_id.in_(exclude_favorited_ids),  # type: ignore[attr-defined]
-            )
-        )
-    # Status filtering: explicit param overrides, otherwise use user's show_all_images
-    # setting. Visibility clauses are COLLECTED here, not applied: the count path below
-    # decomposes the default logged-in feed into a shared public term plus a per-viewer
-    # own-hidden term, which needs the content filters without the visibility WHERE.
-    # They are applied to `query` right after the last content filter.
-    visibility_clauses = []
-    decompose_count = False
-    if image_status is not None:
-        # Explicit status filter - always honor it (supports single or multiple values)
-        query = query.where(Images.status.in_(image_status))  # type: ignore[attr-defined]
-        if current_user is None:
-            # Anonymous users may never see non-public statuses, even when requested
-            # explicitly — otherwise ?status=0/-2/-4 enumerates deactivated /
-            # inappropriate / review-queue image metadata. Authenticated users retain
-            # full explicit-status access (policy decision 2026-07-12).
-            visibility_clauses.append(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
-    else:
-        # No explicit filter - apply default based on user's show_all_images setting
-        # Anonymous users or users with show_all_images=0 see only public statuses
-        show_all = current_user is not None and current_user.show_all_images == 1
-        if not show_all:
-            if current_user is not None:
-                # Logged in: show public statuses OR user's own images (any status)
-                visibility_clauses.append(
-                    or_(
-                        Images.status.in_(PUBLIC_IMAGE_STATUSES),  # type: ignore[attr-defined]
-                        Images.user_id == current_user.user_id,  # type: ignore[arg-type]
-                    )
-                )
-                decompose_count = current_user.user_id is not None
-            else:
-                # Anonymous: only public statuses
-                visibility_clauses.append(Images.status.in_(PUBLIC_IMAGE_STATUSES))  # type: ignore[attr-defined]
-
-        # hide_reposts preference — applied in the no-explicit-status branch, outside the
-        # show_all sub-block so it covers both show_all=0 and show_all=1. This is a global
-        # exclusion (not ownership-aware), so the viewer's own reposts are dropped too.
-        # An explicit ?status= takes the other branch and overrides this.
-        if current_user is not None and current_user.hide_reposts == 1:
-            visibility_clauses.append(Images.status != ImageStatus.REPOST)
-
-    # Tag filtering
-    tag_ids: list[int] = []
-    if tags:
-        # isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
-        tag_ids = [int(tid.strip()) for tid in tags.split(",") if tid.strip().isdecimal()]
-        if len(tag_ids) > settings.MAX_SEARCH_TAGS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"You can only search for up to {settings.MAX_SEARCH_TAGS} tags at a time.",
-            )
-        if tag_ids:
-            # Map tag_depth to max_depth for the CTE query
-            # tag_depth=0 → max_depth=1 (root only), tag_depth=1 → max_depth=2, etc.
-            # None → default (10, full hierarchy)
-            hierarchy_max_depth = tag_depth + 1 if tag_depth is not None else 10
-
-            if tags_mode == "all":
-                # Images must have ALL specified tags (including their descendants)
-                for tag_id in tag_ids:
-                    _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
-                    # Expand hierarchy to configured depth
-                    hierarchy_ids = await get_tag_hierarchy(
-                        db, resolved_tag_id, max_depth=hierarchy_max_depth
-                    )
-                    query = query.where(
-                        Images.image_id.in_(  # type: ignore[union-attr]
-                            select(TagLinks.image_id).where(TagLinks.tag_id.in_(hierarchy_ids))  # type: ignore[call-overload,attr-defined]
-                        )
-                    )
-            else:
-                # Images must have ANY of the specified tags (including their descendants)
-                # Resolve aliases and expand hierarchies for all tags
-                all_hierarchy_ids: set[int] = set()
-                for tag_id in tag_ids:
-                    _, resolved_tag_id = await resolve_tag_alias(db, tag_id)
-                    hierarchy_ids = await get_tag_hierarchy(
-                        db, resolved_tag_id, max_depth=hierarchy_max_depth
-                    )
-                    all_hierarchy_ids.update(hierarchy_ids)
-                query = query.where(
-                    Images.image_id.in_(  # type: ignore[union-attr]
-                        select(TagLinks.image_id).where(TagLinks.tag_id.in_(all_hierarchy_ids))  # type: ignore[call-overload,attr-defined]
-                    )
-                )
-
-    # Exclude tag filtering. Exact match by default; with exclude_descendants the
-    # excluded tag's whole subtree is removed too (mirrors the include-side hierarchy).
-    if exclude_tags:
-        # isdecimal() (not isdigit()): int() rejects chars like '²' that isdigit() matches.
-        exclude_tag_ids = [
-            int(tid.strip()) for tid in exclude_tags.split(",") if tid.strip().isdecimal()
-        ]
-        if exclude_tag_ids:
-            # Enforce shared MAX_SEARCH_TAGS limit across include + exclude
-            total_tag_count = len(tag_ids) + len(exclude_tag_ids)
-            if total_tag_count > settings.MAX_SEARCH_TAGS:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"You can only search for up to {settings.MAX_SEARCH_TAGS} tags at a time.",
-                )
-
-            # Resolve aliases, then optionally expand each to its full subtree.
-            resolved_exclude_ids: set[int] = set()
-            for etid in exclude_tag_ids:
-                _, resolved_etid = await resolve_tag_alias(db, etid)
-                if exclude_descendants:
-                    resolved_exclude_ids.update(await get_tag_hierarchy(db, resolved_etid))
-                else:
-                    resolved_exclude_ids.add(resolved_etid)
-
-            # NOT EXISTS anti-join, not NOT IN (subquery): Postgres can only hash a
-            # NOT IN subquery when it fits in work_mem, and a popular tag's tag_links
-            # rows overflow that and never finish (#394). NOT EXISTS always plans as
-            # a hash anti-join.
-            query = query.where(
-                _not_linked_to(
-                    TagLinks,
-                    TagLinks.tag_id.in_(resolved_exclude_ids),  # type: ignore[attr-defined]
-                )
-            )
-
-    # Missing tag-type filtering (images lacking a tag of the given type[s]).
-    # Aliases are intentionally NOT resolved here: the applied tag's own `type` is authoritative.
-    if missing_tag_types:
-        # Reject any token that is not a valid type ID (non-digit or out of range), rather
-        # than silently dropping it. Empty tokens are ignored (empty param = no filter).
-        raw_tokens = [t.strip() for t in missing_tag_types.split(",") if t.strip()]
-        # isdecimal() (not isdigit()): int() only parses decimal digits, while isdigit()
-        # also matches chars like '²' that int() rejects (would otherwise 500 on int()).
-        invalid = [t for t in raw_tokens if not (t.isdecimal() and int(t) in {1, 2, 3, 4})]
-        if invalid:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Invalid tag type(s): {', '.join(invalid)}. "
-                    "Valid types are 1=Theme, 2=Source, 3=Artist, 4=Character."
-                ),
-            )
-        missing_type_ids = sorted({int(t) for t in raw_tokens})
-        if missing_type_ids:
-            type_column = {
-                1: Images.has_theme,
-                2: Images.has_source,
-                3: Images.has_artist,
-                4: Images.has_character,
-            }
-            # "missing type T" == that image's has_<type> flag is False.
-            clauses = [
-                type_column[t] == False  # noqa: E712
-                for t in missing_type_ids
-            ]
-            if missing_tag_types_mode == "all":
-                query = query.where(and_(*clauses))  # type: ignore[arg-type]  # missing every listed type
-            else:
-                query = query.where(or_(*clauses))  # type: ignore[arg-type]  # missing at least one listed type
-
-    # Date filtering. date_from/date_to arrive as "YYYY-MM-DD" strings; the
-    # date_added column is a tz-aware UtcDateTime, so the raw string must be
-    # parsed to a tz-aware UTC datetime before comparison (otherwise the column's
-    # bind hook raises "'str' object has no attribute 'tzinfo'" -> HTTP 500).
-    # date_to is treated as inclusive of the whole day by using an exclusive
-    # upper bound at the start of the following day.
-    if date_from:
-        try:
-            from_dt = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=UTC)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="date_from must be in YYYY-MM-DD format.",
-            ) from None
-        query = query.where(Images.date_added >= from_dt)  # type: ignore[arg-type,operator]
-    if date_to:
-        try:
-            to_dt = datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=UTC)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="date_to must be in YYYY-MM-DD format.",
-            ) from None
-        query = query.where(Images.date_added < to_dt + timedelta(days=1))  # type: ignore[arg-type,operator]
-
-    # Size filtering
-    if min_width:
-        query = query.where(Images.width >= min_width)  # type: ignore[arg-type]
-    if max_width:
-        query = query.where(Images.width <= max_width)  # type: ignore[arg-type]
-    if min_height:
-        query = query.where(Images.height >= min_height)  # type: ignore[arg-type]
-    if max_height:
-        query = query.where(Images.height <= max_height)  # type: ignore[arg-type]
-
-    # Rating filtering
-    if min_rating is not None:
-        query = query.where(Images.bayesian_rating >= min_rating)  # type: ignore[arg-type]
-    if min_favorites is not None:
-        query = query.where(Images.favorites >= min_favorites)  # type: ignore[arg-type]
-    if min_num_ratings is not None:
-        query = query.where(Images.num_ratings >= min_num_ratings)  # type: ignore[arg-type]
-
-    # Comment filtering: correlated EXISTS so an image with several matching
-    # comments still surfaces once, with no DISTINCT needed downstream (#366).
-    # Built by hand rather than via `_linked_to` because `apply_comment_text_search`
-    # needs a `Select` to add its predicates to (see its docstring), not a
-    # ColumnElement predicate list; the EXISTS/correlate shape mirrors `_linked_to`.
-    if commenter is not None or commentsearch is not None:
-        # Soft-deleted comments are excluded here so this agrees with /comments,
-        # which filters them everywhere. Without it an image can match on a comment
-        # the comment endpoint will never return, producing a result whose match is
-        # invisible.
-        comment_match = select(Comments.image_id).where(  # type: ignore[call-overload]
-            Comments.deleted == False  # noqa: E712
-        )
-        if commenter is not None:
-            comment_match = comment_match.where(Comments.user_id == commenter)
-        if commentsearch is not None:
-            comment_match = apply_comment_text_search(
-                comment_match, commentsearch, commentsearch_mode
-            )
-        query = query.where(
-            comment_match.where(Comments.image_id == Images.image_id).correlate(Images).exists()
-        )
-    elif hascomments is True:
-        # Use posts counter field (fast indexed lookup)
-        query = query.where(Images.posts > 0)  # type: ignore[arg-type]
-    elif hascomments is False:
-        # Filter to images WITHOUT comments using posts counter
-        query = query.where(Images.posts == 0)  # type: ignore[arg-type]
-
-    # Exclude commenter filter: anti-join to exclude images commented on by specified
-    # users. NOT EXISTS (not NOT IN (subquery) — see _not_linked_to) also sidesteps the
-    # legacy posts table's nullable image_id for free: the correlation
-    # `Comments.image_id == Images.image_id` can never match a NULL row, unlike SQL's
-    # NOT IN, which returns UNKNOWN (not TRUE) for every row when the subquery yields
-    # a NULL and would silently empty the whole search.
-    exclude_commenter_ids = _parse_user_id_list(exclude_commenter, "exclude_commenter")
-    if exclude_commenter_ids:
-        query = query.where(
-            _not_linked_to(
-                Comments,
-                Comments.user_id.in_(exclude_commenter_ids),  # type: ignore[attr-defined]
-                # Deleted comments must not hide an image, for the same reason
-                # they must not surface one: /comments never shows them.
-                Comments.deleted == False,  # type: ignore[arg-type]  # noqa: E712
-            )
-        )
-
-    # Reported filtering: restrict to images that have a PENDING report. Mods only
-    # (REPORT_VIEW) so it never leaks the triage queue — silently a no-op for everyone else.
-    apply_reported = (
-        bool(reported)
-        and current_user is not None
-        and current_user.user_id is not None
-        and await has_any_permission(
-            db, current_user.user_id, [Permission.REPORT_VIEW], redis_client
-        )
-    )
-    if apply_reported:
-        query = query.where(
-            Images.image_id.in_(  # type: ignore[union-attr]
-                select(ImageReports.image_id).where(  # type: ignore[call-overload]
-                    ImageReports.status == ReportStatus.PENDING
-                )
-            )
-        )
-
-    # Content filters end here. `content_query` (no visibility WHERE) feeds the
-    # decomposed count's shared public term; `query` gains the visibility clauses and
-    # serves the page fetch and every other count path.
-    content_query = query
-    for clause in visibility_clauses:
-        query = query.where(clause)
+    filter_query = await build_image_filter_query(db, filters, current_user, redis_client)
+    content_query = filter_query.content_query
+    query = filter_query.query
 
     # Count total results. For the *bare* default feed (no content filter — only the
     # implicit visibility filter), count(visible OR mine) is a full-table scan; use the
     # fast hidden-complement count instead. ANY explicit filter falls back to the exact
     # subquery count.
-    active_filters = _FeedFilters(
-        image_status=image_status,
-        user_id=user_id,
-        favorited_by_user_id=favorited_by_user_id,
-        exclude_user_id=exclude_user_id or None,
-        exclude_favorited_by_user_id=exclude_favorited_by_user_id or None,
-        tags=tags or None,
-        exclude_tags=exclude_tags or None,
-        missing_tag_types=missing_tag_types or None,
-        date_from=date_from,
-        date_to=date_to,
-        min_width=min_width,
-        max_width=max_width,
-        min_height=min_height,
-        max_height=max_height,
-        min_rating=min_rating,
-        min_favorites=min_favorites,
-        min_num_ratings=min_num_ratings,
-        commenter=commenter,
-        commentsearch=commentsearch,
-        exclude_commenter=exclude_commenter or None,
-        hascomments=hascomments,
-        reported=apply_reported or None,
-    )
-    # Bare feed = every content filter empty. One comparison, so a field added to
-    # _FeedFilters is covered automatically. Falsy strings (e.g. tags="") normalize to
-    # None so an empty filter param still reads as "no filter", matching the old `not x`.
-    is_bare_default_feed = active_filters == _FeedFilters()
-    if is_bare_default_feed:
+    if not filter_query.has_content_filters:
         total = await _default_feed_total(db, current_user, redis_client)
     else:
-        if decompose_count and current_user is not None:
+        if filter_query.decompose_count and current_user is not None:
             # Default logged-in (show_all=0) feed. The visibility OR bakes the viewer's
             # user_id into the count, which would give every user a private cache entry.
             # Decompose instead (disjoint union):
@@ -2160,6 +1640,56 @@ def get_review_outcome_label(outcome: int) -> str:
         ReviewOutcome.SUPERSEDED: "superseded",
     }
     return outcome_labels.get(outcome, "unknown")
+
+
+@router.get("/{image_id}/neighbors", response_model=ImageNeighborsResponse)
+async def get_image_neighbors(
+    image_id: Annotated[int, Path(description="Image ID")],
+    filters: Annotated[ImageFilterParams, Depends()],
+    sorting: Annotated[ImageSortParams, Depends()],
+    db: DbSession,
+    current_user: OptionalCurrentUser,
+    redis_client: RedisClient,
+) -> ImageNeighborsResponse:
+    """
+    Get the results either side of an image in a search.
+
+    Takes the same filter and sort parameters as `GET /images`, and answers with
+    the ids that precede and follow the image in that listing's order, for the
+    image page's previous/next arrows. Visibility matches the listing for the
+    caller. The image need not match the filters itself; the neighbours are then
+    the nearest results either side of where it would sit. A null id means the
+    image is at that end of the results.
+    """
+    # Only the sort column is read from the image, so load just that.
+    sort_column = sorting.sort_by.get_column(Images)
+    image = (
+        await db.execute(
+            select(Images)
+            .options(load_only(Images.image_id, sort_column))  # type: ignore[arg-type]
+            .where(Images.image_id == image_id)  # type: ignore[arg-type]
+        )
+    ).scalar_one_or_none()
+    if image is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Seekable: find_neighbors bounds the link subqueries by each statement's own id range.
+    filter_query = await build_image_filter_query(
+        db, filters, current_user, redis_client, seekable=True
+    )
+    timeout_seconds = settings.IMAGE_NEIGHBORS_TIMEOUT_SECONDS
+    if filters.commentsearch is not None:
+        # The listing allows a comment search this long per statement, and the last
+        # result's "nothing follows" costs about what the listing's count does.
+        timeout_seconds = max(timeout_seconds, COMMENT_SEARCH_TIMEOUT_SECONDS)
+    try:
+        prev_image_id, next_image_id = await find_neighbors(
+            db, filter_query.query, image, sorting, timeout_seconds
+        )
+    except NeighborsTimeoutError:
+        logger.warning("image_neighbors_timeout", image_id=image_id)
+        raise HTTPException(status_code=504, detail="Search navigation timed out") from None
+    return ImageNeighborsResponse(prev_image_id=prev_image_id, next_image_id=next_image_id)
 
 
 @router.get("/{image_id}/reviews", response_model=ImageReviewListResponse)

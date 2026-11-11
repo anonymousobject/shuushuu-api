@@ -6,14 +6,14 @@ never finishes (#394). NOT EXISTS always plans as a hash anti-join regardless of
 subquery size. This pins the SQL shape so a future edit can't regress to NOT IN.
 
 _not_linked_to is `~_linked_to(...)`, so the positive EXISTS form is covered here
-too: it's the building block the comment-filter EXISTS in list_images shares.
+too: it's the building block the comment-filter EXISTS in build_image_filter_query shares.
 """
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from app.api.v1.images import _linked_to, _not_linked_to
 from app.models import Comments, Favorites, TagLinks
+from app.services.image_filters import _linked_to, _not_linked_to
 
 
 @pytest.mark.unit

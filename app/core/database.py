@@ -8,6 +8,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends
 from sqlalchemy import text as sql_text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 
@@ -77,6 +78,40 @@ def get_async_session() -> AsyncSession:
     return AsyncSessionLocal()
 
 
+async def set_statement_timeout(db: AsyncSession, seconds: float) -> None:
+    """Limit each following statement on `db`'s connection to `seconds`.
+
+    Call it bare only inside a `statement_timeout` block, to tighten the block's
+    limit: the block's exit is what restores the connection for its next user.
+    """
+    # int() coerces the value: SET does not take bind parameters, so this is
+    # interpolated, and the coercion is what keeps that safe. Postgres takes whole
+    # milliseconds, and 0 would switch the limit off, hence at least 1.
+    await db.execute(sql_text(f"SET statement_timeout = {max(1, int(seconds * 1000))}"))
+
+
+@asynccontextmanager
+async def _restoring_default(db: AsyncSession, setting: str) -> AsyncIterator[None]:
+    """Restore `setting` (a trusted literal) to the server default after the block.
+
+    Restoring is not optional. Connections are pooled and returned to the pool
+    without resetting session variables, so a value left set would silently apply
+    to whatever request picks that connection up next. `DEFAULT` restores the
+    server's global value rather than assuming one.
+
+    A database error inside the block rolls the session back first, expiring its
+    loaded objects: the error left the transaction aborted, where the restoring
+    SET would fail and replace the error with its own.
+    """
+    try:
+        yield
+    except DBAPIError:
+        await db.rollback()
+        raise
+    finally:
+        await db.execute(sql_text(f"SET {setting} = DEFAULT"))
+
+
 @asynccontextmanager
 async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIterator[None]:
     """Bound how long each statement inside the block may run.
@@ -85,12 +120,11 @@ async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIte
     the limit should sit well clear of the slowest legitimate query so it never
     fires on real traffic. `statement_timeout` is per *statement*, so a request
     issuing several still has a total ceiling of the limit times the statement
-    count.
+    count, unless it tightens the limit as it goes (`set_statement_timeout`).
 
-    Restoring on exit is not optional. Connections are pooled and returned to the
-    pool without resetting session variables, so a limit left set would silently
-    apply to whatever request picks that connection up next. `DEFAULT` restores
-    the server's global value rather than assuming it is 0.
+    The limit is restored on exit, and a database error inside the block rolls the
+    session back (see `_restoring_default`). Do not nest it: the inner block's exit
+    restores DEFAULT, not the outer block's limit.
 
     Passing `seconds=None` is a no-op, so callers can wrap a statement
     unconditionally and decide per request whether the bound applies.
@@ -99,11 +133,23 @@ async def statement_timeout(db: AsyncSession, seconds: float | None) -> AsyncIte
         yield
         return
 
-    # int() coerces the value: SET does not take bind parameters, so this is
-    # interpolated, and the coercion is what keeps that safe. Postgres takes
-    # milliseconds; DEFAULT restores the session's configured value.
-    await db.execute(sql_text(f"SET statement_timeout = {int(seconds * 1000)}"))
-    try:
+    await set_statement_timeout(db, seconds)
+    async with _restoring_default(db, "statement_timeout"):
         yield
-    finally:
-        await db.execute(sql_text("SET statement_timeout = DEFAULT"))
+
+
+@asynccontextmanager
+async def force_custom_plans(db: AsyncSession) -> AsyncIterator[None]:
+    """Plan each statement inside the block for its actual parameter values.
+
+    Under the default `plan_cache_mode = auto`, Postgres may switch a prepared
+    statement to a generic plan, made without looking at the parameters, from its
+    sixth execution, and asyncpg prepares every statement on each pooled connection.
+    Use this where a statement's best plan depends on its bind values.
+
+    Restored on exit, with a rollback on a database error, as `statement_timeout`
+    is. Do not nest it: the inner block's exit restores DEFAULT, not the outer setting.
+    """
+    await db.execute(sql_text("SET plan_cache_mode = force_custom_plan"))
+    async with _restoring_default(db, "plan_cache_mode"):
+        yield
