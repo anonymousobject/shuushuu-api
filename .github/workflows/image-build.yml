@@ -32,9 +32,12 @@ on:
     - cron: '41 6 * * 1'
   workflow_dispatch:
 
+# Superseded pull request runs are cancelled. Runs on main are not: a merge
+# cancelled by the next one would leave its commit with no image, and the
+# weekly run shares main's group.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
