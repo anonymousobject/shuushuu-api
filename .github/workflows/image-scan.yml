@@ -5,8 +5,9 @@ name: Image Scan
 # covers what sits inside one: the OS packages, language runtimes and bundled
 # libraries.
 #
-# Not covered: the images compose builds from this repo (api, arq-worker,
-# frontend, nginx, iqdb), which have no `image:` line to read.
+# Not covered: the images compose builds (api, arq-worker, frontend, nginx,
+# iqdb), which have no `image:` line to read. image-build.yml scans the api
+# and arq-worker image.
 #
 # It scans the image the registry serves for each pinned tag today. Prod keeps
 # the copy it pulled when the tag last changed, so a clean run here after a
@@ -79,6 +80,9 @@ jobs:
           format: 'sarif'
           output: 'trivy-image.sarif'
           severity: 'CRITICAL,HIGH'
+          # Without this the action ignores `severity` for SARIF output and
+          # the Security tab receives every severity.
+          limit-severities-for-sarif: true
           ignore-unfixed: true
 
       # Pull requests from Dependabot and forks get a read-only token, which

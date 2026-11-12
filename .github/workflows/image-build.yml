@@ -1,0 +1,138 @@
+name: Image Build
+
+# Builds the api image (which arq-worker also runs) from the Dockerfile, scans
+# it for known CVEs, and on main pushes it to GitHub's container registry
+# tagged with the commit it was built from.
+#
+# Nothing deploys from the registry yet: prod still builds its own copy with
+# `make prod-deploy`, from the same Dockerfile and lockfile but with whatever
+# base image layers that host has cached. So a finding here is a strong hint
+# about prod, not a statement about it.
+#
+# image-scan.yml covers the third-party images compose pulls; this covers the
+# one built from this repo. Not covered by either: frontend (built from the
+# frontend repo), nginx and iqdb.
+
+on:
+  push:
+    branches: [main]
+  # Only when something that decides the image's OS packages or dependencies
+  # changes. Application code does not change what the scan finds, and the
+  # push to main builds every merge anyway.
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/image-build.yml
+  # A fix landing upstream, or a new CVE being published, changes the result
+  # without any commit here. Same slot as image-scan.yml, a few minutes later.
+  schedule:
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+
+# Superseded pull request runs are cancelled. Runs on main are not: a merge
+# cancelled by the next one would leave its commit with no image, and the
+# weekly run shares main's group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: Build, scan & push
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The full SHA is the tag a deploy would name: it never moves. `main`
+      # follows the newest build and exists for convenience only.
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=main,enable={{is_default_branch}}
+
+      # Loaded into the runner's docker rather than pushed, so the scan below
+      # reads exactly the bytes that get pushed afterwards.
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy (SARIF for the Security tab)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: 'image'
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-image.sarif'
+          severity: 'CRITICAL,HIGH'
+          # Without this the action ignores `severity` for SARIF output and
+          # the Security tab receives every severity.
+          limit-severities-for-sarif: true
+          ignore-unfixed: true
+
+      # Pull requests from Dependabot and forks get a read-only token, which
+      # cannot upload.
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: github.event_name != 'pull_request' && hashFiles('trivy-image.sarif') != ''
+        with:
+          sarif_file: 'trivy-image.sarif'
+          category: trivy-image-shuushuu-api
+
+      # Only merges publish. A scheduled or manual run rebuilds the same commit
+      # on a newer base image, and pushing that would change what an existing
+      # SHA tag points at.
+      #
+      # Before the failing step below on purpose: the scan reports on an image,
+      # it does not decide whether one exists. Nothing pulls these yet, and a
+      # CVE in the base image must not stop every later merge from publishing.
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: github.event_name == 'push'
+        run: docker push --all-tags "$IMAGE"
+
+      # Same policy as image-scan.yml: the scheduled and manual runs fail so
+      # that a finding sends a notification; pull requests and merges only
+      # list what was found, because the findings come from the base image
+      # and the lockfile, not from the change that triggered the run.
+      - name: Run Trivy (report fixable CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: 'image'
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
