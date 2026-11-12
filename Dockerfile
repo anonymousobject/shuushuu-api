@@ -4,13 +4,21 @@ FROM python:3.14-slim
 # Install uv from Astral's uv image. Pinned because :latest defeats the
 # point of locking the Python deps below — a uv minor release can change
 # `sync` semantics or lockfile format. Bump deliberately, same as `uv lock`.
-COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.33 /uv /uvx /usr/local/bin/
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# The base image ships pip, which nothing here uses: uv installs the
+# dependencies and runs the app. pip vendors its own copies of urllib3, msgpack
+# and setuptools, which lag behind their fixes and can't be bumped through
+# uv.lock, so the image scan (.github/workflows/image-build.yml) keeps flagging
+# them.
+RUN pip uninstall -y pip
+
+# Install system dependencies. The upgrade picks up Debian security fixes
+# published since the base image was last rebuilt.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     gcc \
     pkg-config \
     curl \
