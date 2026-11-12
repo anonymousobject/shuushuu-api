@@ -124,9 +124,9 @@ def test_empty():
     ],
 )
 def test_bracket_runs_are_linear(text):
-    start = time.perf_counter()
+    start = time.process_time()
     render_v2(text, headings=False)
-    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+    assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 @pytest.mark.parametrize(
@@ -287,9 +287,9 @@ def test_url_before_container_links_only_the_url():
     ],
 )
 def test_container_scan_is_linear(text):
-    start = time.perf_counter()
+    start = time.process_time()
     render_v2(text, headings=False)
-    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+    assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 @pytest.mark.parametrize(
@@ -337,9 +337,9 @@ def test_huge_list_number_is_text():
 
 @pytest.mark.parametrize("text", ["- a\n" * 4000, "* a\n" * 4000, "1. a\n" * 4000, "- -\n" * 4000])
 def test_many_list_lines_are_linear(text):
-    start = time.perf_counter()
+    start = time.process_time()
     render_v2(text, headings=False)
-    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+    assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 def test_star_faces_do_not_pair_into_a_list():
@@ -380,9 +380,9 @@ def test_code_span_in_a_would_be_quote_name_is_not_in_small():
 
 @pytest.mark.parametrize("text", ["`" * 20000, "`a" * 10000, "`a`b" * 5000, "` " * 10000])
 def test_many_backticks_are_linear(text):
-    start = time.perf_counter()
+    start = time.process_time()
     render_v2(text, headings=False)
-    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+    assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 @pytest.mark.parametrize(
@@ -422,9 +422,9 @@ def test_fence_breaks_a_straddling_spoiler():
 
 def test_unclosed_fences_are_linear():
     text = "```\n" * 5000
-    start = time.perf_counter()
+    start = time.process_time()
     render_v2(text, headings=False)
-    assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+    assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 @pytest.mark.parametrize(

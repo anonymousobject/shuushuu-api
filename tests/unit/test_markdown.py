@@ -385,7 +385,12 @@ class TestParseMarkdownQuotes:
 
 
 # Linear parsing takes milliseconds on these inputs; a scan that restarts from
-# every opener takes seconds. The gap leaves room for a loaded CI runner.
+# every opener takes seconds.
+#
+# The tests that use this measure CPU time (time.process_time), not elapsed
+# time. A loaded CI runner can leave a test waiting for a core for longer than
+# this limit: a 7ms render was seen taking 0.78s there, and that wait is the
+# runner's, not the parser's. CPU time does not count it.
 RENDER_TIME_LIMIT_SECONDS = 0.5
 
 
@@ -410,14 +415,14 @@ class TestParseMarkdownQuoteScaling:
         ],
     )
     def test_many_named_quote_openers(self, text):
-        start = time.perf_counter()
+        start = time.process_time()
         v1(text)
-        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+        assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
 
     def test_many_anonymous_quote_openers(self):
-        start = time.perf_counter()
+        start = time.process_time()
         v1("[quote]" * 10000)
-        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+        assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 class TestParseMarkdownLinkScaling:
@@ -441,9 +446,9 @@ class TestParseMarkdownLinkScaling:
         ],
     )
     def test_many_unfinished_links(self, text):
-        start = time.perf_counter()
+        start = time.process_time()
         v1(text)
-        assert time.perf_counter() - start < RENDER_TIME_LIMIT_SECONDS
+        assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
 
 
 class TestParseMarkdownFaces:
