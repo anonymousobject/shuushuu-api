@@ -1159,6 +1159,29 @@ class TestFuzzyTagSearch:
         assert data["total"] == 1
         assert data["tags"][0]["title"] == "100% Orange Juice"
 
+    async def test_search_relevance_ranks_like_characters_literally(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """An underscore in the search is not a wildcard when ranking prefix matches.
+
+        "qxz q_z" contains the search but does not start with it, so it ranks
+        with the other contains-matches (alphabetically after "qaa q_z"), not
+        ahead of them as a prefix match.
+        """
+        db_session.add_all(
+            [
+                Tags(title="qxz q_z", type=TagType.THEME),
+                Tags(title="qaa q_z", type=TagType.THEME),
+                Tags(title="q_z", type=TagType.THEME),
+            ]
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/tags", params={"search": "q_z"})
+
+        assert response.status_code == 200
+        assert [tag["title"] for tag in response.json()["tags"]] == ["q_z", "qaa q_z", "qxz q_z"]
+
     async def test_search_with_fulltext_special_characters(
         self, client: AsyncClient, db_session: AsyncSession
     ):

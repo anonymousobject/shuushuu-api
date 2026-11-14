@@ -110,6 +110,7 @@ from app.services.ml_suggestion_review import approve_pending_suggestions_for_li
 from app.services.rating import schedule_rating_recalculation
 from app.services.review_jobs import check_early_close
 from app.services.tag_type_flags import refresh_image_tag_type_flags
+from app.utils.like_escape import escape_like_pattern
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -131,7 +132,7 @@ async def list_groups(
     query = select(Groups)
 
     if search:
-        query = query.where(Groups.title.like(f"%{search}%"))  # type: ignore[union-attr]
+        query = query.where(Groups.title.like(f"%{escape_like_pattern(search)}%"))  # type: ignore[union-attr]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -649,7 +650,7 @@ async def list_permissions(
     query = select(Perms)
 
     if search:
-        query = query.where(Perms.title.like(f"%{search}%"))  # type: ignore[union-attr]
+        query = query.where(Perms.title.like(f"%{escape_like_pattern(search)}%"))  # type: ignore[union-attr]
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
