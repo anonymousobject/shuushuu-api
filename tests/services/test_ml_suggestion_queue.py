@@ -407,6 +407,23 @@ class TestCountPendingByTagLimitAndSearch:
         tag_ids = [r[0] for r in results]
         assert tag.tag_id in tag_ids
 
+    async def test_search_matches_like_wildcards_literally(self, db_session: AsyncSession):
+        """search='a_b' matches a literal underscore, not any single character."""
+        user = await _make_user(db_session, "srch3")
+        image1 = await _make_image(db_session, user, "srch3a")
+        image2 = await _make_image(db_session, user, "srch3b")
+        tag_match = await _make_tag(db_session, user, "srch3 a_b")
+        tag_nomatch = await _make_tag(db_session, user, "srch3 axb")
+        await _make_suggestion(db_session, image1, tag_match)
+        await _make_suggestion(db_session, image2, tag_nomatch)
+        await db_session.commit()
+
+        results, _total = await count_pending_by_tag(db_session, search="srch3 a_b")
+
+        tag_ids = [r[0] for r in results]
+        assert tag_match.tag_id in tag_ids
+        assert tag_nomatch.tag_id not in tag_ids
+
     async def test_search_none_returns_all(self, db_session: AsyncSession):
         """search=None (default) does not filter by title."""
         user = await _make_user(db_session, "srch3")

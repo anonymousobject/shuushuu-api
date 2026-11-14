@@ -599,7 +599,7 @@ async def list_tags(  # noqa: C901, PLR0912, PLR0915
             case(
                 (func.lower(Tags.title) == search.lower(), 0),  # Exact match (case-insensitive)
                 (
-                    func.lower(Tags.title).like(f"{search.lower()}%"),
+                    func.lower(Tags.title).like(f"{escape_like_pattern(search.lower())}%"),
                     1,
                 ),  # Starts with (case-insensitive)
                 else_=2,  # Contains (middle/end)

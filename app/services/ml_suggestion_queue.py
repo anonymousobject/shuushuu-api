@@ -17,6 +17,7 @@ from sqlalchemy.orm import aliased
 from app.models.ml_tag_suggestion import MlTagSuggestions
 from app.models.tag import Tags
 from app.models.tag_link import TagLinks
+from app.utils.like_escape import escape_like_pattern
 
 # Anti-join: excludes suggestions whose tag is already applied to the image.
 # Tags can be applied without going through the review flow (manual tag add,
@@ -91,7 +92,7 @@ async def count_pending_by_tag(
     if type_filter is not None:
         base_filters.append(Tags.type == type_filter)
     if search is not None:
-        base_filters.append(Tags.title.ilike(f"%{search}%"))  # type: ignore[union-attr]
+        base_filters.append(Tags.title.ilike(f"%{escape_like_pattern(search)}%"))  # type: ignore[union-attr]
 
     # Total count of DISTINCT tags matching filters (used for pagination metadata).
     total_stmt = (
