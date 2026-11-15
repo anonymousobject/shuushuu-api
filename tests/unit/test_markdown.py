@@ -2,7 +2,10 @@
 Tests for safe Markdown parser
 """
 
+import gc
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import partial
 
 import pytest
@@ -386,12 +389,60 @@ class TestParseMarkdownQuotes:
 
 # Linear parsing takes milliseconds on these inputs; a scan that restarts from
 # every opener takes seconds.
-#
-# The tests that use this measure CPU time (time.process_time), not elapsed
-# time. A loaded CI runner can leave a test waiting for a core for longer than
-# this limit: a 7ms render was seen taking 0.78s there, and that wait is the
-# runner's, not the parser's. CPU time does not count it.
 RENDER_TIME_LIMIT_SECONDS = 0.5
+
+
+@contextmanager
+def render_time_limit() -> Iterator[None]:
+    """Fail if the block uses more than RENDER_TIME_LIMIT_SECONDS of CPU time.
+
+    The block is charged for the parser's own work and nothing else:
+
+    - CPU time (time.process_time), not elapsed time, so waiting for a core on
+      a loaded CI runner does not count.
+    - Garbage collection is paused. These inputs allocate enough objects to
+      trigger a full collection, and late in the suite one full collection of a
+      test worker's heap takes longer than the limit by itself.
+    """
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    start = time.process_time()
+    try:
+        yield
+        cpu_seconds = time.process_time() - start
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+    assert cpu_seconds < RENDER_TIME_LIMIT_SECONDS
+
+
+class TestRenderTimeLimit:
+    """The timing helper itself: what it measures and what it leaves behind."""
+
+    def test_pauses_garbage_collection_inside_the_block(self):
+        with render_time_limit():
+            assert not gc.isenabled()
+        assert gc.isenabled()
+
+    def test_restores_garbage_collection_when_the_block_raises(self):
+        with pytest.raises(RuntimeError), render_time_limit():
+            raise RuntimeError
+        assert gc.isenabled()
+
+    def test_leaves_garbage_collection_off_if_it_was_already_off(self):
+        gc.disable()
+        try:
+            with render_time_limit():
+                pass
+            assert not gc.isenabled()
+        finally:
+            gc.enable()
+
+    def test_fails_a_block_that_uses_more_cpu_time_than_the_limit(self):
+        with pytest.raises(AssertionError), render_time_limit():
+            start = time.process_time()
+            while time.process_time() - start <= RENDER_TIME_LIMIT_SECONDS:
+                pass
 
 
 class TestParseMarkdownQuoteScaling:
@@ -415,14 +466,12 @@ class TestParseMarkdownQuoteScaling:
         ],
     )
     def test_many_named_quote_openers(self, text):
-        start = time.process_time()
-        v1(text)
-        assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
+        with render_time_limit():
+            v1(text)
 
     def test_many_anonymous_quote_openers(self):
-        start = time.process_time()
-        v1("[quote]" * 10000)
-        assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
+        with render_time_limit():
+            v1("[quote]" * 10000)
 
 
 class TestParseMarkdownLinkScaling:
@@ -446,9 +495,8 @@ class TestParseMarkdownLinkScaling:
         ],
     )
     def test_many_unfinished_links(self, text):
-        start = time.process_time()
-        v1(text)
-        assert time.process_time() - start < RENDER_TIME_LIMIT_SECONDS
+        with render_time_limit():
+            v1(text)
 
 
 class TestParseMarkdownFaces:
