@@ -47,7 +47,8 @@ def _decode_percent_utf8(match: re.Match[str]) -> str:
         decoded = bytes.fromhex(match.group(0).replace("%", "")).decode("utf-8")
     except UnicodeDecodeError:
         return match.group(0)  # Overlong, surrogate or out of range
-    if len(decoded) != 1 or unicodedata.category(decoded)[0] in "CZ":
+    # The pattern matches one sequence, so decoded is one character
+    if unicodedata.category(decoded)[0] in "CZ":
         return match.group(0)
     return decoded
 
