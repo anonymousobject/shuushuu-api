@@ -131,6 +131,77 @@ def escape_source(text: str) -> str:
     return escape(unescape(text))
 
 
+# Excludes * so markdown bold/italic delimiters adjacent to URLs
+# aren't consumed into the match. The text is already escaped, so a quote
+# or angle bracket is the entity &quot; &lt; or &gt;, which also ends it.
+# A raw quote only ever comes from HTML this module wrote, and ends it too, so
+# a match can never run out of an attribute. A bare "www." link must not start
+# mid-word or mid-URL/email, and needs a letter or digit after the dot. The
+# scheme and "www" match in any case.
+_BARE_URL = re.compile(
+    r"(?:(?i:https?)://|(?P<www>(?<![\w./@-])(?i:www)\.(?=[^\W_])))"
+    r"(?:(?!&quot;|&lt;|&gt;)[^\s<>\[\]*\"])+"
+)
+# The start of a scheme-less link, bare or explicit
+_WWW = re.compile(r"www\.(?=[^\W_])", re.IGNORECASE)
+_SCHEME_ONLY = re.compile(r"https?://", re.IGNORECASE)
+
+
+def _replace_bare_url(match: re.Match[str]) -> str:
+    escaped_url = match.group(0)
+
+    # Work on unescaped URL for punctuation stripping and validation,
+    # since the text is already HTML-escaped (& → &amp;) at this point.
+    raw_url = unescape(escaped_url)
+
+    # Strip trailing punctuation that's unlikely to be part of the URL, and a
+    # trailing ) with no matching ( in the URL. Each can uncover the other, as
+    # in "(see https://a.example/x.)".
+    end = len(raw_url)
+    unmatched = raw_url.count(")") - raw_url.count("(")
+    while end and (raw_url[end - 1] in ".,!?;:'" or (raw_url[end - 1] == ")" and unmatched > 0)):
+        if raw_url[end - 1] == ")":
+            unmatched -= 1
+        end -= 1
+    raw_url, trailing = raw_url[:end], raw_url[end:]
+
+    # Nothing but punctuation followed the scheme, as in "http://."
+    if _SCHEME_ONLY.fullmatch(raw_url):
+        return match.group(0)
+
+    # A www. link has no scheme as typed; the href gets https://
+    href_url = f"https://{raw_url}" if match["www"] is not None else raw_url
+
+    # Defense-in-depth: the regex only matches http(s):// and www. which
+    # is_safe_url always accepts, but this guard protects against future regex changes.
+    if not is_safe_url(href_url):
+        return match.group(0)
+
+    # Re-escape the cleaned URL for safe use in href and display text.
+    # The href stays as typed; only the visible text is decoded.
+    safe_url_html = escape(href_url, quote=True)
+    display_html = escape(_decode_for_display(raw_url), quote=True)
+
+    return f'<a href="{safe_url_html}" rel="nofollow noopener" target="_blank">{display_html}</a>{escape(trailing)}'
+
+
+def _link_bare_urls(text: str) -> str:
+    """
+    Auto-link bare URLs in already-escaped text.
+
+    Runs AFTER explicit markdown links to avoid double-linking. To prevent
+    nested <a> tags, we split text on existing anchor tags and only auto-link
+    within non-anchor segments.
+    """
+    # DOTALL: an explicit link's text can span lines
+    parts = re.split(r"(<a\s[^>]*>.*?</a>)", text, flags=re.DOTALL)
+    for i, part in enumerate(parts):
+        # Only process segments that are NOT existing anchor tags
+        if not part.startswith("<a "):
+            parts[i] = _BARE_URL.sub(_replace_bare_url, part)
+    return "".join(parts)
+
+
 def render_inline(text: str) -> str:
     """
     Render links, bare URLs, bold and italics on already-escaped text.
@@ -150,6 +221,10 @@ def render_inline(text: str) -> str:
         # URL is already escaped by the initial escape() call, so unescape it
         url = url.replace("&amp;", "&")
 
+        # As for a bare www. link: without a scheme the href would be relative
+        if _WWW.match(url):
+            url = f"https://{url}"
+
         # Write * as a character reference so the bold/italic passes below
         # can't see it; the browser decodes the attribute back to the same URL.
         href = escape(url).replace("*", "&#42;")
@@ -158,55 +233,7 @@ def render_inline(text: str) -> str:
 
     text = _sub_links(replace_link, text)
 
-    # Auto-link bare URLs (https://... or http://...)
-    # Runs AFTER explicit markdown links to avoid double-linking.
-    # To prevent nested <a> tags, we split text on existing anchor tags
-    # and only auto-link within non-anchor segments.
-    # Excludes * and _ so markdown bold/italic delimiters adjacent to URLs
-    # aren't consumed into the match. The text is already escaped, so a quote
-    # or angle bracket is the entity &quot; &lt; or &gt;, which also ends it.
-    # A raw " only ever comes from HTML this module wrote, so excluding it
-    # keeps a match from running out of an attribute.
-    _bare_url_re = re.compile(r'https?://(?:(?!&quot;|&lt;|&gt;)[^\s<>\[\]*"])+')
-
-    def replace_bare_url(match: re.Match[str]) -> str:
-        escaped_url = match.group(0)
-
-        # Work on unescaped URL for punctuation stripping and validation,
-        # since the text is already HTML-escaped (& → &amp;) at this point.
-        raw_url = unescape(escaped_url)
-
-        # Strip trailing punctuation that's unlikely to be part of the URL
-        trailing = ""
-        while raw_url and raw_url[-1] in ".,!?;:'":
-            trailing = raw_url[-1] + trailing
-            raw_url = raw_url[:-1]
-
-        # Handle unbalanced trailing parenthesis — strip ) only if no matching (
-        while raw_url.endswith(")") and raw_url.count("(") < raw_url.count(")"):
-            trailing = ")" + trailing
-            raw_url = raw_url[:-1]
-
-        # Defense-in-depth: the regex only matches http(s):// which is_safe_url
-        # always accepts, but this guard protects against future regex changes.
-        if not is_safe_url(raw_url):
-            return match.group(0)
-
-        # Re-escape the cleaned URL for safe use in href and display text.
-        # The href stays as typed; only the visible text is decoded.
-        safe_url_html = escape(raw_url, quote=True)
-        display_html = escape(_decode_for_display(raw_url), quote=True)
-
-        return f'<a href="{safe_url_html}" rel="nofollow noopener" target="_blank">{display_html}</a>{escape(trailing)}'
-
-    # Split on <a ...>...</a> spans to avoid auto-linking inside existing anchors
-    # DOTALL: an explicit link's text can span lines
-    parts = re.split(r"(<a\s[^>]*>.*?</a>)", text, flags=re.DOTALL)
-    for i, part in enumerate(parts):
-        # Only process segments that are NOT existing anchor tags
-        if not part.startswith("<a "):
-            parts[i] = _bare_url_re.sub(replace_bare_url, part)
-    text = "".join(parts)
+    text = _link_bare_urls(text)
 
     # Process bold **text**
     # Use negative lookbehind/lookahead to avoid matching single * meant for italic
