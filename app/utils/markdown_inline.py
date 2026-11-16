@@ -142,7 +142,9 @@ _BARE_URL = re.compile(
     r"(?:(?i:https?)://|(?P<www>(?<![\w./@-])(?i:www)\.(?=[^\W_])))"
     r"(?:(?!&quot;|&lt;|&gt;)[^\s<>\[\]*\"])+"
 )
-_WWW = re.compile(r"www\.", re.IGNORECASE)
+# The start of a scheme-less link, bare or explicit
+_WWW = re.compile(r"www\.(?=[^\W_])", re.IGNORECASE)
+_SCHEME_ONLY = re.compile(r"https?://", re.IGNORECASE)
 
 
 def _replace_bare_url(match: re.Match[str]) -> str:
@@ -162,6 +164,10 @@ def _replace_bare_url(match: re.Match[str]) -> str:
             unmatched -= 1
         end -= 1
     raw_url, trailing = raw_url[:end], raw_url[end:]
+
+    # Nothing but punctuation followed the scheme, as in "http://."
+    if _SCHEME_ONLY.fullmatch(raw_url):
+        return match.group(0)
 
     # A www. link has no scheme as typed; the href gets https://
     href_url = f"https://{raw_url}" if match["www"] is not None else raw_url

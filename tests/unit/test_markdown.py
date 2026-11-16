@@ -732,6 +732,12 @@ class TestAutolinkAroundExplicitLinks:
         )
 
     @pytest.mark.parametrize("version", [1, 2])
+    @pytest.mark.parametrize("url", ["www.", "www..", "www._"])
+    def test_explicit_link_to_www_without_a_host_keeps_its_href(self, version, url):
+        # Same rule as a bare www. link: a letter or digit must follow the dot
+        assert parse_markdown(f"[x]({url})", version=version) == _anchor(url, "x")
+
+    @pytest.mark.parametrize("version", [1, 2])
     def test_explicit_relative_link_keeps_its_href(self, version):
         assert parse_markdown("[x](/images/1)", version=version) == _anchor("/images/1", "x")
 

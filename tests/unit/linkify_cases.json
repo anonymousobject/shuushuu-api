@@ -787,6 +787,45 @@
       "segments": [
         "www.__init__"
       ]
+    },
+    {
+      "name": "scheme with only punctuation after it is not linked",
+      "text": "http://.",
+      "segments": [
+        "http://."
+      ]
+    },
+    {
+      "name": "scheme with only punctuation after it, mid-sentence",
+      "text": "see https://! ok",
+      "segments": [
+        "see https://! ok"
+      ]
+    },
+    {
+      "name": "scheme with only a closing parenthesis after it",
+      "text": "(http://)",
+      "segments": [
+        "(http://)"
+      ]
+    },
+    {
+      "name": "www after = inside another address is linked",
+      "text": "example.com/r?to=www.other.com",
+      "segments": [
+        "example.com/r?to=",
+        {
+          "href": "https://www.other.com",
+          "text": "www.other.com"
+        }
+      ]
+    },
+    {
+      "name": "www not linked: after a letter outside the BMP",
+      "text": "𝒜www.a.example",
+      "segments": [
+        "𝒜www.a.example"
+      ]
     }
   ]
 }
