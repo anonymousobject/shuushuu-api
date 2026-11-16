@@ -6,6 +6,7 @@ structure (quotes, spoilers, lists, code) lives in the per-version modules.
 """
 
 import re
+import unicodedata
 from collections.abc import Callable
 from html import escape, unescape
 from urllib.parse import urlparse
@@ -29,6 +30,44 @@ def is_safe_url(url: str) -> bool:
 _LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 _FACE_LINE = re.compile(r"&gt;(?:&#?\w+;|[^\s&<\ue000]){0,3}&lt;")
+
+
+# One percent-encoded UTF-8 multi-byte sequence. The lead byte decides how many
+# continuation bytes (%80-%BF) follow, so a match never needs to backtrack.
+_CONTINUATION = r"%[89ABab][0-9A-Fa-f]"
+_PERCENT_UTF8 = re.compile(
+    rf"%(?:[Cc][2-9A-Fa-f]|[Dd][0-9A-Fa-f]){_CONTINUATION}"
+    rf"|%[Ee][0-9A-Fa-f](?:{_CONTINUATION}){{2}}"
+    rf"|%[Ff][0-4](?:{_CONTINUATION}){{3}}"
+)
+
+
+def _decode_percent_utf8(match: re.Match[str]) -> str:
+    try:
+        decoded = bytes.fromhex(match.group(0).replace("%", "")).decode("utf-8")
+    except UnicodeDecodeError:
+        return match.group(0)  # Overlong, surrogate or out of range
+    if len(decoded) != 1 or unicodedata.category(decoded)[0] in "CZ":
+        return match.group(0)
+    return decoded
+
+
+def _decode_for_display(url: str) -> str:
+    """
+    Decode percent-encoded non-ASCII characters in a URL, for display only.
+
+    Each valid UTF-8 multi-byte sequence that is one visible character is
+    shown as that character; anything else stays exactly as typed. ASCII
+    escapes (%20, %2F, %3C, ...) are never decoded, so the shown text still
+    pastes back to the same URL and can't gain markup characters.
+
+    Categories C* and Z* stay encoded: controls, bidi overrides and zero-width
+    characters (Cf), unassigned and surrogates, and spaces. Private use (Co) is
+    load-bearing for security: markdown_v2 uses U+E000 and U+E001 as token
+    placeholders and strips them from the source, so decoding %EE%80%80 here
+    would let a user forge one.
+    """
+    return _PERCENT_UTF8.sub(_decode_percent_utf8, url)
 
 
 def is_face_line(stripped: str) -> bool:
@@ -110,7 +149,11 @@ def render_inline(text: str) -> str:
         # URL is already escaped by the initial escape() call, so unescape it
         url = url.replace("&amp;", "&")
 
-        return f'<a href="{escape(url)}" rel="nofollow noopener" target="_blank">{link_text}</a>'
+        # Write * as a character reference so the bold/italic passes below
+        # can't see it; the browser decodes the attribute back to the same URL.
+        href = escape(url).replace("*", "&#42;")
+
+        return f'<a href="{href}" rel="nofollow noopener" target="_blank">{link_text}</a>'
 
     text = _sub_links(replace_link, text)
 
@@ -119,19 +162,20 @@ def render_inline(text: str) -> str:
     # To prevent nested <a> tags, we split text on existing anchor tags
     # and only auto-link within non-anchor segments.
     # Excludes * and _ so markdown bold/italic delimiters adjacent to URLs
-    # aren't consumed into the match.
-    _bare_url_re = re.compile(r"https?://[^\s<>\[\]*]+")
+    # aren't consumed into the match. The text is already escaped, so a quote
+    # or angle bracket is the entity &quot; &lt; or &gt;, which also ends it.
+    _bare_url_re = re.compile(r"https?://(?:(?!&quot;|&lt;|&gt;)[^\s<>\[\]*])+")
 
     def replace_bare_url(match: re.Match[str]) -> str:
         escaped_url = match.group(0)
 
         # Work on unescaped URL for punctuation stripping and validation,
         # since the text is already HTML-escaped (& → &amp;) at this point.
-        raw_url = escaped_url.replace("&amp;", "&")
+        raw_url = unescape(escaped_url)
 
         # Strip trailing punctuation that's unlikely to be part of the URL
         trailing = ""
-        while raw_url and raw_url[-1] in ".,!?;:":
+        while raw_url and raw_url[-1] in ".,!?;:'":
             trailing = raw_url[-1] + trailing
             raw_url = raw_url[:-1]
 
@@ -145,10 +189,12 @@ def render_inline(text: str) -> str:
         if not is_safe_url(raw_url):
             return match.group(0)
 
-        # Re-escape the cleaned URL for safe use in href and display text
+        # Re-escape the cleaned URL for safe use in href and display text.
+        # The href stays as typed; only the visible text is decoded.
         safe_url_html = escape(raw_url, quote=True)
+        display_html = escape(_decode_for_display(raw_url), quote=True)
 
-        return f'<a href="{safe_url_html}" rel="nofollow noopener" target="_blank">{safe_url_html}</a>{escape(trailing)}'
+        return f'<a href="{safe_url_html}" rel="nofollow noopener" target="_blank">{display_html}</a>{escape(trailing)}'
 
     # Split on <a ...>...</a> spans to avoid auto-linking inside existing anchors
     parts = re.split(r"(<a\s[^>]*>.*?</a>)", text)

@@ -27,7 +27,8 @@ This module provides security mechanisms for different types of user content:
 
 - **bold** and *italic*
 - [link text](url)
-- Bare URLs auto-linked (https://example.com → clickable link)
+- Bare URLs auto-linked (https://example.com → clickable link); percent-escaped
+  non-ASCII shows decoded in the link text only, the href stays as typed
 - > blockquotes
 - Line breaks
 - Version 2 only: - and 1. lists, `code` spans, ``` code blocks, and (forum
