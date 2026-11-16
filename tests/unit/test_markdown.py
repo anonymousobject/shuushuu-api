@@ -3,10 +3,14 @@ Tests for safe Markdown parser
 """
 
 import gc
+import itertools
+import random
+import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import partial
+from html.parser import HTMLParser
 
 import pytest
 
@@ -669,3 +673,173 @@ class TestStripMarkdown:
     def test_strip_empty_string(self):
         assert strip_markdown("") == ""
         assert strip_markdown(None) == ""
+
+
+class TestAutolinkAroundExplicitLinks:
+    """Bare-URL linking must leave the anchors of explicit links alone."""
+
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_explicit_link_with_text_over_two_lines_is_not_relinked(self, version):
+        assert parse_markdown("x [a\nb](https://b.example/)", version=version) == (
+            "x " + _anchor("https://b.example/", "a<br>\nb")
+        )
+
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_url_text_over_two_lines_in_explicit_link_is_not_nested(self, version):
+        result = parse_markdown("x [see\nhttps://a.example/](https://b.example/)", version=version)
+        assert result.count("<a ") == 1
+        assert 'href="https://b.example/"' in result
+
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_quote_in_multiline_explicit_link_url_cannot_inject_attributes(self, version):
+        result = parse_markdown(
+            'x [a\nb](https://b.example/"onmouseover=alert(1))', version=version
+        )
+        checker = _StructureCheck()
+        checker.feed(result)
+        checker.close()
+        assert result.count("<a ") == 1
+        assert checker.problems == [], result
+
+
+_ALLOWED_TAGS = {
+    "a", "strong", "em", "blockquote", "small", "span", "br",
+    "ul", "ol", "li", "code", "pre", "h2", "h3",
+}  # fmt: skip
+_URL_SCHEME = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*):")
+
+
+def _href_problem(href: str | None) -> str | None:
+    """Why a browser would not treat this href as http(s) or scheme-less, if so."""
+    if href is None:
+        return "href without value"
+    # As a browser reads it: strip C0 controls and space at the ends, drop tab and newlines
+    cleaned = re.sub(r"[\t\n\r]", "", href.strip("".join(map(chr, range(33)))))
+    scheme = _URL_SCHEME.match(cleaned)
+    if scheme and scheme[1].lower() not in ("http", "https"):
+        return f"scheme {scheme[1]}"
+    return None
+
+
+class _StructureCheck(HTMLParser):
+    """Collects every way rendered HTML strays from the tags and attributes we emit."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.problems: list[str] = []
+        self._open: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in _ALLOWED_TAGS:
+            self.problems.append(f"tag <{tag}>")
+            return
+        if tag == "a":
+            self._check_anchor(attrs)
+        elif tag == "span":
+            if attrs != [("class", "spoiler")]:
+                self.problems.append(f"span attrs {attrs}")
+        elif tag == "ol":
+            if attrs and not (
+                len(attrs) == 1 and attrs[0][0] == "start" and (attrs[0][1] or "").isdigit()
+            ):
+                self.problems.append(f"ol attrs {attrs}")
+        elif attrs:
+            self.problems.append(f"{tag} attrs {attrs}")
+        if tag != "br":
+            self._open.append(tag)
+
+    def _check_anchor(self, attrs: list[tuple[str, str | None]]) -> None:
+        if "a" in self._open:
+            self.problems.append("nested <a>")
+        if [name for name, _ in attrs] != ["href", "rel", "target"]:
+            self.problems.append(f"a attrs {attrs}")
+            return
+        values = dict(attrs)
+        if values["rel"] != "nofollow noopener" or values["target"] != "_blank":
+            self.problems.append(f"a attrs {attrs}")
+        if problem := _href_problem(values["href"]):
+            self.problems.append(f"href {problem}: {values['href']!r}")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.problems.append(f"self-closing <{tag}/>")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag not in _ALLOWED_TAGS:
+            self.problems.append(f"end tag </{tag}>")
+        elif tag in self._open:
+            self._open.reverse()
+            self._open.remove(tag)
+            self._open.reverse()
+
+    def handle_comment(self, data: str) -> None:
+        self.problems.append("comment")
+
+    def handle_decl(self, decl: str) -> None:
+        self.problems.append("declaration")
+
+    def handle_pi(self, data: str) -> None:
+        self.problems.append("processing instruction")
+
+    def unknown_decl(self, data: str) -> None:
+        self.problems.append("unknown declaration")
+
+
+_FRAGMENTS = [
+    "[", "]", "(", ")", "](", "*", "**", "`", "```", "\n", " ", ">", "<", '"', "'", "&",
+    "&quot;", "&amp;", "&#42;", "&lt;", "&#x3c;", "&amp;quot;",
+    "http://a.example/", "https://b.example/x", "www.c.example", "Www.d.example/",
+    "javascript:alert(1)", " onmouseover=alert(1) ", "onclick=x", "//evil.example",
+    "[spoiler]", "[/spoiler]", "[quote]", "[/quote]", '[quote="n"]', '[quote="', '"]',
+    "- ", "1. ", "7. ", "# ", "a", "b c", "%EE%80%80", "%E2%80%AE", "\ue000", "0", "\ue001",
+    "=", "</a>", '<a href="', "\t", "data:text/html,x", "style=", "\r", "\x00",
+]  # fmt: skip
+
+# (opening, middle, closing) around nested content; closing is added after a second body
+_WRAPS = [
+    ("[", "](", ")"), ("**", "**", ""), ("*", "*", ""), ("[spoiler]", "[/spoiler]", ""),
+    ("[quote]", "[/quote]", ""), ('[quote="', '"]', "[/quote]"), ("`", "`", ""),
+    ("```\n", "\n```\n", ""), ("> ", "\n", ""), ("- ", "\n", ""), ("(", ")", ""),
+]  # fmt: skip
+
+_RENDERS = [(1, False), (2, False), (2, True)]
+
+
+def _build(rng: random.Random, depth: int) -> str:
+    """Random text made of well-formed constructs wrapped around fragments."""
+    parts: list[str] = []
+    for _ in range(rng.randint(1, 4)):
+        if depth and rng.random() < 0.5:
+            opening, middle, closing = rng.choice(_WRAPS)
+            parts += [opening, _build(rng, depth - 1), middle]
+            if closing:
+                parts += [_build(rng, depth - 1), closing]
+        else:
+            parts.append(rng.choice(_FRAGMENTS))
+    return "".join(parts)
+
+
+def _structure_corpus(random_count: int) -> Iterator[str]:
+    for size in (1, 2):
+        for combo in itertools.product(_FRAGMENTS, repeat=size):
+            yield "".join(combo)
+    rng = random.Random(0)
+    for _ in range(random_count):
+        yield "".join(rng.choices(_FRAGMENTS, k=rng.randint(4, 14)))
+        yield _build(rng, 3)
+
+
+class TestRenderedHtmlStructure:
+    """Whatever the input, the output holds only the tags and attributes we emit."""
+
+    def test_rendered_html_has_only_allowed_structure(self):
+        failures = []
+        for text in _structure_corpus(10_000):
+            for version, headings in _RENDERS:
+                checker = _StructureCheck()
+                checker.feed(parse_markdown(text, version, headings=headings))
+                checker.close()
+                if checker.problems:
+                    failures.append(
+                        f"input={text!r} version={version} headings={headings}: {checker.problems}"
+                    )
+        assert not failures, f"{len(failures)} bad renders, first few:\n" + "\n".join(failures[:5])
