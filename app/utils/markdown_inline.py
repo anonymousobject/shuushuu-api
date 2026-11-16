@@ -165,7 +165,9 @@ def render_inline(text: str) -> str:
     # Excludes * and _ so markdown bold/italic delimiters adjacent to URLs
     # aren't consumed into the match. The text is already escaped, so a quote
     # or angle bracket is the entity &quot; &lt; or &gt;, which also ends it.
-    _bare_url_re = re.compile(r"https?://(?:(?!&quot;|&lt;|&gt;)[^\s<>\[\]*])+")
+    # A raw " only ever comes from HTML this module wrote, so excluding it
+    # keeps a match from running out of an attribute.
+    _bare_url_re = re.compile(r'https?://(?:(?!&quot;|&lt;|&gt;)[^\s<>\[\]*"])+')
 
     def replace_bare_url(match: re.Match[str]) -> str:
         escaped_url = match.group(0)
@@ -198,7 +200,8 @@ def render_inline(text: str) -> str:
         return f'<a href="{safe_url_html}" rel="nofollow noopener" target="_blank">{display_html}</a>{escape(trailing)}'
 
     # Split on <a ...>...</a> spans to avoid auto-linking inside existing anchors
-    parts = re.split(r"(<a\s[^>]*>.*?</a>)", text)
+    # DOTALL: an explicit link's text can span lines
+    parts = re.split(r"(<a\s[^>]*>.*?</a>)", text, flags=re.DOTALL)
     for i, part in enumerate(parts):
         # Only process segments that are NOT existing anchor tags
         if not part.startswith("<a "):
