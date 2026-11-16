@@ -4,13 +4,16 @@ Tests for safe Markdown parser
 
 import gc
 import itertools
+import json
 import random
 import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import partial
+from html import escape
 from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 
@@ -609,6 +612,11 @@ class TestParseMarkdownLinkScaling:
         with render_time_limit():
             v1(text)
 
+    @pytest.mark.parametrize("tail", [")", ".", ").", "(x)"], ids=repr)
+    def test_bare_url_with_long_trailing_run(self, tail):
+        with render_time_limit():
+            v1("https://a.example/" + tail * 40000)
+
 
 class TestParseMarkdownFaces:
     """Tests for emoticon faces that start with > are not quotes"""
@@ -675,14 +683,57 @@ class TestStripMarkdown:
         assert strip_markdown(None) == ""
 
 
+_LINKIFY_CASES = json.loads((Path(__file__).parent / "linkify_cases.json").read_text())["cases"]
+
+
+class TestSharedLinkifyCases:
+    """
+    The bare-URL rules shared with the frontend's plain-text linkifier.
+
+    The frontend runs the same table, so the two can't drift apart unnoticed.
+    """
+
+    @pytest.mark.parametrize("version", [1, 2])
+    @pytest.mark.parametrize("case", _LINKIFY_CASES, ids=lambda case: case["name"])
+    def test_case(self, version, case):
+        expected = "".join(
+            escape(segment)
+            if isinstance(segment, str)
+            else _anchor(escape(segment["href"]), escape(segment["text"]))
+            for segment in case["segments"]
+        )
+        assert parse_markdown(case["text"], version=version) == expected
+
+
 class TestAutolinkAroundExplicitLinks:
     """Bare-URL linking must leave the anchors of explicit links alone."""
+
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_www_in_explicit_link_text_is_not_relinked(self, version):
+        assert parse_markdown("[www.a.example](https://b.example/)", version=version) == _anchor(
+            "https://b.example/", "www.a.example"
+        )
 
     @pytest.mark.parametrize("version", [1, 2])
     def test_explicit_link_with_text_over_two_lines_is_not_relinked(self, version):
         assert parse_markdown("x [a\nb](https://b.example/)", version=version) == (
             "x " + _anchor("https://b.example/", "a<br>\nb")
         )
+
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_url_text_over_two_lines_in_explicit_link_is_not_relinked(self, version):
+        result = parse_markdown("x [www.a.example\nmore](https://b.example/)", version=version)
+        assert result == "x " + _anchor("https://b.example/", "www.a.example<br>\nmore")
+
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_explicit_link_to_www_gets_https_href(self, version):
+        assert parse_markdown("[x](Www.a.example/y)", version=version) == _anchor(
+            "https://Www.a.example/y", "x"
+        )
+
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_explicit_relative_link_keeps_its_href(self, version):
+        assert parse_markdown("[x](/images/1)", version=version) == _anchor("/images/1", "x")
 
     @pytest.mark.parametrize("version", [1, 2])
     def test_url_text_over_two_lines_in_explicit_link_is_not_nested(self, version):

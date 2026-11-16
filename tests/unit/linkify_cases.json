@@ -1,0 +1,792 @@
+{
+  "about": [
+    "How bare URLs in text become links. Two implementations follow this table:",
+    "the API's markdown renderer (app/utils/markdown_inline.py, tested in",
+    "tests/unit/test_markdown.py) and the frontend's plain-text linkifier",
+    "(<shuushuu-frontend-repo>/src/lib/utils/linkify.ts). This copy in the API",
+    "repo is the original; the frontend keeps an identical copy. Change both",
+    "together. Each case is one line of text with no markdown in it. A segment",
+    "is either plain text (a string) or a link (href as typed, plus the text shown)."
+  ],
+  "cases": [
+    {
+      "name": "no url",
+      "text": "no links here",
+      "segments": [
+        "no links here"
+      ]
+    },
+    {
+      "name": "https url",
+      "text": "https://a.example/x",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        }
+      ]
+    },
+    {
+      "name": "http url",
+      "text": "http://a.example/x",
+      "segments": [
+        {
+          "href": "http://a.example/x",
+          "text": "http://a.example/x"
+        }
+      ]
+    },
+    {
+      "name": "url inside text",
+      "text": "see https://a.example/x now",
+      "segments": [
+        "see ",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        " now"
+      ]
+    },
+    {
+      "name": "two urls",
+      "text": "https://a.example/x and https://a.example/y",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        " and ",
+        {
+          "href": "https://a.example/y",
+          "text": "https://a.example/y"
+        }
+      ]
+    },
+    {
+      "name": "fragment",
+      "text": "https://a.example/x#s-2.3",
+      "segments": [
+        {
+          "href": "https://a.example/x#s-2.3",
+          "text": "https://a.example/x#s-2.3"
+        }
+      ]
+    },
+    {
+      "name": "query with ampersand",
+      "text": "https://a.example/?a=1&b=2",
+      "segments": [
+        {
+          "href": "https://a.example/?a=1&b=2",
+          "text": "https://a.example/?a=1&b=2"
+        }
+      ]
+    },
+    {
+      "name": "html in surrounding text is text",
+      "text": "a < b & c https://a.example/x",
+      "segments": [
+        "a < b & c ",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        }
+      ]
+    },
+    {
+      "name": "trailing . stays outside",
+      "text": "https://a.example/x.",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "."
+      ]
+    },
+    {
+      "name": "trailing , stays outside",
+      "text": "https://a.example/x,",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        ","
+      ]
+    },
+    {
+      "name": "trailing ! stays outside",
+      "text": "https://a.example/x!",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "!"
+      ]
+    },
+    {
+      "name": "trailing ? stays outside",
+      "text": "https://a.example/x?",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "?"
+      ]
+    },
+    {
+      "name": "trailing ; stays outside",
+      "text": "https://a.example/x;",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        ";"
+      ]
+    },
+    {
+      "name": "trailing : stays outside",
+      "text": "https://a.example/x:",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        ":"
+      ]
+    },
+    {
+      "name": "trailing ' stays outside",
+      "text": "https://a.example/x'",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "'"
+      ]
+    },
+    {
+      "name": "several trailing marks",
+      "text": "https://a.example/x?!",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "?!"
+      ]
+    },
+    {
+      "name": "double quotes end the url",
+      "text": "see \"https://a.example/x\" ok",
+      "segments": [
+        "see \"",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "\" ok"
+      ]
+    },
+    {
+      "name": "angle brackets end the url",
+      "text": "<https://a.example/x>",
+      "segments": [
+        "<",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        ">"
+      ]
+    },
+    {
+      "name": "angle bracket inside ends the url",
+      "text": "https://a.example/<b>",
+      "segments": [
+        {
+          "href": "https://a.example/",
+          "text": "https://a.example/"
+        },
+        "<b>"
+      ]
+    },
+    {
+      "name": "apostrophe inside the url",
+      "text": "https://a.example/it's",
+      "segments": [
+        {
+          "href": "https://a.example/it's",
+          "text": "https://a.example/it's"
+        }
+      ]
+    },
+    {
+      "name": "apostrophes around the url",
+      "text": "'https://a.example/x'",
+      "segments": [
+        "'",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "'"
+      ]
+    },
+    {
+      "name": "balanced parentheses stay in",
+      "text": "https://ja.wikipedia.org/wiki/Foo_(bar)",
+      "segments": [
+        {
+          "href": "https://ja.wikipedia.org/wiki/Foo_(bar)",
+          "text": "https://ja.wikipedia.org/wiki/Foo_(bar)"
+        }
+      ]
+    },
+    {
+      "name": "wrapping parentheses stay out",
+      "text": "(https://a.example/x)",
+      "segments": [
+        "(",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        ")"
+      ]
+    },
+    {
+      "name": "wrapped url with its own parentheses",
+      "text": "(see https://a.example/Foo_(bar))",
+      "segments": [
+        "(see ",
+        {
+          "href": "https://a.example/Foo_(bar)",
+          "text": "https://a.example/Foo_(bar)"
+        },
+        ")"
+      ]
+    },
+    {
+      "name": "closing parenthesis then period",
+      "text": "(https://a.example/x).",
+      "segments": [
+        "(",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        ")."
+      ]
+    },
+    {
+      "name": "square brackets end the url",
+      "text": "[https://a.example/x]",
+      "segments": [
+        "[",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "]"
+      ]
+    },
+    {
+      "name": "asterisk ends the url",
+      "text": "https://a.example/x*y",
+      "segments": [
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        "*y"
+      ]
+    },
+    {
+      "name": "raw non-ascii in the url",
+      "text": "https://ja.wikipedia.org/wiki/神崎蘭子",
+      "segments": [
+        {
+          "href": "https://ja.wikipedia.org/wiki/神崎蘭子",
+          "text": "https://ja.wikipedia.org/wiki/神崎蘭子"
+        }
+      ]
+    },
+    {
+      "name": "www gets an https href",
+      "text": "see www.example.com/x, ok",
+      "segments": [
+        "see ",
+        {
+          "href": "https://www.example.com/x",
+          "text": "www.example.com/x"
+        },
+        ", ok"
+      ]
+    },
+    {
+      "name": "www in parentheses",
+      "text": "(www.a.example)",
+      "segments": [
+        "(",
+        {
+          "href": "https://www.a.example",
+          "text": "www.a.example"
+        },
+        ")"
+      ]
+    },
+    {
+      "name": "www after a quote",
+      "text": "\"www.a.example\"",
+      "segments": [
+        "\"",
+        {
+          "href": "https://www.a.example",
+          "text": "www.a.example"
+        },
+        "\""
+      ]
+    },
+    {
+      "name": "https www is one link",
+      "text": "https://www.example.com",
+      "segments": [
+        {
+          "href": "https://www.example.com",
+          "text": "https://www.example.com"
+        }
+      ]
+    },
+    {
+      "name": "www before a non-ascii label",
+      "text": "www.日本.example",
+      "segments": [
+        {
+          "href": "https://www.日本.example",
+          "text": "www.日本.example"
+        }
+      ]
+    },
+    {
+      "name": "www not linked: awww.cute",
+      "text": "awww.cute",
+      "segments": [
+        "awww.cute"
+      ]
+    },
+    {
+      "name": "www not linked: foo@www.example.com",
+      "text": "foo@www.example.com",
+      "segments": [
+        "foo@www.example.com"
+      ]
+    },
+    {
+      "name": "www not linked: x.www.example.com",
+      "text": "x.www.example.com",
+      "segments": [
+        "x.www.example.com"
+      ]
+    },
+    {
+      "name": "www not linked: a/www.example.com",
+      "text": "a/www.example.com",
+      "segments": [
+        "a/www.example.com"
+      ]
+    },
+    {
+      "name": "www not linked: a-www.example.com",
+      "text": "a-www.example.com",
+      "segments": [
+        "a-www.example.com"
+      ]
+    },
+    {
+      "name": "www not linked: a_www.example.com",
+      "text": "a_www.example.com",
+      "segments": [
+        "a_www.example.com"
+      ]
+    },
+    {
+      "name": "www not linked: 日本www.example.com",
+      "text": "日本www.example.com",
+      "segments": [
+        "日本www.example.com"
+      ]
+    },
+    {
+      "name": "www not linked: www...",
+      "text": "www...",
+      "segments": [
+        "www..."
+      ]
+    },
+    {
+      "name": "www not linked: www.",
+      "text": "www.",
+      "segments": [
+        "www."
+      ]
+    },
+    {
+      "name": "www not linked: www. example",
+      "text": "www. example",
+      "segments": [
+        "www. example"
+      ]
+    },
+    {
+      "name": "decode hangul, keep ascii escapes",
+      "text": "https://a.example/w/%EC%B9%B8%EC%9E%90%ED%82%A4%20%EB%9E%80%EC%BD%94/%EC%95%84%EC%9D%B4%EB%8F%8C#s-2.3",
+      "segments": [
+        {
+          "href": "https://a.example/w/%EC%B9%B8%EC%9E%90%ED%82%A4%20%EB%9E%80%EC%BD%94/%EC%95%84%EC%9D%B4%EB%8F%8C#s-2.3",
+          "text": "https://a.example/w/칸자키%20란코/아이돌#s-2.3"
+        }
+      ]
+    },
+    {
+      "name": "decode lowercase hex",
+      "text": "https://a.example/%ec%b9%b8",
+      "segments": [
+        {
+          "href": "https://a.example/%ec%b9%b8",
+          "text": "https://a.example/칸"
+        }
+      ]
+    },
+    {
+      "name": "decode 2-byte sequence",
+      "text": "https://a.example/%C3%A9",
+      "segments": [
+        {
+          "href": "https://a.example/%C3%A9",
+          "text": "https://a.example/é"
+        }
+      ]
+    },
+    {
+      "name": "decode 4-byte sequence",
+      "text": "https://a.example/%F0%9F%98%80",
+      "segments": [
+        {
+          "href": "https://a.example/%F0%9F%98%80",
+          "text": "https://a.example/😀"
+        }
+      ]
+    },
+    {
+      "name": "decode back-to-back sequences",
+      "text": "https://a.example/%EC%B9%B8%EC%9E%90",
+      "segments": [
+        {
+          "href": "https://a.example/%EC%B9%B8%EC%9E%90",
+          "text": "https://a.example/칸자"
+        }
+      ]
+    },
+    {
+      "name": "ascii escapes stay",
+      "text": "https://a.example/a%2Fb%23c%25d%2Ae%3Cf%22g",
+      "segments": [
+        {
+          "href": "https://a.example/a%2Fb%23c%25d%2Ae%3Cf%22g",
+          "text": "https://a.example/a%2Fb%23c%25d%2Ae%3Cf%22g"
+        }
+      ]
+    },
+    {
+      "name": "invalid: shift-jis stays",
+      "text": "https://a.example/%83%4A",
+      "segments": [
+        {
+          "href": "https://a.example/%83%4A",
+          "text": "https://a.example/%83%4A"
+        }
+      ]
+    },
+    {
+      "name": "invalid: truncated stays",
+      "text": "https://a.example/%EC%B9",
+      "segments": [
+        {
+          "href": "https://a.example/%EC%B9",
+          "text": "https://a.example/%EC%B9"
+        }
+      ]
+    },
+    {
+      "name": "invalid: overlong stays",
+      "text": "https://a.example/%C0%AF",
+      "segments": [
+        {
+          "href": "https://a.example/%C0%AF",
+          "text": "https://a.example/%C0%AF"
+        }
+      ]
+    },
+    {
+      "name": "invalid: overlong 3-byte stays",
+      "text": "https://a.example/%E0%80%AF",
+      "segments": [
+        {
+          "href": "https://a.example/%E0%80%AF",
+          "text": "https://a.example/%E0%80%AF"
+        }
+      ]
+    },
+    {
+      "name": "invalid: surrogate stays",
+      "text": "https://a.example/%ED%A0%80",
+      "segments": [
+        {
+          "href": "https://a.example/%ED%A0%80",
+          "text": "https://a.example/%ED%A0%80"
+        }
+      ]
+    },
+    {
+      "name": "invalid: above U+10FFFF stays",
+      "text": "https://a.example/%F4%90%80%80",
+      "segments": [
+        {
+          "href": "https://a.example/%F4%90%80%80",
+          "text": "https://a.example/%F4%90%80%80"
+        }
+      ]
+    },
+    {
+      "name": "invalid: lone continuation stays",
+      "text": "https://a.example/%80",
+      "segments": [
+        {
+          "href": "https://a.example/%80",
+          "text": "https://a.example/%80"
+        }
+      ]
+    },
+    {
+      "name": "valid after invalid",
+      "text": "https://a.example/%83%4A%EC%B9%B8",
+      "segments": [
+        {
+          "href": "https://a.example/%83%4A%EC%B9%B8",
+          "text": "https://a.example/%83%4A칸"
+        }
+      ]
+    },
+    {
+      "name": "valid after truncated",
+      "text": "https://a.example/%EC%B9%EC%B9%B8",
+      "segments": [
+        {
+          "href": "https://a.example/%EC%B9%EC%B9%B8",
+          "text": "https://a.example/%EC%B9칸"
+        }
+      ]
+    },
+    {
+      "name": "right-to-left override stays",
+      "text": "https://a.example/%E2%80%AE",
+      "segments": [
+        {
+          "href": "https://a.example/%E2%80%AE",
+          "text": "https://a.example/%E2%80%AE"
+        }
+      ]
+    },
+    {
+      "name": "zero-width space stays",
+      "text": "https://a.example/%E2%80%8B",
+      "segments": [
+        {
+          "href": "https://a.example/%E2%80%8B",
+          "text": "https://a.example/%E2%80%8B"
+        }
+      ]
+    },
+    {
+      "name": "byte order mark stays",
+      "text": "https://a.example/%EF%BB%BF",
+      "segments": [
+        {
+          "href": "https://a.example/%EF%BB%BF",
+          "text": "https://a.example/%EF%BB%BF"
+        }
+      ]
+    },
+    {
+      "name": "no-break space stays",
+      "text": "https://a.example/%C2%A0",
+      "segments": [
+        {
+          "href": "https://a.example/%C2%A0",
+          "text": "https://a.example/%C2%A0"
+        }
+      ]
+    },
+    {
+      "name": "ideographic space stays",
+      "text": "https://a.example/%E3%80%80",
+      "segments": [
+        {
+          "href": "https://a.example/%E3%80%80",
+          "text": "https://a.example/%E3%80%80"
+        }
+      ]
+    },
+    {
+      "name": "line separator stays",
+      "text": "https://a.example/%E2%80%A8",
+      "segments": [
+        {
+          "href": "https://a.example/%E2%80%A8",
+          "text": "https://a.example/%E2%80%A8"
+        }
+      ]
+    },
+    {
+      "name": "c1 control stays",
+      "text": "https://a.example/%C2%85",
+      "segments": [
+        {
+          "href": "https://a.example/%C2%85",
+          "text": "https://a.example/%C2%85"
+        }
+      ]
+    },
+    {
+      "name": "private use stays",
+      "text": "https://a.example/%EE%80%80",
+      "segments": [
+        {
+          "href": "https://a.example/%EE%80%80",
+          "text": "https://a.example/%EE%80%80"
+        }
+      ]
+    },
+    {
+      "name": "noncharacter stays",
+      "text": "https://a.example/%EF%BF%BF",
+      "segments": [
+        {
+          "href": "https://a.example/%EF%BF%BF",
+          "text": "https://a.example/%EF%BF%BF"
+        }
+      ]
+    },
+    {
+      "name": "www with decoding",
+      "text": "www.a.example/%EC%B9%B8",
+      "segments": [
+        {
+          "href": "https://www.a.example/%EC%B9%B8",
+          "text": "www.a.example/칸"
+        }
+      ]
+    },
+    {
+      "name": "decoded url then period",
+      "text": "see https://a.example/%EC%B9%B8.",
+      "segments": [
+        "see ",
+        {
+          "href": "https://a.example/%EC%B9%B8",
+          "text": "https://a.example/칸"
+        },
+        "."
+      ]
+    },
+    {
+      "name": "capitalised www",
+      "text": "Www.example.com/x",
+      "segments": [
+        {
+          "href": "https://Www.example.com/x",
+          "text": "Www.example.com/x"
+        }
+      ]
+    },
+    {
+      "name": "upper-case www",
+      "text": "see WWW.EXAMPLE.COM now",
+      "segments": [
+        "see ",
+        {
+          "href": "https://WWW.EXAMPLE.COM",
+          "text": "WWW.EXAMPLE.COM"
+        },
+        " now"
+      ]
+    },
+    {
+      "name": "upper-case scheme",
+      "text": "HTTPS://A.EXAMPLE/x",
+      "segments": [
+        {
+          "href": "HTTPS://A.EXAMPLE/x",
+          "text": "HTTPS://A.EXAMPLE/x"
+        }
+      ]
+    },
+    {
+      "name": "period inside closing parenthesis",
+      "text": "(see https://a.example/x.)",
+      "segments": [
+        "(see ",
+        {
+          "href": "https://a.example/x",
+          "text": "https://a.example/x"
+        },
+        ".)"
+      ]
+    },
+    {
+      "name": "www with period inside closing parenthesis",
+      "text": "(see www.a.example.)",
+      "segments": [
+        "(see ",
+        {
+          "href": "https://www.a.example",
+          "text": "www.a.example"
+        },
+        ".)"
+      ]
+    },
+    {
+      "name": "own parentheses, then period and closing parenthesis",
+      "text": "(https://a.example/Foo_(bar).)",
+      "segments": [
+        "(",
+        {
+          "href": "https://a.example/Foo_(bar)",
+          "text": "https://a.example/Foo_(bar)"
+        },
+        ".)"
+      ]
+    },
+    {
+      "name": "www not linked: www._",
+      "text": "www._",
+      "segments": [
+        "www._"
+      ]
+    },
+    {
+      "name": "www not linked: www.__init__",
+      "text": "www.__init__",
+      "segments": [
+        "www.__init__"
+      ]
+    }
+  ]
+}
