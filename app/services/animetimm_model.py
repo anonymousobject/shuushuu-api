@@ -185,6 +185,23 @@ class AnimetimmModel:
 
         return results
 
+    async def embed(self, image_path: str) -> np.ndarray[Any, np.dtype[np.float32]]:
+        """The model's pooled feature vector for an image (the "embedding" ONNX output).
+
+        This is the 1024-d input to the Danbooru classification head, and the
+        feature the theme-tag probe (app/services/ml_probe) is trained on.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._embed_sync, image_path)
+
+    def _embed_sync(self, image_path: str) -> np.ndarray[Any, np.dtype[np.float32]]:
+        if not self.session:
+            raise RuntimeError("Model not loaded. Call load() first.")
+        img_array = self._preprocess_image(image_path)
+        outputs = self.session.run(["embedding"], {self.input_name: img_array})
+        embedding: np.ndarray[Any, np.dtype[np.float32]] = outputs[0][0]
+        return embedding
+
     def _preprocess_image(self, image_path: str) -> np.ndarray[Any, np.dtype[np.float32]]:
         """Preprocess an image using this model's preprocess.json pipeline."""
         return apply_test_pipeline(load_rgb(image_path), self.preprocess_pipeline)

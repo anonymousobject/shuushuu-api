@@ -202,29 +202,6 @@ def test_corrupt_image_is_skipped_not_fatal(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _FakeSession:
-    """Minimal ONNX session stub for predict() unit tests."""
-
-    def __init__(self, probabilities: list[float]) -> None:
-        # probabilities must align with the tag lists passed to predict()
-        self._probs = np.array(probabilities, dtype=np.float32)
-
-    def run(self, outputs, feed):
-        # predict() does session.run(["prediction"], {...})[0][0]
-        return [np.array([self._probs])]
-
-
-def _make_fake_pipeline_patches(monkeypatch):
-    """Patch load_rgb and apply_test_pipeline so predict() needs no real image."""
-    dummy_img = object()
-    monkeypatch.setattr(ml_gpu_infer, "load_rgb", lambda path: dummy_img)
-    monkeypatch.setattr(
-        ml_gpu_infer,
-        "apply_test_pipeline",
-        lambda img, pipeline: np.zeros((1, 3, 448, 448), dtype=np.float32),
-    )
-
-
 # Tags layout used by the synthetic tests:
 #   index 0: general tag "sky",       category=0 (GENERAL), threshold=0.35, prob=0.9
 #   index 1: rating tag "safe",       category=9 (rating),  threshold=0.35, prob=0.8
@@ -240,74 +217,61 @@ DUMMY_PIPELINE: list = []
 
 
 @pytest.mark.unit
-def test_predict_include_character_emits_general_and_character(monkeypatch, tmp_path):
+def test_select_predictions_include_character_emits_general_and_character():
     """With allowed_categories={GENERAL, CHARACTER}, predictions for both categories appear."""
-    _make_fake_pipeline_patches(monkeypatch)
-
-    session = _FakeSession(_PROBS)
-    results = ml_gpu_infer.predict(
-        session=session,
-        input_name="input",
-        names=_NAMES,
-        categories=_CATEGORIES,
-        thresholds=_THRESHOLDS,
-        pipeline=DUMMY_PIPELINE,
-        image_path=str(tmp_path / "fake.png"),
-        min_confidence=0.35,
-        model_version="test-model",
-        allowed_categories={ml_gpu_infer.GENERAL_CATEGORY, ml_gpu_infer.CHARACTER_CATEGORY},
+    results = ml_gpu_infer.select_predictions(
+        np.array(_PROBS, dtype=np.float32),
+        _NAMES,
+        _CATEGORIES,
+        _THRESHOLDS,
+        0.35,
+        "test-model",
+        {ml_gpu_infer.GENERAL_CATEGORY, ml_gpu_infer.CHARACTER_CATEGORY},
     )
 
-    emitted_tags = {r["external_tag"] for r in results}
-    emitted_categories = {r["category"] for r in results}
-
-    # General tags present
-    assert "sky" in emitted_tags
-    assert "outdoors" in emitted_tags
-    # Character tag present
-    assert "reimu" in emitted_tags
-    # Rating tag (category 9) not present
-    assert "safe" not in emitted_tags
-
-    assert ml_gpu_infer.GENERAL_CATEGORY in emitted_categories
-    assert ml_gpu_infer.CHARACTER_CATEGORY in emitted_categories
-
-    # Each result carries a category key
-    for r in results:
-        assert "category" in r
+    emitted_tags = [r["external_tag"] for r in results]
+    assert emitted_tags == ["sky", "reimu", "outdoors"], "sorted by confidence, no rating tag"
+    assert {r["category"] for r in results} == {
+        ml_gpu_infer.GENERAL_CATEGORY,
+        ml_gpu_infer.CHARACTER_CATEGORY,
+    }
+    assert all(r["model_version"] == "test-model" for r in results)
 
 
 @pytest.mark.unit
-def test_predict_no_include_character_emits_general_only(monkeypatch, tmp_path):
-    """With allowed_categories={GENERAL} only, character predictions are suppressed."""
-    _make_fake_pipeline_patches(monkeypatch)
-
-    session = _FakeSession(_PROBS)
-    results = ml_gpu_infer.predict(
-        session=session,
-        input_name="input",
-        names=_NAMES,
-        categories=_CATEGORIES,
-        thresholds=_THRESHOLDS,
-        pipeline=DUMMY_PIPELINE,
-        image_path=str(tmp_path / "fake.png"),
-        min_confidence=0.35,
-        model_version="test-model",
-        allowed_categories={ml_gpu_infer.GENERAL_CATEGORY},
+def test_select_predictions_general_only_suppresses_character():
+    results = ml_gpu_infer.select_predictions(
+        np.array(_PROBS, dtype=np.float32),
+        _NAMES,
+        _CATEGORIES,
+        _THRESHOLDS,
+        0.35,
+        "test-model",
+        {ml_gpu_infer.GENERAL_CATEGORY},
     )
 
-    emitted_tags = {r["external_tag"] for r in results}
-    emitted_categories = {r["category"] for r in results}
+    assert [r["external_tag"] for r in results] == ["sky", "outdoors"]
+    assert {r["category"] for r in results} == {ml_gpu_infer.GENERAL_CATEGORY}
 
-    assert "sky" in emitted_tags
-    assert "outdoors" in emitted_tags
-    assert "reimu" not in emitted_tags  # character tag suppressed
-    assert "safe" not in emitted_tags  # rating tag suppressed
 
-    assert emitted_categories == {ml_gpu_infer.GENERAL_CATEGORY}
+@pytest.mark.unit
+def test_select_predictions_applies_the_higher_of_tag_and_floor_threshold():
+    results = ml_gpu_infer.select_predictions(
+        np.array([0.5, 0.5], dtype=np.float32),
+        ["a", "b"],
+        [0, 0],
+        [0.6, 0.2],  # a's own threshold is above 0.5; b's is below the 0.35 floor
+        0.35,
+        "m",
+        {0},
+    )
+    assert [r["external_tag"] for r in results] == ["b"]
 
-    for r in results:
-        assert "category" in r
+
+@pytest.mark.unit
+def test_predict_wrapper_is_gone():
+    """run() uses infer() + select_predictions(); no compatibility wrapper is kept."""
+    assert not hasattr(ml_gpu_infer, "predict")
 
 
 @pytest.mark.unit
@@ -321,3 +285,345 @@ def test_help_shows_include_character_flag():
     assert result.returncode == 0
     assert "--include-character" in result.stdout
     assert "--no-include-character" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Embedding store writer — the runner's append-only output, read back through
+# the app's reader (app/services/ml_probe/store.py)
+# ---------------------------------------------------------------------------
+
+
+def _writer(tmp_path, meta=None):
+    return ml_gpu_infer.EmbeddingWriter(tmp_path, dim=4, meta=meta or {"model": "m"})
+
+
+@pytest.mark.unit
+def test_writer_round_trips_through_reader(tmp_path):
+    from app.services.ml_probe.store import open_embedding_store
+
+    writer = ml_gpu_infer.EmbeddingWriter(
+        tmp_path, dim=4, meta={"model": "m", "variant": "thumbs", "storage_root": "/x"}
+    )
+    writer.append(5, np.arange(4, dtype=np.float32))
+    writer.append(9, np.ones(4, dtype=np.float32))
+    writer.close()
+
+    store = open_embedding_store(tmp_path)
+
+    assert store.ids.tolist() == [5, 9]
+    assert np.allclose(store.vectors[0], [0, 1, 2, 3])
+    assert np.allclose(store.vectors[1], [1, 1, 1, 1])
+    assert store.meta["model"] == "m"
+    assert store.meta["dim"] == 4
+    assert store.meta["dtype"] == "float16"
+    assert store.meta["variant"] == "thumbs"
+    assert store.meta["storage_root"] == "/x"
+    assert "created_at" in store.meta
+
+
+@pytest.mark.unit
+def test_writer_resume_truncates_partial_vector(tmp_path):
+    writer = _writer(tmp_path)
+    for image_id in (1, 2, 3):
+        writer.append(image_id, np.full(4, image_id, dtype=np.float32))
+    writer.close()
+    with open(tmp_path / "embeddings.f16", "ab") as f:
+        f.write(b"\x00" * 8)  # crash mid-record: a half-written 4th vector, no id
+
+    resumed = _writer(tmp_path)
+
+    assert resumed.done_ids == {1, 2, 3}
+    assert (tmp_path / "embeddings.f16").stat().st_size == 3 * 4 * 2
+    assert (tmp_path / "embeddings.ids").stat().st_size == 3 * 8
+
+
+@pytest.mark.unit
+def test_writer_resume_truncates_orphan_id(tmp_path):
+    writer = _writer(tmp_path)
+    for image_id in (1, 2, 3):
+        writer.append(image_id, np.full(4, image_id, dtype=np.float32))
+    writer.close()
+    with open(tmp_path / "embeddings.ids", "ab") as f:
+        f.write(np.int64(4).tobytes())  # an id with no vector behind it
+
+    resumed = _writer(tmp_path)
+
+    assert resumed.done_ids == {1, 2, 3}
+    assert (tmp_path / "embeddings.ids").stat().st_size == 3 * 8
+
+
+@pytest.mark.unit
+def test_writer_append_after_resume_continues_the_store(tmp_path):
+    from app.services.ml_probe.store import open_embedding_store
+
+    writer = _writer(tmp_path)
+    writer.append(1, np.zeros(4, dtype=np.float32))
+    writer.close()
+
+    resumed = _writer(tmp_path)
+    resumed.append(2, np.ones(4, dtype=np.float32))
+    resumed.close()
+
+    assert open_embedding_store(tmp_path).ids.tolist() == [1, 2]
+
+
+@pytest.mark.unit
+def test_writer_rejects_store_from_other_model(tmp_path):
+    _writer(tmp_path, meta={"model": "m"}).close()
+
+    with pytest.raises(ValueError, match="model"):
+        _writer(tmp_path, meta={"model": "other"})
+
+
+@pytest.mark.unit
+def test_writer_rejects_store_with_other_dim(tmp_path):
+    _writer(tmp_path, meta={"model": "m"}).close()
+
+    with pytest.raises(ValueError, match="dim"):
+        ml_gpu_infer.EmbeddingWriter(tmp_path, dim=8, meta={"model": "m"})
+
+
+# ---------------------------------------------------------------------------
+# Embedding extraction: prefetch, CLI validation, and the predict() split
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_bounded_prefetch_preserves_order_and_yields_exceptions():
+    def fn(i):
+        if i == 2:
+            raise ValueError("bad")
+        return i * 10
+
+    out = list(ml_gpu_infer.bounded_prefetch(fn, [0, 1, 2, 3], workers=2, window=2))
+
+    assert [item for item, _ in out] == [0, 1, 2, 3]
+    assert [value for _, value in out][:2] == [0, 10]
+    assert isinstance(out[2][1], ValueError)
+    assert out[3][1] == 30
+
+
+@pytest.mark.unit
+def test_bounded_prefetch_handles_empty_input():
+    assert list(ml_gpu_infer.bounded_prefetch(lambda i: i, [], workers=2, window=2)) == []
+
+
+@pytest.mark.unit
+def test_cli_requires_out_or_embeddings_out():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            "m",
+            "--model-dir",
+            "d",
+            "--storage-path",
+            "s",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "one of --out or --embeddings-out is required" in result.stderr
+
+
+@pytest.mark.unit
+def test_infer_returns_embedding_only_when_asked():
+    class _TwoOutputSession:
+        def run(self, outputs, feed):
+            assert feed["input"].shape == (1, 3, 448, 448)
+            table = {
+                "prediction": np.array([[0.1, 0.9]], dtype=np.float32),
+                "embedding": np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
+            }
+            return [table[name] for name in outputs]
+
+    x = np.zeros((1, 3, 448, 448), dtype=np.float32)
+    probs, emb = ml_gpu_infer.infer(_TwoOutputSession(), "input", x, with_embedding=False)
+    assert probs.tolist() == pytest.approx([0.1, 0.9]) and emb is None
+    probs, emb = ml_gpu_infer.infer(_TwoOutputSession(), "input", x, with_embedding=True)
+    assert emb is not None and emb.tolist() == [1.0, 2.0, 3.0]
+
+
+# ---------------------------------------------------------------------------
+# --embeddings-out end to end, against the real model (skipped without it)
+# ---------------------------------------------------------------------------
+
+_NEEDS_MODEL = pytest.mark.skipif(
+    not (_MODEL_DIR / "model.onnx").exists(),
+    reason="animetimm model not present; set ML_MODELS_PATH to the dir containing it",
+)
+
+
+def _synthetic_storage(tmp_path, image_ids, *, corrupt=()):
+    """A fullsize/ dir with one random PNG per id (or junk bytes for ids in corrupt)."""
+    storage = tmp_path / "storage"
+    (storage / "fullsize").mkdir(parents=True, exist_ok=True)
+    rows = []
+    for image_id in image_ids:
+        path = storage / "fullsize" / f"img{image_id}.png"
+        if image_id in corrupt:
+            path.write_bytes(b"not an image")
+        else:
+            arr = np.random.default_rng(image_id).integers(0, 256, (400, 300, 3), dtype=np.uint8)
+            Image.fromarray(arr).save(path)
+        rows.append({"image_id": image_id, "filename": f"img{image_id}", "ext": "png"})
+    return storage, rows
+
+
+def _run_embeddings(tmp_path, storage, rows, store_dir, name="m.jsonl"):
+    manifest = tmp_path / name
+    manifest.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return subprocess.run(
+        [
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            str(manifest),
+            "--embeddings-out",
+            str(store_dir),
+            "--model-dir",
+            str(_MODEL_DIR),
+            "--storage-path",
+            str(storage),
+            "--variant",
+            "fullsize",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@_NEEDS_MODEL
+async def test_embeddings_out_matches_canonical_embedding(tmp_path):
+    from app.services.animetimm_model import AnimetimmModel
+    from app.services.ml_probe.store import open_embedding_store
+
+    storage, rows = _synthetic_storage(tmp_path, [123])
+    store_dir = tmp_path / "emb"
+
+    _run_embeddings(tmp_path, storage, rows, store_dir)
+
+    store = open_embedding_store(store_dir)
+    model = AnimetimmModel(str(_MODEL_DIR / "model.onnx"), str(_MODEL_DIR / "selected_tags.csv"))
+    await model.load()
+    try:
+        canonical = await model.embed(str(storage / "fullsize" / "img123.png"))
+    finally:
+        await model.cleanup()
+
+    assert store.ids.tolist() == [123]
+    assert store.vectors.shape == (1, 1024)
+    assert store.meta["dim"] == 1024
+    assert store.meta["model"] == _MODEL_DIR.name
+    assert canonical.shape == (1024,)
+    assert np.max(np.abs(store.vectors[0].astype(np.float32) - canonical)) < 2e-2
+    assert not list(tmp_path.glob("*.jsonl.meta")), "no predictions JSONL without --out"
+
+
+@_NEEDS_MODEL
+def test_embeddings_out_skips_unreadable_image(tmp_path):
+    from app.services.ml_probe.store import open_embedding_store
+
+    storage, rows = _synthetic_storage(tmp_path, [1, 2], corrupt={1})
+    store_dir = tmp_path / "emb"
+
+    proc = _run_embeddings(tmp_path, storage, rows, store_dir)
+
+    assert open_embedding_store(store_dir).ids.tolist() == [2]
+    assert "skipping image 1" in proc.stdout
+    assert "1 unreadable" in proc.stdout
+
+
+@_NEEDS_MODEL
+def test_embeddings_out_resumes(tmp_path):
+    from app.services.ml_probe.store import open_embedding_store
+
+    storage, rows = _synthetic_storage(tmp_path, [1, 2, 3])
+    store_dir = tmp_path / "emb"
+
+    _run_embeddings(tmp_path, storage, rows[:2], store_dir, name="first.jsonl")
+    proc = _run_embeddings(tmp_path, storage, rows, store_dir, name="second.jsonl")
+
+    assert open_embedding_store(store_dir).ids.tolist() == [1, 2, 3]
+    assert "2 already done, 1 to process" in proc.stdout
+
+
+@pytest.mark.unit
+def test_cli_rejects_shards_with_embeddings_out():
+    """Two shard processes appending to one store would interleave rows and ids undetectably."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            "m",
+            "--model-dir",
+            "d",
+            "--storage-path",
+            "s",
+            "--embeddings-out",
+            "e",
+            "--shards",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "--embeddings-out" in result.stderr and "--shards" in result.stderr
+
+
+@pytest.mark.unit
+def test_writer_refuses_a_second_writer_on_the_same_store(tmp_path):
+    first = _writer(tmp_path)
+    with pytest.raises(RuntimeError, match="another process"):
+        _writer(tmp_path)
+    first.close()
+    second = _writer(tmp_path)  # released on close
+    second.close()
+
+
+@_NEEDS_MODEL
+def test_embeddings_out_with_out_fills_each_output_independently(tmp_path):
+    """Store and JSONL may be out of step; each gets exactly the images it is missing."""
+    from app.services.ml_probe.store import open_embedding_store
+
+    storage, rows = _synthetic_storage(tmp_path, [1, 2, 3])
+    store_dir = tmp_path / "emb"
+    _run_embeddings(tmp_path, storage, rows[:2], store_dir, name="first.jsonl")  # store: 1, 2
+    out = tmp_path / "r.jsonl"
+    out.write_text(json.dumps({"image_id": 1, "predictions": []}) + "\n")  # JSONL: 1 only
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(_RUNNER),
+            "--manifest",
+            str(manifest),
+            "--embeddings-out",
+            str(store_dir),
+            "--out",
+            str(out),
+            "--model-dir",
+            str(_MODEL_DIR),
+            "--storage-path",
+            str(storage),
+            "--variant",
+            "fullsize",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert open_embedding_store(store_dir).ids.tolist() == [1, 2, 3]
+    jsonl_ids = [json.loads(line)["image_id"] for line in out.read_text().splitlines()]
+    assert jsonl_ids == [1, 2, 3], "image 2 repaired, image 1 not duplicated"
+    assert "1 already done, 2 to process" in proc.stdout
