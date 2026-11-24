@@ -269,7 +269,7 @@ services:
     logging: *default-logging
 
   loki:
-    image: grafana/loki:3.7.9
+    image: grafana/loki:3.7.10
     container_name: shuushuu-loki-prod
     user: "10001:10001"  # Loki's default uid; must match volume ownership
     command: -config.file=/etc/loki/loki-config.yaml
@@ -382,7 +382,7 @@ services:
     logging: *default-logging
 
   alloy:
-    image: grafana/alloy:v1.21.3
+    image: grafana/alloy:v1.22.0
     container_name: shuushuu-alloy-prod
     # Alloy runs as its image-default user (uid 473) and stays under the
     # daemon's userns-remap. It does NOT have host docker.sock access; it
