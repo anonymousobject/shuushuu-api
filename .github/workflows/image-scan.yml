@@ -21,6 +21,7 @@ on:
     paths:
       - docker-compose.prod.yml
       - .github/workflows/image-scan.yml
+      - .trivyignore.yaml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -64,6 +65,10 @@ jobs:
         image: ${{ fromJSON(needs.images.outputs.list) }}
 
     steps:
+      # For .trivyignore.yaml, the findings both Trivy steps accept.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       # A SARIF category must be unique per image, or each upload would
       # replace the previous image's findings in the Security tab.
       - name: Derive SARIF category
@@ -84,6 +89,7 @@ jobs:
           # the Security tab receives every severity.
           limit-severities-for-sarif: true
           ignore-unfixed: true
+          trivyignores: '.trivyignore.yaml'
 
       # Pull requests from Dependabot and forks get a read-only token, which
       # cannot upload; the scheduled run on main is what feeds the Security tab.
@@ -97,7 +103,8 @@ jobs:
       # Fails the scheduled and manual runs so a scan that finds something
       # sends a notification. Unfixed CVEs are left out: nothing can be done
       # about them until the distribution ships a fix, and they would keep
-      # this permanently red.
+      # this permanently red. Findings someone has already reviewed are
+      # listed, with their reasons and expiry dates, in .trivyignore.yaml.
       #
       # On pull requests it only reports. The findings belong to the images,
       # not to the change under review, so failing there put the same red
@@ -110,4 +117,5 @@ jobs:
           format: 'table'
           severity: 'CRITICAL,HIGH'
           ignore-unfixed: true
+          trivyignores: '.trivyignore.yaml'
           exit-code: ${{ github.event_name == 'pull_request' && '0' || '1' }}
