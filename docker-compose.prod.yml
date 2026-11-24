@@ -347,8 +347,14 @@ services:
   # itself stays under userns-remap and reaches the API only via TCP on an
   # isolated network. Allowlist is CONTAINERS=1 + NETWORKS=1 only — both
   # read-only inspect endpoints; no exec/create/volumes/auth/etc.
+  #
+  # Pinned to a digest, not just a tag. Upstream stopped publishing versioned
+  # tags after v0.5.0 (see its v0.6.0 release notes); `3.4` tracks HAProxy 3.4
+  # and is rebuilt every week with Alpine fixes. The digest means prod runs
+  # exactly the build Image Scan checked, and each rebuild arrives as a
+  # Dependabot PR (.github/dependabot.yml) rather than on the next pull.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:v0.5.0
+    image: tecnativa/docker-socket-proxy:3.4@sha256:027f9fa5ee70be5836eeaa10ce889d7a83f34a8db16a7f412818b92997e0beab
     container_name: shuushuu-docker-socket-proxy-prod
     userns_mode: "host"
     group_add:
