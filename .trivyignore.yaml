@@ -1,0 +1,61 @@
+# Findings Image Scan (.github/workflows/image-scan.yml) accepts, so the
+# weekly run stays red only for findings nobody has looked at.
+#
+# Each entry is scoped to the exact package version it was checked against.
+# A new image that ships a different version raises the finding again, so the
+# reasoning gets redone rather than inherited. Entries waiting on an upstream
+# fix carry an expired_at; when that date passes, the finding comes back.
+
+vulnerabilities:
+  # grafana/grafana: false positives. Grafana pins tempo at a commit on its main
+  # branch, which Go names v1.5.1-<date>-<sha> because the module has no /v2
+  # path. Trivy compares that against the 2.x fix releases and reports it as
+  # vulnerable. The commit (525d1bab07e0, 2026-04-27) already contains both
+  # fixes: bb8ca663d (#6711, CVE-2026-28377) and 650eb1985 (#6525,
+  # max_result_limit default, CVE-2026-21728) are its ancestors.
+  - id: CVE-2026-28377
+    purls:
+      - pkg:golang/github.com/grafana/tempo@v1.5.1-0.20260427112133-525d1bab07e0
+    statement: Fix bb8ca663d is an ancestor of the pinned tempo commit.
+  - id: CVE-2026-21728
+    purls:
+      - pkg:golang/github.com/grafana/tempo@v1.5.1-0.20260427112133-525d1bab07e0
+    statement: Fix 650eb1985 is an ancestor of the pinned tempo commit.
+
+  # mediawiki: YAML parser DoS, fixed in symfony/yaml 7.4.18. MediaWiki's
+  # REL1_46 branch already pins 7.4.23, so it ships in 1.46.3, which Dependabot
+  # will offer. MediaWiki only parses YAML from config and maintenance scripts.
+  - id: CVE-2026-109413
+    purls:
+      - pkg:composer/symfony/yaml@v7.4.12
+    statement: Waiting on MediaWiki 1.46.3; YAML input is not user-controlled.
+    expired_at: 2027-01-15
+
+  # certbot/dns-cloudflare: v5.10.0 is the newest tag, so this waits on
+  # upstream. Certbot runs on a schedule and only talks to Let's Encrypt and
+  # the Cloudflare API.
+  - id: CVE-2026-114613
+    purls:
+      - pkg:pypi/msgpack@1.1.2
+    statement: Waiting on a certbot release.
+    expired_at: 2026-12-24
+  - id: GHSA-6v7p-g79w-8964
+    purls:
+      - pkg:pypi/msgpack@1.1.2
+    statement: Waiting on a certbot release.
+    expired_at: 2026-12-24
+  - id: CVE-2025-47273
+    purls:
+      - pkg:pypi/setuptools@70.3.0
+    statement: Waiting on a certbot release.
+    expired_at: 2026-12-24
+  - id: CVE-2026-97687
+    purls:
+      - pkg:pypi/urllib3@2.7.0
+    statement: Waiting on a certbot release.
+    expired_at: 2026-12-24
+  - id: CVE-2026-97689
+    purls:
+      - pkg:pypi/urllib3@2.7.0
+    statement: Waiting on a certbot release.
+    expired_at: 2026-12-24
