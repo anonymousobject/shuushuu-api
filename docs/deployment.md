@@ -121,3 +121,29 @@ make prod-restart nginx           # force-recreate a specific service
 `make prod-restart` with **no arguments** force-recreates *everything*,
 including nginx — that drops the TLS edge for its boot and is the source of the
 old 30–60s outage. Scope it to the service you changed.
+
+## MediaWiki release-branch upgrades
+
+A patch bump within a branch (e.g. 1.46.1 → 1.46.2) is an ordinary
+`make prod-restart mediawiki`. Moving to a new branch (1.46 → 1.47) also needs
+`maintenance/update.php` run against the wiki database on tomoyo, and that
+update is **not** backward-compatible: 1.46's dropped columns the 1.45 code
+still used, including `objectcache.modtoken`, which backs the wiki's main and
+session caches (`CACHE_DB`). So the old version can't keep serving while the
+schema moves — stop it, update, start the new one:
+
+```bash
+# Fresh dump first (the daily backup may be up to a day old)
+$COMPOSE_PROD stop mediawiki
+$COMPOSE_PROD run --rm mediawiki php maintenance/run.php update --quick
+make prod-restart mediawiki
+```
+
+(`$COMPOSE_PROD` is the Makefile's `docker compose -f docker-compose.yml -f
+docker-compose.prod.yml`.) The wiki is down from the stop until the restart.
+Rolling back means restoring the dump *and* reverting the tag; reverting the
+tag alone leaves old code on a newer schema.
+
+Read the new branch's `RELEASE-NOTES-1.xx` in the image first, and rehearse
+`update.php` against a restore of the dump in a scratch MariaDB before touching
+prod. The 1.45 → 1.46 rehearsal took 27s for the update itself.
